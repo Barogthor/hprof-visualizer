@@ -220,12 +220,11 @@ impl HprofTestBuilder {
         }
 
         // Apply corruption mutation
-        if let Some(idx) = self.corrupt_record_at {
-            if let Some(&offset) = record_offsets.get(idx) {
-                if offset < bytes.len() {
-                    bytes[offset] = 0xFF;
-                }
-            }
+        if let Some(idx) = self.corrupt_record_at
+            && let Some(&offset) = record_offsets.get(idx)
+            && offset < bytes.len()
+        {
+            bytes[offset] = 0xFF;
         }
 
         // Apply truncation mutation
