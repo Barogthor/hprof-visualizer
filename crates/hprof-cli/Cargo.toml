@@ -10,3 +10,6 @@ path = "src/main.rs"
 [dependencies]
 hprof-engine = { path = "../hprof-engine" }
 hprof-tui    = { path = "../hprof-tui" }
+
+[dev-dependencies]
+tempfile = "3"

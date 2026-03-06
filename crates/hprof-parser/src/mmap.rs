@@ -43,11 +43,14 @@ pub fn open_readonly(path: &Path) -> Result<Mmap, HprofError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn non_existent_path_returns_mmap_failed() {
-        let result = open_readonly(Path::new("/non/existent/file.hprof"));
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let missing_path = tmp.path().to_path_buf();
+        drop(tmp);
+
+        let result = open_readonly(&missing_path);
         assert!(matches!(result, Err(HprofError::MmapFailed(_))));
     }
 }
@@ -56,6 +59,7 @@ mod tests {
 mod builder_tests {
     use super::*;
     use crate::test_utils::HprofTestBuilder;
+    use crate::{HprofVersion, parse_header};
     use std::io::Write;
 
     #[test]
@@ -71,5 +75,22 @@ mod builder_tests {
 
         let mmap = open_readonly(tmp.path()).unwrap();
         assert_eq!(mmap.len(), expected_len);
+    }
+
+    #[test]
+    fn builder_bytes_mmap_then_parse_header() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_string(1, "main")
+            .build();
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let mmap = open_readonly(tmp.path()).unwrap();
+        let header = parse_header(&mmap).unwrap();
+
+        assert_eq!(header.version, HprofVersion::V1_0_2);
+        assert_eq!(header.id_size, 8);
     }
 }

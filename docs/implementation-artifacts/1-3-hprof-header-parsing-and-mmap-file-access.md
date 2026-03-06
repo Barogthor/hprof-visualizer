@@ -81,6 +81,20 @@ so that I can start working with any hprof file without it being loaded entirely
   - [x] `cargo clippy -p hprof-parser -- -D warnings`
   - [x] `cargo fmt -- --check`
 
+### Review Follow-ups (AI)
+
+- [x] [AI-Review][High] Implement Story FR1 end-to-end CLI flow: parse file path argument,
+      call `open_readonly`, parse header, and surface clear fatal error messages in
+      `hprof-cli` (`crates/hprof-cli/src/main.rs:4`,
+      `docs/implementation-artifacts/1-3-hprof-header-parsing-and-mmap-file-access.md:7`).
+- [x] [AI-Review][High] Add AC#7 integration test that writes builder bytes to a temp file,
+      mmaps it, then calls `parse_header` and asserts `HprofVersion` + `id_size`
+      (`docs/implementation-artifacts/1-3-hprof-header-parsing-and-mmap-file-access.md:38`).
+- [x] [AI-Review][High] Reconcile completion metadata with implementation scope (task checks,
+      completion notes, and status) once AC gaps are closed.
+- [x] [AI-Review][Medium] Replace Unix-specific missing-path test fixture with a
+      cross-platform guaranteed-missing path strategy (`crates/hprof-parser/src/mmap.rs:50`).
+
 ## Dev Notes
 
 ### Files to Create or Modify
@@ -95,8 +109,9 @@ crates/hprof-parser/
     └── header.rs                       ← NEW: HprofVersion, HprofHeader, parse_header()
 ```
 
-No other crate is touched in this story. `hprof-cli` wiring (FR1) is deferred to the
-engine factory story; the CLI cannot import from `hprof-parser` directly per architecture.
+Initial implementation touched only `hprof-parser`. Post-review fixes also touched
+`hprof-engine` and `hprof-cli` to satisfy FR1 end-to-end while preserving architecture
+boundaries (`hprof-cli` depends on `hprof-engine`, not `hprof-parser` directly).
 
 [Source: docs/planning-artifacts/architecture.md#Project Structure]
 
@@ -347,7 +362,7 @@ None.
   timestamp, invalid version, empty input, valid 1.0.1 4-byte, valid 1.0.2 8-byte.
   Tests (`#[cfg(all(test, feature = "test-utils"))]`): builder-sourced 1.0.1 and 1.0.2 cases.
 - Updated `lib.rs`: re-exported `open_readonly`, `HprofHeader`, `HprofVersion`, `parse_header`.
-- All 36 tests pass with `--features test-utils`; 16 pass without.
+- All 40 tests pass with `--features test-utils`; 18 pass without.
 - `cargo clippy -p hprof-parser -- -D warnings` clean.
 - `cargo fmt -- --check` clean.
 - **Code review fixes (2026-03-06):**
@@ -355,7 +370,15 @@ None.
   - Added tests for `id_size = 0` and `id_size = 3` edge cases.
   - Changed `pub mod error/mmap/header` to `pub(crate)` in `lib.rs` per architecture visibility rules.
   - Added Change Log section.
-  - 38 tests pass after review fixes.
+  - 40 tests pass after review fixes.
+- **Code review follow-up fixes (2026-03-06):**
+  - Implemented CLI FR1 flow in `hprof-cli`: one path argument, mmap + header parse via engine,
+    clear fatal error output.
+  - Added `hprof-engine::open_hprof_header` to keep parser internals out of CLI while enabling
+    end-to-end open + parse.
+  - Added AC#7 integration test in parser mmap tests: builder bytes → temp file → mmap →
+    `parse_header`.
+  - Replaced Unix-specific missing-path test with cross-platform guaranteed-missing temp path.
 
 ### File List
 
@@ -365,10 +388,15 @@ None.
 - `crates/hprof-parser/src/lib.rs` (modified — declared and re-exported `mmap` and `header` modules; modules are `pub(crate)`)
 - `crates/hprof-parser/src/mmap.rs` (new)
 - `crates/hprof-parser/src/header.rs` (new)
+- `crates/hprof-engine/src/lib.rs` (modified — added `open_hprof_header` helper and parser type re-exports)
+- `crates/hprof-cli/src/main.rs` (modified — implemented CLI path parsing and file open+header parse flow)
+- `crates/hprof-cli/Cargo.toml` (modified — added `tempfile` dev-dependency for CLI tests)
 
 ## Change Log
 
 - 2026-03-06: Story implemented — `open_readonly`, `parse_header`, `HprofVersion`, `HprofHeader`;
-  `memmap2` and `byteorder` added as workspace dependencies; 38 tests pass.
+  `memmap2` and `byteorder` added as workspace dependencies; 40 tests pass.
 - 2026-03-06: Code review fixes — `id_size` validation added, `pub(crate)` module visibility
   enforced, tests for invalid `id_size` (0 and 3) added.
+- 2026-03-06: Review follow-ups fixed — CLI FR1 flow implemented through engine helper,
+  AC#7 mmap+parse integration test added, and missing-path test made cross-platform.

@@ -103,6 +103,13 @@ against realistic hprof byte sequences without committing large binary files.
   - [x] `cargo clippy -p hprof-parser -- -D warnings`
   - [x] `cargo fmt -- --check`
 
+### Review Follow-ups (AI)
+
+- [x] [AI-Review][Medium] Validate `id_size` (must be 4 or 8) in `HprofTestBuilder::new`
+      or at the start of `build()` so invalid values fail deterministically even when no
+      records are added (`crates/hprof-parser/src/test_utils.rs:39`,
+      `crates/hprof-parser/src/test_utils.rs:198`, `crates/hprof-parser/src/test_utils.rs:231`).
+
 ## Dev Notes
 
 ### Crate & Module Structure
@@ -338,9 +345,13 @@ None.
   `add_stack_trace`, `add_thread`, `add_instance`, plus `truncate_at` and `corrupt_record_at`.
 - Bug found and fixed during TDD: "JAVA PROFILE 1.0.2" = 18 chars (not 19) — test assertions
   for magic string slice and header offsets corrected to reflect actual byte layout.
-- 8 unit tests in `error.rs`, 15 unit tests + 1 doctest in `test_utils.rs` — all pass.
+- 8 unit tests in `error.rs`, 16 unit tests + 1 doctest in `test_utils.rs` — all pass.
 - All acceptance criteria satisfied: AC#1 (HprofError enum), AC#2 (builder API), AC#3 (feature
   gate — `HprofTestBuilder` absent without `test-utils`), AC#4 (byte layout verified).
+- **Code review fixes applied (2026-03-06):**
+  - Added early `id_size` validation in `HprofTestBuilder::new` and `build` to fail
+    deterministically even when no records are added.
+  - Added test coverage for invalid `id_size` with no records.
 
 ### File List
 

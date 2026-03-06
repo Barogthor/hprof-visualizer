@@ -37,6 +37,7 @@ impl HprofTestBuilder {
     ///   `build()` appends the null byte automatically
     /// - `id_size`: byte width of object IDs — must be 4 or 8
     pub fn new(version: &'static str, id_size: u32) -> Self {
+        Self::assert_valid_id_size(id_size);
         Self {
             version,
             id_size,
@@ -188,6 +189,8 @@ impl HprofTestBuilder {
     ///
     /// Applies truncation and corruption mutations if configured.
     pub fn build(self) -> Vec<u8> {
+        Self::assert_valid_id_size(self.id_size);
+
         let mut bytes = Vec::new();
 
         // Header: null-terminated version string
@@ -229,13 +232,16 @@ impl HprofTestBuilder {
     /// # Panics
     /// Panics if `id_size` is not 4 or 8 — the only valid hprof ID sizes.
     fn encode_id(&self, id: u64) -> Vec<u8> {
-        assert!(
-            self.id_size == 4 || self.id_size == 8,
-            "id_size must be 4 or 8, got {}",
-            self.id_size
-        );
+        Self::assert_valid_id_size(self.id_size);
         let all = id.to_be_bytes();
         all[8 - self.id_size as usize..].to_vec()
+    }
+
+    fn assert_valid_id_size(id_size: u32) {
+        assert!(
+            id_size == 4 || id_size == 8,
+            "id_size must be 4 or 8, got {id_size}"
+        );
     }
 
     /// Builds a record: `tag(u8)` + `time_offset(u32=0)` + `length(u32)` + `payload`.
@@ -446,6 +452,12 @@ mod tests {
         HprofTestBuilder::new("JAVA PROFILE 1.0.2", 3)
             .add_string(1, "x")
             .build();
+    }
+
+    #[test]
+    #[should_panic(expected = "id_size must be 4 or 8")]
+    fn new_panics_on_invalid_id_size_without_records() {
+        HprofTestBuilder::new("JAVA PROFILE 1.0.2", 3).build();
     }
 
     #[test]
