@@ -9,3 +9,5 @@ resolver = "2"
 
 [workspace.dependencies]
 thiserror = "2"
+memmap2 = "0.9"
+byteorder = "1"
