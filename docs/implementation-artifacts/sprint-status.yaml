@@ -43,7 +43,7 @@ development_status:
   # Epic 1: Open and Validate Heap Files
   epic-1: in-progress
   1-1-workspace-setup-and-ci-pipeline: done
-  1-2-error-types-and-test-builder: ready-for-dev
+  1-2-error-types-and-test-builder: done
   1-3-hprof-header-parsing-and-mmap-file-access: backlog
   epic-1-retrospective: optional
 

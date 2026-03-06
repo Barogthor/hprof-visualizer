@@ -8,4 +8,4 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-# Shared dependency versions — populated by future stories
+thiserror = "2"
