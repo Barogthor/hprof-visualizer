@@ -30,31 +30,61 @@ pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> Result<PreciseIndex, 
 
     while (cursor.position() as usize) < data.len() {
         let header = parse_record_header(&mut cursor)?;
+
+        if !matches!(header.tag, 0x01 | 0x02 | 0x04 | 0x05 | 0x06) {
+            skip_record(&mut cursor, &header)?;
+            continue;
+        }
+
+        let payload_start = cursor.position() as usize;
+        let payload_end = payload_start
+            .checked_add(header.length as usize)
+            .ok_or_else(|| {
+                HprofError::CorruptedData(format!(
+                    "record 0x{tag:02X} payload length overflow: {len}",
+                    tag = header.tag,
+                    len = header.length
+                ))
+            })?;
+        if payload_end > data.len() {
+            return Err(HprofError::TruncatedRecord);
+        }
+
+        let mut payload_cursor = Cursor::new(&data[payload_start..payload_end]);
         match header.tag {
             0x01 => {
-                let s = parse_string_record(&mut cursor, id_size, header.length)?;
+                let s = parse_string_record(&mut payload_cursor, id_size, header.length)?;
                 index.strings.insert(s.id, s);
             }
             0x02 => {
-                let c = parse_load_class(&mut cursor, id_size)?;
+                let c = parse_load_class(&mut payload_cursor, id_size)?;
                 index.classes.insert(c.class_serial, c);
             }
             0x04 => {
-                let f = parse_stack_frame(&mut cursor, id_size)?;
+                let f = parse_stack_frame(&mut payload_cursor, id_size)?;
                 index.stack_frames.insert(f.frame_id, f);
             }
             0x05 => {
-                let t = parse_stack_trace(&mut cursor, id_size)?;
+                let t = parse_stack_trace(&mut payload_cursor, id_size)?;
                 index.stack_traces.insert(t.stack_trace_serial, t);
             }
             0x06 => {
-                let t = parse_start_thread(&mut cursor, id_size)?;
+                let t = parse_start_thread(&mut payload_cursor, id_size)?;
                 index.threads.insert(t.thread_serial, t);
             }
-            _ => {
-                skip_record(&mut cursor, &header)?;
-            }
+            _ => unreachable!(),
         }
+
+        if payload_cursor.position() as usize != header.length as usize {
+            return Err(HprofError::CorruptedData(format!(
+                "record 0x{tag:02X} length mismatch: consumed {consumed} of {declared} bytes",
+                tag = header.tag,
+                consumed = payload_cursor.position(),
+                declared = header.length
+            )));
+        }
+
+        cursor.set_position(payload_end as u64);
     }
 
     Ok(index)
@@ -70,6 +100,15 @@ mod tests {
         rec.write_u8(tag).unwrap();
         rec.write_u32::<BigEndian>(0).unwrap(); // time_offset
         rec.write_u32::<BigEndian>(payload.len() as u32).unwrap();
+        rec.extend_from_slice(payload);
+        rec
+    }
+
+    fn make_record_with_declared_length(tag: u8, declared_length: u32, payload: &[u8]) -> Vec<u8> {
+        let mut rec = Vec::new();
+        rec.write_u8(tag).unwrap();
+        rec.write_u32::<BigEndian>(0).unwrap(); // time_offset
+        rec.write_u32::<BigEndian>(declared_length).unwrap();
         rec.extend_from_slice(payload);
         rec
     }
@@ -278,6 +317,34 @@ mod tests {
         assert_eq!(index.strings[&5].value, "foo");
         assert_eq!(index.classes.len(), 1);
         assert_eq!(index.classes[&1].class_object_id, 50);
+    }
+
+    #[test]
+    fn known_record_with_too_short_declared_length_returns_truncated() {
+        // Declared length is 4, but LOAD_CLASS needs more bytes.
+        let payload = make_load_class_payload(1, 100, 0, 200, 8);
+        let data = make_record_with_declared_length(0x02, 4, &payload);
+        let err = run_first_pass(&data, 8).unwrap_err();
+        assert!(matches!(err, HprofError::TruncatedRecord));
+    }
+
+    #[test]
+    fn known_record_with_extra_payload_returns_corrupted_data() {
+        // STACK_TRACE with one frame plus trailing junk bytes in the same record.
+        let mut payload = make_stack_trace_payload(3, 1, &[10], 8);
+        payload.extend_from_slice(&[0xEE; 8]);
+        let data = make_record(0x05, &payload);
+        let err = run_first_pass(&data, 8).unwrap_err();
+        assert!(matches!(err, HprofError::CorruptedData(_)));
+    }
+
+    #[test]
+    fn string_record_declared_length_smaller_than_id_size_returns_truncated() {
+        // Declared payload length is invalid for id_size=8.
+        let payload = 1u64.to_be_bytes();
+        let data = make_record_with_declared_length(0x01, 4, &payload);
+        let err = run_first_pass(&data, 8).unwrap_err();
+        assert!(matches!(err, HprofError::TruncatedRecord));
     }
 }
 

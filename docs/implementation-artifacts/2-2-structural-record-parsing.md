@@ -444,3 +444,12 @@ claude-sonnet-4-6
   `method_sig_string_id`, `source_file_string_id`. Fixed: added all three assertions. [types.rs]
 - [x] [Low] `advance_past_header` duplicated in `strings.rs` and `types.rs` builder_tests.
   Fixed: moved to `test_utils.rs` with `#[cfg(test)]`, imported from there. [test_utils.rs]
+
+### Follow-up Fixes (AI) — 2026-03-07
+
+- [x] [High] `parse_string_record` now rejects impossible payload contracts where
+  `payload_length < id_size` and returns `TruncatedRecord` before any ID read. Added
+  `parse_string_payload_shorter_than_id_size_returns_truncated`. [strings.rs]
+- [x] [Medium] `parse_stack_trace` now validates that `num_frames * id_size` fits in
+  remaining payload bytes before reading frame IDs; otherwise returns `TruncatedRecord`.
+  [types.rs]

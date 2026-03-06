@@ -429,3 +429,23 @@ claude-sonnet-4-6
 - `.gitignore` (modified)
 - `docs/implementation-artifacts/2-3-first-pass-indexer-with-precise-indexes.md` (modified)
 - `docs/implementation-artifacts/sprint-status.yaml` (modified)
+
+## Senior Developer Review (AI)
+
+**Review Date:** 2026-03-07
+**Outcome:** Changes Requested (all fixed in same session)
+**Action Items:** 3 total — 0 remaining
+
+### Action Items
+
+- [x] [High] `run_first_pass` now constrains known-record parsing to the declared
+  `header.length` payload window, preventing cross-record over-read on malformed length
+  metadata. [indexer/first_pass.rs]
+- [x] [High] known-record branches now require exact payload consumption
+  (`consumed == header.length`), returning `CorruptedData` on mismatch so cursor
+  alignment invariants are preserved. [indexer/first_pass.rs]
+- [x] [Medium] added malformed-length regression coverage:
+  `known_record_with_too_short_declared_length_returns_truncated`,
+  `known_record_with_extra_payload_returns_corrupted_data`, and
+  `string_record_declared_length_smaller_than_id_size_returns_truncated`.
+  [indexer/first_pass.rs]

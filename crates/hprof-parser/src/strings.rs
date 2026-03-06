@@ -37,8 +37,12 @@ pub fn parse_string_record(
     id_size: u32,
     payload_length: u32,
 ) -> Result<HprofString, HprofError> {
+    if payload_length < id_size {
+        return Err(HprofError::TruncatedRecord);
+    }
+
     let id = read_id(cursor, id_size)?;
-    let content_len = (payload_length as usize).saturating_sub(id_size as usize);
+    let content_len = (payload_length - id_size) as usize;
     let mut content_bytes = vec![0u8; content_len];
     cursor
         .read_exact(&mut content_bytes)
@@ -103,6 +107,17 @@ mod tests {
         let mut cursor = Cursor::new(data.as_slice());
         let err = parse_string_record(&mut cursor, 8, 8 + 2).unwrap_err();
         assert!(matches!(err, HprofError::CorruptedData(_)));
+    }
+
+    #[test]
+    fn parse_string_payload_shorter_than_id_size_returns_truncated() {
+        // payload_length says only 4 bytes exist, but id_size requires 8.
+        // Even if the cursor has enough bytes, this record contract is invalid.
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u64.to_be_bytes());
+        let mut cursor = Cursor::new(data.as_slice());
+        let err = parse_string_record(&mut cursor, 8, 4).unwrap_err();
+        assert!(matches!(err, HprofError::TruncatedRecord));
     }
 }
 

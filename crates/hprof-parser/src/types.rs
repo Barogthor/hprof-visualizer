@@ -177,6 +177,22 @@ pub fn parse_stack_trace(
     let num_frames = cursor
         .read_u32::<BigEndian>()
         .map_err(|_| HprofError::TruncatedRecord)?;
+
+    let remaining = cursor
+        .get_ref()
+        .len()
+        .saturating_sub(cursor.position() as usize);
+    let required = (num_frames as usize)
+        .checked_mul(id_size as usize)
+        .ok_or_else(|| {
+            HprofError::CorruptedData(format!(
+                "stack trace frame list size overflow: num_frames={num_frames}, id_size={id_size}"
+            ))
+        })?;
+    if required > remaining {
+        return Err(HprofError::TruncatedRecord);
+    }
+
     let mut frame_ids = Vec::new();
     for _ in 0..num_frames {
         frame_ids.push(read_id(cursor, id_size)?);
