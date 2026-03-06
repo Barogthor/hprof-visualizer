@@ -1,0 +1,12 @@
+[package]
+name = "hprof-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "hprof-visualizer"
+path = "src/main.rs"
+
+[dependencies]
+hprof-engine = { path = "../hprof-engine" }
+hprof-tui    = { path = "../hprof-tui" }

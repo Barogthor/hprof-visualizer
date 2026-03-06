@@ -1,0 +1,95 @@
+# generated: 2026-03-06
+# project: hprof-visualizer
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: docs/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-03-06
+project: hprof-visualizer
+project_key: NOKEY
+tracking_system: file-system
+story_location: docs/implementation-artifacts
+
+development_status:
+  # Epic 1: Open and Validate Heap Files
+  epic-1: in-progress
+  1-1-workspace-setup-and-ci-pipeline: done
+  1-2-error-types-and-test-builder: ready-for-dev
+  1-3-hprof-header-parsing-and-mmap-file-access: backlog
+  epic-1-retrospective: optional
+
+  # Epic 2: Structural Indexing
+  epic-2: backlog
+  2-1-record-header-parsing-id-utility-and-unknown-record-skip: backlog
+  2-2-structural-record-parsing: backlog
+  2-3-first-pass-indexer-with-precise-indexes: backlog
+  2-4-tolerant-indexing: backlog
+  2-5-segment-level-binaryfuse8-filters: backlog
+  2-6-indexing-progress-bar: backlog
+  epic-2-retrospective: optional
+
+  # Epic 3: Thread-Centric Navigation & Value Display
+  epic-3: backlog
+  3-1-navigation-engine-trait-and-engine-factory: backlog
+  3-2-thread-list-and-search-in-tui: backlog
+  3-3-stack-frame-and-local-variable-display: backlog
+  3-4-object-resolution-and-single-level-expansion: backlog
+  3-5-recursive-expansion-and-collection-size-indicators: backlog
+  3-6-lazy-value-string-loading: backlog
+  epic-3-retrospective: optional
+
+  # Epic 4: Large Collection Handling & Pagination
+  epic-4: backlog
+  4-1-collection-pagination-engine: backlog
+  4-2-paginated-collection-view-and-keyboard-navigation: backlog
+  epic-4-retrospective: optional
+
+  # Epic 5: Memory Management & LRU Eviction
+  epic-5: backlog
+  5-1-memorysize-trait-and-budget-tracking: backlog
+  5-2-memory-budget-auto-calculation-and-override: backlog
+  5-3-lru-eviction-core: backlog
+  5-4-transparent-re-parse-and-multi-cycle-stability: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: Configuration & Error Resilience
+  epic-6: backlog
+  6-1-toml-configuration-and-cli-precedence: backlog
+  6-2-loading-indicators-and-status-bar-warnings: backlog
+  epic-6-retrospective: optional
+
+  # Epic 7: TUI UX & Interaction Design
+  epic-7: backlog
+  7-1-favorites-panel: backlog
+  7-2-theme-system: backlog
+  7-3-keyboard-navigation-map: backlog
+  epic-7-retrospective: optional

@@ -1,0 +1,9 @@
+.idea/
+docs/.obsidian
+.agents/
+.claude/
+.gemini/
+.codex/
+_bmad/
+
+/target

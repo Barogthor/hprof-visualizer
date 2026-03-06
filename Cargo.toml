@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "crates/hprof-parser",
+    "crates/hprof-engine",
+    "crates/hprof-tui",
+    "crates/hprof-cli",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Shared dependency versions — populated by future stories
