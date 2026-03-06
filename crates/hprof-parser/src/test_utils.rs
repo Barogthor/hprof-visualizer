@@ -17,6 +17,15 @@
 //! assert_eq!(&bytes[..18], b"JAVA PROFILE 1.0.2");
 //! ```
 
+/// Returns the byte offset of the first record in a builder-produced byte slice.
+///
+/// Advances past the null-terminated version string, `id_size` (`u32`), and
+/// timestamp (`u64`) that constitute the hprof file header.
+#[cfg(test)]
+pub fn advance_past_header(bytes: &[u8]) -> usize {
+    bytes.iter().position(|&b| b == 0).unwrap() + 1 + 4 + 8
+}
+
 /// Builder for synthetic hprof binary data.
 ///
 /// Constructs a `Vec<u8>` conforming to the hprof binary format,

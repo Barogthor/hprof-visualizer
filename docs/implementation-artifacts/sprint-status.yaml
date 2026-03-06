@@ -50,7 +50,7 @@ development_status:
   # Epic 2: Structural Indexing
   epic-2: in-progress
   2-1-record-header-parsing-id-utility-and-unknown-record-skip: done
-  2-2-structural-record-parsing: backlog
+  2-2-structural-record-parsing: done
   2-3-first-pass-indexer-with-precise-indexes: backlog
   2-4-tolerant-indexing: backlog
   2-5-segment-level-binaryfuse8-filters: backlog
