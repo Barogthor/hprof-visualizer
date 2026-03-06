@@ -41,15 +41,15 @@ story_location: docs/implementation-artifacts
 
 development_status:
   # Epic 1: Open and Validate Heap Files
-  epic-1: in-progress
+  epic-1: done
   1-1-workspace-setup-and-ci-pipeline: done
   1-2-error-types-and-test-builder: done
   1-3-hprof-header-parsing-and-mmap-file-access: done
-  epic-1-retrospective: optional
+  epic-1-retrospective: done
 
   # Epic 2: Structural Indexing
-  epic-2: backlog
-  2-1-record-header-parsing-id-utility-and-unknown-record-skip: backlog
+  epic-2: in-progress
+  2-1-record-header-parsing-id-utility-and-unknown-record-skip: done
   2-2-structural-record-parsing: backlog
   2-3-first-pass-indexer-with-precise-indexes: backlog
   2-4-tolerant-indexing: backlog
