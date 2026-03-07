@@ -124,7 +124,7 @@ impl FilterProgressReporter {
             let pb = self.mp.add(ProgressBar::new(total as u64));
             pb.set_style(
                 ProgressStyle::with_template(
-                    "[{elapsed_precise}] [{bar:40.green/white}] {pos}/{len} segments",
+                    "[{elapsed_precise}] [{bar:40.green/white}] {pos}/{len} segments (ETA {eta})",
                 )
                 .unwrap()
                 .progress_chars("=>-"),
