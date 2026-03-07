@@ -18,8 +18,16 @@
 //! Indexed 142057/142057 records in 3.2s (1.24 GB/s)
 //! ```
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::time::Duration;
+
+/// Creates a new [`MultiProgress`] for coordinating the two indexing phase bars.
+///
+/// Callers that do not have `indicatif` as a direct dependency use this
+/// constructor so they do not need to depend on the crate themselves.
+pub fn new_multi_progress() -> MultiProgress {
+    MultiProgress::new()
+}
 
 /// Drives an [`indicatif::ProgressBar`] from byte-offset callbacks.
 pub struct ProgressReporter {
@@ -29,9 +37,11 @@ pub struct ProgressReporter {
 }
 
 impl ProgressReporter {
-    /// Creates a new reporter for a file of `total_bytes` bytes.
-    pub fn new(total_bytes: u64) -> Self {
-        let pb = ProgressBar::new(total_bytes);
+    /// Creates a new reporter registered with `mp` for a file of `total_bytes`
+    /// bytes. Using [`MultiProgress`] prevents visual interference when a
+    /// second bar is added later for the filter-build phase.
+    pub fn new(mp: &MultiProgress, total_bytes: u64) -> Self {
+        let pb = mp.add(ProgressBar::new(total_bytes));
         pb.set_style(
             ProgressStyle::with_template(
                 "[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} \
@@ -87,44 +97,47 @@ impl ProgressReporter {
 /// Drives a second [`indicatif::ProgressBar`] for the segment-filter build
 /// phase (sort + BinaryFuse8 construction per 64 MiB segment).
 ///
-/// Create this reporter just before calling
-/// [`hprof_engine::open_hprof_file_with_progress`], pass
-/// [`FilterProgressReporter::on_segment_built`] as the `filter_progress_fn`
-/// argument, then call [`FilterProgressReporter::finish`] when done.
+/// The bar is created lazily on the first [`on_segment_built`] call so it
+/// never appears during the scan phase.
+///
+/// [`on_segment_built`]: FilterProgressReporter::on_segment_built
 pub struct FilterProgressReporter {
-    pb: ProgressBar,
+    mp: MultiProgress,
+    pb: Option<ProgressBar>,
 }
 
 impl FilterProgressReporter {
-    /// Creates a new reporter. The total segment count is not known upfront;
-    /// the bar uses `indicatif`'s "length unknown" spinner style until the
-    /// first callback sets the length.
-    pub fn new() -> Self {
-        let pb = ProgressBar::new(0);
-        pb.set_style(
-            ProgressStyle::with_template(
-                "[{elapsed_precise}] [{bar:40.green/white}] {pos}/{len} segments",
-            )
-            .unwrap()
-            .progress_chars("=>-"),
-        );
-        pb.enable_steady_tick(Duration::from_secs(1));
-        Self { pb }
+    /// Creates a new reporter that will add its bar to `mp` on first use.
+    pub fn new(mp: MultiProgress) -> Self {
+        Self { mp, pb: None }
     }
 
     /// Called by the engine after each segment filter is built.
     ///
     /// `done` — segments completed so far; `total` — total segments to build.
+    /// Creates the progress bar on the first invocation.
     pub fn on_segment_built(&mut self, done: usize, total: usize) {
-        if self.pb.length() != Some(total as u64) {
-            self.pb.set_length(total as u64);
-        }
-        self.pb.set_position(done as u64);
+        let pb = self.pb.get_or_insert_with(|| {
+            let pb = self.mp.add(ProgressBar::new(total as u64));
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] [{bar:40.green/white}] {pos}/{len} segments",
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+            );
+            pb.enable_steady_tick(Duration::from_secs(1));
+            pb
+        });
+        pb.set_length(total as u64);
+        pb.set_position(done as u64);
     }
 
-    /// Clears the filter bar.
+    /// Clears the filter bar if it was ever shown.
     pub fn finish(self) {
-        self.pb.finish_and_clear();
+        if let Some(pb) = self.pb {
+            pb.finish_and_clear();
+        }
     }
 }
 
@@ -134,18 +147,21 @@ mod tests {
 
     #[test]
     fn new_constructs_without_panic() {
-        let _reporter = ProgressReporter::new(1024);
+        let mp = MultiProgress::new();
+        let _reporter = ProgressReporter::new(&mp, 1024);
     }
 
     #[test]
     fn on_bytes_processed_does_not_panic() {
-        let mut reporter = ProgressReporter::new(1024);
+        let mp = MultiProgress::new();
+        let mut reporter = ProgressReporter::new(&mp, 1024);
         reporter.on_bytes_processed(512);
     }
 
     #[test]
     fn filter_reporter_on_segment_built_does_not_panic() {
-        let mut reporter = FilterProgressReporter::new();
+        let mp = MultiProgress::new();
+        let mut reporter = FilterProgressReporter::new(mp);
         reporter.on_segment_built(1, 10);
         reporter.on_segment_built(10, 10);
     }

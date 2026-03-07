@@ -29,8 +29,9 @@ where
     let file_len = std::fs::metadata(&path)
         .map_err(CliError::MetadataFailed)?
         .len();
-    let mut reporter = hprof_tui::progress::ProgressReporter::new(file_len);
-    let mut filter_reporter = hprof_tui::progress::FilterProgressReporter::new();
+    let mp = hprof_tui::progress::new_multi_progress();
+    let mut reporter = hprof_tui::progress::ProgressReporter::new(&mp, file_len);
+    let mut filter_reporter = hprof_tui::progress::FilterProgressReporter::new(mp);
     let summary = hprof_engine::open_hprof_file_with_progress(
         &path,
         |bytes| reporter.on_bytes_processed(bytes),
