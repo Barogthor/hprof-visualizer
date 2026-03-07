@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 hprof-parser = { path = "../hprof-parser" }
+
+[dev-dependencies]
+tempfile = "3"

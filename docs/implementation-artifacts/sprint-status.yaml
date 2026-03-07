@@ -54,7 +54,7 @@ development_status:
   2-3-first-pass-indexer-with-precise-indexes: done
   2-4-tolerant-indexing: done
   2-5-segment-level-binaryfuse8-filters: done
-  2-6-indexing-progress-bar: backlog
+  2-6-indexing-progress-bar: done
   epic-2-retrospective: optional
 
   # Epic 3: Thread-Centric Navigation & Value Display

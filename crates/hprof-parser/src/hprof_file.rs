@@ -4,6 +4,10 @@
 //! first-pass indexer in one call, making all structural metadata available
 //! via [`HprofFile::index`] after construction. Truncated or corrupted
 //! records are non-fatal and collected in [`HprofFile::index_warnings`].
+//!
+//! Use [`HprofFile::from_path_with_progress`] to receive byte-offset callbacks
+//! during indexing, or [`HprofFile::from_path`] for a no-op convenience
+//! wrapper.
 
 use std::path::Path;
 
@@ -50,22 +54,30 @@ pub struct HprofFile {
 
 impl HprofFile {
     /// Opens `path` as a read-only mmap, parses the header, and indexes all
-    /// structural records in a single sequential pass.
+    /// structural records, calling `progress_fn` with the current byte offset
+    /// every [`PROGRESS_REPORT_INTERVAL`] bytes and once after the final record.
     ///
     /// Truncated or corrupted records are non-fatal: they are collected in
     /// [`HprofFile::index_warnings`] and indexing continues where possible.
     ///
+    /// The byte offset passed to `progress_fn` is an absolute file offset from
+    /// the beginning of the file (including the header).
+    ///
     /// ## Errors
     /// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
     /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
-    /// - [`HprofError::TruncatedRecord`] — file header is truncated (missing
-    ///   null terminator, id_size field, or timestamp). Record-level truncation
-    ///   is non-fatal and collected in [`HprofFile::index_warnings`] instead.
-    pub fn from_path(path: &Path) -> Result<Self, HprofError> {
+    /// - [`HprofError::TruncatedRecord`] — file header is truncated.
+    pub fn from_path_with_progress(
+        path: &Path,
+        mut progress_fn: impl FnMut(u64),
+    ) -> Result<Self, HprofError> {
         let mmap = open_readonly(path)?;
         let header = parse_header(&mmap)?;
         let records_start = header_end(&mmap)?;
-        let result = run_first_pass(&mmap[records_start..], header.id_size);
+        let base_offset = records_start as u64;
+        let result = run_first_pass(&mmap[records_start..], header.id_size, |bytes| {
+            progress_fn(base_offset.saturating_add(bytes));
+        });
         Ok(Self {
             _mmap: mmap,
             header,
@@ -75,6 +87,18 @@ impl HprofFile {
             records_indexed: result.records_indexed,
             segment_filters: result.segment_filters,
         })
+    }
+
+    /// Opens `path` and indexes it without a progress callback.
+    ///
+    /// Convenience wrapper around [`HprofFile::from_path_with_progress`].
+    ///
+    /// ## Errors
+    /// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
+    /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
+    /// - [`HprofError::TruncatedRecord`] — file header is truncated.
+    pub fn from_path(path: &Path) -> Result<Self, HprofError> {
+        Self::from_path_with_progress(path, |_| {})
     }
 }
 
@@ -123,6 +147,56 @@ mod tests {
         let hfile = HprofFile::from_path(tmp.path()).unwrap(); // Ok, not Err
         assert!(!hfile.index_warnings.is_empty());
         assert!(hfile.index.strings.is_empty());
+    }
+
+    #[test]
+    fn from_path_with_progress_on_valid_file_calls_callback_at_least_once() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"JAVA PROFILE 1.0.2\0");
+        bytes.extend_from_slice(&8u32.to_be_bytes());
+        bytes.extend_from_slice(&0u64.to_be_bytes());
+        // Add one string record so the records section is non-empty.
+        bytes.push(0x01); // tag
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // time_offset
+        let id_bytes = 1u64.to_be_bytes();
+        bytes.extend_from_slice(&(id_bytes.len() as u32).to_be_bytes()); // length
+        bytes.extend_from_slice(&id_bytes); // payload
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let mut call_count = 0usize;
+        let mut last = None;
+        HprofFile::from_path_with_progress(tmp.path(), |bytes| {
+            call_count += 1;
+            last = Some(bytes);
+        })
+        .unwrap();
+        assert!(
+            call_count >= 1,
+            "progress callback must be called at least once"
+        );
+        assert_eq!(
+            last,
+            Some(bytes.len() as u64),
+            "final callback should report absolute file offset"
+        );
+    }
+
+    #[test]
+    fn from_path_on_valid_file_compiles_and_succeeds() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"JAVA PROFILE 1.0.2\0");
+        bytes.extend_from_slice(&8u32.to_be_bytes());
+        bytes.extend_from_slice(&0u64.to_be_bytes());
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let result = HprofFile::from_path(tmp.path());
+        assert!(result.is_ok(), "from_path must succeed with no-op callback");
     }
 
     #[test]

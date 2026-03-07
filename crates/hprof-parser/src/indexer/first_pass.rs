@@ -4,8 +4,14 @@
 //! immediately after the file header), parsing known record types into the
 //! index and collecting any non-fatal errors as warnings. The function is
 //! infallible — it always returns an [`IndexResult`].
+//!
+//! Progress is reported via the `progress_fn` callback, which receives the
+//! current byte offset (relative to `data`) every [`PROGRESS_REPORT_INTERVAL`]
+//! bytes, at least every [`PROGRESS_REPORT_MAX_INTERVAL`] during long scans,
+//! and once unconditionally after the loop.
 
 use std::io::Cursor;
+use std::time::{Duration, Instant};
 
 use byteorder::{BigEndian, ReadBytesExt};
 
@@ -17,20 +23,85 @@ use crate::{
     parse_start_thread, parse_string_record, read_id,
 };
 
+/// Minimum bytes between consecutive [`progress_fn`] calls inside the loop.
+pub(crate) const PROGRESS_REPORT_INTERVAL: usize = 4 * 1024 * 1024;
+
+/// Maximum time between consecutive [`progress_fn`] calls during the loop.
+pub(crate) const PROGRESS_REPORT_MAX_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Maximum number of distinct warning strings kept in [`IndexResult::warnings`].
+///
+/// Warnings beyond this cap are counted but not stored to prevent memory
+/// saturation on heavily-corrupted large heap dumps.
+pub(crate) const MAX_WARNINGS: usize = 100;
+
+fn maybe_report_progress(
+    pos: usize,
+    last_progress_bytes: &mut usize,
+    last_progress_at: &mut Instant,
+    progress_fn: &mut impl FnMut(u64),
+) {
+    let now = Instant::now();
+    let enough_bytes = pos.saturating_sub(*last_progress_bytes) >= PROGRESS_REPORT_INTERVAL;
+    let enough_time = now.duration_since(*last_progress_at) >= PROGRESS_REPORT_MAX_INTERVAL;
+    if enough_bytes || enough_time {
+        progress_fn(pos as u64);
+        *last_progress_bytes = pos;
+        *last_progress_at = now;
+    }
+}
+
+/// Pushes `msg` to `warnings` unless the cap is reached.
+///
+/// Returns `true` if the warning was stored, `false` if suppressed.
+/// When the cap is hit exactly, a sentinel "N more warnings suppressed" message
+/// is NOT pushed here — the caller is responsible for appending a summary at
+/// the end of the pass via [`push_suppressed_summary`].
+fn push_warning(warnings: &mut Vec<String>, suppressed: &mut u64, msg: String) {
+    if warnings.len() < MAX_WARNINGS {
+        warnings.push(msg);
+    } else {
+        *suppressed += 1;
+    }
+}
+
+/// If any warnings were suppressed, appends a single summary entry to `warnings`.
+fn push_suppressed_summary(warnings: &mut Vec<String>, suppressed: u64) {
+    if suppressed > 0 {
+        warnings.push(format!(
+            "... {suppressed} additional warning(s) suppressed \
+             (only first {MAX_WARNINGS} shown)"
+        ));
+    }
+}
+
 /// Scans all records in `data` and returns a populated [`IndexResult`].
 ///
 /// Non-fatal errors (corrupted payloads, size mismatches) are collected in
 /// [`IndexResult::warnings`]. Fatal truncations (mid-header EOF, payload
 /// window exceeds file) stop iteration and are also recorded as warnings.
 ///
+/// `progress_fn` is called with the current byte offset after every
+/// [`PROGRESS_REPORT_INTERVAL`] bytes processed, at least every
+/// [`PROGRESS_REPORT_MAX_INTERVAL`] during long scans, and once after the loop
+/// (reporting the final cursor position).
+///
 /// ## Parameters
 /// - `data`: raw bytes starting at the first record (immediately after the
 ///   hprof file header).
 /// - `id_size`: byte width of object IDs, taken from the hprof file header
 ///   (4 or 8).
-pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> IndexResult {
+/// - `progress_fn`: callback receiving the current cursor offset as `u64`.
+pub(crate) fn run_first_pass(
+    data: &[u8],
+    id_size: u32,
+    mut progress_fn: impl FnMut(u64),
+) -> IndexResult {
     let mut cursor = Cursor::new(data);
+    let mut last_progress_bytes: usize = 0;
+    let mut last_progress_at = Instant::now();
     let mut seg_builder = SegmentFilterBuilder::new();
+    let mut suppressed_warnings: u64 = 0;
     let mut result = IndexResult {
         index: PreciseIndex::new(),
         warnings: Vec::new(),
@@ -43,7 +114,11 @@ pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> IndexResult {
         let header = match parse_record_header(&mut cursor) {
             Ok(h) => h,
             Err(e) => {
-                result.warnings.push(format!("EOF mid-header: {e}"));
+                push_warning(
+                    &mut result.warnings,
+                    &mut suppressed_warnings,
+                    format!("EOF mid-header: {e}"),
+                );
                 break;
             }
         };
@@ -52,18 +127,26 @@ pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> IndexResult {
         let payload_end = match payload_start.checked_add(header.length as usize) {
             Some(end) if end <= data.len() => end,
             Some(end) => {
-                result.warnings.push(format!(
-                    "record 0x{:02X} payload end {end} exceeds file size {}",
-                    header.tag,
-                    data.len()
-                ));
+                push_warning(
+                    &mut result.warnings,
+                    &mut suppressed_warnings,
+                    format!(
+                        "record 0x{:02X} payload end {end} exceeds file size {}",
+                        header.tag,
+                        data.len()
+                    ),
+                );
                 break;
             }
             None => {
-                result.warnings.push(format!(
-                    "record 0x{:02X} payload length overflow: {}",
-                    header.tag, header.length
-                ));
+                push_warning(
+                    &mut result.warnings,
+                    &mut suppressed_warnings,
+                    format!(
+                        "record 0x{:02X} payload length overflow: {}",
+                        header.tag, header.length
+                    ),
+                );
                 break;
             }
         };
@@ -74,13 +157,30 @@ pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> IndexResult {
                 payload_start,
                 id_size,
                 &mut seg_builder,
+                &mut last_progress_bytes,
+                &mut last_progress_at,
+                &mut progress_fn,
             );
             cursor.set_position(payload_end as u64);
+            let pos = cursor.position() as usize;
+            maybe_report_progress(
+                pos,
+                &mut last_progress_bytes,
+                &mut last_progress_at,
+                &mut progress_fn,
+            );
             continue;
         }
 
         if !matches!(header.tag, 0x01 | 0x02 | 0x04 | 0x05 | 0x06) {
             cursor.set_position(payload_end as u64);
+            let pos = cursor.position() as usize;
+            maybe_report_progress(
+                pos,
+                &mut last_progress_bytes,
+                &mut last_progress_at,
+                &mut progress_fn,
+            );
             continue;
         }
 
@@ -97,19 +197,24 @@ pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> IndexResult {
                         true
                     }
                     (Ok(_), false) => {
-                        result.warnings.push(format!(
-                            "record 0x{:02X} consumed {} of {} bytes — skipping",
-                            header.tag,
-                            payload_cursor.position(),
-                            header.length
-                        ));
+                        push_warning(
+                            &mut result.warnings,
+                            &mut suppressed_warnings,
+                            format!(
+                                "record 0x{:02X} consumed {} of {} bytes — skipping",
+                                header.tag,
+                                payload_cursor.position(),
+                                header.length
+                            ),
+                        );
                         false
                     }
                     (Err(e), _) => {
-                        result.warnings.push(format!(
-                            "record 0x{:02X} at offset {payload_start}: {e}",
-                            header.tag
-                        ));
+                        push_warning(
+                            &mut result.warnings,
+                            &mut suppressed_warnings,
+                            format!("record 0x{:02X} at offset {payload_start}: {e}", header.tag),
+                        );
                         false
                     }
                 }
@@ -123,19 +228,24 @@ pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> IndexResult {
                         true
                     }
                     (Ok(_), false) => {
-                        result.warnings.push(format!(
-                            "record 0x{:02X} consumed {} of {} bytes — skipping",
-                            header.tag,
-                            payload_cursor.position(),
-                            header.length
-                        ));
+                        push_warning(
+                            &mut result.warnings,
+                            &mut suppressed_warnings,
+                            format!(
+                                "record 0x{:02X} consumed {} of {} bytes — skipping",
+                                header.tag,
+                                payload_cursor.position(),
+                                header.length
+                            ),
+                        );
                         false
                     }
                     (Err(e), _) => {
-                        result.warnings.push(format!(
-                            "record 0x{:02X} at offset {payload_start}: {e}",
-                            header.tag
-                        ));
+                        push_warning(
+                            &mut result.warnings,
+                            &mut suppressed_warnings,
+                            format!("record 0x{:02X} at offset {payload_start}: {e}", header.tag),
+                        );
                         false
                     }
                 }
@@ -149,19 +259,24 @@ pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> IndexResult {
                         true
                     }
                     (Ok(_), false) => {
-                        result.warnings.push(format!(
-                            "record 0x{:02X} consumed {} of {} bytes — skipping",
-                            header.tag,
-                            payload_cursor.position(),
-                            header.length
-                        ));
+                        push_warning(
+                            &mut result.warnings,
+                            &mut suppressed_warnings,
+                            format!(
+                                "record 0x{:02X} consumed {} of {} bytes — skipping",
+                                header.tag,
+                                payload_cursor.position(),
+                                header.length
+                            ),
+                        );
                         false
                     }
                     (Err(e), _) => {
-                        result.warnings.push(format!(
-                            "record 0x{:02X} at offset {payload_start}: {e}",
-                            header.tag
-                        ));
+                        push_warning(
+                            &mut result.warnings,
+                            &mut suppressed_warnings,
+                            format!("record 0x{:02X} at offset {payload_start}: {e}", header.tag),
+                        );
                         false
                     }
                 }
@@ -175,19 +290,24 @@ pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> IndexResult {
                         true
                     }
                     (Ok(_), false) => {
-                        result.warnings.push(format!(
-                            "record 0x{:02X} consumed {} of {} bytes — skipping",
-                            header.tag,
-                            payload_cursor.position(),
-                            header.length
-                        ));
+                        push_warning(
+                            &mut result.warnings,
+                            &mut suppressed_warnings,
+                            format!(
+                                "record 0x{:02X} consumed {} of {} bytes — skipping",
+                                header.tag,
+                                payload_cursor.position(),
+                                header.length
+                            ),
+                        );
                         false
                     }
                     (Err(e), _) => {
-                        result.warnings.push(format!(
-                            "record 0x{:02X} at offset {payload_start}: {e}",
-                            header.tag
-                        ));
+                        push_warning(
+                            &mut result.warnings,
+                            &mut suppressed_warnings,
+                            format!("record 0x{:02X} at offset {payload_start}: {e}", header.tag),
+                        );
                         false
                     }
                 }
@@ -201,19 +321,24 @@ pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> IndexResult {
                         true
                     }
                     (Ok(_), false) => {
-                        result.warnings.push(format!(
-                            "record 0x{:02X} consumed {} of {} bytes — skipping",
-                            header.tag,
-                            payload_cursor.position(),
-                            header.length
-                        ));
+                        push_warning(
+                            &mut result.warnings,
+                            &mut suppressed_warnings,
+                            format!(
+                                "record 0x{:02X} consumed {} of {} bytes — skipping",
+                                header.tag,
+                                payload_cursor.position(),
+                                header.length
+                            ),
+                        );
                         false
                     }
                     (Err(e), _) => {
-                        result.warnings.push(format!(
-                            "record 0x{:02X} at offset {payload_start}: {e}",
-                            header.tag
-                        ));
+                        push_warning(
+                            &mut result.warnings,
+                            &mut suppressed_warnings,
+                            format!("record 0x{:02X} at offset {payload_start}: {e}", header.tag),
+                        );
                         false
                     }
                 }
@@ -226,7 +351,17 @@ pub(crate) fn run_first_pass(data: &[u8], id_size: u32) -> IndexResult {
         }
 
         cursor.set_position(payload_end as u64);
+        let pos = cursor.position() as usize;
+        maybe_report_progress(
+            pos,
+            &mut last_progress_bytes,
+            &mut last_progress_at,
+            &mut progress_fn,
+        );
     }
+
+    progress_fn(cursor.position());
+    push_suppressed_summary(&mut result.warnings, suppressed_warnings);
 
     result.segment_filters = seg_builder.build();
     result
@@ -328,12 +463,19 @@ fn skip_class_dump(cursor: &mut Cursor<&[u8]>, id_size: u32) -> bool {
 /// Extracts object IDs from a `HEAP_DUMP` (0x0C) or `HEAP_DUMP_SEGMENT`
 /// (0x1C) payload, registering each ID with `builder` at `data_offset`.
 ///
+/// `progress_fn` is called periodically via [`maybe_report_progress`] to
+/// prevent the progress bar from freezing on large heap segments. The absolute
+/// position reported is `data_offset + sub-record cursor offset`.
+///
 /// All read errors silently break the sub-record loop (tolerant parsing).
 fn extract_heap_object_ids(
     payload: &[u8],
     data_offset: usize,
     id_size: u32,
     builder: &mut SegmentFilterBuilder,
+    last_progress_bytes: &mut usize,
+    last_progress_at: &mut Instant,
+    progress_fn: &mut impl FnMut(u64),
 ) {
     let mut cursor = Cursor::new(payload);
 
@@ -414,6 +556,9 @@ fn extract_heap_object_ids(
         if !ok {
             break;
         }
+
+        let abs_pos = data_offset + cursor.position() as usize;
+        maybe_report_progress(abs_pos, last_progress_bytes, last_progress_at, progress_fn);
     }
 }
 
@@ -563,11 +708,98 @@ mod tests {
         p
     }
 
+    // --- Progress callback tests ---
+
+    #[test]
+    fn progress_callback_called_once_with_zero_for_empty_data() {
+        let mut calls: Vec<u64> = Vec::new();
+        run_first_pass(&[], 8, |bytes| calls.push(bytes));
+        assert_eq!(
+            calls,
+            vec![0],
+            "empty data must still trigger a final callback with offset 0"
+        );
+    }
+
+    #[test]
+    fn progress_callback_called_once_for_single_record_with_final_position() {
+        let payload = make_string_payload(1, "hello", 8);
+        let data = make_record(0x01, &payload);
+        let mut calls: Vec<u64> = Vec::new();
+        run_first_pass(&data, 8, |bytes| calls.push(bytes));
+        assert_eq!(
+            calls.len(),
+            1,
+            "single record must trigger exactly one callback"
+        );
+        assert_eq!(
+            calls[0],
+            data.len() as u64,
+            "final callback must report full data length"
+        );
+    }
+
+    #[test]
+    fn progress_callback_fires_more_than_once_for_large_data() {
+        use byteorder::WriteBytesExt;
+        // Build 5 MiB of unknown-tag (0xFF) records, each 9 bytes (tag + 4 time + 4 len=0).
+        const FIVE_MIB: usize = 5 * 1024 * 1024;
+        let mut data: Vec<u8> = Vec::with_capacity(FIVE_MIB + 16);
+        while data.len() < FIVE_MIB {
+            data.write_u8(0xFF).unwrap();
+            data.write_u32::<BigEndian>(0).unwrap();
+            data.write_u32::<BigEndian>(0).unwrap();
+        }
+        let mut values: Vec<u64> = Vec::new();
+        run_first_pass(&data, 8, |bytes| values.push(bytes));
+        assert!(
+            values.len() > 1,
+            "large data must trigger more than one callback"
+        );
+        for w in values.windows(2) {
+            assert!(
+                w[1] >= w[0],
+                "callback values must be monotonically increasing"
+            );
+        }
+    }
+
+    #[test]
+    fn progress_callback_reports_partial_position_for_truncated_data() {
+        use byteorder::WriteBytesExt;
+        const DECLARED_PAYLOAD: u32 = 1000;
+        // Build: 9-byte header declaring 1000-byte payload + only 50 actual payload bytes.
+        // Cursor stops after the header (position 9) when the payload window check fails.
+        let mut data: Vec<u8> = Vec::new();
+        data.write_u8(0x01).unwrap();
+        data.write_u32::<BigEndian>(0).unwrap();
+        data.write_u32::<BigEndian>(DECLARED_PAYLOAD).unwrap();
+        data.extend_from_slice(&[0u8; 50]); // only 50 of the declared 1000 bytes
+        // data.len() = 59; declared payload end = 1009.
+        let mut final_pos: Option<u64> = None;
+        run_first_pass(&data, 8, |bytes| {
+            final_pos = Some(bytes);
+        });
+        let reported = final_pos.expect("callback must be called at least once");
+        let declared_end = 9u64 + DECLARED_PAYLOAD as u64;
+        // Cursor must stop before the declared payload end (non-trivial bound).
+        assert!(
+            reported < declared_end,
+            "cursor ({reported}) must be before declared end ({declared_end})"
+        );
+        // Cursor must remain within actual data (confirms no over-run).
+        assert!(
+            reported <= data.len() as u64,
+            "cursor ({reported}) must not exceed actual data length ({})",
+            data.len()
+        );
+    }
+
     #[test]
     fn heap_dump_0x0c_record_produces_segment_filter() {
         let obj_id: u64 = 0x1234;
         let data = make_record(0x0C, &make_instance_sub(obj_id, 100));
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert_eq!(
             result.segment_filters.len(),
             1,
@@ -584,7 +816,7 @@ mod tests {
         payload.write_u8(0x21).unwrap(); // sub-tag of truncated record
         payload.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // only 4 of 8 id bytes
         let data = make_record(0x1C, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         // First sub-record was fully parsed → filter exists
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(obj_id1));
@@ -601,7 +833,7 @@ mod tests {
         // INSTANCE_DUMP (0x21)
         payload.extend_from_slice(&make_instance_sub(obj_id, 200));
         let data = make_record(0x1C, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(obj_id));
     }
@@ -626,7 +858,7 @@ mod tests {
         // INSTANCE_DUMP (0x21)
         payload.extend_from_slice(&make_instance_sub(obj_id, class_id));
         let data = make_record(0x1C, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(obj_id));
     }
@@ -637,7 +869,7 @@ mod tests {
     fn eof_mid_header_produces_warning_and_no_records() {
         // Only 1 byte — cannot form a 9-byte record header.
         let data = &[0x01u8];
-        let result = run_first_pass(data, 8);
+        let result = run_first_pass(data, 8, |_| {});
         assert!(
             !result.warnings.is_empty(),
             "expected EOF mid-header warning"
@@ -658,7 +890,7 @@ mod tests {
         data.write_u32::<BigEndian>(0).unwrap();
         data.write_u32::<BigEndian>(1000).unwrap();
 
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert!(
             !result.warnings.is_empty(),
             "expected out-of-bounds warning"
@@ -682,7 +914,7 @@ mod tests {
         let str_payload = make_string_payload(7, "next", 8);
         data.extend(make_record(0x01, &str_payload));
 
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert!(!result.warnings.is_empty(), "expected parse warning");
         assert_eq!(
             result.records_indexed, 1,
@@ -704,7 +936,7 @@ mod tests {
         let str_payload = make_string_payload(42, "good", 8);
         data.extend(make_record(0x01, &str_payload));
 
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert_eq!(result.records_indexed, 1);
         assert_eq!(result.warnings.len(), 1);
     }
@@ -713,7 +945,7 @@ mod tests {
     fn valid_single_record_no_warnings() {
         let payload = make_string_payload(7, "main", 8);
         let data = make_record(0x01, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert!(result.warnings.is_empty());
         assert_eq!(result.records_attempted, 1);
         assert_eq!(result.records_indexed, 1);
@@ -721,7 +953,7 @@ mod tests {
 
     #[test]
     fn empty_data_no_warnings_no_records() {
-        let result = run_first_pass(&[], 8);
+        let result = run_first_pass(&[], 8, |_| {});
         assert!(result.warnings.is_empty());
         assert_eq!(result.records_indexed, 0);
         assert_eq!(result.records_attempted, 0);
@@ -734,7 +966,7 @@ mod tests {
         // Declared length is 4, but LOAD_CLASS needs more bytes.
         let payload = make_load_class_payload(1, 100, 0, 200, 8);
         let data = make_record_with_declared_length(0x02, 4, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert!(
             !result.warnings.is_empty(),
             "expected a warning for short declared length"
@@ -752,7 +984,7 @@ mod tests {
         let str_payload = make_string_payload(99, "after", 8);
         data.extend(make_record(0x01, &str_payload));
 
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert!(
             !result.warnings.is_empty(),
             "expected size-mismatch warning"
@@ -768,7 +1000,7 @@ mod tests {
         // Declared payload length is invalid for id_size=8.
         let payload = 1u64.to_be_bytes();
         let data = make_record_with_declared_length(0x01, 4, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert!(!result.warnings.is_empty(), "expected truncation warning");
     }
 
@@ -776,7 +1008,7 @@ mod tests {
 
     #[test]
     fn empty_data_returns_empty_index() {
-        let result = run_first_pass(&[], 8);
+        let result = run_first_pass(&[], 8, |_| {});
         assert!(result.index.strings.is_empty());
         assert!(result.index.classes.is_empty());
         assert!(result.index.threads.is_empty());
@@ -788,7 +1020,7 @@ mod tests {
     fn single_string_record_indexed() {
         let payload = make_string_payload(7, "main", 8);
         let data = make_record(0x01, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert_eq!(result.index.strings.len(), 1);
         assert_eq!(result.index.strings[&7].value, "main");
     }
@@ -797,7 +1029,7 @@ mod tests {
     fn single_load_class_indexed() {
         let payload = make_load_class_payload(1, 100, 0, 200, 8);
         let data = make_record(0x02, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert_eq!(result.index.classes.len(), 1);
         assert_eq!(result.index.classes[&1].class_object_id, 100);
     }
@@ -806,7 +1038,7 @@ mod tests {
     fn single_start_thread_indexed() {
         let payload = make_start_thread_payload(2, 300, 0, 1, 2, 3, 8);
         let data = make_record(0x06, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert_eq!(result.index.threads.len(), 1);
         assert_eq!(result.index.threads[&2].object_id, 300);
     }
@@ -815,7 +1047,7 @@ mod tests {
     fn single_stack_frame_indexed() {
         let payload = make_stack_frame_payload(10, 1, 2, 3, 5, 42, 8);
         let data = make_record(0x04, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert_eq!(result.index.stack_frames.len(), 1);
         assert_eq!(result.index.stack_frames[&10].line_number, 42);
     }
@@ -824,7 +1056,7 @@ mod tests {
     fn single_stack_trace_indexed() {
         let payload = make_stack_trace_payload(3, 1, &[10, 20], 8);
         let data = make_record(0x05, &payload);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert_eq!(result.index.stack_traces.len(), 1);
         assert_eq!(result.index.stack_traces[&3].frame_ids, vec![10u64, 20u64]);
     }
@@ -832,7 +1064,7 @@ mod tests {
     #[test]
     fn unknown_tag_skipped_index_empty() {
         let data = make_record(0xFF, &[0u8; 4]);
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert!(result.index.strings.is_empty());
         assert!(result.index.classes.is_empty());
         assert!(result.index.threads.is_empty());
@@ -847,7 +1079,7 @@ mod tests {
             let payload = make_string_payload(id, s, 8);
             data.extend(make_record(0x01, &payload));
         }
-        let result = run_first_pass(&data, 8);
+        let result = run_first_pass(&data, 8, |_| {});
         assert_eq!(result.index.strings.len(), 3);
         assert_eq!(result.index.strings[&1].value, "a");
         assert_eq!(result.index.strings[&2].value, "b");
@@ -861,7 +1093,7 @@ mod tests {
         data.extend(make_record(0x01, &str_payload));
         let cls_payload = make_load_class_payload(1, 50, 0, 5, 4);
         data.extend(make_record(0x02, &cls_payload));
-        let result = run_first_pass(&data, 4);
+        let result = run_first_pass(&data, 4, |_| {});
         assert_eq!(result.index.strings.len(), 1);
         assert_eq!(result.index.strings[&5].value, "foo");
         assert_eq!(result.index.classes.len(), 1);
@@ -883,7 +1115,7 @@ mod builder_tests {
             .add_instance(object_id, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8);
+        let result = run_first_pass(&bytes[start..], 8, |_| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert_eq!(
             result.segment_filters[0].segment_index, 0,
@@ -908,7 +1140,7 @@ mod builder_tests {
             .truncate_at(full.len() - 5)
             .build();
         let start = advance_past_header(&truncated);
-        let result = run_first_pass(&truncated[start..], 8);
+        let result = run_first_pass(&truncated[start..], 8, |_| {});
         // id1 was in a complete record → filter must exist and contain id1
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(id1));
@@ -920,7 +1152,7 @@ mod builder_tests {
             .add_string(1, "hello")
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8);
+        let result = run_first_pass(&bytes[start..], 8, |_| {});
         assert!(result.segment_filters.is_empty());
     }
 
@@ -933,7 +1165,7 @@ mod builder_tests {
             .add_instance(id2, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8);
+        let result = run_first_pass(&bytes[start..], 8, |_| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert_eq!(result.segment_filters[0].segment_index, 0);
         assert!(result.segment_filters[0].contains(id1));
@@ -947,7 +1179,7 @@ mod builder_tests {
             .add_object_array(array_id, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8);
+        let result = run_first_pass(&bytes[start..], 8, |_| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(array_id));
     }
@@ -960,7 +1192,7 @@ mod builder_tests {
             .add_prim_array(array_id, 0, 2, 8, &[0x01, 0x02])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8);
+        let result = run_first_pass(&bytes[start..], 8, |_| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(array_id));
     }
@@ -979,7 +1211,7 @@ mod builder_tests {
             .add_stack_trace(100, 1, &[50])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8);
+        let result = run_first_pass(&bytes[start..], 8, |_| {});
         assert!(result.warnings.is_empty());
         assert_eq!(result.records_indexed, result.records_attempted);
         assert_eq!(result.index.strings.len(), 2);
@@ -1003,7 +1235,7 @@ mod builder_tests {
             .build();
         let truncated = &bytes[..bytes.len() - 4];
         let start = advance_past_header(truncated);
-        let result = run_first_pass(&truncated[start..], 8);
+        let result = run_first_pass(&truncated[start..], 8, |_| {});
         assert!(!result.warnings.is_empty(), "expected truncation warning");
         assert_eq!(result.index.strings.len(), 1);
         assert_eq!(result.index.strings[&1].value, "main");
