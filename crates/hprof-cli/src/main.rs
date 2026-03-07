@@ -30,10 +30,14 @@ where
         .map_err(CliError::MetadataFailed)?
         .len();
     let mut reporter = hprof_tui::progress::ProgressReporter::new(file_len);
-    let summary = hprof_engine::open_hprof_file_with_progress(&path, |bytes| {
-        reporter.on_bytes_processed(bytes)
-    })
+    let mut filter_reporter = hprof_tui::progress::FilterProgressReporter::new();
+    let summary = hprof_engine::open_hprof_file_with_progress(
+        &path,
+        |bytes| reporter.on_bytes_processed(bytes),
+        |done, total| filter_reporter.on_segment_built(done, total),
+    )
     .map_err(CliError::OpenFailed)?;
+    filter_reporter.finish();
     reporter.finish(&summary);
     Ok(())
 }

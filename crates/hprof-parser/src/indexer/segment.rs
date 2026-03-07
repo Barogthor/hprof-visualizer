@@ -68,7 +68,14 @@ impl SegmentFilterBuilder {
 
     /// Consumes the builder and produces one [`SegmentFilter`] per non-empty
     /// segment. Segments whose filter construction fails are silently skipped.
-    pub(crate) fn build(self) -> Vec<SegmentFilter> {
+    ///
+    /// `progress_fn` is called after each segment is built with
+    /// `(segments_done, segments_total)`.
+    pub(crate) fn build_with_progress(
+        self,
+        mut progress_fn: impl FnMut(usize, usize),
+    ) -> Vec<SegmentFilter> {
+        let total = self.buckets.len();
         let mut filters = Vec::new();
         for (segment_index, mut ids) in self.buckets {
             ids.sort_unstable();
@@ -79,8 +86,15 @@ impl SegmentFilterBuilder {
                     filter,
                 });
             }
+            progress_fn(filters.len(), total);
         }
         filters
+    }
+
+    /// Consumes the builder and produces one [`SegmentFilter`] per non-empty
+    /// segment without a progress callback.
+    pub(crate) fn build(self) -> Vec<SegmentFilter> {
+        self.build_with_progress(|_, _| {})
     }
 }
 

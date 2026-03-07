@@ -1,12 +1,16 @@
-//! Progress bar for the hprof first-pass indexing stage.
+//! Progress reporters for the two hprof indexing phases.
 //!
-//! [`ProgressReporter`] wraps an [`indicatif::ProgressBar`] and exposes a
-//! simple API compatible with the `progress_fn` callback accepted by
-//! [`hprof_engine::open_hprof_file_with_progress`].
+//! - [`ProgressReporter`] — byte-level scan progress (phase 1).
+//! - [`FilterProgressReporter`] — segment filter construction progress
+//!   (phase 2: sort + BinaryFuse8 per 64 MiB segment).
 //!
-//! Example output during indexing:
+//! Example output during scan:
 //! ```text
-//! [00:00:03] [=========>-----------] 512MiB/1.00GiB (1.24GB/s, ETA 2s)
+//! [00:00:03] [=========>-----------] 512MiB/1.00GiB 51.2% (1.24GB/s, ETA 2s)
+//! ```
+//! Example output during filter build:
+//! ```text
+//! [00:00:01] [=========>-----------]  8/16 segments
 //! ```
 //!
 //! On completion, [`ProgressReporter::finish`] clears the bar and prints:
@@ -31,7 +35,7 @@ impl ProgressReporter {
         pb.set_style(
             ProgressStyle::with_template(
                 "[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} \
-                 {percent:.1}% ({bytes_per_sec}, ETA {eta}){msg}",
+                 {percent:.1}% ({bytes_per_sec}, ETA {eta})",
             )
             .unwrap()
             .progress_chars("=>-"),
@@ -45,17 +49,8 @@ impl ProgressReporter {
     }
 
     /// Advances the progress bar to `bytes` processed.
-    ///
-    /// A `bytes` value of [`u64::MAX`] is a sentinel emitted by
-    /// [`hprof_engine::open_hprof_file_with_progress`] just before the
-    /// segment-filter build phase. When received, the bar switches to a
-    /// "Building segment filters…" message instead of updating the position.
     pub fn on_bytes_processed(&mut self, bytes: u64) {
-        if bytes == u64::MAX {
-            self.pb.set_message("Building segment filters...");
-        } else {
-            self.pb.set_position(bytes);
-        }
+        self.pb.set_position(bytes);
     }
 
     /// Clears the bar and prints a one-line indexing summary to stdout.
@@ -89,6 +84,50 @@ impl ProgressReporter {
     }
 }
 
+/// Drives a second [`indicatif::ProgressBar`] for the segment-filter build
+/// phase (sort + BinaryFuse8 construction per 64 MiB segment).
+///
+/// Create this reporter just before calling
+/// [`hprof_engine::open_hprof_file_with_progress`], pass
+/// [`FilterProgressReporter::on_segment_built`] as the `filter_progress_fn`
+/// argument, then call [`FilterProgressReporter::finish`] when done.
+pub struct FilterProgressReporter {
+    pb: ProgressBar,
+}
+
+impl FilterProgressReporter {
+    /// Creates a new reporter. The total segment count is not known upfront;
+    /// the bar uses `indicatif`'s "length unknown" spinner style until the
+    /// first callback sets the length.
+    pub fn new() -> Self {
+        let pb = ProgressBar::new(0);
+        pb.set_style(
+            ProgressStyle::with_template(
+                "[{elapsed_precise}] [{bar:40.green/white}] {pos}/{len} segments",
+            )
+            .unwrap()
+            .progress_chars("=>-"),
+        );
+        pb.enable_steady_tick(Duration::from_secs(1));
+        Self { pb }
+    }
+
+    /// Called by the engine after each segment filter is built.
+    ///
+    /// `done` — segments completed so far; `total` — total segments to build.
+    pub fn on_segment_built(&mut self, done: usize, total: usize) {
+        if self.pb.length() != Some(total as u64) {
+            self.pb.set_length(total as u64);
+        }
+        self.pb.set_position(done as u64);
+    }
+
+    /// Clears the filter bar.
+    pub fn finish(self) {
+        self.pb.finish_and_clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +141,12 @@ mod tests {
     fn on_bytes_processed_does_not_panic() {
         let mut reporter = ProgressReporter::new(1024);
         reporter.on_bytes_processed(512);
+    }
+
+    #[test]
+    fn filter_reporter_on_segment_built_does_not_panic() {
+        let mut reporter = FilterProgressReporter::new();
+        reporter.on_segment_built(1, 10);
+        reporter.on_segment_built(10, 10);
     }
 }

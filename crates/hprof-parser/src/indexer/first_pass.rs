@@ -96,6 +96,7 @@ pub(crate) fn run_first_pass(
     data: &[u8],
     id_size: u32,
     mut progress_fn: impl FnMut(u64),
+    filter_progress_fn: impl FnMut(usize, usize),
 ) -> IndexResult {
     let mut cursor = Cursor::new(data);
     let mut last_progress_bytes: usize = 0;
@@ -362,12 +363,7 @@ pub(crate) fn run_first_pass(
 
     progress_fn(cursor.position());
     push_suppressed_summary(&mut result.warnings, suppressed_warnings);
-
-    // Signal that we are entering the filter-build phase.
-    // Callers that drive a progress bar should show a "building…" message
-    // instead of advancing the position when they receive `u64::MAX`.
-    progress_fn(u64::MAX);
-    result.segment_filters = seg_builder.build();
+    result.segment_filters = seg_builder.build_with_progress(filter_progress_fn);
     result
 }
 
@@ -717,11 +713,9 @@ mod tests {
     #[test]
     fn progress_callback_called_once_with_zero_for_empty_data() {
         let mut calls: Vec<u64> = Vec::new();
-        run_first_pass(&[], 8, |bytes| calls.push(bytes));
-        // Filter out the u64::MAX sentinel (signals "building filters" phase).
-        let offsets: Vec<u64> = calls.into_iter().filter(|&b| b != u64::MAX).collect();
+        run_first_pass(&[], 8, |bytes| calls.push(bytes), |_, _| {});
         assert_eq!(
-            offsets,
+            calls,
             vec![0],
             "empty data must still trigger a final callback with offset 0"
         );
@@ -732,16 +726,14 @@ mod tests {
         let payload = make_string_payload(1, "hello", 8);
         let data = make_record(0x01, &payload);
         let mut calls: Vec<u64> = Vec::new();
-        run_first_pass(&data, 8, |bytes| calls.push(bytes));
-        // Filter out the u64::MAX sentinel (signals "building filters" phase).
-        let offsets: Vec<u64> = calls.into_iter().filter(|&b| b != u64::MAX).collect();
+        run_first_pass(&data, 8, |bytes| calls.push(bytes), |_, _| {});
         assert_eq!(
-            offsets.len(),
+            calls.len(),
             1,
-            "single record must trigger exactly one non-sentinel callback"
+            "single record must trigger exactly one callback"
         );
         assert_eq!(
-            offsets[0],
+            calls[0],
             data.len() as u64,
             "final callback must report full data length"
         );
@@ -759,7 +751,7 @@ mod tests {
             data.write_u32::<BigEndian>(0).unwrap();
         }
         let mut values: Vec<u64> = Vec::new();
-        run_first_pass(&data, 8, |bytes| values.push(bytes));
+        run_first_pass(&data, 8, |bytes| values.push(bytes), |_, _| {});
         assert!(
             values.len() > 1,
             "large data must trigger more than one callback"
@@ -784,14 +776,9 @@ mod tests {
         data.write_u32::<BigEndian>(DECLARED_PAYLOAD).unwrap();
         data.extend_from_slice(&[0u8; 50]); // only 50 of the declared 1000 bytes
         // data.len() = 59; declared payload end = 1009.
-        // Track the last non-sentinel value (u64::MAX = "building filters").
         let mut final_pos: Option<u64> = None;
-        run_first_pass(&data, 8, |bytes| {
-            if bytes != u64::MAX {
-                final_pos = Some(bytes);
-            }
-        });
-        let reported = final_pos.expect("callback must be called at least once with an offset");
+        run_first_pass(&data, 8, |bytes| final_pos = Some(bytes), |_, _| {});
+        let reported = final_pos.expect("callback must be called at least once");
         let declared_end = 9u64 + DECLARED_PAYLOAD as u64;
         // Cursor must stop before the declared payload end (non-trivial bound).
         assert!(
@@ -810,7 +797,7 @@ mod tests {
     fn heap_dump_0x0c_record_produces_segment_filter() {
         let obj_id: u64 = 0x1234;
         let data = make_record(0x0C, &make_instance_sub(obj_id, 100));
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert_eq!(
             result.segment_filters.len(),
             1,
@@ -827,7 +814,7 @@ mod tests {
         payload.write_u8(0x21).unwrap(); // sub-tag of truncated record
         payload.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // only 4 of 8 id bytes
         let data = make_record(0x1C, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         // First sub-record was fully parsed → filter exists
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(obj_id1));
@@ -844,7 +831,7 @@ mod tests {
         // INSTANCE_DUMP (0x21)
         payload.extend_from_slice(&make_instance_sub(obj_id, 200));
         let data = make_record(0x1C, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(obj_id));
     }
@@ -869,7 +856,7 @@ mod tests {
         // INSTANCE_DUMP (0x21)
         payload.extend_from_slice(&make_instance_sub(obj_id, class_id));
         let data = make_record(0x1C, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(obj_id));
     }
@@ -880,7 +867,7 @@ mod tests {
     fn eof_mid_header_produces_warning_and_no_records() {
         // Only 1 byte — cannot form a 9-byte record header.
         let data = &[0x01u8];
-        let result = run_first_pass(data, 8, |_| {});
+        let result = run_first_pass(data, 8, |_| {}, |_, _| {});
         assert!(
             !result.warnings.is_empty(),
             "expected EOF mid-header warning"
@@ -901,7 +888,7 @@ mod tests {
         data.write_u32::<BigEndian>(0).unwrap();
         data.write_u32::<BigEndian>(1000).unwrap();
 
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert!(
             !result.warnings.is_empty(),
             "expected out-of-bounds warning"
@@ -925,7 +912,7 @@ mod tests {
         let str_payload = make_string_payload(7, "next", 8);
         data.extend(make_record(0x01, &str_payload));
 
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert!(!result.warnings.is_empty(), "expected parse warning");
         assert_eq!(
             result.records_indexed, 1,
@@ -947,7 +934,7 @@ mod tests {
         let str_payload = make_string_payload(42, "good", 8);
         data.extend(make_record(0x01, &str_payload));
 
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert_eq!(result.records_indexed, 1);
         assert_eq!(result.warnings.len(), 1);
     }
@@ -956,7 +943,7 @@ mod tests {
     fn valid_single_record_no_warnings() {
         let payload = make_string_payload(7, "main", 8);
         let data = make_record(0x01, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert!(result.warnings.is_empty());
         assert_eq!(result.records_attempted, 1);
         assert_eq!(result.records_indexed, 1);
@@ -964,7 +951,7 @@ mod tests {
 
     #[test]
     fn empty_data_no_warnings_no_records() {
-        let result = run_first_pass(&[], 8, |_| {});
+        let result = run_first_pass(&[], 8, |_| {}, |_, _| {});
         assert!(result.warnings.is_empty());
         assert_eq!(result.records_indexed, 0);
         assert_eq!(result.records_attempted, 0);
@@ -977,7 +964,7 @@ mod tests {
         // Declared length is 4, but LOAD_CLASS needs more bytes.
         let payload = make_load_class_payload(1, 100, 0, 200, 8);
         let data = make_record_with_declared_length(0x02, 4, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert!(
             !result.warnings.is_empty(),
             "expected a warning for short declared length"
@@ -995,7 +982,7 @@ mod tests {
         let str_payload = make_string_payload(99, "after", 8);
         data.extend(make_record(0x01, &str_payload));
 
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert!(
             !result.warnings.is_empty(),
             "expected size-mismatch warning"
@@ -1011,7 +998,7 @@ mod tests {
         // Declared payload length is invalid for id_size=8.
         let payload = 1u64.to_be_bytes();
         let data = make_record_with_declared_length(0x01, 4, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert!(!result.warnings.is_empty(), "expected truncation warning");
     }
 
@@ -1019,7 +1006,7 @@ mod tests {
 
     #[test]
     fn empty_data_returns_empty_index() {
-        let result = run_first_pass(&[], 8, |_| {});
+        let result = run_first_pass(&[], 8, |_| {}, |_, _| {});
         assert!(result.index.strings.is_empty());
         assert!(result.index.classes.is_empty());
         assert!(result.index.threads.is_empty());
@@ -1031,7 +1018,7 @@ mod tests {
     fn single_string_record_indexed() {
         let payload = make_string_payload(7, "main", 8);
         let data = make_record(0x01, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert_eq!(result.index.strings.len(), 1);
         assert_eq!(result.index.strings[&7].value, "main");
     }
@@ -1040,7 +1027,7 @@ mod tests {
     fn single_load_class_indexed() {
         let payload = make_load_class_payload(1, 100, 0, 200, 8);
         let data = make_record(0x02, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert_eq!(result.index.classes.len(), 1);
         assert_eq!(result.index.classes[&1].class_object_id, 100);
     }
@@ -1049,7 +1036,7 @@ mod tests {
     fn single_start_thread_indexed() {
         let payload = make_start_thread_payload(2, 300, 0, 1, 2, 3, 8);
         let data = make_record(0x06, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert_eq!(result.index.threads.len(), 1);
         assert_eq!(result.index.threads[&2].object_id, 300);
     }
@@ -1058,7 +1045,7 @@ mod tests {
     fn single_stack_frame_indexed() {
         let payload = make_stack_frame_payload(10, 1, 2, 3, 5, 42, 8);
         let data = make_record(0x04, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert_eq!(result.index.stack_frames.len(), 1);
         assert_eq!(result.index.stack_frames[&10].line_number, 42);
     }
@@ -1067,7 +1054,7 @@ mod tests {
     fn single_stack_trace_indexed() {
         let payload = make_stack_trace_payload(3, 1, &[10, 20], 8);
         let data = make_record(0x05, &payload);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert_eq!(result.index.stack_traces.len(), 1);
         assert_eq!(result.index.stack_traces[&3].frame_ids, vec![10u64, 20u64]);
     }
@@ -1075,7 +1062,7 @@ mod tests {
     #[test]
     fn unknown_tag_skipped_index_empty() {
         let data = make_record(0xFF, &[0u8; 4]);
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert!(result.index.strings.is_empty());
         assert!(result.index.classes.is_empty());
         assert!(result.index.threads.is_empty());
@@ -1090,7 +1077,7 @@ mod tests {
             let payload = make_string_payload(id, s, 8);
             data.extend(make_record(0x01, &payload));
         }
-        let result = run_first_pass(&data, 8, |_| {});
+        let result = run_first_pass(&data, 8, |_| {}, |_, _| {});
         assert_eq!(result.index.strings.len(), 3);
         assert_eq!(result.index.strings[&1].value, "a");
         assert_eq!(result.index.strings[&2].value, "b");
@@ -1104,7 +1091,7 @@ mod tests {
         data.extend(make_record(0x01, &str_payload));
         let cls_payload = make_load_class_payload(1, 50, 0, 5, 4);
         data.extend(make_record(0x02, &cls_payload));
-        let result = run_first_pass(&data, 4, |_| {});
+        let result = run_first_pass(&data, 4, |_| {}, |_, _| {});
         assert_eq!(result.index.strings.len(), 1);
         assert_eq!(result.index.strings[&5].value, "foo");
         assert_eq!(result.index.classes.len(), 1);
@@ -1126,7 +1113,7 @@ mod builder_tests {
             .add_instance(object_id, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8, |_| {});
+        let result = run_first_pass(&bytes[start..], 8, |_| {}, |_, _| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert_eq!(
             result.segment_filters[0].segment_index, 0,
@@ -1151,7 +1138,7 @@ mod builder_tests {
             .truncate_at(full.len() - 5)
             .build();
         let start = advance_past_header(&truncated);
-        let result = run_first_pass(&truncated[start..], 8, |_| {});
+        let result = run_first_pass(&truncated[start..], 8, |_| {}, |_, _| {});
         // id1 was in a complete record → filter must exist and contain id1
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(id1));
@@ -1163,7 +1150,7 @@ mod builder_tests {
             .add_string(1, "hello")
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8, |_| {});
+        let result = run_first_pass(&bytes[start..], 8, |_| {}, |_, _| {});
         assert!(result.segment_filters.is_empty());
     }
 
@@ -1176,7 +1163,7 @@ mod builder_tests {
             .add_instance(id2, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8, |_| {});
+        let result = run_first_pass(&bytes[start..], 8, |_| {}, |_, _| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert_eq!(result.segment_filters[0].segment_index, 0);
         assert!(result.segment_filters[0].contains(id1));
@@ -1190,7 +1177,7 @@ mod builder_tests {
             .add_object_array(array_id, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8, |_| {});
+        let result = run_first_pass(&bytes[start..], 8, |_| {}, |_, _| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(array_id));
     }
@@ -1203,7 +1190,7 @@ mod builder_tests {
             .add_prim_array(array_id, 0, 2, 8, &[0x01, 0x02])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8, |_| {});
+        let result = run_first_pass(&bytes[start..], 8, |_| {}, |_, _| {});
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(array_id));
     }
@@ -1222,7 +1209,7 @@ mod builder_tests {
             .add_stack_trace(100, 1, &[50])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_first_pass(&bytes[start..], 8, |_| {});
+        let result = run_first_pass(&bytes[start..], 8, |_| {}, |_, _| {});
         assert!(result.warnings.is_empty());
         assert_eq!(result.records_indexed, result.records_attempted);
         assert_eq!(result.index.strings.len(), 2);
@@ -1246,7 +1233,7 @@ mod builder_tests {
             .build();
         let truncated = &bytes[..bytes.len() - 4];
         let start = advance_past_header(truncated);
-        let result = run_first_pass(&truncated[start..], 8, |_| {});
+        let result = run_first_pass(&truncated[start..], 8, |_| {}, |_, _| {});
         assert!(!result.warnings.is_empty(), "expected truncation warning");
         assert_eq!(result.index.strings.len(), 1);
         assert_eq!(result.index.strings[&1].value, "main");

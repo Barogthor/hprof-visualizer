@@ -33,11 +33,19 @@ pub struct IndexSummary {
 /// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
 /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
 /// - [`HprofError::TruncatedRecord`] — file header is truncated.
+/// Opens `path`, indexes all structural records, and reports progress via
+/// two callbacks:
+/// - `progress_fn(bytes)` — absolute file offset every 4 MiB or once per
+///   second during the scan.
+/// - `filter_progress_fn(done, total)` — called after each segment filter is
+///   built (sort + BinaryFuse8); use this to drive a second progress bar.
 pub fn open_hprof_file_with_progress(
     path: &Path,
     progress_fn: impl FnMut(u64),
+    filter_progress_fn: impl FnMut(usize, usize),
 ) -> Result<IndexSummary, HprofError> {
-    let hfile = hprof_parser::HprofFile::from_path_with_progress(path, progress_fn)?;
+    let hfile =
+        hprof_parser::HprofFile::from_path_with_progress(path, progress_fn, filter_progress_fn)?;
     Ok(IndexSummary {
         records_attempted: hfile.records_attempted,
         records_indexed: hfile.records_indexed,
@@ -54,7 +62,7 @@ pub fn open_hprof_file_with_progress(
 /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
 /// - [`HprofError::TruncatedRecord`] — file header is truncated.
 pub fn open_hprof_file(path: &Path) -> Result<IndexSummary, HprofError> {
-    open_hprof_file_with_progress(path, |_| {})
+    open_hprof_file_with_progress(path, |_| {}, |_, _| {})
 }
 
 /// Opens an hprof file in read-only mmap mode and parses its header.
@@ -102,14 +110,15 @@ mod tests {
         tmp.flush().unwrap();
 
         let mut call_count = 0usize;
-        // Track the last non-sentinel call (u64::MAX signals "building filters").
         let mut last_offset = None;
-        let result = open_hprof_file_with_progress(tmp.path(), |b| {
-            call_count += 1;
-            if b != u64::MAX {
+        let result = open_hprof_file_with_progress(
+            tmp.path(),
+            |b| {
+                call_count += 1;
                 last_offset = Some(b);
-            }
-        });
+            },
+            |_, _| {},
+        );
         assert!(result.is_ok());
         assert!(
             call_count >= 1,
@@ -128,7 +137,7 @@ mod tests {
         let missing = tmp.path().to_path_buf();
         drop(tmp);
 
-        let result = open_hprof_file_with_progress(&missing, |_| {});
+        let result = open_hprof_file_with_progress(&missing, |_| {}, |_, _| {});
         assert!(matches!(result, Err(HprofError::MmapFailed(_))));
     }
 }

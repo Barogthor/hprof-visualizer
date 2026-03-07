@@ -67,24 +67,27 @@ impl HprofFile {
     /// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
     /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
     /// - [`HprofError::TruncatedRecord`] — file header is truncated.
+    /// Opens `path`, indexes all structural records, and reports progress via
+    /// two callbacks:
+    /// - `progress_fn(bytes)` — absolute file offset, called every 4 MiB or
+    ///   once per second during the scan.
+    /// - `filter_progress_fn(done, total)` — called after each segment filter
+    ///   is built (sort + BinaryFuse8 construction).
     pub fn from_path_with_progress(
         path: &Path,
         mut progress_fn: impl FnMut(u64),
+        filter_progress_fn: impl FnMut(usize, usize),
     ) -> Result<Self, HprofError> {
         let mmap = open_readonly(path)?;
         let header = parse_header(&mmap)?;
         let records_start = header_end(&mmap)?;
         let base_offset = records_start as u64;
-        let result = run_first_pass(&mmap[records_start..], header.id_size, |bytes| {
-            // `u64::MAX` is a sentinel meaning "entering filter-build phase";
-            // pass it through unchanged so TUI callers can show a message.
-            let abs = if bytes == u64::MAX {
-                u64::MAX
-            } else {
-                base_offset.saturating_add(bytes)
-            };
-            progress_fn(abs);
-        });
+        let result = run_first_pass(
+            &mmap[records_start..],
+            header.id_size,
+            |bytes| progress_fn(base_offset.saturating_add(bytes)),
+            filter_progress_fn,
+        );
         Ok(Self {
             _mmap: mmap,
             header,
@@ -105,7 +108,7 @@ impl HprofFile {
     /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
     /// - [`HprofError::TruncatedRecord`] — file header is truncated.
     pub fn from_path(path: &Path) -> Result<Self, HprofError> {
-        Self::from_path_with_progress(path, |_| {})
+        Self::from_path_with_progress(path, |_| {}, |_, _| {})
     }
 }
 
@@ -175,12 +178,14 @@ mod tests {
 
         let mut call_count = 0usize;
         let mut last_offset = None;
-        HprofFile::from_path_with_progress(tmp.path(), |b| {
-            call_count += 1;
-            if b != u64::MAX {
+        HprofFile::from_path_with_progress(
+            tmp.path(),
+            |b| {
+                call_count += 1;
                 last_offset = Some(b);
-            }
-        })
+            },
+            |_, _| {},
+        )
         .unwrap();
         assert!(
             call_count >= 1,
