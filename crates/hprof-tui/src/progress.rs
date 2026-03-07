@@ -50,7 +50,10 @@ impl ProgressReporter {
             .unwrap()
             .progress_chars("=>-"),
         );
-        pb.enable_steady_tick(Duration::from_secs(1));
+        // No steady tick: the bar redraws only on set_position() calls, which
+        // come from maybe_report_progress (≥1 per second during scan). During
+        // the filter-build phase no set_position is called, so the bar freezes
+        // at 100% instead of continuing to update the speed metric.
         Self {
             pb,
             start: std::time::Instant::now(),
