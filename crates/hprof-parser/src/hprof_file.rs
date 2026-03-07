@@ -2,13 +2,14 @@
 //!
 //! [`HprofFile`] memory-maps the file, parses its header, and runs the
 //! first-pass indexer in one call, making all structural metadata available
-//! via [`HprofFile::index`] after construction.
+//! via [`HprofFile::index`] after construction. Truncated or corrupted
+//! records are non-fatal and collected in [`HprofFile::index_warnings`].
 
 use std::path::Path;
 
 use memmap2::Mmap;
 
-use crate::indexer::{first_pass::run_first_pass, precise::PreciseIndex};
+use crate::indexer::{first_pass::run_first_pass, precise::PreciseIndex, segment::SegmentFilter};
 use crate::{HprofError, HprofHeader, open_readonly, parse_header};
 
 /// An open hprof file with a parsed header and populated structural index.
@@ -17,6 +18,13 @@ use crate::{HprofError, HprofHeader, open_readonly, parse_header};
 /// - `header`: [`HprofHeader`] — parsed file header (version, id_size,
 ///   timestamp).
 /// - `index`: [`PreciseIndex`] — O(1) lookup maps for all structural records.
+/// - `index_warnings`: non-fatal parse errors collected during indexing.
+/// - `records_attempted`: known-type records whose payload window was within
+///   bounds. Unknown-tag records are silently skipped and not counted here.
+/// - `records_indexed`: records successfully parsed and inserted into the index.
+/// - `segment_filters`: probabilistic per-segment filters for object ID
+///   resolution. Each [`SegmentFilter`] covers a 64 MiB slice of the records
+///   section and allows fast candidate-segment lookup before a targeted scan.
 ///
 /// The internal `_mmap` field keeps the memory mapping alive for the duration
 /// of this struct's lifetime. It must not be dropped early.
@@ -28,26 +36,44 @@ pub struct HprofFile {
     pub header: HprofHeader,
     /// O(1) lookup index built from the first sequential pass.
     pub index: PreciseIndex,
+    /// Warnings collected during indexing (non-fatal parse errors).
+    pub index_warnings: Vec<String>,
+    /// Records whose header and payload window were valid.
+    pub records_attempted: u64,
+    /// Records successfully parsed and inserted into the index.
+    pub records_indexed: u64,
+    /// Probabilistic per-segment filters for object ID resolution.
+    // `SegmentFilter` is `pub(crate)` until the engine crate is built (Story 3.1).
+    #[allow(private_interfaces)]
+    pub segment_filters: Vec<SegmentFilter>,
 }
 
 impl HprofFile {
     /// Opens `path` as a read-only mmap, parses the header, and indexes all
     /// structural records in a single sequential pass.
     ///
+    /// Truncated or corrupted records are non-fatal: they are collected in
+    /// [`HprofFile::index_warnings`] and indexing continues where possible.
+    ///
     /// ## Errors
     /// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
     /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
-    /// - [`HprofError::TruncatedRecord`] — file truncated during header or
-    ///   record parsing.
+    /// - [`HprofError::TruncatedRecord`] — file header is truncated (missing
+    ///   null terminator, id_size field, or timestamp). Record-level truncation
+    ///   is non-fatal and collected in [`HprofFile::index_warnings`] instead.
     pub fn from_path(path: &Path) -> Result<Self, HprofError> {
         let mmap = open_readonly(path)?;
         let header = parse_header(&mmap)?;
         let records_start = header_end(&mmap)?;
-        let index = run_first_pass(&mmap[records_start..], header.id_size)?;
+        let result = run_first_pass(&mmap[records_start..], header.id_size);
         Ok(Self {
             _mmap: mmap,
             header,
-            index,
+            index: result.index,
+            index_warnings: result.warnings,
+            records_attempted: result.records_attempted,
+            records_indexed: result.records_indexed,
+            segment_filters: result.segment_filters,
         })
     }
 }
@@ -82,20 +108,21 @@ mod tests {
     }
 
     #[test]
-    fn from_path_truncated_record_returns_error() {
+    fn from_path_truncated_record_returns_partial_with_warning() {
         // Valid header + incomplete record (tag only, missing time_offset+length)
         let mut bytes: Vec<u8> = Vec::new();
         bytes.extend_from_slice(b"JAVA PROFILE 1.0.2\0");
         bytes.extend_from_slice(&8u32.to_be_bytes());
         bytes.extend_from_slice(&0u64.to_be_bytes());
-        bytes.push(0x01); // tag byte only — truncated
+        bytes.push(0x01); // tag byte only — truncated mid-header
 
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
 
-        let result = HprofFile::from_path(tmp.path());
-        assert!(matches!(result, Err(HprofError::TruncatedRecord)));
+        let hfile = HprofFile::from_path(tmp.path()).unwrap(); // Ok, not Err
+        assert!(!hfile.index_warnings.is_empty());
+        assert!(hfile.index.strings.is_empty());
     }
 
     #[test]
@@ -116,6 +143,9 @@ mod tests {
         assert_eq!(hfile.header.version, HprofVersion::V1_0_2);
         assert_eq!(hfile.header.id_size, 8);
         assert!(hfile.index.strings.is_empty());
+        assert!(hfile.index_warnings.is_empty());
+        assert_eq!(hfile.records_attempted, 0);
+        assert_eq!(hfile.records_indexed, 0);
     }
 }
 
@@ -124,6 +154,20 @@ mod builder_tests {
     use super::*;
     use crate::test_utils::HprofTestBuilder;
     use std::io::Write;
+
+    #[test]
+    fn from_path_with_instance_produces_one_segment_filter() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xDEAD, 0, 100, &[])
+            .build();
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+        assert_eq!(hfile.segment_filters.len(), 1);
+    }
 
     #[test]
     fn from_path_with_string_record_indexed() {
@@ -138,5 +182,8 @@ mod builder_tests {
         let hfile = HprofFile::from_path(tmp.path()).unwrap();
         assert_eq!(hfile.index.strings.len(), 1);
         assert_eq!(hfile.index.strings[&99].value, "thread-main");
+        assert!(hfile.index_warnings.is_empty());
+        assert_eq!(hfile.records_attempted, 1);
+        assert_eq!(hfile.records_indexed, 1);
     }
 }

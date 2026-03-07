@@ -180,6 +180,56 @@ impl HprofTestBuilder {
         self
     }
 
+    /// Appends a `HEAP_DUMP_SEGMENT` record (tag `0x1C`) wrapping an
+    /// `OBJECT_ARRAY_DUMP` sub-record (sub-tag `0x22`).
+    ///
+    /// Sub-record payload: `array_id(id_size)` + `stack_trace_serial(u32)` +
+    /// `num_elements(u32)` + `element_class_id(id_size)` +
+    /// `elements([id_size; num_elements])`.
+    pub fn add_object_array(
+        mut self,
+        array_id: u64,
+        stack_trace_serial: u32,
+        element_class_id: u64,
+        elements: &[u64],
+    ) -> Self {
+        let mut sub = Vec::new();
+        sub.push(0x22_u8); // OBJECT_ARRAY_DUMP sub-tag
+        sub.extend_from_slice(&self.encode_id(array_id));
+        sub.extend_from_slice(&stack_trace_serial.to_be_bytes());
+        sub.extend_from_slice(&(elements.len() as u32).to_be_bytes());
+        sub.extend_from_slice(&self.encode_id(element_class_id));
+        for &elem in elements {
+            sub.extend_from_slice(&self.encode_id(elem));
+        }
+        self.records.push(Self::make_record(0x1C, &sub));
+        self
+    }
+
+    /// Appends a `HEAP_DUMP_SEGMENT` record (tag `0x1C`) wrapping a
+    /// `PRIMITIVE_ARRAY_DUMP` sub-record (sub-tag `0x23`).
+    ///
+    /// Sub-record payload: `array_id(id_size)` + `stack_trace_serial(u32)` +
+    /// `num_elements(u32)` + `element_type(u8)` + `byte_data`.
+    pub fn add_prim_array(
+        mut self,
+        array_id: u64,
+        stack_trace_serial: u32,
+        num_elements: u32,
+        element_type: u8,
+        byte_data: &[u8],
+    ) -> Self {
+        let mut sub = Vec::new();
+        sub.push(0x23_u8); // PRIMITIVE_ARRAY_DUMP sub-tag
+        sub.extend_from_slice(&self.encode_id(array_id));
+        sub.extend_from_slice(&stack_trace_serial.to_be_bytes());
+        sub.extend_from_slice(&num_elements.to_be_bytes());
+        sub.push(element_type);
+        sub.extend_from_slice(byte_data);
+        self.records.push(Self::make_record(0x1C, &sub));
+        self
+    }
+
     /// Sets a truncation point. `build()` truncates the final bytes to `offset`.
     /// If `offset` exceeds the total length, this is a no-op.
     pub fn truncate_at(mut self, offset: usize) -> Self {
@@ -425,6 +475,28 @@ mod tests {
             .build();
         let hdr = header_size(version);
         assert_eq!(bytes[hdr], 0x06, "START_THREAD tag");
+    }
+
+    #[test]
+    fn add_object_array_produces_heap_dump_segment_with_0x22_subtag() {
+        let version = "JAVA PROFILE 1.0.2";
+        let bytes = HprofTestBuilder::new(version, 8)
+            .add_object_array(42, 0, 100, &[])
+            .build();
+        let hdr = header_size(version);
+        assert_eq!(bytes[hdr], 0x1C, "HEAP_DUMP_SEGMENT tag");
+        assert_eq!(bytes[hdr + 9], 0x22, "OBJECT_ARRAY_DUMP sub-tag");
+    }
+
+    #[test]
+    fn add_prim_array_produces_heap_dump_segment_with_0x23_subtag() {
+        let version = "JAVA PROFILE 1.0.2";
+        let bytes = HprofTestBuilder::new(version, 8)
+            .add_prim_array(99, 0, 0, 8, &[])
+            .build();
+        let hdr = header_size(version);
+        assert_eq!(bytes[hdr], 0x1C, "HEAP_DUMP_SEGMENT tag");
+        assert_eq!(bytes[hdr + 9], 0x23, "PRIMITIVE_ARRAY_DUMP sub-tag");
     }
 
     #[test]
