@@ -102,10 +102,13 @@ mod tests {
         tmp.flush().unwrap();
 
         let mut call_count = 0usize;
-        let mut last = None;
-        let result = open_hprof_file_with_progress(tmp.path(), |bytes| {
+        // Track the last non-sentinel call (u64::MAX signals "building filters").
+        let mut last_offset = None;
+        let result = open_hprof_file_with_progress(tmp.path(), |b| {
             call_count += 1;
-            last = Some(bytes);
+            if b != u64::MAX {
+                last_offset = Some(b);
+            }
         });
         assert!(result.is_ok());
         assert!(
@@ -113,9 +116,9 @@ mod tests {
             "progress callback must be called at least once"
         );
         assert_eq!(
-            last,
+            last_offset,
             Some(bytes.len() as u64),
-            "final callback should report absolute file offset"
+            "a callback should report the absolute file offset"
         );
     }
 

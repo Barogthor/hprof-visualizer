@@ -76,7 +76,14 @@ impl HprofFile {
         let records_start = header_end(&mmap)?;
         let base_offset = records_start as u64;
         let result = run_first_pass(&mmap[records_start..], header.id_size, |bytes| {
-            progress_fn(base_offset.saturating_add(bytes));
+            // `u64::MAX` is a sentinel meaning "entering filter-build phase";
+            // pass it through unchanged so TUI callers can show a message.
+            let abs = if bytes == u64::MAX {
+                u64::MAX
+            } else {
+                base_offset.saturating_add(bytes)
+            };
+            progress_fn(abs);
         });
         Ok(Self {
             _mmap: mmap,
@@ -167,10 +174,12 @@ mod tests {
         tmp.flush().unwrap();
 
         let mut call_count = 0usize;
-        let mut last = None;
-        HprofFile::from_path_with_progress(tmp.path(), |bytes| {
+        let mut last_offset = None;
+        HprofFile::from_path_with_progress(tmp.path(), |b| {
             call_count += 1;
-            last = Some(bytes);
+            if b != u64::MAX {
+                last_offset = Some(b);
+            }
         })
         .unwrap();
         assert!(
@@ -178,9 +187,9 @@ mod tests {
             "progress callback must be called at least once"
         );
         assert_eq!(
-            last,
+            last_offset,
             Some(bytes.len() as u64),
-            "final callback should report absolute file offset"
+            "a callback should report the absolute file offset"
         );
     }
 

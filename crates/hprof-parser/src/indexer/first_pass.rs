@@ -363,6 +363,10 @@ pub(crate) fn run_first_pass(
     progress_fn(cursor.position());
     push_suppressed_summary(&mut result.warnings, suppressed_warnings);
 
+    // Signal that we are entering the filter-build phase.
+    // Callers that drive a progress bar should show a "building…" message
+    // instead of advancing the position when they receive `u64::MAX`.
+    progress_fn(u64::MAX);
     result.segment_filters = seg_builder.build();
     result
 }
@@ -714,8 +718,10 @@ mod tests {
     fn progress_callback_called_once_with_zero_for_empty_data() {
         let mut calls: Vec<u64> = Vec::new();
         run_first_pass(&[], 8, |bytes| calls.push(bytes));
+        // Filter out the u64::MAX sentinel (signals "building filters" phase).
+        let offsets: Vec<u64> = calls.into_iter().filter(|&b| b != u64::MAX).collect();
         assert_eq!(
-            calls,
+            offsets,
             vec![0],
             "empty data must still trigger a final callback with offset 0"
         );
@@ -727,13 +733,15 @@ mod tests {
         let data = make_record(0x01, &payload);
         let mut calls: Vec<u64> = Vec::new();
         run_first_pass(&data, 8, |bytes| calls.push(bytes));
+        // Filter out the u64::MAX sentinel (signals "building filters" phase).
+        let offsets: Vec<u64> = calls.into_iter().filter(|&b| b != u64::MAX).collect();
         assert_eq!(
-            calls.len(),
+            offsets.len(),
             1,
-            "single record must trigger exactly one callback"
+            "single record must trigger exactly one non-sentinel callback"
         );
         assert_eq!(
-            calls[0],
+            offsets[0],
             data.len() as u64,
             "final callback must report full data length"
         );
@@ -776,11 +784,14 @@ mod tests {
         data.write_u32::<BigEndian>(DECLARED_PAYLOAD).unwrap();
         data.extend_from_slice(&[0u8; 50]); // only 50 of the declared 1000 bytes
         // data.len() = 59; declared payload end = 1009.
+        // Track the last non-sentinel value (u64::MAX = "building filters").
         let mut final_pos: Option<u64> = None;
         run_first_pass(&data, 8, |bytes| {
-            final_pos = Some(bytes);
+            if bytes != u64::MAX {
+                final_pos = Some(bytes);
+            }
         });
-        let reported = final_pos.expect("callback must be called at least once");
+        let reported = final_pos.expect("callback must be called at least once with an offset");
         let declared_end = 9u64 + DECLARED_PAYLOAD as u64;
         // Cursor must stop before the declared payload end (non-trivial bound).
         assert!(

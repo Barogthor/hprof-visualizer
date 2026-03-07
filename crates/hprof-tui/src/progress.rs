@@ -31,7 +31,7 @@ impl ProgressReporter {
         pb.set_style(
             ProgressStyle::with_template(
                 "[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} \
-                 {percent:.1}% ({bytes_per_sec}, ETA {eta})",
+                 {percent:.1}% ({bytes_per_sec}, ETA {eta}){msg}",
             )
             .unwrap()
             .progress_chars("=>-"),
@@ -45,8 +45,17 @@ impl ProgressReporter {
     }
 
     /// Advances the progress bar to `bytes` processed.
+    ///
+    /// A `bytes` value of [`u64::MAX`] is a sentinel emitted by
+    /// [`hprof_engine::open_hprof_file_with_progress`] just before the
+    /// segment-filter build phase. When received, the bar switches to a
+    /// "Building segment filters…" message instead of updating the position.
     pub fn on_bytes_processed(&mut self, bytes: u64) {
-        self.pb.set_position(bytes);
+        if bytes == u64::MAX {
+            self.pb.set_message("Building segment filters...");
+        } else {
+            self.pb.set_position(bytes);
+        }
     }
 
     /// Clears the bar and prints a one-line indexing summary to stdout.
