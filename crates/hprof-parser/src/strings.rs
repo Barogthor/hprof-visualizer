@@ -24,6 +24,11 @@ pub struct HprofString {
 /// `payload_length` is the value from the record header and is used to
 /// compute how many bytes belong to the UTF-8 content.
 ///
+/// Invalid byte sequences (including Java's modified UTF-8 encoding) are
+/// replaced with the Unicode replacement character `\u{FFFD}` rather than
+/// failing, because HPROF string records frequently contain non-standard
+/// encodings (class descriptors, modified UTF-8, etc.).
+///
 /// ## Parameters
 /// - `cursor`: positioned at start of record payload
 /// - `id_size`: byte width of object IDs (4 or 8)
@@ -31,7 +36,6 @@ pub struct HprofString {
 ///
 /// ## Errors
 /// - [`HprofError::TruncatedRecord`] if the payload is shorter than expected
-/// - [`HprofError::CorruptedData`] if the content is not valid UTF-8
 pub fn parse_string_record(
     cursor: &mut Cursor<&[u8]>,
     id_size: u32,
@@ -47,8 +51,7 @@ pub fn parse_string_record(
     cursor
         .read_exact(&mut content_bytes)
         .map_err(|_| HprofError::TruncatedRecord)?;
-    let value = String::from_utf8(content_bytes)
-        .map_err(|e| HprofError::CorruptedData(format!("invalid UTF-8 in string: {e}")))?;
+    let value = String::from_utf8_lossy(&content_bytes).into_owned();
     Ok(HprofString { id, value })
 }
 
@@ -100,13 +103,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_string_invalid_utf8_returns_corrupted_data() {
+    fn parse_string_invalid_utf8_returns_ok_with_replacement_chars() {
         let mut data = Vec::new();
         data.extend_from_slice(&1u64.to_be_bytes()); // id = 1
         data.extend_from_slice(&[0x80, 0xFF]); // invalid UTF-8 bytes
         let mut cursor = Cursor::new(data.as_slice());
-        let err = parse_string_record(&mut cursor, 8, 8 + 2).unwrap_err();
-        assert!(matches!(err, HprofError::CorruptedData(_)));
+        let s = parse_string_record(&mut cursor, 8, 8 + 2).unwrap();
+        assert_eq!(s.id, 1);
+        assert!(
+            s.value.contains('\u{FFFD}'),
+            "invalid bytes must be replaced with U+FFFD"
+        );
     }
 
     #[test]

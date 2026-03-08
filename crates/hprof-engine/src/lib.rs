@@ -1,7 +1,14 @@
 //! Navigation Engine trait, `Engine::from_file()` factory, LRU cache,
 //! `MemorySize` tracking, object resolution, and pagination logic.
 //!
-//! Public entry points for opening hprof files:
+//! Public API surface:
+//! - [`NavigationEngine`] — trait defining the high-level TUI API.
+//! - [`Engine`] — concrete implementation constructed via [`Engine::from_file`].
+//! - [`EngineConfig`] — configuration for the engine (placeholder until Story 6.1).
+//! - [`ThreadInfo`], [`ThreadState`], [`FrameInfo`], [`VariableInfo`], [`FieldInfo`],
+//!   [`EntryInfo`] — view model types returned by the trait methods.
+//!
+//! Legacy entry points (used by `hprof-cli`):
 //! - [`open_hprof_file`] — full indexing without a progress callback.
 //! - [`open_hprof_file_with_progress`] — full indexing with a byte-offset
 //!   callback, suitable for driving a progress bar.
@@ -9,6 +16,23 @@
 use std::path::Path;
 
 pub use hprof_parser::{HprofError, HprofHeader, HprofVersion};
+
+mod engine;
+mod engine_impl;
+pub(crate) mod resolver;
+
+pub use engine::{
+    EntryInfo, FieldInfo, FieldValue, FrameInfo, LineNumber, NavigationEngine, ThreadInfo,
+    ThreadState, VariableInfo, VariableValue,
+};
+pub use engine_impl::Engine;
+
+/// Configuration for the navigation engine.
+///
+/// Currently a placeholder; Story 6.1 will populate this from TOML config
+/// and CLI overrides. Implements `Default` for zero-config construction.
+#[derive(Debug, Default)]
+pub struct EngineConfig;
 
 /// Summary of a completed first-pass indexing run.
 ///
@@ -33,19 +57,15 @@ pub struct IndexSummary {
 /// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
 /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
 /// - [`HprofError::TruncatedRecord`] — file header is truncated.
-/// Opens `path`, indexes all structural records, and reports progress via
-/// two callbacks:
-/// - `progress_fn(bytes)` — absolute file offset every 4 MiB or once per
-///   second during the scan.
-/// - `filter_progress_fn(done, total)` — called after each segment filter is
-///   built (sort + BinaryFuse8); use this to drive a second progress bar.
+///
+/// `progress_fn(bytes)` — absolute file offset every 4 MiB or once per
+/// second during the scan. Segment filters are built inline (no separate
+/// phase callback).
 pub fn open_hprof_file_with_progress(
     path: &Path,
     progress_fn: impl FnMut(u64),
-    filter_progress_fn: impl FnMut(usize, usize),
 ) -> Result<IndexSummary, HprofError> {
-    let hfile =
-        hprof_parser::HprofFile::from_path_with_progress(path, progress_fn, filter_progress_fn)?;
+    let hfile = hprof_parser::HprofFile::from_path_with_progress(path, progress_fn)?;
     Ok(IndexSummary {
         records_attempted: hfile.records_attempted,
         records_indexed: hfile.records_indexed,
@@ -62,7 +82,7 @@ pub fn open_hprof_file_with_progress(
 /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
 /// - [`HprofError::TruncatedRecord`] — file header is truncated.
 pub fn open_hprof_file(path: &Path) -> Result<IndexSummary, HprofError> {
-    open_hprof_file_with_progress(path, |_| {}, |_, _| {})
+    open_hprof_file_with_progress(path, |_| {})
 }
 
 /// Opens an hprof file in read-only mmap mode and parses its header.
@@ -111,14 +131,10 @@ mod tests {
 
         let mut call_count = 0usize;
         let mut last_offset = None;
-        let result = open_hprof_file_with_progress(
-            tmp.path(),
-            |b| {
-                call_count += 1;
-                last_offset = Some(b);
-            },
-            |_, _| {},
-        );
+        let result = open_hprof_file_with_progress(tmp.path(), |b| {
+            call_count += 1;
+            last_offset = Some(b);
+        });
         assert!(result.is_ok());
         assert!(
             call_count >= 1,
@@ -137,7 +153,7 @@ mod tests {
         let missing = tmp.path().to_path_buf();
         drop(tmp);
 
-        let result = open_hprof_file_with_progress(&missing, |_| {}, |_, _| {});
+        let result = open_hprof_file_with_progress(&missing, |_| {});
         assert!(matches!(result, Err(HprofError::MmapFailed(_))));
     }
 }

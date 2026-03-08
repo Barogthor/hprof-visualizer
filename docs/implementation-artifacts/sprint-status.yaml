@@ -55,17 +55,19 @@ development_status:
   2-4-tolerant-indexing: done
   2-5-segment-level-binaryfuse8-filters: done
   2-6-indexing-progress-bar: done
-  epic-2-retrospective: optional
+  epic-2-retrospective: done
 
   # Epic 3: Thread-Centric Navigation & Value Display
-  epic-3: backlog
-  3-1-navigation-engine-trait-and-engine-factory: backlog
-  3-2-thread-list-and-search-in-tui: backlog
-  3-3-stack-frame-and-local-variable-display: backlog
-  3-4-object-resolution-and-single-level-expansion: backlog
-  3-5-recursive-expansion-and-collection-size-indicators: backlog
-  3-6-lazy-value-string-loading: backlog
-  epic-3-retrospective: optional
+  epic-3: done
+  3-1-navigation-engine-trait-and-engine-factory: done
+  3-2-thread-list-and-search-in-tui: done
+  3-3-stack-frame-and-local-variable-display: done
+  3-4-object-resolution-and-single-level-expansion: done
+  3-5-recursive-expansion-and-collection-size-indicators: done
+  3-6-lazy-value-string-loading: done
+  3-7-real-thread-names-and-local-variable-resolution: done
+  3-8-inline-filters-and-optimized-thread-resolution: done
+  epic-3-retrospective: done
 
   # Epic 4: Large Collection Handling & Pagination
   epic-4: backlog

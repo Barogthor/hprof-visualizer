@@ -2,13 +2,15 @@
 //! memory budget calculation, and frontend selection.
 //!
 //! After argument parsing the binary opens the hprof file with a live
-//! progress bar, then prints an indexing summary before exiting.
+//! progress bar, then launches the TUI.
 
 use std::env;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use hprof_engine::NavigationEngine;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -31,15 +33,27 @@ where
         .len();
     let mp = hprof_tui::progress::new_multi_progress();
     let mut reporter = hprof_tui::progress::ProgressReporter::new(&mp, file_len);
-    let mut filter_reporter = hprof_tui::progress::FilterProgressReporter::new(mp);
-    let summary = hprof_engine::open_hprof_file_with_progress(
+    let mut name_reporter = hprof_tui::progress::NameProgressReporter::new(&mp);
+
+    let config = hprof_engine::EngineConfig;
+    let engine = hprof_engine::Engine::from_file_with_progress(
         &path,
+        &config,
         |bytes| reporter.on_bytes_processed(bytes),
-        |done, total| filter_reporter.on_segment_built(done, total),
+        |done, total| name_reporter.on_name_resolved(done, total),
     )
     .map_err(CliError::OpenFailed)?;
-    filter_reporter.finish();
-    reporter.finish(&summary);
+    name_reporter.finish();
+    let (elapsed, total_bytes) = reporter.elapsed_summary();
+    let speed = total_bytes as f64 / elapsed.as_secs_f64() / 1e9;
+    println!("Loaded in {elapsed:.1?} ({speed:.2} GB/s)");
+
+    for w in engine.warnings() {
+        eprintln!("[warn] {w}");
+    }
+
+    hprof_tui::run_tui(engine, path.display().to_string()).map_err(CliError::TuiFailed)?;
+
     Ok(())
 }
 
@@ -68,6 +82,7 @@ enum CliError {
     Usage(OsString),
     MetadataFailed(std::io::Error),
     OpenFailed(hprof_engine::HprofError),
+    TuiFailed(std::io::Error),
 }
 
 impl fmt::Display for CliError {
@@ -79,6 +94,7 @@ impl fmt::Display for CliError {
             }
             Self::MetadataFailed(err) => write!(f, "failed to read file metadata: {err}"),
             Self::OpenFailed(err) => write!(f, "failed to open heap dump: {err}"),
+            Self::TuiFailed(err) => write!(f, "TUI error: {err}"),
         }
     }
 }
@@ -86,7 +102,6 @@ impl fmt::Display for CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn os_args(parts: &[&str]) -> Vec<OsString> {
         parts.iter().map(OsString::from).collect()
@@ -115,21 +130,5 @@ mod tests {
 
         let result = run(os_args(&["hprof-visualizer", &missing_path]));
         assert!(matches!(result, Err(CliError::MetadataFailed(_))));
-    }
-
-    #[test]
-    fn run_succeeds_for_valid_hprof_header_file() {
-        let mut bytes = b"JAVA PROFILE 1.0.2\0".to_vec();
-        bytes.extend_from_slice(&8u32.to_be_bytes());
-        bytes.extend_from_slice(&0u64.to_be_bytes());
-
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        tmp.write_all(&bytes).unwrap();
-        tmp.flush().unwrap();
-
-        let arg_path = tmp.path().to_string_lossy().to_string();
-        let result = run(os_args(&["hprof-visualizer", &arg_path]));
-
-        assert!(result.is_ok());
     }
 }

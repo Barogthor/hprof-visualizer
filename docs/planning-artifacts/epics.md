@@ -2,12 +2,13 @@
 stepsCompleted: ['step-01-validate-prerequisites', 'step-02-design-epics', 'step-03-create-stories', 'step-04-final-validation']
 status: 'complete'
 completedAt: '2026-03-06'
-revisedAt: '2026-03-06'
-revisionNotes: 'Split oversized stories (2.1, 2.2, 3.4, 5.3), added user-visible AC to enabler stories (1.2, 3.1), renamed Epic 1, added NFR traceability per story; UX revision: favorites promoted to MVP, browse-and-preview in 3.2, async expansion with pseudo-node loading in 3.4, explicit pagination in 4.2, added Epic 7 (theme, keymap, favorites panel)'
+revisedAt: '2026-03-08'
+revisionNotes: 'Added Epic 8: First Pass Performance Optimization (stories 8.0-8.3) — FxHashMap, lazy strings, parallel heap parsing. Informed by Algorithm Olympics, Performance Profiler Panel, Pre-mortem Analysis, and Red Team vs Blue Team elicitation sessions. Validated step-04.'
 inputDocuments:
   - 'docs/planning-artifacts/prd.md'
   - 'docs/planning-artifacts/architecture.md'
   - 'docs/planning-artifacts/ux-design-specification.md'
+  - 'docs/report/party-mode-perf-optimization-2026-03-08.md'
 ---
 
 # hprof-visualizer - Epic Breakdown
@@ -176,6 +177,10 @@ The user can configure the tool via a TOML config file with CLI overrides and pr
 ### Epic 7: TUI UX & Interaction Design
 The TUI has a consistent color theme (16 ANSI colors), a complete keyboard navigation map, and a
 favorites/pin panel that appears conditionally when pins exist to support value comparison across threads.
+
+### Epic 8: First Pass Performance Optimization
+The system loads and indexes heap dumps significantly faster through optimized data structures, lazy string loading, and parallel heap segment parsing — reducing RustRover dump load time from ~30s to 10-15s.
+**NFRs improved:** NFR1 (indexing performance beyond original target)
 
 ## Epic 1: Open and Validate Heap Files
 
@@ -915,3 +920,154 @@ favorites panel, `s` or `/` open search, `Esc` clear search
 **Given** I press `q` from any panel
 **When** the quit event is processed
 **Then** the TUI exits cleanly and the terminal is restored to its original state
+
+## Epic 8: First Pass Performance Optimization
+
+The system loads and indexes heap dumps significantly faster through optimized data structures, lazy string loading, and parallel heap segment parsing — reducing RustRover dump load time from ~30s to 10-15s. Target: 50-60% reduction in real load time.
+
+### Story 8.0: Profiling Infrastructure
+
+As a developer,
+I want reproducible benchmarks and visual profiling tools for the first pass pipeline,
+So that I can measure the exact impact of each optimization and identify remaining hotspots.
+
+**NFRs verified:** NFR1 (indexing performance measurement)
+
+**Acceptance Criteria:**
+
+**Given** a real hprof file path in `HPROF_BENCH_FILE` env var
+**When** I run `cargo bench --bench first_pass`
+**Then** criterion produces benchmark results with statistical analysis comparing to the previous run
+
+**Given** the `dev-profiling` feature flag is enabled
+**When** I run `cargo run --features dev-profiling -- <file.hprof>`
+**Then** a `trace.json` file is generated that can be opened in Perfetto UI showing spans for each first pass phase (record scan, heap extraction, segment filter build, thread cache)
+
+**Given** no `HPROF_BENCH_FILE` env var is set
+**When** I run `cargo test`
+**Then** benchmark tests are skipped without failure
+
+**Technical Notes:**
+- Criterion benchmarks gated behind `HPROF_BENCH_FILE` env var (per architecture.md)
+- `tracing-chrome` behind feature flag `dev-profiling` — not included in release builds
+- Benchmark per component: first pass total, string parsing, heap extraction, segment filter build
+
+### Story 8.1: FxHashMap, Pre-allocation & all_offsets Optimization
+
+As a user,
+I want faster heap dump loading through optimized data structures,
+So that the indexing phase completes sooner with less memory pressure.
+
+**NFRs improved:** NFR1 (indexing performance)
+
+**Acceptance Criteria:**
+
+**Given** the first pass uses FxHashMap for all integer-keyed maps
+**When** I index a heap dump
+**Then** the indexing time is measurably reduced vs std::HashMap (verified via Story 8.0 benchmarks)
+
+**Given** the first pass pre-allocates HashMaps based on `file_size / 80`
+**When** I index a heap dump
+**Then** zero HashMap reallocations occur during the heap extraction phase
+
+**Given** the temporary `all_offsets` storage uses a sorted `Vec<(u64, u64)>` instead of `HashMap<u64, u64>`
+**When** `resolve_thread_transitive_offsets` looks up ~600-800 thread-related object offsets
+**Then** all lookups succeed via binary search with identical results to the previous HashMap-based implementation
+
+**Given** a heap dump with IDs that have common high bits (ZGC/Shenandoah pattern)
+**When** indexed with FxHashMap
+**Then** no pathological collision behavior — verified by a dedicated regression test
+
+**Given** all existing tests
+**When** I run `cargo test`
+**Then** all tests pass with identical results to pre-optimization behavior
+
+**Technical Notes:**
+- Add `rustc-hash = "2"` dependency to `hprof-parser`
+- Replace `HashMap` with `FxHashMap` in `precise.rs` for: `strings`, `classes`, `threads`, `stack_frames`, `stack_traces`, `java_frame_roots`, `class_dumps`, `thread_object_ids`, `class_names_by_id`, `instance_offsets`
+- Replace `all_offsets: HashMap<u64, u64>` in `first_pass.rs` with `Vec<(u64, u64)>`, sort with `sort_unstable()` after heap scan, use `binary_search_by_key()` for lookups
+- Pre-allocate: `strings` with `file_size / 300`, instance Vec with `file_size / 80`
+- Keep `std::HashMap` for any string-keyed maps (FxHash is poor on long strings)
+- Vec<(u64,u64)> sorted: ~80 MB vs ~120 MB for HashMap on 5M entries, cache-friendly sort
+
+### Story 8.2: Lazy String References
+
+As a user,
+I want the indexing phase to skip eagerly loading all 130K+ string values,
+So that the first pass is faster and uses less memory.
+
+**NFRs improved:** NFR1 (indexing performance), NFR5 (memory usage)
+
+**Acceptance Criteria:**
+
+**Given** the first pass encounters a STRING record (tag 0x01)
+**When** it is indexed
+**Then** only `HprofStringRef { id, offset, len }` is stored — no string content is allocated
+
+**Given** a component needs a string value (class name, method name, field name)
+**When** it calls `resolve_string(ref)` on the HprofFile
+**Then** the string is resolved on-demand from the mmap data with `from_utf8_lossy`
+
+**Given** the first pass builds `class_names_by_id`
+**When** it encounters LOAD_CLASS records
+**Then** class names are resolved eagerly and stored as owned `String` in `class_names_by_id` (not lazy)
+
+**Given** all existing tests
+**When** I run `cargo test`
+**Then** all tests pass with identical string values to pre-optimization behavior
+
+**Technical Notes:**
+- `HprofString { id, value: String }` → `HprofStringRef { id, offset: u64, len: u32 }` in `strings.rs`
+- Add `resolve_string(&self, sref: &HprofStringRef) -> String` to `HprofFile`
+- `class_names_by_id` stays eager — it's the natural cache for class/method names used in UI
+- No LRU cache for strings — over-engineering per Red Team analysis
+- 4 production call sites to adapt: `first_pass.rs:254`, `first_pass.rs:279`, `first_pass.rs:872`, `resolver.rs:32`
+- String records appear before heap segments in hprof format — lazy resolve works during first pass
+- Blast radius: 4 production call sites + ~15 test assertions
+
+### Story 8.3: Parallel Heap Segment Parsing
+
+As a user,
+I want heap dump segments parsed in parallel across CPU cores,
+So that multi-core machines index heap dumps proportionally faster.
+
+**NFRs improved:** NFR1 (indexing performance — target 3-4x speedup on 8 cores)
+
+**Acceptance Criteria:**
+
+**Given** a heap dump with total heap segment size >= 32 MB
+**When** the first pass reaches heap extraction
+**Then** heap segments are parsed in parallel using rayon
+
+**Given** a heap dump with total heap segment size < 32 MB
+**When** the first pass reaches heap extraction
+**Then** heap segments are parsed sequentially (no rayon overhead)
+
+**Given** parallel heap parsing
+**When** CLASS_DUMP sub-records (tag 0x20) are encountered
+**Then** they are extracted in a sequential pre-pass before parallel extraction begins, so `class_dumps` is available as read-only shared state
+
+**Given** parallel heap parsing with multiple workers
+**When** workers produce object IDs for segment filters
+**Then** IDs are collected in per-worker `Vec<u64>`, concatenated per 64 MiB segment, and built into BinaryFuse8 filters after all workers complete
+
+**Given** parallel heap parsing with workers producing offset data
+**When** results are merged
+**Then** per-worker `Vec<(u64, u64)>` are concatenated (not HashMap-merged) and sorted once
+
+**Given** a HEAP_DUMP_SEGMENT larger than 16 MB
+**When** it is assigned to a worker
+**Then** it may be sub-divided at sub-record boundaries for finer load balancing
+
+**Given** all existing tests
+**When** I run `cargo test`
+**Then** all tests pass with identical indexing results to sequential parsing
+
+**Technical Notes:**
+- Parallelize by HEAP_DUMP_SEGMENT (tag 0x1C) — natural chunk boundaries in hprof format, already tracked in `heap_record_ranges`
+- Sub-pass 1 (sequential): scan heap segments extracting only CLASS_DUMP (tag 0x20) + note sub-record offsets
+- Sub-pass 2 (parallel): `heap_record_ranges.par_iter()` with per-worker local Vecs, no shared mutable state
+- Merge: Vec `append` (O(1)) + single `sort_unstable` — no HashMap merge contention
+- Segment filter coherence: collect IDs per 64 MiB segment boundary, build BinaryFuse8 after merge
+- Minimum threshold: 32 MB total heap size to activate parallelism
+- Sub-divide segments > 16 MB at sub-record boundaries for better work-stealing

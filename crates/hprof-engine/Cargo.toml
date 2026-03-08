@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+byteorder = "1"
+rayon = { workspace = true }
 hprof-parser = { path = "../hprof-parser" }
 
 [dev-dependencies]
 tempfile = "3"
+hprof-parser = { path = "../hprof-parser", features = ["test-utils"] }

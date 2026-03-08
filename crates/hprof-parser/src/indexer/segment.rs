@@ -9,8 +9,6 @@
 //! guaranteed absence; a `true` result means the object *probably* lives in
 //! that segment.
 
-use std::collections::HashMap;
-
 use xorf::{BinaryFuse8, Filter};
 
 /// Size of one file segment in bytes (64 MiB).
@@ -46,55 +44,90 @@ impl std::fmt::Debug for SegmentFilter {
     }
 }
 
-/// Accumulates object IDs per segment during the first pass, then builds
-/// [`SegmentFilter`] instances via [`build`](SegmentFilterBuilder::build).
+/// Builds [`SegmentFilter`] instances incrementally during the first pass.
+///
+/// When [`add`](SegmentFilterBuilder::add) detects that the object belongs
+/// to a new segment, the previous segment's filter is finalized immediately
+/// and its raw ID vector is freed. Call [`finish`](SegmentFilterBuilder::finish)
+/// after the last record to finalize the final segment.
 pub(crate) struct SegmentFilterBuilder {
-    buckets: HashMap<usize, Vec<u64>>,
+    current_segment: Option<usize>,
+    current_ids: Vec<u64>,
+    filters: Vec<SegmentFilter>,
+    warnings: Vec<String>,
 }
 
 impl SegmentFilterBuilder {
     /// Creates an empty builder.
     pub(crate) fn new() -> Self {
         Self {
-            buckets: HashMap::new(),
+            current_segment: None,
+            current_ids: Vec::new(),
+            filters: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
     /// Records `id` as belonging to the segment that contains `data_offset`.
+    ///
+    /// When a new segment index is detected, the previous segment's filter
+    /// is built immediately and its raw ID vector is freed.
     pub(crate) fn add(&mut self, data_offset: usize, id: u64) {
         let seg = data_offset / SEGMENT_SIZE;
-        self.buckets.entry(seg).or_default().push(id);
+        if self.current_segment != Some(seg) {
+            self.finalize_current();
+            self.current_segment = Some(seg);
+        }
+        self.current_ids.push(id);
     }
 
-    /// Consumes the builder and produces one [`SegmentFilter`] per non-empty
-    /// segment. Segments whose filter construction fails are silently skipped.
-    ///
-    /// `progress_fn` is called after each segment is built with
-    /// `(segments_done, segments_total)`.
-    pub(crate) fn build_with_progress(
-        self,
-        mut progress_fn: impl FnMut(usize, usize),
-    ) -> Vec<SegmentFilter> {
-        let total = self.buckets.len();
-        let mut filters = Vec::new();
-        for (segment_index, mut ids) in self.buckets {
+    /// Builds the filter for the current segment and resets state.
+    fn finalize_current(&mut self) {
+        if let Some(seg_idx) = self.current_segment.take() {
+            let mut ids = std::mem::take(&mut self.current_ids);
             ids.sort_unstable();
             ids.dedup();
-            if let Ok(filter) = BinaryFuse8::try_from(ids.as_slice()) {
-                filters.push(SegmentFilter {
-                    segment_index,
-                    filter,
-                });
+            match BinaryFuse8::try_from(ids.as_slice()) {
+                Ok(filter) => {
+                    self.filters.push(SegmentFilter {
+                        segment_index: seg_idx,
+                        filter,
+                    });
+                }
+                Err(e) => {
+                    self.warnings.push(format!(
+                        "segment {seg_idx}: BinaryFuse8 build \
+                         failed ({} IDs): {e}",
+                        ids.len()
+                    ));
+                }
             }
-            progress_fn(filters.len(), total);
         }
-        filters
     }
 
-    /// Consumes the builder and produces one [`SegmentFilter`] per non-empty
-    /// segment without a progress callback.
-    pub(crate) fn build(self) -> Vec<SegmentFilter> {
-        self.build_with_progress(|_, _| {})
+    /// Returns the number of segment filters already built.
+    #[allow(dead_code)]
+    pub(crate) fn completed_count(&self) -> usize {
+        self.filters.len()
+    }
+
+    /// Returns the number of raw IDs currently accumulated (not yet
+    /// finalized).
+    #[allow(dead_code)]
+    pub(crate) fn pending_id_count(&self) -> usize {
+        self.current_ids.len()
+    }
+
+    /// Finalizes the last segment and returns `(filters, warnings)`.
+    pub(crate) fn finish(mut self) -> (Vec<SegmentFilter>, Vec<String>) {
+        self.finalize_current();
+        (self.filters, self.warnings)
+    }
+
+    /// Alias for [`finish`](SegmentFilterBuilder::finish).
+    #[allow(dead_code)]
+    pub(crate) fn build(self) -> (Vec<SegmentFilter>, Vec<String>) {
+        self.finish()
     }
 }
 
@@ -105,14 +138,15 @@ mod tests {
     #[test]
     fn build_empty_returns_empty_vec() {
         let builder = SegmentFilterBuilder::new();
-        assert!(builder.build().is_empty());
+        let (filters, _) = builder.build();
+        assert!(filters.is_empty());
     }
 
     #[test]
     fn add_single_id_produces_one_filter_segment_0_contains_true() {
         let mut builder = SegmentFilterBuilder::new();
         builder.add(0, 42);
-        let filters = builder.build();
+        let (filters, _) = builder.build();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].segment_index, 0);
         assert!(filters[0].contains(42));
@@ -122,7 +156,7 @@ mod tests {
     fn add_id_at_segment_size_offset_produces_segment_1() {
         let mut builder = SegmentFilterBuilder::new();
         builder.add(SEGMENT_SIZE, 99);
-        let filters = builder.build();
+        let (filters, _) = builder.build();
         assert_eq!(filters.len(), 1);
         assert_eq!(filters[0].segment_index, 1);
         assert!(filters[0].contains(99));
@@ -136,7 +170,7 @@ mod tests {
         builder.add(3 * SEGMENT_SIZE + 200, 1002);
         // segment 0 — one object
         builder.add(0, 500);
-        let mut filters = builder.build();
+        let (mut filters, _) = builder.build();
         filters.sort_by_key(|f| f.segment_index);
         assert_eq!(filters.len(), 2);
         let seg0 = &filters[0];
@@ -152,7 +186,7 @@ mod tests {
         let mut builder = SegmentFilterBuilder::new();
         builder.add(0, 500);
         builder.add(3 * SEGMENT_SIZE, 9999);
-        let mut filters = builder.build();
+        let (mut filters, _) = builder.build();
         filters.sort_by_key(|f| f.segment_index);
         let seg0 = &filters[0];
         // 9999 was only added to segment 3 — guaranteed false negative in seg0
@@ -165,8 +199,45 @@ mod tests {
         builder.add(0, 77);
         builder.add(100, 77);
         builder.add(200, 77);
-        let filters = builder.build();
+        let (filters, _) = builder.build();
         assert_eq!(filters.len(), 1);
         assert!(filters[0].contains(77));
+    }
+
+    #[test]
+    fn inline_filter_built_on_segment_change() {
+        let mut builder = SegmentFilterBuilder::new();
+        // Add IDs to segment 0
+        builder.add(0, 42);
+        builder.add(100, 43);
+        assert_eq!(
+            builder.completed_count(),
+            0,
+            "no filter yet while still in segment 0"
+        );
+        // Transition to segment 1 — should finalize seg 0
+        builder.add(SEGMENT_SIZE, 99);
+        assert_eq!(
+            builder.completed_count(),
+            1,
+            "segment 0 filter must be built inline"
+        );
+        // Finish to get all filters
+        let (filters, _) = builder.finish();
+        assert_eq!(filters.len(), 2);
+    }
+
+    #[test]
+    fn raw_ids_freed_after_segment_finalized() {
+        let mut builder = SegmentFilterBuilder::new();
+        builder.add(0, 42);
+        builder.add(100, 43);
+        // Transition to segment 1 — seg 0 IDs freed
+        builder.add(SEGMENT_SIZE, 99);
+        assert_eq!(
+            builder.pending_id_count(),
+            1,
+            "only segment 1's single ID should remain"
+        );
     }
 }

@@ -75,6 +75,36 @@ pub struct StackTrace {
     pub frame_ids: Vec<u64>,
 }
 
+/// One instance field definition from a `CLASS_DUMP` sub-record.
+///
+/// `field_type` codes: 2=object ref, 4=bool, 5=char, 6=float, 7=double,
+/// 8=byte, 9=short, 10=int, 11=long.
+#[derive(Debug, Clone)]
+pub struct FieldDef {
+    pub name_string_id: u64,
+    pub field_type: u8,
+}
+
+/// Parsed instance field layout extracted from a `CLASS_DUMP` sub-record
+/// (heap sub-tag `0x20`).
+#[derive(Debug, Clone)]
+pub struct ClassDumpInfo {
+    pub class_object_id: u64,
+    pub super_class_id: u64,
+    pub instance_size: u32,
+    /// Instance fields in declaration order (NOT including inherited fields).
+    pub instance_fields: Vec<FieldDef>,
+}
+
+/// Raw bytes of an `INSTANCE_DUMP` sub-record payload, returned by the
+/// object resolver before field decoding.
+#[derive(Debug, Clone)]
+pub struct RawInstance {
+    pub class_object_id: u64,
+    /// Field data bytes, ordered as declared in the class hierarchy.
+    pub data: Vec<u8>,
+}
+
 /// Parses a `LOAD_CLASS` record payload from `cursor`.
 ///
 /// Cursor must be positioned immediately after the 9-byte record header.
@@ -102,8 +132,15 @@ pub fn parse_load_class(cursor: &mut Cursor<&[u8]>, id_size: u32) -> Result<Clas
 ///
 /// Cursor must be positioned immediately after the 9-byte record header.
 ///
+/// The `group_name_string_id` and `group_parent_name_string_id` fields are
+/// treated as optional — if the payload is exhausted after the first four
+/// required fields, they default to `0`. This tolerates JVM implementations
+/// that emit a shorter `START_THREAD` record.
+///
 /// ## Errors
-/// - [`HprofError::TruncatedRecord`] if the payload is shorter than expected
+/// - [`HprofError::TruncatedRecord`] if the payload is shorter than the four
+///   required fields (thread_serial, object_id, stack_trace_serial,
+///   name_string_id).
 pub fn parse_start_thread(
     cursor: &mut Cursor<&[u8]>,
     id_size: u32,
@@ -116,8 +153,8 @@ pub fn parse_start_thread(
         .read_u32::<BigEndian>()
         .map_err(|_| HprofError::TruncatedRecord)?;
     let name_string_id = read_id(cursor, id_size)?;
-    let group_name_string_id = read_id(cursor, id_size)?;
-    let group_parent_name_string_id = read_id(cursor, id_size)?;
+    let group_name_string_id = read_id(cursor, id_size).unwrap_or(0);
+    let group_parent_name_string_id = read_id(cursor, id_size).unwrap_or(0);
     Ok(HprofThread {
         thread_serial,
         object_id,
@@ -202,6 +239,48 @@ pub fn parse_stack_trace(
         thread_serial,
         frame_ids,
     })
+}
+
+#[cfg(test)]
+mod new_type_compile_tests {
+    use super::*;
+
+    #[test]
+    fn field_def_has_required_fields() {
+        let f = FieldDef {
+            name_string_id: 1,
+            field_type: 10,
+        };
+        assert_eq!(f.name_string_id, 1);
+        assert_eq!(f.field_type, 10);
+    }
+
+    #[test]
+    fn class_dump_info_has_required_fields() {
+        let c = ClassDumpInfo {
+            class_object_id: 100,
+            super_class_id: 50,
+            instance_size: 16,
+            instance_fields: vec![FieldDef {
+                name_string_id: 1,
+                field_type: 10,
+            }],
+        };
+        assert_eq!(c.class_object_id, 100);
+        assert_eq!(c.super_class_id, 50);
+        assert_eq!(c.instance_size, 16);
+        assert_eq!(c.instance_fields.len(), 1);
+    }
+
+    #[test]
+    fn raw_instance_has_required_fields() {
+        let r = RawInstance {
+            class_object_id: 200,
+            data: vec![1, 2, 3],
+        };
+        assert_eq!(r.class_object_id, 200);
+        assert_eq!(r.data, vec![1u8, 2, 3]);
+    }
 }
 
 #[cfg(test)]

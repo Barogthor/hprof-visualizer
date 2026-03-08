@@ -230,6 +230,74 @@ impl HprofTestBuilder {
         self
     }
 
+    /// Appends a `HEAP_DUMP_SEGMENT` (tag `0x1C`) containing one `CLASS_DUMP`
+    /// (sub-tag `0x20`) sub-record.
+    ///
+    /// `fields`: slice of `(name_string_id, field_type)` pairs.
+    pub fn add_class_dump(
+        mut self,
+        class_object_id: u64,
+        super_class_id: u64,
+        instance_size: u32,
+        fields: &[(u64, u8)],
+    ) -> Self {
+        let mut sub = vec![0x20u8]; // CLASS_DUMP sub-tag
+        sub.extend_from_slice(&self.encode_id(class_object_id));
+        sub.extend_from_slice(&0u32.to_be_bytes()); // stack_trace_serial
+        sub.extend_from_slice(&self.encode_id(super_class_id));
+        // classloader_id, signers_id, protection_domain_id, reserved1, reserved2 = 0
+        for _ in 0..5 {
+            sub.extend_from_slice(&self.encode_id(0));
+        }
+        sub.extend_from_slice(&instance_size.to_be_bytes());
+        sub.extend_from_slice(&0u16.to_be_bytes()); // constant_pool_count = 0
+        sub.extend_from_slice(&0u16.to_be_bytes()); // static_fields_count = 0
+        sub.extend_from_slice(&(fields.len() as u16).to_be_bytes());
+        for &(name_id, field_type) in fields {
+            sub.extend_from_slice(&self.encode_id(name_id));
+            sub.push(field_type);
+        }
+        self.records.push(Self::make_record(0x1C, &sub));
+        self
+    }
+
+    /// Appends a `HEAP_DUMP_SEGMENT` (tag `0x1C`) containing one
+    /// `GC_ROOT_JAVA_FRAME` (sub-tag `0x03`) sub-record.
+    ///
+    /// Payload: `object_id(id_size)` + `thread_serial(u32)` + `frame_number(i32)`
+    pub fn add_java_frame_root(
+        mut self,
+        object_id: u64,
+        thread_serial: u32,
+        frame_number: i32,
+    ) -> Self {
+        let mut sub = vec![0x03u8]; // GC_ROOT_JAVA_FRAME sub-tag
+        sub.extend_from_slice(&self.encode_id(object_id));
+        sub.extend_from_slice(&thread_serial.to_be_bytes());
+        sub.extend_from_slice(&frame_number.to_be_bytes());
+        self.records.push(Self::make_record(0x1C, &sub));
+        self
+    }
+
+    /// Appends a `HEAP_DUMP_SEGMENT` (tag `0x1C`) containing one
+    /// `ROOT_THREAD_OBJ` (sub-tag `0x08`) sub-record.
+    ///
+    /// Payload: `object_id(id_size)` + `thread_serial(u32)` +
+    /// `stack_trace_serial(u32)`
+    pub fn add_root_thread_obj(
+        mut self,
+        object_id: u64,
+        thread_serial: u32,
+        stack_trace_serial: u32,
+    ) -> Self {
+        let mut sub = vec![0x08u8]; // ROOT_THREAD_OBJ sub-tag
+        sub.extend_from_slice(&self.encode_id(object_id));
+        sub.extend_from_slice(&thread_serial.to_be_bytes());
+        sub.extend_from_slice(&stack_trace_serial.to_be_bytes());
+        self.records.push(Self::make_record(0x1C, &sub));
+        self
+    }
+
     /// Sets a truncation point. `build()` truncates the final bytes to `offset`.
     /// If `offset` exceeds the total length, this is a no-op.
     pub fn truncate_at(mut self, offset: usize) -> Self {
@@ -497,6 +565,18 @@ mod tests {
         let hdr = header_size(version);
         assert_eq!(bytes[hdr], 0x1C, "HEAP_DUMP_SEGMENT tag");
         assert_eq!(bytes[hdr + 9], 0x23, "PRIMITIVE_ARRAY_DUMP sub-tag");
+    }
+
+    #[test]
+    fn add_class_dump_produces_heap_dump_segment_with_0x20_subtag_and_correct_field_count() {
+        let version = "JAVA PROFILE 1.0.2";
+        // two instance fields
+        let bytes = HprofTestBuilder::new(version, 8)
+            .add_class_dump(100, 0, 16, &[(10, 10u8), (11, 8u8)])
+            .build();
+        let hdr = header_size(version);
+        assert_eq!(bytes[hdr], 0x1C, "HEAP_DUMP_SEGMENT tag");
+        assert_eq!(bytes[hdr + 9], 0x20, "CLASS_DUMP sub-tag");
     }
 
     #[test]

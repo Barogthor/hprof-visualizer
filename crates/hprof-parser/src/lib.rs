@@ -33,9 +33,12 @@ pub use strings::{HprofString, parse_string_record};
 
 pub(crate) mod types;
 pub use types::{
-    ClassDef, HprofThread, StackFrame, StackTrace, parse_load_class, parse_stack_frame,
-    parse_stack_trace, parse_start_thread,
+    ClassDef, ClassDumpInfo, FieldDef, HprofThread, RawInstance, StackFrame, StackTrace,
+    parse_load_class, parse_stack_frame, parse_stack_trace, parse_start_thread,
 };
+
+pub(crate) mod java_types;
+pub use java_types::jvm_to_java;
 
 pub(crate) mod indexer;
 pub use indexer::precise::PreciseIndex;

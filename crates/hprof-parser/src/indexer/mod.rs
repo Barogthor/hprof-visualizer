@@ -34,6 +34,10 @@ pub(crate) struct IndexResult {
     pub records_indexed: u64,
     /// Per-segment BinaryFuse8 filters built from heap dump records.
     pub segment_filters: Vec<SegmentFilter>,
+    /// `(payload_start_offset, payload_length)` for every `HEAP_DUMP` (0x0C)
+    /// and `HEAP_DUMP_SEGMENT` (0x1C) record. Offsets are relative to the
+    /// records section (i.e., the slice passed to `run_first_pass`).
+    pub heap_record_ranges: Vec<(u64, u64)>,
 }
 
 impl IndexResult {
@@ -60,6 +64,7 @@ mod tests {
             records_attempted: attempted,
             records_indexed: indexed,
             segment_filters: Vec::new(),
+            heap_record_ranges: Vec::new(),
         }
     }
 

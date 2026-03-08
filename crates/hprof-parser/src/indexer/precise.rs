@@ -1,7 +1,7 @@
 //! In-memory O(1) indexes for all structural hprof records, built by the
 //! first-pass indexer.
 //!
-//! [`PreciseIndex`] holds five [`HashMap`] collections, each keyed by the
+//! [`PreciseIndex`] holds [`HashMap`] collections, each keyed by the
 //! primary identifier of its record type:
 //!
 //! | Field | Key type | Record |
@@ -11,14 +11,18 @@
 //! | `threads` | `u32` thread serial | `START_THREAD` |
 //! | `stack_frames` | `u64` frame ID | `STACK_FRAME` |
 //! | `stack_traces` | `u32` stack trace serial | `STACK_TRACE` |
+//! | `java_frame_roots` | `u64` frame ID | `GC_ROOT_JAVA_FRAME` |
+//! | `class_dumps` | `u64` class object ID | `CLASS_DUMP` |
+//! | `thread_object_ids` | `u32` thread serial | `ROOT_THREAD_OBJ` |
+//! | `class_names_by_id` | `u64` class object ID | derived from `LOAD_CLASS` |
 
 use std::collections::HashMap;
 
-use crate::{ClassDef, HprofString, HprofThread, StackFrame, StackTrace};
+use crate::{ClassDef, ClassDumpInfo, HprofString, HprofThread, StackFrame, StackTrace};
 
 /// O(1) lookup index populated by a single sequential pass over an hprof file.
 ///
-/// All five maps are public so callers can inspect them directly. Maps are
+/// All maps are public so callers can inspect them directly. Maps are
 /// populated by [`crate::indexer::first_pass::run_first_pass`] and are
 /// read-only after construction.
 #[derive(Debug)]
@@ -33,6 +37,36 @@ pub struct PreciseIndex {
     pub stack_frames: HashMap<u64, StackFrame>,
     /// `STACK_TRACE` records keyed by stack trace serial number.
     pub stack_traces: HashMap<u32, StackTrace>,
+    /// GC root object IDs keyed by frame ID. Populated during first pass by
+    /// correlating `GC_ROOT_JAVA_FRAME` sub-records with `STACK_TRACE` records.
+    ///
+    /// Key: `frame_id` (u64) — Value: Vec of object IDs rooted at that frame.
+    pub java_frame_roots: HashMap<u64, Vec<u64>>,
+    /// `CLASS_DUMP` sub-records keyed by `class_object_id`.
+    pub class_dumps: HashMap<u64, ClassDumpInfo>,
+    /// `ROOT_THREAD_OBJ` heap object IDs keyed by thread serial.
+    /// Maps thread_serial → object_id from the heap.
+    pub thread_object_ids: HashMap<u32, u64>,
+    /// Java class names keyed by `class_object_id`.
+    ///
+    /// Populated from `LOAD_CLASS` records during the first pass. Binary JVM
+    /// names (`java/util/HashMap`) are normalised to dot notation
+    /// (`java.util.HashMap`).
+    pub class_names_by_id: HashMap<u64, String>,
+    /// Object-ID → byte offset (relative to records section) for
+    /// thread-related heap objects: Thread instances, their `name`
+    /// String instances, the backing `char[]/byte[]` arrays, and
+    /// JDK 19+ `FieldHolder` instances.
+    ///
+    /// Populated after the first pass by cross-referencing
+    /// `thread_object_ids` with a temporary offset index, then
+    /// following transitive references (`Thread.name` → `String` →
+    /// `String.value` → `char[]`, `Thread.holder` → `FieldHolder`).
+    ///
+    /// Used by the engine for O(1) offset-based reads during thread
+    /// name and state resolution, falling back to linear scan when
+    /// an ID is not present.
+    pub instance_offsets: HashMap<u64, u64>,
 }
 
 impl PreciseIndex {
@@ -44,6 +78,11 @@ impl PreciseIndex {
             threads: HashMap::new(),
             stack_frames: HashMap::new(),
             stack_traces: HashMap::new(),
+            java_frame_roots: HashMap::new(),
+            class_dumps: HashMap::new(),
+            thread_object_ids: HashMap::new(),
+            class_names_by_id: HashMap::new(),
+            instance_offsets: HashMap::new(),
         }
     }
 }
@@ -67,6 +106,10 @@ mod tests {
         assert!(index.threads.is_empty());
         assert!(index.stack_frames.is_empty());
         assert!(index.stack_traces.is_empty());
+        assert!(index.java_frame_roots.is_empty());
+        assert!(index.class_dumps.is_empty());
+        assert!(index.thread_object_ids.is_empty());
+        assert!(index.class_names_by_id.is_empty());
     }
 
     #[test]
