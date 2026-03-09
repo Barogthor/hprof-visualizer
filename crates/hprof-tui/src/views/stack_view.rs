@@ -62,6 +62,12 @@ pub enum StackCursor {
         /// Empty = root var's loading node. Non-empty = nested object's node.
         field_path: Vec<usize>,
     },
+    /// Cursor on a cyclic reference marker (non-expandable leaf).
+    OnCyclicNode {
+        frame_idx: usize,
+        var_idx: usize,
+        field_path: Vec<usize>,
+    },
 }
 
 /// State for the stack frame panel.
@@ -157,7 +163,8 @@ impl StackState {
             StackCursor::OnFrame(fi) => self.frames.get(*fi).map(|f| f.frame_id),
             StackCursor::OnVar { frame_idx, .. }
             | StackCursor::OnObjectField { frame_idx, .. }
-            | StackCursor::OnObjectLoadingNode { frame_idx, .. } => {
+            | StackCursor::OnObjectLoadingNode { frame_idx, .. }
+            | StackCursor::OnCyclicNode { frame_idx, .. } => {
                 self.frames.get(*frame_idx).map(|f| f.frame_id)
             }
         }
@@ -431,7 +438,8 @@ impl StackState {
             // Reset cursor to the frame row when collapsing from a var position.
             if let StackCursor::OnVar { frame_idx, .. }
             | StackCursor::OnObjectField { frame_idx, .. }
-            | StackCursor::OnObjectLoadingNode { frame_idx, .. } = self.cursor
+            | StackCursor::OnObjectLoadingNode { frame_idx, .. }
+            | StackCursor::OnCyclicNode { frame_idx, .. } = self.cursor
             {
                 self.cursor = StackCursor::OnFrame(frame_idx);
             }
@@ -496,7 +504,15 @@ impl StackState {
                             var_idx: vi,
                         });
                         if let VariableValue::ObjectRef { id: object_id, .. } = var.value {
-                            self.emit_object_children(fi, vi, object_id, vec![], &mut out);
+                            let mut visited = HashSet::new();
+                            self.emit_object_children(
+                                fi,
+                                vi,
+                                object_id,
+                                vec![],
+                                &mut visited,
+                                &mut out,
+                            );
                         }
                     }
                 }
@@ -508,12 +524,14 @@ impl StackState {
     /// Emits cursor nodes for the children of `object_id` at `parent_path`.
     ///
     /// Guards against runaway recursion: stops at depth 16.
+    /// `visited` tracks the ancestor chain for cycle detection.
     fn emit_object_children(
         &self,
         fi: usize,
         vi: usize,
         object_id: u64,
         parent_path: Vec<usize>,
+        visited: &mut HashSet<u64>,
         out: &mut Vec<StackCursor>,
     ) {
         if parent_path.len() >= 16 {
@@ -529,30 +547,41 @@ impl StackState {
                 });
             }
             ExpansionPhase::Expanded => {
+                visited.insert(object_id);
                 let fields = self.object_fields.get(&object_id);
                 let field_count = fields.map(|f| f.len()).unwrap_or(0);
                 if field_count == 0 {
                     out.push(StackCursor::OnObjectLoadingNode {
                         frame_idx: fi,
                         var_idx: vi,
-                        field_path: parent_path,
+                        field_path: parent_path.clone(),
                     });
                 } else {
                     let field_list = fields.unwrap();
                     for (idx, field) in field_list.iter().enumerate() {
                         let mut path = parent_path.clone();
                         path.push(idx);
+                        if let FieldValue::ObjectRef { id, .. } = field.value
+                            && visited.contains(&id)
+                        {
+                            out.push(StackCursor::OnCyclicNode {
+                                frame_idx: fi,
+                                var_idx: vi,
+                                field_path: path,
+                            });
+                            continue;
+                        }
                         out.push(StackCursor::OnObjectField {
                             frame_idx: fi,
                             var_idx: vi,
                             field_path: path.clone(),
                         });
-                        // StringRef is a leaf — no recursion.
                         if let FieldValue::ObjectRef { id, .. } = field.value {
-                            self.emit_object_children(fi, vi, id, path, out);
+                            self.emit_object_children(fi, vi, id, path, visited, out);
                         }
                     }
                 }
+                visited.remove(&object_id);
             }
             ExpansionPhase::Failed => {
                 out.push(StackCursor::OnObjectLoadingNode {
@@ -664,6 +693,7 @@ impl StackState {
                     StackCursor::OnVar { frame_idx, .. }
                     | StackCursor::OnObjectField { frame_idx, .. }
                     | StackCursor::OnObjectLoadingNode { frame_idx, .. }
+                    | StackCursor::OnCyclicNode { frame_idx, .. }
                     if *frame_idx == fi);
             let style = if is_selected {
                 theme::SELECTED
@@ -716,9 +746,16 @@ impl StackState {
                         };
                         items.push(ListItem::new(Line::from(Span::styled(var_text, var_style))));
 
-                        // Emit nested field items
                         if let VariableValue::ObjectRef { id: object_id, .. } = var.value {
-                            self.build_object_items(fi, vi, object_id, &[], &mut items);
+                            let mut visited = HashSet::new();
+                            self.build_object_items(
+                                fi,
+                                vi,
+                                object_id,
+                                &[],
+                                &mut visited,
+                                &mut items,
+                            );
                         }
                     }
                 }
@@ -736,12 +773,14 @@ impl StackState {
     /// Recursively appends list items for `object_id` at `parent_path`.
     ///
     /// Indentation = `2 + 2 * (parent_path.len() + 1)` spaces for field rows.
+    /// `visited` tracks the ancestor chain for cycle detection.
     fn build_object_items(
         &self,
         fi: usize,
         vi: usize,
         object_id: u64,
         parent_path: &[usize],
+        visited: &mut HashSet<u64>,
         items: &mut Vec<ListItem<'static>>,
     ) {
         // Guard against runaway recursion.
@@ -769,6 +808,7 @@ impl StackState {
                 ))));
             }
             ExpansionPhase::Expanded => {
+                visited.insert(object_id);
                 let empty: Vec<FieldInfo> = vec![];
                 let field_list = self
                     .object_fields
@@ -793,6 +833,39 @@ impl StackState {
                     for (fidx, field) in field_list.iter().enumerate() {
                         let mut child_path = parent_path.to_vec();
                         child_path.push(fidx);
+
+                        // Cycle detection for ObjectRef fields
+                        if let FieldValue::ObjectRef { id, class_name, .. } = &field.value
+                            && visited.contains(id)
+                        {
+                            let label = if *id == object_id {
+                                "self-ref"
+                            } else {
+                                "cyclic"
+                            };
+                            let short = class_name.rsplit('.').next().unwrap_or(class_name);
+                            let marker = format!("\u{21BB} {} @ 0x{:X} [{}]", short, id, label,);
+                            let text = format!("{indent}  {}: {}", field.name, marker,);
+                            let sel = matches!(
+                                &self.cursor,
+                                StackCursor::OnCyclicNode {
+                                    frame_idx: ffi,
+                                    var_idx: vvi,
+                                    field_path,
+                                }
+                                if *ffi == fi
+                                    && *vvi == vi
+                                    && *field_path == child_path
+                            );
+                            let s = if sel {
+                                theme::SELECTED
+                            } else {
+                                theme::SEARCH_HINT
+                            };
+                            items.push(ListItem::new(Line::from(Span::styled(text, s))));
+                            continue;
+                        }
+
                         let selected = matches!(&self.cursor,
                             StackCursor::OnObjectField { frame_idx: ffi, var_idx: vvi, field_path }
                             if *ffi == fi && *vvi == vi && *field_path == child_path);
@@ -832,12 +905,12 @@ impl StackState {
                         let text = format!("{indent}{toggle}{}: {}", field.name, val,);
                         items.push(ListItem::new(Line::from(Span::styled(text, s))));
 
-                        // Recurse for nested ObjectRef fields only (StringRef is a leaf)
                         if let FieldValue::ObjectRef { id, .. } = field.value {
-                            self.build_object_items(fi, vi, id, &child_path, items);
+                            self.build_object_items(fi, vi, id, &child_path, visited, items);
                         }
                     }
                 }
+                visited.remove(&object_id);
             }
             ExpansionPhase::Failed => {
                 let cur_path: Vec<usize> = parent_path.to_vec();
@@ -1631,5 +1704,313 @@ mod tests {
             text.contains("! Failed to resolve object"),
             "error node must contain error message, got: {text:?}"
         );
+    }
+
+    // --- Cyclic reference detection tests ---
+
+    #[test]
+    fn flat_items_self_ref_emits_cyclic_node() {
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 100)];
+        state.toggle_expand(10, vars);
+        let fields = vec![FieldInfo {
+            name: "self".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 100,
+                class_name: "Node".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(100, fields);
+        let flat = state.flat_items();
+        let cyclic_count = flat
+            .iter()
+            .filter(|c| matches!(c, StackCursor::OnCyclicNode { .. }))
+            .count();
+        assert_eq!(cyclic_count, 1);
+        let deep_fields = flat
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    StackCursor::OnObjectField {
+                        field_path, ..
+                    } if field_path.len() > 1
+                )
+            })
+            .count();
+        assert_eq!(deep_fields, 0, "no recursive fields beyond depth 1");
+    }
+
+    #[test]
+    fn flat_items_multi_self_ref_emits_two_cyclic_nodes() {
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 100)];
+        state.toggle_expand(10, vars);
+        let fields = vec![
+            FieldInfo {
+                name: "left".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 100,
+                    class_name: "Node".to_string(),
+                    entry_count: None,
+                },
+            },
+            FieldInfo {
+                name: "right".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 100,
+                    class_name: "Node".to_string(),
+                    entry_count: None,
+                },
+            },
+        ];
+        state.set_expansion_done(100, fields);
+        let flat = state.flat_items();
+        let cyclic_count = flat
+            .iter()
+            .filter(|c| matches!(c, StackCursor::OnCyclicNode { .. }))
+            .count();
+        assert_eq!(cyclic_count, 2);
+    }
+
+    #[test]
+    fn build_items_self_ref_renders_self_ref_marker() {
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 100)];
+        state.toggle_expand(10, vars);
+        let fields = vec![FieldInfo {
+            name: "me".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 100,
+                class_name: "java.lang.Thread".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(100, fields);
+        let items = state.build_items();
+        let text = item_text(items[2].clone());
+        assert!(text.contains("\u{21BB}"), "must contain ↻, got: {text:?}");
+        assert!(
+            text.contains("[self-ref]"),
+            "must contain [self-ref], got: {text:?}"
+        );
+        assert!(
+            text.contains("Thread"),
+            "must show short class name, got: {text:?}"
+        );
+        assert!(
+            !text.contains("java.lang.Thread"),
+            "must NOT show FQCN, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn flat_items_indirect_cycle_emits_cyclic_node() {
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 100)];
+        state.toggle_expand(10, vars);
+        // A(100) → B(200)
+        let fields_a = vec![FieldInfo {
+            name: "child".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 200,
+                class_name: "B".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(100, fields_a);
+        // B(200) → A(100) (back-reference)
+        let fields_b = vec![FieldInfo {
+            name: "parent".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 100,
+                class_name: "A".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(200, fields_b);
+        let flat = state.flat_items();
+        let cyclic_count = flat
+            .iter()
+            .filter(|c| matches!(c, StackCursor::OnCyclicNode { .. }))
+            .count();
+        assert_eq!(cyclic_count, 1, "B's back-ref to A should be cyclic");
+        // Should not recurse 16 levels deep
+        let max_depth = flat
+            .iter()
+            .filter_map(|c| match c {
+                StackCursor::OnObjectField { field_path, .. } => Some(field_path.len()),
+                StackCursor::OnCyclicNode { field_path, .. } => Some(field_path.len()),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(max_depth <= 3, "no deep recursion, max depth: {max_depth}");
+    }
+
+    #[test]
+    fn build_items_indirect_cycle_renders_cyclic_marker() {
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 100)];
+        state.toggle_expand(10, vars);
+        let fields_a = vec![FieldInfo {
+            name: "child".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 200,
+                class_name: "B".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(100, fields_a);
+        let fields_b = vec![FieldInfo {
+            name: "parent".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 100,
+                class_name: "A".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(200, fields_b);
+        let items = state.build_items();
+        let all_text: Vec<String> = items.into_iter().map(item_text).collect();
+        let cyclic_line = all_text.iter().find(|t| t.contains("[cyclic]"));
+        assert!(
+            cyclic_line.is_some(),
+            "must have [cyclic] marker, items: {all_text:?}"
+        );
+        let line = cyclic_line.unwrap();
+        assert!(line.contains("\u{21BB}"), "must contain ↻, got: {line:?}");
+        assert!(
+            !line.contains("[self-ref]"),
+            "indirect cycle must NOT show [self-ref]"
+        );
+    }
+
+    #[test]
+    fn move_down_up_across_cyclic_node() {
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 100)];
+        state.toggle_expand(10, vars);
+        let fields = vec![
+            FieldInfo {
+                name: "a".to_string(),
+                value: FieldValue::Int(1),
+            },
+            FieldInfo {
+                name: "b".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 100,
+                    class_name: "Node".to_string(),
+                    entry_count: None,
+                },
+            },
+            FieldInfo {
+                name: "c".to_string(),
+                value: FieldValue::Int(3),
+            },
+        ];
+        state.set_expansion_done(100, fields);
+        // flat: Frame(0), Var{0,0}, Field[0](Int),
+        //       CyclicNode[1](self-ref), Field[2](Int)
+        state.move_down(); // Frame → Var
+        state.move_down(); // Var → Field[0]
+        assert!(matches!(
+            &state.cursor,
+            StackCursor::OnObjectField { field_path, .. }
+            if *field_path == vec![0]
+        ));
+        state.move_down(); // Field[0] → CyclicNode[1]
+        assert!(matches!(
+            &state.cursor,
+            StackCursor::OnCyclicNode { field_path, .. }
+            if *field_path == vec![1]
+        ));
+        state.move_down(); // CyclicNode[1] → Field[2]
+        assert!(matches!(
+            &state.cursor,
+            StackCursor::OnObjectField { field_path, .. }
+            if *field_path == vec![2]
+        ));
+        // Now go back up
+        state.move_up(); // Field[2] → CyclicNode[1]
+        assert!(matches!(
+            &state.cursor,
+            StackCursor::OnCyclicNode { field_path, .. }
+            if *field_path == vec![1]
+        ));
+        state.move_up(); // CyclicNode[1] → Field[0]
+        assert!(matches!(
+            &state.cursor,
+            StackCursor::OnObjectField { field_path, .. }
+            if *field_path == vec![0]
+        ));
+    }
+
+    #[test]
+    fn flat_items_acyclic_tree_no_cyclic_nodes() {
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 100)];
+        state.toggle_expand(10, vars);
+        // A(100) → B(200) → C(300), no cycles
+        let fields_a = vec![FieldInfo {
+            name: "b".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 200,
+                class_name: "B".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(100, fields_a);
+        let fields_b = vec![FieldInfo {
+            name: "c".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 300,
+                class_name: "C".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(200, fields_b);
+        let fields_c = vec![FieldInfo {
+            name: "val".to_string(),
+            value: FieldValue::Int(42),
+        }];
+        state.set_expansion_done(300, fields_c);
+        let flat = state.flat_items();
+        let cyclic_count = flat
+            .iter()
+            .filter(|c| matches!(c, StackCursor::OnCyclicNode { .. }))
+            .count();
+        assert_eq!(cyclic_count, 0, "acyclic tree must have zero cyclic nodes");
+        // Should have fields at depths 1, 2, 3
+        assert!(flat.contains(&StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![0],
+        }));
+        assert!(flat.contains(&StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![0, 0],
+        }));
+        assert!(flat.contains(&StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![0, 0, 0],
+        }));
     }
 }

@@ -267,6 +267,10 @@ impl<E: NavigationEngine> App<E> {
                                 ExpansionPhase::Loading => return None, // no-op
                             }
                         }
+                        StackCursor::OnCyclicNode { .. }
+                        | StackCursor::OnObjectLoadingNode { .. } => {
+                            return None;
+                        }
                         _ => return None,
                     })
                 });
