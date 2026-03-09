@@ -355,10 +355,16 @@ impl StackState {
     ///
     /// Also clears string state for any `StringRef` fields in collapsed objects.
     /// Uses a visited set to guard against cycles in corrupted heap metadata.
+    /// After collapse, resyncs the cursor if it became orphaned.
     pub fn collapse_object_recursive(&mut self, object_id: u64) {
         let mut to_remove: Vec<u64> = Vec::new();
         let mut visited: HashSet<u64> = HashSet::new();
-        collect_descendants(object_id, &self.object_fields, &mut visited, &mut to_remove);
+        collect_descendants(
+            object_id,
+            &self.object_fields,
+            &mut visited,
+            &mut to_remove,
+        );
         // Clear string state for any StringRef fields in descendants.
         for &desc_id in &to_remove {
             if let Some(fields) = self.object_fields.get(&desc_id) {
@@ -382,6 +388,48 @@ impl StackState {
         for id in to_remove {
             self.collapse_object(id);
         }
+        self.resync_cursor_after_collapse();
+    }
+
+    /// If the current cursor is no longer in the flat list (orphaned
+    /// after a collapse that propagated through a cyclic back-ref),
+    /// fall back to the parent `OnVar` or `OnFrame`.
+    fn resync_cursor_after_collapse(&mut self) {
+        let flat = self.flat_items();
+        if flat.contains(&self.cursor) {
+            return;
+        }
+        // Try falling back to OnVar
+        match &self.cursor {
+            StackCursor::OnObjectField {
+                frame_idx,
+                var_idx,
+                ..
+            }
+            | StackCursor::OnCyclicNode {
+                frame_idx,
+                var_idx,
+                ..
+            }
+            | StackCursor::OnObjectLoadingNode {
+                frame_idx,
+                var_idx,
+                ..
+            } => {
+                let fallback = StackCursor::OnVar {
+                    frame_idx: *frame_idx,
+                    var_idx: *var_idx,
+                };
+                if flat.contains(&fallback) {
+                    self.cursor = fallback;
+                } else {
+                    self.cursor =
+                        StackCursor::OnFrame(*frame_idx);
+                }
+            }
+            _ => {}
+        }
+        self.sync_list_state();
     }
 
     /// Returns all `StringRef` object IDs reachable from `object_id` in the
@@ -2069,5 +2117,77 @@ mod tests {
             var_idx: 0,
             field_path: vec![1, 0],
         }));
+    }
+
+    #[test]
+    fn collapse_cyclic_child_resyncs_cursor_to_var() {
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10), make_frame(20)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 1000)];
+        state.toggle_expand(10, vars);
+        // Thread(1000) → parkBlocker field → Coroutine(2000)
+        let thread_fields = vec![FieldInfo {
+            name: "parkBlocker".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 2000,
+                class_name: "Coroutine".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(1000, thread_fields);
+        // Coroutine(2000) → blockedThread → Thread(1000) (cycle)
+        let coroutine_fields = vec![FieldInfo {
+            name: "blockedThread".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 1000,
+                class_name: "Thread".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(2000, coroutine_fields);
+
+        // Navigate to parkBlocker field (path [0])
+        state.cursor = StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![0],
+        };
+
+        // Collapse the nested Coroutine object.
+        // collect_descendants(2000) follows back-ref to 1000,
+        // collapsing BOTH objects. Cursor becomes orphaned.
+        state.collapse_object_recursive(2000);
+
+        // Cursor must have been resynced — not stuck
+        let flat = state.flat_items();
+        assert!(
+            flat.contains(&state.cursor),
+            "cursor must be in flat_items after collapse, got: {:?}",
+            state.cursor,
+        );
+        // Should have fallen back to OnVar
+        assert!(
+            matches!(
+                &state.cursor,
+                StackCursor::OnVar {
+                    frame_idx: 0,
+                    var_idx: 0,
+                }
+            ),
+            "cursor should fall back to OnVar, got: {:?}",
+            state.cursor,
+        );
+
+        // Navigation must work again
+        state.move_down();
+        assert_ne!(
+            state.cursor,
+            StackCursor::OnVar {
+                frame_idx: 0,
+                var_idx: 0,
+            },
+            "move_down must move away from OnVar"
+        );
     }
 }
