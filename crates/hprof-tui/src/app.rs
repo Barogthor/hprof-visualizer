@@ -999,45 +999,14 @@ mod tests {
     // --- Task 6: async string loading tests ---
 
     fn make_string_ref_field(name: &str, string_id: u64) -> FieldInfo {
-        use hprof_engine::FieldValue;
         FieldInfo {
             name: name.to_string(),
             value: FieldValue::StringRef { id: string_id },
         }
     }
 
-    struct StubEngineReturnsNone;
-
-    impl NavigationEngine for StubEngineReturnsNone {
-        fn warnings(&self) -> &[String] {
-            &[]
-        }
-        fn list_threads(&self) -> Vec<ThreadInfo> {
-            vec![]
-        }
-        fn select_thread(&self, _: u32) -> Option<ThreadInfo> {
-            None
-        }
-        fn get_stack_frames(&self, _: u32) -> Vec<FrameInfo> {
-            vec![]
-        }
-        fn get_local_variables(&self, _: u64) -> Vec<VariableInfo> {
-            vec![]
-        }
-        fn expand_object(&self, _: u64) -> Option<Vec<FieldInfo>> {
-            None
-        }
-        fn get_page(&self, _: u64, _: usize, _: usize) -> Vec<EntryInfo> {
-            vec![]
-        }
-        fn resolve_string(&self, _: u64) -> Option<String> {
-            None
-        }
-    }
-
     #[test]
     fn enter_on_string_ref_field_sets_loading_state() {
-        use hprof_engine::FieldValue;
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);

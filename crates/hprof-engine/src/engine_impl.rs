@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use hprof_api::{NullProgressObserver, ParseProgressObserver, ProgressNotifier};
 use rayon::prelude::*;
 
 use hprof_parser::{HprofFile, PreciseIndex, RawInstance};
@@ -46,7 +47,12 @@ const COLLECTION_CLASS_SUFFIXES: &[&str] = &[
 /// against [`COLLECTION_CLASS_SUFFIXES`]. Then searches the immediate class
 /// fields for an `Int` or `Long` field named `size`, `elementCount`, or
 /// `count`.
-fn collection_entry_count(raw: &RawInstance, index: &PreciseIndex, id_size: u32) -> Option<u64> {
+fn collection_entry_count(
+    raw: &RawInstance,
+    index: &PreciseIndex,
+    id_size: u32,
+    records_bytes: &[u8],
+) -> Option<u64> {
     let class_name = index.class_names_by_id.get(&raw.class_object_id)?;
     let short_name = class_name.rsplit('.').next().unwrap_or(class_name.as_str());
     if !COLLECTION_CLASS_SUFFIXES
@@ -86,11 +92,14 @@ fn collection_entry_count(raw: &RawInstance, index: &PreciseIndex, id_size: u32)
     }
     // Now parse immediate class fields looking for size/elementCount/count.
     for field in &class_info.instance_fields {
-        let name = index
-            .strings
-            .get(&field.name_string_id)
-            .map(|s| s.value.as_str())
-            .unwrap_or("");
+        let resolved_name;
+        let name = match index.strings.get(&field.name_string_id) {
+            Some(sref) => {
+                resolved_name = sref.resolve(records_bytes);
+                resolved_name.as_str()
+            }
+            None => "",
+        };
         let is_candidate = matches!(name, "size" | "elementCount" | "count");
         match field.field_type {
             10 => {
@@ -186,45 +195,47 @@ impl Engine {
     /// - [`HprofError::UnsupportedVersion`] — unrecognised version string.
     /// - [`HprofError::TruncatedRecord`] — file header is truncated.
     pub fn from_file(path: &Path, _config: &EngineConfig) -> Result<Self, HprofError> {
+        let mut null_obs = NullProgressObserver;
         let hfile = Arc::new(HprofFile::from_path(path)?);
-        let thread_cache = Self::build_thread_cache(&hfile, |_, _| {});
+        let mut notifier = ProgressNotifier::new(&mut null_obs);
+        let thread_cache = Self::build_thread_cache(&hfile, &mut notifier);
         Ok(Self {
             hfile,
             thread_cache,
         })
     }
 
-    /// Opens `path`, runs the first-pass indexer with progress callbacks, and
-    /// returns a ready-to-use engine.
+    /// Opens `path`, runs the first-pass indexer with
+    /// progress reporting, and returns a ready-to-use
+    /// engine.
     ///
-    /// `progress_fn(bytes)` — called every ~4 MiB during the scan phase.
-    /// Segment filters are built inline during the scan (no separate phase).
-    /// `name_progress_fn(done, total)` — called after each thread name is
-    /// resolved from the heap.
+    /// The observer receives scan, segment, and name
+    /// resolution progress signals.
     ///
     /// ## Errors
     /// See [`Engine::from_file`].
     pub fn from_file_with_progress(
         path: &Path,
         _config: &EngineConfig,
-        progress_fn: impl FnMut(u64),
-        name_progress_fn: impl FnMut(usize, usize),
+        observer: &mut dyn ParseProgressObserver,
     ) -> Result<Self, HprofError> {
-        let hfile = Arc::new(HprofFile::from_path_with_progress(path, progress_fn)?);
-        let thread_cache = Self::build_thread_cache(&hfile, name_progress_fn);
+        let hfile = Arc::new(HprofFile::from_path_with_progress(path, observer)?);
+        let mut notifier = ProgressNotifier::new(observer);
+        let thread_cache = Self::build_thread_cache(&hfile, &mut notifier);
         Ok(Self {
             hfile,
             thread_cache,
         })
     }
 
-    /// Resolves all thread metadata (name + state) once at load time.
+    /// Resolves all thread metadata (name + state) once
+    /// at load time.
     ///
-    /// Processes threads in chunks with rayon `par_iter`, reporting
-    /// incremental progress after each chunk completes.
+    /// Processes threads in chunks with rayon `par_iter`,
+    /// reporting incremental progress after each chunk.
     fn build_thread_cache(
         hfile: &HprofFile,
-        mut progress_fn: impl FnMut(usize, usize),
+        notifier: &mut ProgressNotifier,
     ) -> HashMap<u32, ThreadMetadata> {
         let total = hfile.index.threads.len();
         if total == 0 {
@@ -246,7 +257,7 @@ impl Engine {
                                     .index
                                     .strings
                                     .get(&t.name_string_id)
-                                    .map(|s| s.value.clone())
+                                    .map(|sref| hfile.resolve_string(sref))
                                     .unwrap_or_else(|| format!("Thread-{}", serial))
                             } else {
                                 format!("Thread-{}", serial)
@@ -258,7 +269,7 @@ impl Engine {
                 })
                 .collect();
             cache.extend(results);
-            progress_fn(cache.len(), total);
+            notifier.names_resolved(cache.len(), total);
         }
         cache
     }
@@ -274,7 +285,12 @@ impl Engine {
     ) -> Option<(String, ThreadState)> {
         let &obj_id = hfile.index.thread_object_ids.get(&t.thread_serial)?;
         let raw = Self::read_instance(hfile, obj_id)?;
-        let fields = crate::resolver::decode_fields(&raw, &hfile.index, hfile.header.id_size);
+        let fields = crate::resolver::decode_fields(
+            &raw,
+            &hfile.index,
+            hfile.header.id_size,
+            hfile.records_bytes(),
+        );
 
         // Extract threadStatus from the Thread instance.
         // JDK <19: threadStatus is a direct int field.
@@ -321,8 +337,12 @@ impl Engine {
             }
         })?;
         let holder_raw = Self::read_instance(hfile, holder_id)?;
-        let holder_fields =
-            crate::resolver::decode_fields(&holder_raw, &hfile.index, hfile.header.id_size);
+        let holder_fields = crate::resolver::decode_fields(
+            &holder_raw,
+            &hfile.index,
+            hfile.header.id_size,
+            hfile.records_bytes(),
+        );
         holder_fields.iter().find_map(|f| {
             if f.name == "threadStatus"
                 && let crate::engine::FieldValue::Int(v) = f.value
@@ -371,8 +391,12 @@ impl Engine {
             }
         })?;
         let str_raw = Self::read_instance(hfile, name_obj_id)?;
-        let str_fields =
-            crate::resolver::decode_fields(&str_raw, &hfile.index, hfile.header.id_size);
+        let str_fields = crate::resolver::decode_fields(
+            &str_raw,
+            &hfile.index,
+            hfile.header.id_size,
+            hfile.records_bytes(),
+        );
         let value_id = str_fields.iter().find_map(|f| {
             if f.name == "value"
                 && let crate::engine::FieldValue::ObjectRef { id, .. } = f.value
@@ -414,7 +438,7 @@ impl Engine {
             .index
             .strings
             .get(&name_string_id)
-            .map(|s| s.value.clone())
+            .map(|sref| self.hfile.resolve_string(sref))
             .unwrap_or_else(|| format!("<unknown:{}>", name_string_id))
     }
 
@@ -549,8 +573,12 @@ impl NavigationEngine for Engine {
 
     fn expand_object(&self, object_id: u64) -> Option<Vec<FieldInfo>> {
         let raw = self.hfile.find_instance(object_id)?;
-        let mut fields =
-            crate::resolver::decode_fields(&raw, &self.hfile.index, self.hfile.header.id_size);
+        let mut fields = crate::resolver::decode_fields(
+            &raw,
+            &self.hfile.index,
+            self.hfile.header.id_size,
+            self.hfile.records_bytes(),
+        );
         // Enrichment pass: resolve class name and entry count for ObjectRef fields.
         for field in &mut fields {
             if let crate::engine::FieldValue::ObjectRef {
@@ -576,6 +604,7 @@ impl NavigationEngine for Engine {
                         &child_raw,
                         &self.hfile.index,
                         self.hfile.header.id_size,
+                        self.hfile.records_bytes(),
                     );
                     *class_name = name;
                 } else {
@@ -592,8 +621,12 @@ impl NavigationEngine for Engine {
 
     fn resolve_string(&self, object_id: u64) -> Option<String> {
         let raw = self.hfile.find_instance(object_id)?;
-        let fields =
-            crate::resolver::decode_fields(&raw, &self.hfile.index, self.hfile.header.id_size);
+        let fields = crate::resolver::decode_fields(
+            &raw,
+            &self.hfile.index,
+            self.hfile.header.id_size,
+            self.hfile.records_bytes(),
+        );
         let value_id = fields.iter().find_map(|f| {
             if f.name == "value"
                 && let crate::engine::FieldValue::ObjectRef { id, .. } = f.value
@@ -626,17 +659,27 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig::default();
+        let config = EngineConfig;
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         assert!(engine.warnings().is_empty());
     }
 
     #[test]
-    fn from_file_with_progress_on_valid_file_calls_progress_callback_at_least_once() {
+    fn from_file_with_progress_on_valid_file_calls_observer() {
+        struct CountingObserver {
+            call_count: usize,
+        }
+        impl ParseProgressObserver for CountingObserver {
+            fn on_bytes_scanned(&mut self, _pos: u64) {
+                self.call_count += 1;
+            }
+            fn on_segment_completed(&mut self, _d: usize, _t: usize) {}
+            fn on_names_resolved(&mut self, _d: usize, _t: usize) {}
+        }
+
         let mut bytes = b"JAVA PROFILE 1.0.2\0".to_vec();
         bytes.extend_from_slice(&8u32.to_be_bytes());
         bytes.extend_from_slice(&0u64.to_be_bytes());
-        // Add a string record so records section is non-empty
         bytes.push(0x01);
         bytes.extend_from_slice(&0u32.to_be_bytes());
         let id_bytes = 1u64.to_be_bytes();
@@ -647,19 +690,62 @@ mod tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig::default();
-        let mut call_count = 0usize;
-        let result = Engine::from_file_with_progress(
-            tmp.path(),
-            &config,
-            |_bytes| call_count += 1,
-            |_, _| {},
-        );
+        let config = EngineConfig;
+        let mut obs = CountingObserver { call_count: 0 };
+        let result = Engine::from_file_with_progress(tmp.path(), &config, &mut obs);
+        assert!(result.is_ok());
+        assert!(obs.call_count >= 1, "observer must be called at least once");
+    }
+
+    #[test]
+    fn from_file_with_progress_reports_monotonic_name_resolution() {
+        #[derive(Default)]
+        struct CapturingObserver {
+            name_events: Vec<(usize, usize)>,
+        }
+
+        impl ParseProgressObserver for CapturingObserver {
+            fn on_bytes_scanned(&mut self, _pos: u64) {}
+            fn on_segment_completed(&mut self, _d: usize, _t: usize) {}
+            fn on_names_resolved(&mut self, done: usize, total: usize) {
+                self.name_events.push((done, total));
+            }
+        }
+
+        let bytes = hprof_parser::HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_string(10, "main")
+            .add_string(11, "worker-1")
+            .add_string(12, "worker-2")
+            .add_thread(1, 100, 0, 10, 0, 0)
+            .add_thread(2, 101, 0, 11, 0, 0)
+            .add_thread(3, 102, 0, 12, 0, 0)
+            .build();
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig;
+        let mut obs = CapturingObserver::default();
+        let result = Engine::from_file_with_progress(tmp.path(), &config, &mut obs);
+
         assert!(result.is_ok());
         assert!(
-            call_count >= 1,
-            "progress callback must be called at least once"
+            !obs.name_events.is_empty(),
+            "observer must receive name resolution events"
         );
+
+        let expected_total = obs.name_events[0].1;
+        assert!(expected_total > 0, "name resolution total must be > 0");
+
+        let mut last_done = 0usize;
+        for (done, total) in &obs.name_events {
+            assert_eq!(*total, expected_total, "total must stay constant");
+            assert!(*done > last_done, "done must be strictly increasing");
+            last_done = *done;
+        }
+
+        assert_eq!(last_done, expected_total, "final done must equal total");
     }
 
     #[test]
@@ -668,7 +754,7 @@ mod tests {
         let missing = tmp.path().to_path_buf();
         drop(tmp);
 
-        let config = EngineConfig::default();
+        let config = EngineConfig;
         let result = Engine::from_file(&missing, &config);
         assert!(matches!(result, Err(HprofError::MmapFailed(_))));
     }
@@ -679,7 +765,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig::default();
+        let config = EngineConfig;
         let result = Engine::from_file(tmp.path(), &config);
         assert!(result.is_ok());
     }
@@ -690,7 +776,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig::default();
+        let config = EngineConfig;
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         assert!(engine.list_threads().is_empty());
     }
@@ -701,7 +787,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig::default();
+        let config = EngineConfig;
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         assert!(engine.select_thread(999).is_none());
     }
@@ -718,7 +804,7 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            let config = EngineConfig::default();
+            let config = EngineConfig;
             Engine::from_file(tmp.path(), &config).unwrap()
         }
 
@@ -1048,7 +1134,7 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            let config = EngineConfig::default();
+            let config = EngineConfig;
             Engine::from_file(tmp.path(), &config).unwrap()
         }
 
@@ -1121,7 +1207,7 @@ mod tests {
     }
 
     mod collection_tests {
-        use hprof_parser::{ClassDumpInfo, FieldDef, HprofString, PreciseIndex, RawInstance};
+        use hprof_parser::{ClassDumpInfo, FieldDef, HprofStringRef, PreciseIndex, RawInstance};
 
         use super::collection_entry_count;
 
@@ -1130,13 +1216,15 @@ mod tests {
             super_id: u64,
             field_name: &str,
             type_code: u8,
-        ) -> (PreciseIndex, u64) {
+        ) -> (PreciseIndex, u64, Vec<u8>) {
             let mut index = PreciseIndex::new();
+            let buf = field_name.as_bytes().to_vec();
             index.strings.insert(
                 1,
-                HprofString {
+                HprofStringRef {
                     id: 1,
-                    value: field_name.to_string(),
+                    offset: 0,
+                    len: field_name.len() as u32,
                 },
             );
             index.class_dumps.insert(
@@ -1151,12 +1239,12 @@ mod tests {
                     }],
                 },
             );
-            (index, class_id)
+            (index, class_id, buf)
         }
 
         #[test]
         fn hashmap_with_size_field_returns_entry_count() {
-            let (mut index, class_id) = make_int_index(100, 0, "size", 10);
+            let (mut index, class_id, buf) = make_int_index(100, 0, "size", 10);
             index
                 .class_names_by_id
                 .insert(class_id, "java.util.HashMap".to_string());
@@ -1164,12 +1252,12 @@ mod tests {
                 class_object_id: class_id,
                 data: 524288i32.to_be_bytes().to_vec(),
             };
-            assert_eq!(collection_entry_count(&raw, &index, 8), Some(524288));
+            assert_eq!(collection_entry_count(&raw, &index, 8, &buf), Some(524288));
         }
 
         #[test]
         fn plain_object_returns_none() {
-            let (mut index, class_id) = make_int_index(100, 0, "size", 10);
+            let (mut index, class_id, buf) = make_int_index(100, 0, "size", 10);
             index
                 .class_names_by_id
                 .insert(class_id, "com.example.Foo".to_string());
@@ -1177,7 +1265,7 @@ mod tests {
                 class_object_id: class_id,
                 data: 42i32.to_be_bytes().to_vec(),
             };
-            assert_eq!(collection_entry_count(&raw, &index, 8), None);
+            assert_eq!(collection_entry_count(&raw, &index, 8, &buf), None);
         }
 
         #[test]
@@ -1187,12 +1275,12 @@ mod tests {
                 class_object_id: 999,
                 data: 42i32.to_be_bytes().to_vec(),
             };
-            assert_eq!(collection_entry_count(&raw, &index, 8), None);
+            assert_eq!(collection_entry_count(&raw, &index, 8, &[]), None);
         }
 
         #[test]
         fn arraylist_with_size_field_returns_entry_count() {
-            let (mut index, class_id) = make_int_index(200, 0, "size", 10);
+            let (mut index, class_id, buf) = make_int_index(200, 0, "size", 10);
             index
                 .class_names_by_id
                 .insert(class_id, "java.util.ArrayList".to_string());
@@ -1200,12 +1288,12 @@ mod tests {
                 class_object_id: class_id,
                 data: 7i32.to_be_bytes().to_vec(),
             };
-            assert_eq!(collection_entry_count(&raw, &index, 8), Some(7));
+            assert_eq!(collection_entry_count(&raw, &index, 8, &buf), Some(7));
         }
 
         #[test]
         fn collection_detection_is_case_insensitive() {
-            let (mut index, class_id) = make_int_index(300, 0, "size", 10);
+            let (mut index, class_id, buf) = make_int_index(300, 0, "size", 10);
             index
                 .class_names_by_id
                 .insert(class_id, "java.util.hashmap".to_string());
@@ -1213,12 +1301,12 @@ mod tests {
                 class_object_id: class_id,
                 data: 3i32.to_be_bytes().to_vec(),
             };
-            assert_eq!(collection_entry_count(&raw, &index, 8), Some(3));
+            assert_eq!(collection_entry_count(&raw, &index, 8, &buf), Some(3));
         }
 
         #[test]
         fn negative_size_field_returns_none() {
-            let (mut index, class_id) = make_int_index(400, 0, "size", 10);
+            let (mut index, class_id, buf) = make_int_index(400, 0, "size", 10);
             index
                 .class_names_by_id
                 .insert(class_id, "java.util.HashMap".to_string());
@@ -1226,7 +1314,7 @@ mod tests {
                 class_object_id: class_id,
                 data: (-1i32).to_be_bytes().to_vec(),
             };
-            assert_eq!(collection_entry_count(&raw, &index, 8), None);
+            assert_eq!(collection_entry_count(&raw, &index, 8, &buf), None);
         }
     }
 
@@ -1242,7 +1330,7 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            let config = EngineConfig::default();
+            let config = EngineConfig;
             Engine::from_file(tmp.path(), &config).unwrap()
         }
 
@@ -1407,7 +1495,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig::default();
+            let config = EngineConfig;
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -1432,7 +1520,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig::default();
+            let config = EngineConfig;
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -1457,7 +1545,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig::default();
+            let config = EngineConfig;
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -1478,7 +1566,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig::default();
+            let config = EngineConfig;
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -1498,7 +1586,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig::default();
+            let config = EngineConfig;
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
 
             let found = engine.select_thread(1);
@@ -1572,7 +1660,7 @@ mod tests {
             eprintln!("skip: dump not found");
             return;
         }
-        let config = EngineConfig::default();
+        let config = EngineConfig;
         let engine = Engine::from_file(path, &config).unwrap();
         let threads = engine.list_threads();
         for t in &threads {

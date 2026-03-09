@@ -1,17 +1,21 @@
-//! Binary entry point, `clap` CLI argument parsing, TOML config loading,
-//! memory budget calculation, and frontend selection.
+//! Binary entry point, CLI argument parsing, and
+//! frontend selection.
 //!
-//! After argument parsing the binary opens the hprof file with a live
-//! progress bar, then launches the TUI.
+//! After argument parsing the binary opens the hprof
+//! file with a live progress bar, then launches the TUI.
 
 use std::env;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-
-use hprof_engine::NavigationEngine;
 use std::process::ExitCode;
+
+use hprof_api::ParseProgressObserver;
+use hprof_engine::NavigationEngine;
+use indicatif::MultiProgress;
+
+mod progress;
 
 fn main() -> ExitCode {
     match run(env::args_os()) {
@@ -27,26 +31,30 @@ fn run<I>(args: I) -> Result<(), CliError>
 where
     I: IntoIterator<Item = OsString>,
 {
+    #[cfg(feature = "dev-profiling")]
+    let _guard = {
+        use tracing_chrome::ChromeLayerBuilder;
+        use tracing_subscriber::prelude::*;
+        let (chrome_layer, guard) = ChromeLayerBuilder::new().file("trace.json").build();
+        tracing_subscriber::registry().with(chrome_layer).init();
+        guard
+    };
+
     let path = parse_hprof_path(args)?;
     let file_len = std::fs::metadata(&path)
         .map_err(CliError::MetadataFailed)?
         .len();
-    let mp = hprof_tui::progress::new_multi_progress();
-    let mut reporter = hprof_tui::progress::ProgressReporter::new(&mp, file_len);
-    let mut name_reporter = hprof_tui::progress::NameProgressReporter::new(&mp);
+    let mp = MultiProgress::new();
+    let mut observer = progress::CliProgressObserver::new(&mp, file_len);
 
     let config = hprof_engine::EngineConfig;
     let engine = hprof_engine::Engine::from_file_with_progress(
         &path,
         &config,
-        |bytes| reporter.on_bytes_processed(bytes),
-        |done, total| name_reporter.on_name_resolved(done, total),
+        &mut observer as &mut dyn ParseProgressObserver,
     )
     .map_err(CliError::OpenFailed)?;
-    name_reporter.finish();
-    let (elapsed, total_bytes) = reporter.elapsed_summary();
-    let speed = total_bytes as f64 / elapsed.as_secs_f64() / 1e9;
-    println!("Loaded in {elapsed:.1?} ({speed:.2} GB/s)");
+    observer.finish();
 
     for w in engine.warnings() {
         eprintln!("[warn] {w}");
@@ -94,7 +102,9 @@ impl fmt::Display for CliError {
             }
             Self::MetadataFailed(err) => write!(f, "failed to read file metadata: {err}"),
             Self::OpenFailed(err) => write!(f, "failed to open heap dump: {err}"),
-            Self::TuiFailed(err) => write!(f, "TUI error: {err}"),
+            Self::TuiFailed(err) => {
+                write!(f, "TUI error: {err}")
+            }
         }
     }
 }

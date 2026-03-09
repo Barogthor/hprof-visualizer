@@ -31,6 +31,9 @@ pub struct HprofHeader {
     pub version: HprofVersion,
     /// Byte width of object IDs in this dump (4 or 8).
     pub id_size: u32,
+    /// Byte offset where records begin (after version
+    /// string, id_size, and timestamp).
+    pub records_start: usize,
 }
 
 /// Parses an hprof header from a raw byte slice.
@@ -72,7 +75,13 @@ pub fn parse_header(data: &[u8]) -> Result<HprofHeader, HprofError> {
         .read_u64::<BigEndian>()
         .map_err(|_| HprofError::TruncatedRecord)?;
 
-    Ok(HprofHeader { version, id_size })
+    // null terminator + id_size(4) + timestamp(8)
+    let records_start = null_pos + 1 + 4 + 8;
+    Ok(HprofHeader {
+        version,
+        id_size,
+        records_start,
+    })
 }
 
 #[cfg(test)]

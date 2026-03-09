@@ -5,6 +5,5 @@ edition = "2024"
 
 [dependencies]
 hprof-engine = { path = "../hprof-engine" }
-indicatif = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }

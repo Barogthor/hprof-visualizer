@@ -8,12 +8,23 @@
 //! - [`segment`] — [`segment::SegmentFilter`]: per-64-MiB BinaryFuse8 filters
 //!   for fast candidate-segment lookup by object ID.
 
-pub(crate) mod first_pass;
+pub mod first_pass;
 pub(crate) mod precise;
 pub(crate) mod segment;
 
 use precise::PreciseIndex;
 use segment::SegmentFilter;
+
+/// A single `HEAP_DUMP` or `HEAP_DUMP_SEGMENT` record
+/// location. Offsets are relative to the records section.
+#[derive(Debug, Clone, Copy)]
+pub struct HeapRecordRange {
+    /// Byte offset of the payload start within the
+    /// records section.
+    pub payload_start: u64,
+    /// Length of the payload in bytes.
+    pub payload_length: u64,
+}
 
 /// Result of a tolerant first-pass index run.
 ///
@@ -23,7 +34,7 @@ use segment::SegmentFilter;
 /// Note: `records_attempted` counts only **known** record types whose payload
 /// window was within bounds. Unknown tags are silently skipped and not counted.
 #[derive(Debug)]
-pub(crate) struct IndexResult {
+pub struct IndexResult {
     /// Populated structural index.
     pub index: PreciseIndex,
     /// Human-readable description of each skipped or corrupted record.
@@ -33,19 +44,17 @@ pub(crate) struct IndexResult {
     /// Records successfully parsed and inserted into the index.
     pub records_indexed: u64,
     /// Per-segment BinaryFuse8 filters built from heap dump records.
-    pub segment_filters: Vec<SegmentFilter>,
-    /// `(payload_start_offset, payload_length)` for every `HEAP_DUMP` (0x0C)
-    /// and `HEAP_DUMP_SEGMENT` (0x1C) record. Offsets are relative to the
-    /// records section (i.e., the slice passed to `run_first_pass`).
-    pub heap_record_ranges: Vec<(u64, u64)>,
+    pub(crate) segment_filters: Vec<SegmentFilter>,
+    /// Location of every `HEAP_DUMP` (0x0C) and
+    /// `HEAP_DUMP_SEGMENT` (0x1C) record.
+    pub heap_record_ranges: Vec<HeapRecordRange>,
 }
 
 impl IndexResult {
     /// Returns the percentage of attempted records successfully indexed.
     ///
     /// Returns `100.0` when no records were attempted (empty file).
-    #[allow(dead_code)]
-    pub(crate) fn percent_indexed(&self) -> f64 {
+    pub fn percent_indexed(&self) -> f64 {
         if self.records_attempted == 0 {
             return 100.0;
         }

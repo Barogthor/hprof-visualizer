@@ -193,6 +193,7 @@ mod tests {
 mod builder_tests {
     use super::*;
     use crate::header::parse_header;
+    use crate::tags::RecordTag;
     use crate::test_utils::HprofTestBuilder;
     use std::io::Cursor;
 
@@ -211,7 +212,7 @@ mod builder_tests {
         let hdr_end = hprof_header_end(&bytes);
         let mut cursor = Cursor::new(&bytes[hdr_end..]);
         let rec = parse_record_header(&mut cursor).unwrap();
-        assert_eq!(rec.tag, 0x01);
+        assert_eq!(rec.tag, RecordTag::StringInUtf8.as_u8());
         // payload = id(8) + "main"(4) = 12 bytes
         assert_eq!(rec.length, 8 + 4);
         skip_record(&mut cursor, &rec).unwrap();

@@ -1,7 +1,7 @@
 //! In-memory O(1) indexes for all structural hprof records, built by the
 //! first-pass indexer.
 //!
-//! [`PreciseIndex`] holds [`HashMap`] collections, each keyed by the
+//! [`PreciseIndex`] holds [`FxHashMap`] collections, each keyed by the
 //! primary identifier of its record type:
 //!
 //! | Field | Key type | Record |
@@ -16,9 +16,9 @@
 //! | `thread_object_ids` | `u32` thread serial | `ROOT_THREAD_OBJ` |
 //! | `class_names_by_id` | `u64` class object ID | derived from `LOAD_CLASS` |
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
-use crate::{ClassDef, ClassDumpInfo, HprofString, HprofThread, StackFrame, StackTrace};
+use crate::{ClassDef, ClassDumpInfo, HprofStringRef, HprofThread, StackFrame, StackTrace};
 
 /// O(1) lookup index populated by a single sequential pass over an hprof file.
 ///
@@ -28,31 +28,33 @@ use crate::{ClassDef, ClassDumpInfo, HprofString, HprofThread, StackFrame, Stack
 #[derive(Debug)]
 pub struct PreciseIndex {
     /// `STRING_IN_UTF8` records keyed by string object ID.
-    pub strings: HashMap<u64, HprofString>,
+    pub strings: FxHashMap<u64, HprofStringRef>,
     /// `LOAD_CLASS` records keyed by class serial number.
-    pub classes: HashMap<u32, ClassDef>,
+    pub classes: FxHashMap<u32, ClassDef>,
     /// `START_THREAD` records keyed by thread serial number.
-    pub threads: HashMap<u32, HprofThread>,
+    pub threads: FxHashMap<u32, HprofThread>,
     /// `STACK_FRAME` records keyed by frame ID.
-    pub stack_frames: HashMap<u64, StackFrame>,
+    pub stack_frames: FxHashMap<u64, StackFrame>,
     /// `STACK_TRACE` records keyed by stack trace serial number.
-    pub stack_traces: HashMap<u32, StackTrace>,
-    /// GC root object IDs keyed by frame ID. Populated during first pass by
-    /// correlating `GC_ROOT_JAVA_FRAME` sub-records with `STACK_TRACE` records.
+    pub stack_traces: FxHashMap<u32, StackTrace>,
+    /// GC root object IDs keyed by frame ID. Populated during first
+    /// pass by correlating `GC_ROOT_JAVA_FRAME` sub-records with
+    /// `STACK_TRACE` records.
     ///
-    /// Key: `frame_id` (u64) — Value: Vec of object IDs rooted at that frame.
-    pub java_frame_roots: HashMap<u64, Vec<u64>>,
+    /// Key: `frame_id` (u64) — Value: Vec of object IDs rooted at
+    /// that frame.
+    pub java_frame_roots: FxHashMap<u64, Vec<u64>>,
     /// `CLASS_DUMP` sub-records keyed by `class_object_id`.
-    pub class_dumps: HashMap<u64, ClassDumpInfo>,
+    pub class_dumps: FxHashMap<u64, ClassDumpInfo>,
     /// `ROOT_THREAD_OBJ` heap object IDs keyed by thread serial.
     /// Maps thread_serial → object_id from the heap.
-    pub thread_object_ids: HashMap<u32, u64>,
+    pub thread_object_ids: FxHashMap<u32, u64>,
     /// Java class names keyed by `class_object_id`.
     ///
-    /// Populated from `LOAD_CLASS` records during the first pass. Binary JVM
-    /// names (`java/util/HashMap`) are normalised to dot notation
-    /// (`java.util.HashMap`).
-    pub class_names_by_id: HashMap<u64, String>,
+    /// Populated from `LOAD_CLASS` records during the first pass.
+    /// Binary JVM names (`java/util/HashMap`) are normalised to
+    /// dot notation (`java.util.HashMap`).
+    pub class_names_by_id: FxHashMap<u64, String>,
     /// Object-ID → byte offset (relative to records section) for
     /// thread-related heap objects: Thread instances, their `name`
     /// String instances, the backing `char[]/byte[]` arrays, and
@@ -61,28 +63,51 @@ pub struct PreciseIndex {
     /// Populated after the first pass by cross-referencing
     /// `thread_object_ids` with a temporary offset index, then
     /// following transitive references (`Thread.name` → `String` →
-    /// `String.value` → `char[]`, `Thread.holder` → `FieldHolder`).
+    /// `String.value` → `char[]`, `Thread.holder` →
+    /// `FieldHolder`).
     ///
     /// Used by the engine for O(1) offset-based reads during thread
     /// name and state resolution, falling back to linear scan when
     /// an ID is not present.
-    pub instance_offsets: HashMap<u64, u64>,
+    pub instance_offsets: FxHashMap<u64, u64>,
 }
 
 impl PreciseIndex {
-    /// Creates a new empty index.
+    /// Creates a new empty index with no pre-allocation.
     pub fn new() -> Self {
         Self {
-            strings: HashMap::new(),
-            classes: HashMap::new(),
-            threads: HashMap::new(),
-            stack_frames: HashMap::new(),
-            stack_traces: HashMap::new(),
-            java_frame_roots: HashMap::new(),
-            class_dumps: HashMap::new(),
-            thread_object_ids: HashMap::new(),
-            class_names_by_id: HashMap::new(),
-            instance_offsets: HashMap::new(),
+            strings: FxHashMap::default(),
+            classes: FxHashMap::default(),
+            threads: FxHashMap::default(),
+            stack_frames: FxHashMap::default(),
+            stack_traces: FxHashMap::default(),
+            java_frame_roots: FxHashMap::default(),
+            class_dumps: FxHashMap::default(),
+            thread_object_ids: FxHashMap::default(),
+            class_names_by_id: FxHashMap::default(),
+            instance_offsets: FxHashMap::default(),
+        }
+    }
+
+    /// Creates a new index with pre-allocated maps sized from
+    /// `data_len` (byte length of the records section).
+    ///
+    /// Capacities are capped to avoid multi-GB reservations on
+    /// very large dumps (>10 GB).
+    pub fn with_capacity(data_len: usize) -> Self {
+        let string_cap = (data_len / 300).min(500_000);
+        let class_cap = (data_len / 5000).min(100_000);
+        Self {
+            strings: FxHashMap::with_capacity_and_hasher(string_cap, Default::default()),
+            classes: FxHashMap::with_capacity_and_hasher(class_cap, Default::default()),
+            threads: FxHashMap::default(),
+            stack_frames: FxHashMap::default(),
+            stack_traces: FxHashMap::default(),
+            java_frame_roots: FxHashMap::default(),
+            class_dumps: FxHashMap::with_capacity_and_hasher(class_cap, Default::default()),
+            thread_object_ids: FxHashMap::default(),
+            class_names_by_id: FxHashMap::with_capacity_and_hasher(class_cap, Default::default()),
+            instance_offsets: FxHashMap::default(),
         }
     }
 }
@@ -96,7 +121,7 @@ impl Default for PreciseIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClassDef, HprofString, HprofThread, StackFrame, StackTrace};
+    use crate::{ClassDef, HprofStringRef, HprofThread, StackFrame, StackTrace};
 
     #[test]
     fn new_creates_empty_index() {
@@ -113,18 +138,20 @@ mod tests {
     }
 
     #[test]
-    fn insert_and_retrieve_string_by_id() {
+    fn insert_and_retrieve_string_ref_by_id() {
         let mut index = PreciseIndex::new();
         index.strings.insert(
             5,
-            HprofString {
+            HprofStringRef {
                 id: 5,
-                value: "hello".into(),
+                offset: 100,
+                len: 5,
             },
         );
         let s = index.strings.get(&5).unwrap();
         assert_eq!(s.id, 5);
-        assert_eq!(s.value, "hello");
+        assert_eq!(s.offset, 100);
+        assert_eq!(s.len, 5);
     }
 
     #[test]

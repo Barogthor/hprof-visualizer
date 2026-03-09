@@ -517,6 +517,7 @@ mod tests {
 mod builder_tests {
     use super::*;
     use crate::record::parse_record_header;
+    use crate::tags::RecordTag;
     use crate::test_utils::{HprofTestBuilder, advance_past_header};
     use std::io::Cursor;
 
@@ -528,7 +529,7 @@ mod builder_tests {
         let hdr_end = advance_past_header(&bytes);
         let mut cursor = Cursor::new(&bytes[hdr_end..]);
         let rec = parse_record_header(&mut cursor).unwrap();
-        assert_eq!(rec.tag, 0x02);
+        assert_eq!(rec.tag, RecordTag::LoadClass.as_u8());
         let def = parse_load_class(&mut cursor, 8).unwrap();
         assert_eq!(def.class_serial, 1);
         assert_eq!(def.class_object_id, 100);
@@ -544,7 +545,7 @@ mod builder_tests {
         let hdr_end = advance_past_header(&bytes);
         let mut cursor = Cursor::new(&bytes[hdr_end..]);
         let rec = parse_record_header(&mut cursor).unwrap();
-        assert_eq!(rec.tag, 0x06);
+        assert_eq!(rec.tag, RecordTag::StartThread.as_u8());
         let t = parse_start_thread(&mut cursor, 8).unwrap();
         assert_eq!(t.thread_serial, 1);
         assert_eq!(t.object_id, 100);
@@ -562,7 +563,7 @@ mod builder_tests {
         let hdr_end = advance_past_header(&bytes);
         let mut cursor = Cursor::new(&bytes[hdr_end..]);
         let rec = parse_record_header(&mut cursor).unwrap();
-        assert_eq!(rec.tag, 0x04);
+        assert_eq!(rec.tag, RecordTag::StackFrame.as_u8());
         let f = parse_stack_frame(&mut cursor, 8).unwrap();
         assert_eq!(f.frame_id, 1);
         assert_eq!(f.method_name_string_id, 2);
@@ -580,7 +581,7 @@ mod builder_tests {
         let hdr_end = advance_past_header(&bytes);
         let mut cursor = Cursor::new(&bytes[hdr_end..]);
         let rec = parse_record_header(&mut cursor).unwrap();
-        assert_eq!(rec.tag, 0x05);
+        assert_eq!(rec.tag, RecordTag::StackTrace.as_u8());
         let st = parse_stack_trace(&mut cursor, 8).unwrap();
         assert_eq!(st.stack_trace_serial, 10);
         assert_eq!(st.thread_serial, 2);

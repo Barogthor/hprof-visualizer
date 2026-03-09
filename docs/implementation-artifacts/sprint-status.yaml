@@ -1,4 +1,4 @@
-# generated: 2026-03-06
+# generated: 2026-03-08
 # project: hprof-visualizer
 # project_key: NOKEY
 # tracking_system: file-system
@@ -33,7 +33,7 @@
 # - SM typically creates next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
-generated: 2026-03-06
+generated: 2026-03-08
 project: hprof-visualizer
 project_key: NOKEY
 tracking_system: file-system
@@ -48,7 +48,7 @@ development_status:
   epic-1-retrospective: done
 
   # Epic 2: Structural Indexing
-  epic-2: in-progress
+  epic-2: done
   2-1-record-header-parsing-id-utility-and-unknown-record-skip: done
   2-2-structural-record-parsing: done
   2-3-first-pass-indexer-with-precise-indexes: done
@@ -68,6 +68,21 @@ development_status:
   3-7-real-thread-names-and-local-variable-resolution: done
   3-8-inline-filters-and-optimized-thread-resolution: done
   epic-3-retrospective: done
+
+  # Epic 8: First Pass Performance Optimization (prioritized before Epics 4-7)
+  epic-8: done
+  8-0-profiling-infrastructure: done
+  8-1-fxhashmap-pre-allocation-and-all-offsets-optimization: done
+  8-2-lazy-string-references: done
+  8-3-parallel-heap-segment-parsing: done
+  # ACTION: 5s freeze after progress 100% on RustRover 1.4 GB —
+  #   build_thread_cache falls back to find_instance (linear scan)
+  #   when transitive IDs missing from instance_offsets.
+  # ACTION: Progress bar freeze during parallel heap extraction —
+  #   batched par_iter reports between batches but still freezes
+  #   visibly. Needs profiling to identify bottleneck phase and
+  #   determine if finer-grained progress is possible.
+  epic-8-retrospective: done
 
   # Epic 4: Large Collection Handling & Pagination
   epic-4: backlog

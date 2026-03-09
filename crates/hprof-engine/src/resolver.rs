@@ -17,8 +17,17 @@ use crate::engine::{FieldInfo, FieldValue};
 /// subclass fields last. Unknown field types produce a break in decoding
 /// (safe fallback — cannot determine byte width).
 ///
-/// Returns an empty `Vec` if the data is truncated or class info is missing.
-pub fn decode_fields(raw: &RawInstance, index: &PreciseIndex, id_size: u32) -> Vec<FieldInfo> {
+/// `records_bytes` is the records section data slice used to
+/// resolve field names from [`HprofStringRef`] offsets.
+///
+/// Returns an empty `Vec` if the data is truncated or class info
+/// is missing.
+pub fn decode_fields(
+    raw: &RawInstance,
+    index: &PreciseIndex,
+    id_size: u32,
+    records_bytes: &[u8],
+) -> Vec<FieldInfo> {
     let mut ordered_defs: Vec<(u64, u8)> = Vec::new();
     collect_fields(raw.class_object_id, index, &mut ordered_defs);
 
@@ -29,7 +38,7 @@ pub fn decode_fields(raw: &RawInstance, index: &PreciseIndex, id_size: u32) -> V
         let name = index
             .strings
             .get(&name_string_id)
-            .map(|s| s.value.clone())
+            .map(|sref| sref.resolve(records_bytes))
             .unwrap_or_else(|| format!("<field:{name_string_id}>"));
 
         let value = match read_field_value(&mut cursor, field_type, id_size) {
@@ -114,16 +123,18 @@ fn read_field_value(cursor: &mut Cursor<&[u8]>, type_code: u8, id_size: u32) -> 
 
 #[cfg(test)]
 mod tests {
-    use hprof_parser::{ClassDumpInfo, FieldDef, HprofString, PreciseIndex};
+    use hprof_parser::{ClassDumpInfo, FieldDef, HprofStringRef, PreciseIndex};
 
     use super::*;
 
+    /// Builds a `PreciseIndex` and a records-bytes buffer where
+    /// each string is laid out at a known offset.
     fn make_index_with_class(
         class_id: u64,
         super_id: u64,
         fields: &[(u64, u8)],
         strings: &[(u64, &str)],
-    ) -> PreciseIndex {
+    ) -> (PreciseIndex, Vec<u8>) {
         let mut index = PreciseIndex::new();
         index.class_dumps.insert(
             class_id,
@@ -140,26 +151,30 @@ mod tests {
                     .collect(),
             },
         );
+        let mut buf = Vec::new();
         for &(id, val) in strings {
+            let offset = buf.len() as u64;
+            buf.extend_from_slice(val.as_bytes());
             index.strings.insert(
                 id,
-                HprofString {
+                HprofStringRef {
                     id,
-                    value: val.to_string(),
+                    offset,
+                    len: val.len() as u32,
                 },
             );
         }
-        index
+        (index, buf)
     }
 
     #[test]
     fn decode_fields_int_field_returns_field_info() {
-        let index = make_index_with_class(100, 0, &[(1, 10)], &[(1, "count")]);
+        let (index, buf) = make_index_with_class(100, 0, &[(1, 10)], &[(1, "count")]);
         let raw = RawInstance {
             class_object_id: 100,
             data: 42i32.to_be_bytes().to_vec(),
         };
-        let fields = decode_fields(&raw, &index, 8);
+        let fields = decode_fields(&raw, &index, 8, &buf);
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].name, "count");
         assert_eq!(fields[0].value, FieldValue::Int(42));
@@ -168,7 +183,6 @@ mod tests {
     #[test]
     fn decode_fields_inherited_field_leaf_first_order() {
         let mut index = PreciseIndex::new();
-        // super class 50 has field "x" (int)
         index.class_dumps.insert(
             50,
             ClassDumpInfo {
@@ -181,7 +195,6 @@ mod tests {
                 }],
             },
         );
-        // sub class 100 has field "y" (int), super=50
         index.class_dumps.insert(
             100,
             ClassDumpInfo {
@@ -194,22 +207,25 @@ mod tests {
                 }],
             },
         );
+        // Build records buffer with "x" at offset 0, "y" at offset 1
+        let buf = b"xy".to_vec();
         index.strings.insert(
             1,
-            HprofString {
+            HprofStringRef {
                 id: 1,
-                value: "x".to_string(),
+                offset: 0,
+                len: 1,
             },
         );
         index.strings.insert(
             2,
-            HprofString {
+            HprofStringRef {
                 id: 2,
-                value: "y".to_string(),
+                offset: 1,
+                len: 1,
             },
         );
 
-        // Leaf-first: y=3 (sub) then x=7 (super)
         let mut data = Vec::new();
         data.extend_from_slice(&3i32.to_be_bytes()); // y (sub)
         data.extend_from_slice(&7i32.to_be_bytes()); // x (super)
@@ -217,7 +233,7 @@ mod tests {
             class_object_id: 100,
             data,
         };
-        let fields = decode_fields(&raw, &index, 8);
+        let fields = decode_fields(&raw, &index, 8, &buf);
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].name, "y");
         assert_eq!(fields[0].value, FieldValue::Int(3));
@@ -227,13 +243,13 @@ mod tests {
 
     #[test]
     fn decode_fields_object_ref_non_null_returns_object_ref() {
-        let index = make_index_with_class(100, 0, &[(1, 2)], &[(1, "ref")]);
+        let (index, buf) = make_index_with_class(100, 0, &[(1, 2)], &[(1, "ref")]);
         let id: u64 = 0xDEAD;
         let raw = RawInstance {
             class_object_id: 100,
             data: id.to_be_bytes().to_vec(),
         };
-        let fields = decode_fields(&raw, &index, 8);
+        let fields = decode_fields(&raw, &index, 8, &buf);
         assert_eq!(
             fields[0].value,
             FieldValue::ObjectRef {
@@ -246,47 +262,46 @@ mod tests {
 
     #[test]
     fn decode_fields_object_ref_zero_returns_null() {
-        let index = make_index_with_class(100, 0, &[(1, 2)], &[(1, "ref")]);
+        let (index, buf) = make_index_with_class(100, 0, &[(1, 2)], &[(1, "ref")]);
         let raw = RawInstance {
             class_object_id: 100,
             data: 0u64.to_be_bytes().to_vec(),
         };
-        let fields = decode_fields(&raw, &index, 8);
+        let fields = decode_fields(&raw, &index, 8, &buf);
         assert_eq!(fields[0].value, FieldValue::Null);
     }
 
     #[test]
     fn decode_fields_bool_true_returns_bool_true() {
-        let index = make_index_with_class(100, 0, &[(1, 4)], &[(1, "flag")]);
+        let (index, buf) = make_index_with_class(100, 0, &[(1, 4)], &[(1, "flag")]);
         let raw = RawInstance {
             class_object_id: 100,
             data: vec![1u8],
         };
-        let fields = decode_fields(&raw, &index, 8);
+        let fields = decode_fields(&raw, &index, 8, &buf);
         assert_eq!(fields[0].value, FieldValue::Bool(true));
     }
 
     #[test]
     fn decode_fields_long_field_returns_long_value() {
-        let index = make_index_with_class(100, 0, &[(1, 11)], &[(1, "timestamp")]);
+        let (index, buf) = make_index_with_class(100, 0, &[(1, 11)], &[(1, "timestamp")]);
         let val: i64 = i64::MAX;
         let raw = RawInstance {
             class_object_id: 100,
             data: val.to_be_bytes().to_vec(),
         };
-        let fields = decode_fields(&raw, &index, 8);
+        let fields = decode_fields(&raw, &index, 8, &buf);
         assert_eq!(fields[0].value, FieldValue::Long(i64::MAX));
     }
 
     #[test]
     fn decode_fields_truncated_data_returns_empty() {
-        let index = make_index_with_class(100, 0, &[(1, 10)], &[(1, "x")]);
-        // int needs 4 bytes but we only provide 2
+        let (index, buf) = make_index_with_class(100, 0, &[(1, 10)], &[(1, "x")]);
         let raw = RawInstance {
             class_object_id: 100,
             data: vec![0u8, 1],
         };
-        let fields = decode_fields(&raw, &index, 8);
+        let fields = decode_fields(&raw, &index, 8, &buf);
         assert!(fields.is_empty());
     }
 }

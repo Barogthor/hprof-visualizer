@@ -12,7 +12,7 @@
 use xorf::{BinaryFuse8, Filter};
 
 /// Size of one file segment in bytes (64 MiB).
-pub(crate) const SEGMENT_SIZE: usize = 64 * 1024 * 1024;
+pub const SEGMENT_SIZE: usize = 64 * 1024 * 1024;
 
 /// A BinaryFuse8 filter covering one 64 MiB slice of the hprof file.
 // `filter` and `contains` are used only in tests today; the engine (Story 3.4+)

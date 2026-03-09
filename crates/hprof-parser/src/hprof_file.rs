@@ -12,9 +12,11 @@
 use std::path::Path;
 
 use byteorder::{BigEndian, ReadBytesExt};
+use hprof_api::{NullProgressObserver, ParseProgressObserver, ProgressNotifier};
 use memmap2::Mmap;
 
 use crate::indexer::{first_pass::run_first_pass, precise::PreciseIndex, segment::SegmentFilter};
+use crate::tags::HeapSubTag;
 use crate::{HprofError, HprofHeader, RawInstance, open_readonly, parse_header, read_id};
 
 /// An open hprof file with a parsed header and populated structural index.
@@ -31,12 +33,13 @@ use crate::{HprofError, HprofHeader, RawInstance, open_readonly, parse_header, r
 ///   resolution. Each [`SegmentFilter`] covers a 64 MiB slice of the records
 ///   section and allows fast candidate-segment lookup before a targeted scan.
 ///
-/// The internal `_mmap` field keeps the memory mapping alive for the duration
-/// of this struct's lifetime. It must not be dropped early.
+/// The internal `mmap` field keeps the memory mapping alive and is used
+/// by [`HprofFile::resolve_string`] to lazily decode string content.
 #[derive(Debug)]
 pub struct HprofFile {
-    /// Keeps the memory mapping alive — must not be removed.
-    _mmap: Mmap,
+    /// Memory mapping — used by `resolve_string` and kept alive for
+    /// the duration of this struct's lifetime.
+    mmap: Mmap,
     /// Parsed hprof file header.
     pub header: HprofHeader,
     /// O(1) lookup index built from the first sequential pass.
@@ -53,44 +56,44 @@ pub struct HprofFile {
     pub segment_filters: Vec<SegmentFilter>,
     /// Byte offset of the first record (immediately after the file header).
     pub records_start: usize,
-    /// `(payload_start, payload_length)` for every HEAP_DUMP / HEAP_DUMP_SEGMENT record.
-    /// Offsets are relative to the records section (`records_bytes()`).
-    pub heap_record_ranges: Vec<(u64, u64)>,
+    /// Location of every HEAP_DUMP / HEAP_DUMP_SEGMENT
+    /// record. See [`HeapRecordRange`].
+    pub heap_record_ranges: Vec<crate::indexer::HeapRecordRange>,
 }
 
 impl HprofFile {
-    /// Opens `path` as a read-only mmap, parses the header, and indexes all
-    /// structural records, calling `progress_fn` with the current byte offset
-    /// every [`PROGRESS_REPORT_INTERVAL`] bytes and once after the final record.
+    /// Opens `path` as a read-only mmap, parses the
+    /// header, and indexes all structural records,
+    /// reporting progress through the observer.
     ///
-    /// Truncated or corrupted records are non-fatal: they are collected in
-    /// [`HprofFile::index_warnings`] and indexing continues where possible.
-    ///
-    /// The byte offset passed to `progress_fn` is an absolute file offset from
-    /// the beginning of the file (including the header).
+    /// Truncated or corrupted records are non-fatal:
+    /// they are collected in
+    /// [`HprofFile::index_warnings`] and indexing
+    /// continues where possible.
     ///
     /// ## Errors
-    /// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
-    /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
-    /// - [`HprofError::TruncatedRecord`] — file header is truncated.
-    ///
-    /// ## Progress
-    /// `progress_fn(bytes)` — absolute file offset, called every 4 MiB or
-    /// once per second during the scan. Segment filters are built inline
-    /// during the scan so no separate filter phase callback is needed.
+    /// - [`HprofError::MmapFailed`] — file not found or
+    ///   OS mapping failed.
+    /// - [`HprofError::UnsupportedVersion`] — unrecognised
+    ///   hprof version string.
+    /// - [`HprofError::TruncatedRecord`] — file header is
+    ///   truncated.
     pub fn from_path_with_progress(
         path: &Path,
-        mut progress_fn: impl FnMut(u64),
+        observer: &mut dyn ParseProgressObserver,
     ) -> Result<Self, HprofError> {
         let mmap = open_readonly(path)?;
         let header = parse_header(&mmap)?;
-        let records_start = header_end(&mmap)?;
-        let base_offset = records_start as u64;
-        let result = run_first_pass(&mmap[records_start..], header.id_size, |bytes| {
-            progress_fn(base_offset.saturating_add(bytes))
-        });
+        let records_start = header.records_start;
+        let mut notifier = ProgressNotifier::new(observer);
+        let result = run_first_pass(
+            &mmap[records_start..],
+            header.id_size,
+            records_start as u64,
+            &mut notifier,
+        );
         Ok(Self {
-            _mmap: mmap,
+            mmap,
             header,
             index: result.index,
             index_warnings: result.warnings,
@@ -102,22 +105,35 @@ impl HprofFile {
         })
     }
 
-    /// Opens `path` and indexes it without a progress callback.
+    /// Opens `path` and indexes it without progress.
     ///
-    /// Convenience wrapper around [`HprofFile::from_path_with_progress`].
+    /// Convenience wrapper around
+    /// [`HprofFile::from_path_with_progress`].
     ///
     /// ## Errors
-    /// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
-    /// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
-    /// - [`HprofError::TruncatedRecord`] — file header is truncated.
+    /// - [`HprofError::MmapFailed`] — file not found or
+    ///   OS mapping failed.
+    /// - [`HprofError::UnsupportedVersion`] — unrecognised
+    ///   hprof version string.
+    /// - [`HprofError::TruncatedRecord`] — file header is
+    ///   truncated.
     pub fn from_path(path: &Path) -> Result<Self, HprofError> {
-        Self::from_path_with_progress(path, |_| {})
+        Self::from_path_with_progress(path, &mut NullProgressObserver)
     }
 
     /// Returns the raw bytes of the records section (immediately after the
     /// file header).
     pub fn records_bytes(&self) -> &[u8] {
-        &self._mmap[self.records_start..]
+        &self.mmap[self.records_start..]
+    }
+
+    /// Resolves a [`HprofStringRef`] into an owned `String` by reading
+    /// the content bytes directly from the mmap.
+    ///
+    /// The offset in `sref` is relative to the records section start.
+    /// Invalid UTF-8 bytes are replaced with `\u{FFFD}`.
+    pub fn resolve_string(&self, sref: &crate::HprofStringRef) -> String {
+        sref.resolve(&self.mmap[self.records_start..])
     }
 
     /// Finds a `PRIMITIVE_ARRAY_DUMP` (sub-tag `0x23`) for `array_id`.
@@ -145,20 +161,20 @@ impl HprofFile {
             return None;
         }
 
-        for &(payload_start, payload_len) in &self.heap_record_ranges {
-            let payload_end = payload_start + payload_len;
+        for r in &self.heap_record_ranges {
+            let payload_end = r.payload_start + r.payload_length;
 
             let overlaps = candidate_segs.iter().any(|&seg| {
                 let seg_start = seg as u64 * SEGMENT_SIZE as u64;
                 let seg_end = seg_start + SEGMENT_SIZE as u64;
-                payload_start < seg_end && payload_end > seg_start
+                r.payload_start < seg_end && payload_end > seg_start
             });
 
             if !overlaps {
                 continue;
             }
 
-            let start = payload_start as usize;
+            let start = r.payload_start as usize;
             let end = (payload_end as usize).min(records.len());
             if start >= records.len() {
                 continue;
@@ -185,8 +201,8 @@ impl HprofFile {
         }
         let data = &records[start..];
         let mut cursor = std::io::Cursor::new(data);
-        let sub_tag = cursor.read_u8().ok()?;
-        if sub_tag != 0x21 {
+        let sub_tag = HeapSubTag::from(cursor.read_u8().ok()?);
+        if sub_tag != HeapSubTag::InstanceDump {
             return None;
         }
         let _obj_id = read_id(&mut cursor, self.header.id_size).ok()?;
@@ -217,8 +233,8 @@ impl HprofFile {
         }
         let data = &records[start..];
         let mut cursor = std::io::Cursor::new(data);
-        let sub_tag = cursor.read_u8().ok()?;
-        if sub_tag != 0x23 {
+        let sub_tag = HeapSubTag::from(cursor.read_u8().ok()?);
+        if sub_tag != HeapSubTag::PrimArrayDump {
             return None;
         }
         let _arr_id = read_id(&mut cursor, self.header.id_size).ok()?;
@@ -261,20 +277,20 @@ impl HprofFile {
             return None;
         }
 
-        for &(payload_start, payload_len) in &self.heap_record_ranges {
-            let payload_end = payload_start + payload_len;
+        for r in &self.heap_record_ranges {
+            let payload_end = r.payload_start + r.payload_length;
 
             let overlaps = candidate_segs.iter().any(|&seg| {
                 let seg_start = seg as u64 * SEGMENT_SIZE as u64;
                 let seg_end = seg_start + SEGMENT_SIZE as u64;
-                payload_start < seg_end && payload_end > seg_start
+                r.payload_start < seg_end && payload_end > seg_start
             });
 
             if !overlaps {
                 continue;
             }
 
-            let start = payload_start as usize;
+            let start = r.payload_start as usize;
             let end = (payload_end as usize).min(records.len());
             if start >= records.len() {
                 continue;
@@ -295,11 +311,11 @@ fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<RawIns
     let mut cursor = Cursor::new(data);
     loop {
         let sub_tag = match cursor.read_u8() {
-            Ok(t) => t,
+            Ok(t) => HeapSubTag::from(t),
             Err(_) => return None,
         };
         match sub_tag {
-            0x21 => {
+            HeapSubTag::InstanceDump => {
                 let obj_id = match read_id(&mut cursor, id_size) {
                     Ok(id) => id,
                     Err(_) => return None,
@@ -343,10 +359,10 @@ fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u8,
     let mut cursor = Cursor::new(data);
     loop {
         let sub_tag = match cursor.read_u8() {
-            Ok(t) => t,
+            Ok(t) => HeapSubTag::from(t),
             Err(_) => return None,
         };
-        if sub_tag == 0x23 {
+        if sub_tag == HeapSubTag::PrimArrayDump {
             let arr_id = match read_id(&mut cursor, id_size) {
                 Ok(id) => id,
                 Err(_) => return None,
@@ -385,7 +401,7 @@ fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u8,
     }
 }
 
-fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: u8, id_size: u32) -> bool {
+fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_size: u32) -> bool {
     use crate::indexer::first_pass::{parse_class_dump, value_byte_size};
     use std::io::Cursor;
 
@@ -400,17 +416,19 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: u8, id_size: u3
     }
 
     match sub_tag {
-        0x01 => skip_n(cursor, id_size as usize),
-        0x02 => skip_n(cursor, 2 * id_size as usize),
-        0x03 => skip_n(cursor, id_size as usize + 8),
-        0x04 => skip_n(cursor, id_size as usize + 8),
-        0x05 => skip_n(cursor, id_size as usize + 4),
-        0x06 => skip_n(cursor, id_size as usize),
-        0x07 => skip_n(cursor, id_size as usize + 4),
-        0x08 => skip_n(cursor, id_size as usize + 8),
-        0x09 => skip_n(cursor, id_size as usize + 8),
-        0x20 => parse_class_dump(cursor, id_size).is_some(),
-        0x21 => {
+        HeapSubTag::GcRootJniGlobal | HeapSubTag::GcRootThreadBlock => {
+            skip_n(cursor, id_size as usize)
+        }
+        HeapSubTag::GcRootJniLocal => skip_n(cursor, 2 * id_size as usize),
+        HeapSubTag::GcRootJavaFrame
+        | HeapSubTag::GcRootThreadObj
+        | HeapSubTag::GcRootInternedString => skip_n(cursor, id_size as usize + 8),
+        HeapSubTag::GcRootNativeStack => skip_n(cursor, id_size as usize + 8),
+        HeapSubTag::GcRootStickyClass | HeapSubTag::GcRootMonitorUsed => {
+            skip_n(cursor, id_size as usize + 4)
+        }
+        HeapSubTag::ClassDump => parse_class_dump(cursor, id_size).is_some(),
+        HeapSubTag::InstanceDump => {
             // INSTANCE_DUMP: obj_id + stack_serial(4) + class_id + num_bytes(4) + data
             if read_id(cursor, id_size).is_err() {
                 return false;
@@ -426,7 +444,7 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: u8, id_size: u3
             };
             skip_n(cursor, num_bytes as usize)
         }
-        0x22 => {
+        HeapSubTag::ObjectArrayDump => {
             // OBJECT_ARRAY_DUMP: array_id + stack_serial(4) + num_elements(4) + class_id + elements
             if read_id(cursor, id_size).is_err() {
                 return false;
@@ -442,7 +460,7 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: u8, id_size: u3
             }
             skip_n(cursor, num_elements as usize * id_size as usize)
         }
-        0x23 => {
+        HeapSubTag::PrimArrayDump => {
             // PRIMITIVE_ARRAY_DUMP: array_id + stack_serial(4) + num_elements(4) + elem_type(1) + data
             if read_id(cursor, id_size).is_err() {
                 return false;
@@ -464,21 +482,6 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: u8, id_size: u3
         }
         _ => false,
     }
-}
-
-/// Returns the byte offset of the first record in `data`.
-///
-/// Scans for the null terminator of the version string, then skips
-/// `id_size` (u32, 4 bytes) and timestamp (u64, 8 bytes).
-///
-/// ## Errors
-/// - [`HprofError::TruncatedRecord`] if no null byte is found.
-fn header_end(data: &[u8]) -> Result<usize, HprofError> {
-    let null_pos = data
-        .iter()
-        .position(|&b| b == 0)
-        .ok_or(HprofError::TruncatedRecord)?;
-    Ok(null_pos + 1 + 4 + 8) // null-term + id_size(u32) + timestamp(u64)
 }
 
 #[cfg(test)]
@@ -514,37 +517,46 @@ mod tests {
     }
 
     #[test]
-    fn from_path_with_progress_on_valid_file_calls_callback_at_least_once() {
+    fn from_path_with_progress_on_valid_file_calls_observer() {
+        use hprof_api::ParseProgressObserver;
+
+        struct CountingObserver {
+            call_count: usize,
+            last_offset: Option<u64>,
+        }
+        impl ParseProgressObserver for CountingObserver {
+            fn on_bytes_scanned(&mut self, position: u64) {
+                self.call_count += 1;
+                self.last_offset = Some(position);
+            }
+            fn on_segment_completed(&mut self, _done: usize, _total: usize) {}
+            fn on_names_resolved(&mut self, _done: usize, _total: usize) {}
+        }
+
         let mut bytes: Vec<u8> = Vec::new();
         bytes.extend_from_slice(b"JAVA PROFILE 1.0.2\0");
         bytes.extend_from_slice(&8u32.to_be_bytes());
         bytes.extend_from_slice(&0u64.to_be_bytes());
-        // Add one string record so the records section is non-empty.
         bytes.push(0x01); // tag
-        bytes.extend_from_slice(&0u32.to_be_bytes()); // time_offset
+        bytes.extend_from_slice(&0u32.to_be_bytes());
         let id_bytes = 1u64.to_be_bytes();
-        bytes.extend_from_slice(&(id_bytes.len() as u32).to_be_bytes()); // length
-        bytes.extend_from_slice(&id_bytes); // payload
+        bytes.extend_from_slice(&(id_bytes.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&id_bytes);
 
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
 
-        let mut call_count = 0usize;
-        let mut last_offset = None;
-        HprofFile::from_path_with_progress(tmp.path(), |b| {
-            call_count += 1;
-            last_offset = Some(b);
-        })
-        .unwrap();
-        assert!(
-            call_count >= 1,
-            "progress callback must be called at least once"
-        );
+        let mut obs = CountingObserver {
+            call_count: 0,
+            last_offset: None,
+        };
+        HprofFile::from_path_with_progress(tmp.path(), &mut obs).unwrap();
+        assert!(obs.call_count >= 1, "observer must be called at least once");
         assert_eq!(
-            last_offset,
+            obs.last_offset,
             Some(bytes.len() as u64),
-            "a callback should report the absolute file offset"
+            "should report the absolute file offset"
         );
     }
 
@@ -749,7 +761,8 @@ mod builder_tests {
 
         let hfile = HprofFile::from_path(tmp.path()).unwrap();
         assert_eq!(hfile.index.strings.len(), 1);
-        assert_eq!(hfile.index.strings[&99].value, "thread-main");
+        let sref = &hfile.index.strings[&99];
+        assert_eq!(hfile.resolve_string(sref), "thread-main");
         assert!(hfile.index_warnings.is_empty());
         assert_eq!(hfile.records_attempted, 1);
         assert_eq!(hfile.records_indexed, 1);
@@ -791,9 +804,9 @@ mod builder_tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
         let hfile = HprofFile::from_path(tmp.path()).unwrap();
-        // The prim array sub-record starts at the heap payload.
-        // heap_record_ranges[0].0 is the payload_start offset.
-        let payload_start = hfile.heap_record_ranges[0].0;
+        // The prim array sub-record starts at the heap
+        // payload.
+        let payload_start = hfile.heap_record_ranges[0].payload_start;
         let (elem_type, result_data) = hfile
             .read_prim_array_at_offset(payload_start)
             .expect("must read prim array");

@@ -1,4 +1,5 @@
-//! JVM internal type name → human-readable Java name conversion.
+//! JVM internal type name → human-readable Java name conversion,
+//! plus named constants for hprof primitive type codes.
 //!
 //! Used to convert class names from `LOAD_CLASS` records and type descriptors
 //! from `STACK_FRAME` records into the format Java developers expect.
@@ -9,6 +10,25 @@
 //! - Array `[descriptor` → `inner[]`, recursively (e.g. `[[I` → `int[][]`)
 //! - Primitive descriptor single char → primitive keyword
 //! - Already-simple names are returned as-is
+
+/// Hprof type code for an object reference field.
+pub const PRIM_TYPE_OBJECT_REF: u8 = 2;
+/// Hprof type code for `boolean`.
+pub const PRIM_TYPE_BOOLEAN: u8 = 4;
+/// Hprof type code for `char`.
+pub const PRIM_TYPE_CHAR: u8 = 5;
+/// Hprof type code for `float`.
+pub const PRIM_TYPE_FLOAT: u8 = 6;
+/// Hprof type code for `double`.
+pub const PRIM_TYPE_DOUBLE: u8 = 7;
+/// Hprof type code for `byte`.
+pub const PRIM_TYPE_BYTE: u8 = 8;
+/// Hprof type code for `short`.
+pub const PRIM_TYPE_SHORT: u8 = 9;
+/// Hprof type code for `int`.
+pub const PRIM_TYPE_INT: u8 = 10;
+/// Hprof type code for `long`.
+pub const PRIM_TYPE_LONG: u8 = 11;
 
 /// Converts a JVM type descriptor or binary class name to a human-readable
 /// Java simple name.
@@ -95,5 +115,18 @@ mod tests {
     #[test]
     fn already_simple_name_returned_as_is() {
         assert_eq!(jvm_to_java("HashMap"), "HashMap");
+    }
+
+    #[test]
+    fn prim_type_constants_have_expected_values() {
+        assert_eq!(PRIM_TYPE_OBJECT_REF, 2);
+        assert_eq!(PRIM_TYPE_BOOLEAN, 4);
+        assert_eq!(PRIM_TYPE_CHAR, 5);
+        assert_eq!(PRIM_TYPE_FLOAT, 6);
+        assert_eq!(PRIM_TYPE_DOUBLE, 7);
+        assert_eq!(PRIM_TYPE_BYTE, 8);
+        assert_eq!(PRIM_TYPE_SHORT, 9);
+        assert_eq!(PRIM_TYPE_INT, 10);
+        assert_eq!(PRIM_TYPE_LONG, 11);
     }
 }

@@ -8,8 +8,19 @@ name = "hprof-visualizer"
 path = "src/main.rs"
 
 [dependencies]
+hprof-api    = { path = "../hprof-api" }
 hprof-engine = { path = "../hprof-engine" }
 hprof-tui    = { path = "../hprof-tui" }
+indicatif    = { workspace = true }
+tracing-chrome = { version = "0.7", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+
+[features]
+dev-profiling = [
+    "hprof-engine/dev-profiling",
+    "dep:tracing-chrome",
+    "dep:tracing-subscriber",
+]
 
 [dev-dependencies]
 tempfile = "3"

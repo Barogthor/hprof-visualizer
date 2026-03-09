@@ -15,6 +15,7 @@
 
 use std::path::Path;
 
+pub use hprof_api::{NullProgressObserver, ParseProgressObserver};
 pub use hprof_parser::{HprofError, HprofHeader, HprofVersion};
 
 mod engine;
@@ -46,26 +47,26 @@ pub struct IndexSummary {
     pub warnings: Vec<String>,
 }
 
-/// Opens `path`, indexes all structural records, and reports byte progress via
-/// `progress_fn`.
+/// Opens `path`, indexes all structural records, and
+/// reports progress via the [`ParseProgressObserver`].
 ///
-/// `progress_fn` receives the current absolute file byte offset every 4 MiB,
-/// at least once per second during long scans, and once after indexing
-/// completes.
+/// The observer receives:
+/// - `on_bytes_scanned` — absolute file offset
+///   (throttled, plus once at scan end)
+/// - `on_segment_completed` — per heap segment
 ///
 /// ## Errors
-/// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
-/// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
-/// - [`HprofError::TruncatedRecord`] — file header is truncated.
-///
-/// `progress_fn(bytes)` — absolute file offset every 4 MiB or once per
-/// second during the scan. Segment filters are built inline (no separate
-/// phase callback).
+/// - [`HprofError::MmapFailed`] — file not found or
+///   OS mapping failed.
+/// - [`HprofError::UnsupportedVersion`] — unrecognised
+///   hprof version string.
+/// - [`HprofError::TruncatedRecord`] — file header is
+///   truncated.
 pub fn open_hprof_file_with_progress(
     path: &Path,
-    progress_fn: impl FnMut(u64),
+    observer: &mut dyn ParseProgressObserver,
 ) -> Result<IndexSummary, HprofError> {
-    let hfile = hprof_parser::HprofFile::from_path_with_progress(path, progress_fn)?;
+    let hfile = hprof_parser::HprofFile::from_path_with_progress(path, observer)?;
     Ok(IndexSummary {
         records_attempted: hfile.records_attempted,
         records_indexed: hfile.records_indexed,
@@ -73,16 +74,21 @@ pub fn open_hprof_file_with_progress(
     })
 }
 
-/// Opens `path` and indexes all structural records without a progress callback.
+/// Opens `path` and indexes all structural records
+/// without progress.
 ///
-/// Convenience wrapper around [`open_hprof_file_with_progress`].
+/// Convenience wrapper around
+/// [`open_hprof_file_with_progress`].
 ///
 /// ## Errors
-/// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
-/// - [`HprofError::UnsupportedVersion`] — unrecognised hprof version string.
-/// - [`HprofError::TruncatedRecord`] — file header is truncated.
+/// - [`HprofError::MmapFailed`] — file not found or
+///   OS mapping failed.
+/// - [`HprofError::UnsupportedVersion`] — unrecognised
+///   hprof version string.
+/// - [`HprofError::TruncatedRecord`] — file header is
+///   truncated.
 pub fn open_hprof_file(path: &Path) -> Result<IndexSummary, HprofError> {
-    open_hprof_file_with_progress(path, |_| {})
+    open_hprof_file_with_progress(path, &mut NullProgressObserver)
 }
 
 /// Opens an hprof file in read-only mmap mode and parses its header.
@@ -116,34 +122,42 @@ mod tests {
     }
 
     #[test]
-    fn open_hprof_file_with_progress_on_valid_file_calls_callback_at_least_once() {
+    fn open_hprof_file_with_progress_on_valid_file_calls_observer() {
+        struct CountingObserver {
+            call_count: usize,
+            last_offset: Option<u64>,
+        }
+        impl ParseProgressObserver for CountingObserver {
+            fn on_bytes_scanned(&mut self, position: u64) {
+                self.call_count += 1;
+                self.last_offset = Some(position);
+            }
+            fn on_segment_completed(&mut self, _done: usize, _total: usize) {}
+            fn on_names_resolved(&mut self, _done: usize, _total: usize) {}
+        }
+
         let mut bytes = minimal_hprof_bytes();
-        // Add a string record so the records section is non-empty.
         bytes.push(0x01); // tag
-        bytes.extend_from_slice(&0u32.to_be_bytes()); // time_offset
+        bytes.extend_from_slice(&0u32.to_be_bytes());
         let id_bytes = 1u64.to_be_bytes();
-        bytes.extend_from_slice(&(id_bytes.len() as u32).to_be_bytes()); // length
-        bytes.extend_from_slice(&id_bytes); // payload
+        bytes.extend_from_slice(&(id_bytes.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&id_bytes);
 
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
 
-        let mut call_count = 0usize;
-        let mut last_offset = None;
-        let result = open_hprof_file_with_progress(tmp.path(), |b| {
-            call_count += 1;
-            last_offset = Some(b);
-        });
+        let mut obs = CountingObserver {
+            call_count: 0,
+            last_offset: None,
+        };
+        let result = open_hprof_file_with_progress(tmp.path(), &mut obs);
         assert!(result.is_ok());
-        assert!(
-            call_count >= 1,
-            "progress callback must be called at least once"
-        );
+        assert!(obs.call_count >= 1, "observer must be called at least once");
         assert_eq!(
-            last_offset,
+            obs.last_offset,
             Some(bytes.len() as u64),
-            "a callback should report the absolute file offset"
+            "should report the absolute file offset"
         );
     }
 
@@ -153,7 +167,80 @@ mod tests {
         let missing = tmp.path().to_path_buf();
         drop(tmp);
 
-        let result = open_hprof_file_with_progress(&missing, |_| {});
+        let result = open_hprof_file_with_progress(&missing, &mut NullProgressObserver);
         assert!(matches!(result, Err(HprofError::MmapFailed(_))));
+    }
+
+    #[test]
+    fn test_observer_captures_event_sequence() {
+        use hprof_api::{ProgressEvent, TestObserver};
+
+        let mut bytes = minimal_hprof_bytes();
+        // STRING record (tag 0x01)
+        bytes.push(0x01);
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        let id_bytes = 1u64.to_be_bytes();
+        let str_payload = b"hello";
+        let len = id_bytes.len() + str_payload.len();
+        bytes.extend_from_slice(&(len as u32).to_be_bytes());
+        bytes.extend_from_slice(&id_bytes);
+        bytes.extend_from_slice(str_payload);
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let mut obs = TestObserver::default();
+        let result = open_hprof_file_with_progress(tmp.path(), &mut obs);
+        assert!(result.is_ok());
+
+        // Must have at least one BytesScanned event
+        let scan_events: Vec<_> = obs
+            .events
+            .iter()
+            .filter(|e| matches!(e, ProgressEvent::BytesScanned(_)))
+            .collect();
+        assert!(
+            !scan_events.is_empty(),
+            "expected at least one BytesScanned event"
+        );
+
+        // BytesScanned offsets must be monotonically
+        // increasing
+        let offsets: Vec<u64> = obs
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                ProgressEvent::BytesScanned(pos) => Some(*pos),
+                _ => None,
+            })
+            .collect();
+        for w in offsets.windows(2) {
+            assert!(
+                w[1] > w[0],
+                "BytesScanned not strictly increasing: {} <= {}",
+                w[1],
+                w[0]
+            );
+        }
+
+        // Final BytesScanned should be total file size
+        assert_eq!(
+            *offsets.last().unwrap(),
+            bytes.len() as u64,
+            "final scan offset should equal file size"
+        );
+
+        // No segment events for a file without heap dumps
+        let seg_events: Vec<_> = obs
+            .events
+            .iter()
+            .filter(|e| matches!(e, ProgressEvent::SegmentCompleted { .. }))
+            .collect();
+        assert!(
+            seg_events.is_empty(),
+            "no segment events expected for a \
+             heap-dump-free file"
+        );
     }
 }

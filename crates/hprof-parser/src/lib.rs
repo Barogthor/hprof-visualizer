@@ -8,8 +8,9 @@
 //! Lower-level modules: error types ([`HprofError`]), memory-mapped file
 //! access ([`open_readonly`]), header parsing ([`parse_header`]), ID reading
 //! utility ([`read_id`]), record-level parsing ([`RecordHeader`],
-//! [`parse_record_header`], [`skip_record`]), string records ([`HprofString`],
-//! [`parse_string_record`]), structural records ([`ClassDef`], [`HprofThread`],
+//! [`parse_record_header`], [`skip_record`]), string records
+//! ([`HprofStringRef`], [`parse_string_ref`]), structural records
+//! ([`ClassDef`], [`HprofThread`],
 //! [`StackFrame`], [`StackTrace`] and their parsers), and a feature-gated test
 //! builder ([`HprofTestBuilder`], enabled with `features = ["test-utils"]`).
 
@@ -29,7 +30,7 @@ pub(crate) mod record;
 pub use record::{RecordHeader, parse_record_header, skip_record};
 
 pub(crate) mod strings;
-pub use strings::{HprofString, parse_string_record};
+pub use strings::{HprofStringRef, parse_string_ref};
 
 pub(crate) mod types;
 pub use types::{
@@ -38,9 +39,16 @@ pub use types::{
 };
 
 pub(crate) mod java_types;
-pub use java_types::jvm_to_java;
+pub use java_types::{
+    PRIM_TYPE_BOOLEAN, PRIM_TYPE_BYTE, PRIM_TYPE_CHAR, PRIM_TYPE_DOUBLE, PRIM_TYPE_FLOAT,
+    PRIM_TYPE_INT, PRIM_TYPE_LONG, PRIM_TYPE_OBJECT_REF, PRIM_TYPE_SHORT, jvm_to_java,
+};
 
-pub(crate) mod indexer;
+pub mod tags;
+pub use tags::{HeapSubTag, RecordTag};
+
+pub mod indexer;
+pub use indexer::HeapRecordRange;
 pub use indexer::precise::PreciseIndex;
 
 pub(crate) mod hprof_file;
