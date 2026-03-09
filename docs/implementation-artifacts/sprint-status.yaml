@@ -75,9 +75,8 @@ development_status:
   8-1-fxhashmap-pre-allocation-and-all-offsets-optimization: done
   8-2-lazy-string-references: done
   8-3-parallel-heap-segment-parsing: done
-  # ACTION: 5s freeze after progress 100% on RustRover 1.4 GB —
-  #   build_thread_cache falls back to find_instance (linear scan)
-  #   when transitive IDs missing from instance_offsets.
+  # CLOSED: 5s freeze build_thread_cache — not reproducible in
+  #   release mode on 1 GB dump (Epic 4 retro).
   # ACTION: Progress bar freeze during parallel heap extraction —
   #   batched par_iter reports between batches but still freezes
   #   visibly. Needs profiling to identify bottleneck phase and
@@ -85,10 +84,14 @@ development_status:
   epic-8-retrospective: done
 
   # Epic 4: Large Collection Handling & Pagination
-  epic-4: backlog
-  4-1-collection-pagination-engine: backlog
-  4-2-paginated-collection-view-and-keyboard-navigation: backlog
-  epic-4-retrospective: optional
+  epic-4: done
+  4-1-collection-pagination-engine: done
+  4-2-paginated-collection-view-and-keyboard-navigation: done
+  # DEFERRED: Shared expansion state — expanding/collapsing an object
+  #   also expands/collapses all other occurrences of the same object_id.
+  #   Fix requires path-based composite keys instead of plain object_id
+  #   in object_phases/object_fields maps. (Accepted deferral — Epic 4 retro)
+  epic-4-retrospective: done
 
   # Epic 5: Memory Management & LRU Eviction
   epic-5: backlog

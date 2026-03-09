@@ -27,6 +27,10 @@ pub enum InputEvent {
     SearchChar(char),
     /// Delete last character in search input.
     SearchBackspace,
+    /// Scroll up by one screen height.
+    PageUp,
+    /// Scroll down by one screen height.
+    PageDown,
     /// Quit the application.
     Quit,
 }
@@ -41,6 +45,8 @@ pub fn from_key(key: KeyEvent) -> Option<InputEvent> {
         (KeyCode::Down, _) => Some(InputEvent::Down),
         (KeyCode::Home, _) => Some(InputEvent::Home),
         (KeyCode::End, _) => Some(InputEvent::End),
+        (KeyCode::PageUp, _) => Some(InputEvent::PageUp),
+        (KeyCode::PageDown, _) => Some(InputEvent::PageDown),
         (KeyCode::Enter, _) => Some(InputEvent::Enter),
         (KeyCode::Esc, _) => Some(InputEvent::Escape),
         (KeyCode::Char('/'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
@@ -156,5 +162,17 @@ mod tests {
     #[test]
     fn from_key_returns_none_for_unbound_keys() {
         assert_eq!(from_key(key(KeyCode::F(1), KeyModifiers::NONE)), None);
+    }
+
+    #[test]
+    fn from_key_maps_page_up_and_page_down() {
+        assert_eq!(
+            from_key(key(KeyCode::PageUp, KeyModifiers::NONE)),
+            Some(InputEvent::PageUp)
+        );
+        assert_eq!(
+            from_key(key(KeyCode::PageDown, KeyModifiers::NONE)),
+            Some(InputEvent::PageDown)
+        );
     }
 }

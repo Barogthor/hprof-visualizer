@@ -18,13 +18,26 @@ use std::path::Path;
 pub use hprof_api::{NullProgressObserver, ParseProgressObserver};
 pub use hprof_parser::{HprofError, HprofHeader, HprofVersion};
 
+/// Debug log macro: routes to `tracing::debug!` when
+/// `dev-profiling` feature is active, otherwise no-op.
+#[cfg(feature = "dev-profiling")]
+macro_rules! dbg_log {
+    ($($arg:tt)*) => { tracing::debug!($($arg)*) };
+}
+
+#[cfg(not(feature = "dev-profiling"))]
+macro_rules! dbg_log {
+    ($($arg:tt)*) => {()};
+}
+
 mod engine;
 mod engine_impl;
+mod pagination;
 pub(crate) mod resolver;
 
 pub use engine::{
-    EntryInfo, FieldInfo, FieldValue, FrameInfo, LineNumber, NavigationEngine, ThreadInfo,
-    ThreadState, VariableInfo, VariableValue,
+    CollectionPage, EntryInfo, FieldInfo, FieldValue, FrameInfo, LineNumber, NavigationEngine,
+    ThreadInfo, ThreadState, VariableInfo, VariableValue,
 };
 pub use engine_impl::Engine;
 

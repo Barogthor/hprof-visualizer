@@ -5,7 +5,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use hprof_engine::{FieldInfo, FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue};
+use hprof_engine::{
+    CollectionPage, FieldInfo, FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue,
+};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -25,13 +27,82 @@ pub enum ExpansionPhase {
     Failed,
 }
 
-/// Phase of a lazy string value load driven by `App`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StringPhase {
-    Unloaded,
+/// State of one chunk section in a paginated collection.
+#[derive(Debug, Clone)]
+pub enum ChunkState {
+    /// Chunk not yet loaded — shows `+ [offset...end]`.
+    Collapsed,
+    /// Chunk load in progress — shows `~ Loading...`.
     Loading,
-    Loaded,
-    Failed,
+    /// Chunk loaded — shows entries inline.
+    Loaded(CollectionPage),
+}
+
+/// State for one expanded collection in the tree.
+#[derive(Debug, Clone)]
+pub struct CollectionChunks {
+    /// Total entry count of the collection.
+    pub total_count: u64,
+    /// First page (eagerly loaded, entries 0..100).
+    pub eager_page: Option<CollectionPage>,
+    /// Chunk sections keyed by chunk offset.
+    pub chunk_pages: HashMap<usize, ChunkState>,
+}
+
+impl CollectionChunks {
+    /// Finds the [`EntryInfo`] with the given `index` across all loaded
+    /// pages (eager page and all loaded chunk pages).
+    pub(crate) fn find_entry(
+        &self,
+        index: usize,
+    ) -> Option<&hprof_engine::EntryInfo> {
+        if let Some(page) = &self.eager_page {
+            if let Some(e) = page.entries.iter().find(|e| e.index == index) {
+                return Some(e);
+            }
+        }
+        for state in self.chunk_pages.values() {
+            if let ChunkState::Loaded(page) = state {
+                if let Some(e) = page.entries.iter().find(|e| e.index == index) {
+                    return Some(e);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Computes chunk ranges for a collection with
+/// `total_count` entries.
+///
+/// Returns `(offset, limit)` pairs following the
+/// 100/100/1000 chunking rules:
+/// - `<= 100`: no sections (all eager)
+/// - `101..=1000`: sections of 100
+/// - `> 1000`: sections of 100 up to 1000, then
+///   sections of 1000
+pub fn compute_chunk_ranges(total_count: u64) -> Vec<(usize, usize)> {
+    if total_count <= 100 {
+        return vec![];
+    }
+    let total = total_count as usize;
+    let mut ranges = Vec::new();
+    // Sections of 100 from 100 up to min(1000, total)
+    let boundary = total.min(1000);
+    let mut offset = 100;
+    while offset < boundary {
+        let limit = (boundary - offset).min(100);
+        ranges.push((offset, limit));
+        offset += 100;
+    }
+    // Sections of 1000 from 1000 onward
+    offset = 1000;
+    while offset < total {
+        let limit = (total - offset).min(1000);
+        ranges.push((offset, limit));
+        offset += 1000;
+    }
+    ranges
 }
 
 /// Cursor position within the frame+var tree.
@@ -68,6 +139,36 @@ pub enum StackCursor {
         var_idx: usize,
         field_path: Vec<usize>,
     },
+    /// Cursor on a chunk section header inside a
+    /// paginated collection.
+    OnChunkSection {
+        frame_idx: usize,
+        var_idx: usize,
+        field_path: Vec<usize>,
+        collection_id: u64,
+        chunk_offset: usize,
+    },
+    /// Cursor on one entry inside a paginated collection.
+    OnCollectionEntry {
+        frame_idx: usize,
+        var_idx: usize,
+        field_path: Vec<usize>,
+        collection_id: u64,
+        entry_index: usize,
+    },
+    /// Cursor on a field within an object expanded from a collection
+    /// entry value. `obj_field_path` is empty for the loading/error
+    /// node; non-empty encodes the field path within the entry object.
+    OnCollectionEntryObjField {
+        frame_idx: usize,
+        var_idx: usize,
+        /// Path to the collection's parent [`FieldValue::ObjectRef`] field.
+        field_path: Vec<usize>,
+        collection_id: u64,
+        entry_index: usize,
+        /// Path within the entry's root object.
+        obj_field_path: Vec<usize>,
+    },
 }
 
 /// State for the stack frame panel.
@@ -84,12 +185,11 @@ pub struct StackState {
     pub(crate) object_fields: HashMap<u64, Vec<FieldInfo>>,
     /// Error messages for failed expansions.
     object_errors: HashMap<u64, String>,
-    /// Per-StringRef load phases (keyed by string object_id).
-    string_phases: HashMap<u64, StringPhase>,
-    /// Resolved string values (keyed by string object_id).
-    string_values: HashMap<u64, String>,
-    /// Error messages for failed string loads (keyed by string object_id).
-    string_errors: HashMap<u64, String>,
+    /// Visible height of the stack panel (set during render).
+    visible_height: u16,
+    /// Per-collection paginated state (keyed by collection
+    /// object ID).
+    pub(crate) collection_chunks: HashMap<u64, CollectionChunks>,
 }
 
 /// Collects all descendant object IDs reachable from `root_id` in depth-first
@@ -150,9 +250,8 @@ impl StackState {
             object_phases: HashMap::new(),
             object_fields: HashMap::new(),
             object_errors: HashMap::new(),
-            string_phases: HashMap::new(),
-            string_values: HashMap::new(),
-            string_errors: HashMap::new(),
+            visible_height: 0,
+            collection_chunks: HashMap::new(),
         }
     }
 
@@ -164,7 +263,10 @@ impl StackState {
             StackCursor::OnVar { frame_idx, .. }
             | StackCursor::OnObjectField { frame_idx, .. }
             | StackCursor::OnObjectLoadingNode { frame_idx, .. }
-            | StackCursor::OnCyclicNode { frame_idx, .. } => {
+            | StackCursor::OnCyclicNode { frame_idx, .. }
+            | StackCursor::OnChunkSection { frame_idx, .. }
+            | StackCursor::OnCollectionEntry { frame_idx, .. }
+            | StackCursor::OnCollectionEntryObjField { frame_idx, .. } => {
                 self.frames.get(*frame_idx).map(|f| f.frame_id)
             }
         }
@@ -173,6 +275,13 @@ impl StackState {
     /// Returns the current cursor.
     pub fn cursor(&self) -> &StackCursor {
         &self.cursor
+    }
+
+    /// Sets the cursor to `new_cursor` and syncs the
+    /// ratatui list state.
+    pub fn set_cursor(&mut self, new_cursor: StackCursor) {
+        self.cursor = new_cursor;
+        self.sync_list_state();
     }
 
     /// Returns the object_id if the cursor is on an `ObjectRef` var.
@@ -255,6 +364,169 @@ impl StackState {
         None
     }
 
+    /// Returns `(object_id, entry_count)` for the field
+    /// under cursor if it is an `ObjectRef` with a
+    /// collection entry count.
+    pub fn selected_field_collection_info(&self) -> Option<(u64, u64)> {
+        if let StackCursor::OnObjectField {
+            frame_idx,
+            var_idx,
+            ref field_path,
+        } = self.cursor
+        {
+            let frame = self.frames.get(frame_idx)?;
+            let vars = self.vars.get(&frame.frame_id)?;
+            let var = vars.get(var_idx)?;
+            if let VariableValue::ObjectRef { id: root_id, .. } = var.value {
+                let parent_path = &field_path[..field_path.len().saturating_sub(1)];
+                let parent_id = self.resolve_object_at_path(root_id, parent_path);
+                let field_idx = *field_path.last()?;
+                let fields = self.object_fields.get(&parent_id)?;
+                let field = fields.get(field_idx)?;
+                if let FieldValue::ObjectRef {
+                    id,
+                    entry_count: Some(ec),
+                    ..
+                } = field.value
+                    && ec > 0
+                {
+                    return Some((id, ec));
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns `(collection_id, chunk_offset, chunk_limit)`
+    /// if cursor is on a chunk section.
+    pub fn selected_chunk_info(&self) -> Option<(u64, usize, usize)> {
+        if let StackCursor::OnChunkSection {
+            collection_id,
+            chunk_offset,
+            ..
+        } = &self.cursor
+        {
+            let cc = self.collection_chunks.get(collection_id)?;
+            let ranges = compute_chunk_ranges(cc.total_count);
+            let limit = ranges
+                .iter()
+                .find(|(o, _)| *o == *chunk_offset)
+                .map(|(_, l)| *l)?;
+            return Some((*collection_id, *chunk_offset, limit));
+        }
+        None
+    }
+
+    /// Returns the `ObjectRef` id when cursor is `OnCollectionEntry`
+    /// and that entry's value is an `ObjectRef`.
+    pub fn selected_collection_entry_ref_id(&self) -> Option<u64> {
+        if let StackCursor::OnCollectionEntry {
+            collection_id,
+            entry_index,
+            ..
+        } = &self.cursor
+        {
+            let cc = self.collection_chunks.get(collection_id)?;
+            let entry = cc.find_entry(*entry_index)?;
+            if let FieldValue::ObjectRef { id, .. } = &entry.value {
+                return Some(*id);
+            }
+        }
+        None
+    }
+
+    /// Returns the `ObjectRef` id when cursor is
+    /// `OnCollectionEntryObjField` pointing to an `ObjectRef` field.
+    pub fn selected_collection_entry_obj_field_ref_id(&self) -> Option<u64> {
+        let field = self.collection_entry_obj_cursor_field()?;
+        if let FieldValue::ObjectRef { id, .. } = field.value {
+            return Some(id);
+        }
+        None
+    }
+
+
+    /// Resolves the field under the cursor when on
+    /// `OnCollectionEntryObjField`.
+    fn collection_entry_obj_cursor_field(
+        &self,
+    ) -> Option<&FieldInfo> {
+        if let StackCursor::OnCollectionEntryObjField {
+            collection_id,
+            entry_index,
+            obj_field_path,
+            ..
+        } = &self.cursor
+        {
+            let obj_root = {
+                let cc =
+                    self.collection_chunks.get(collection_id)?;
+                let entry = cc.find_entry(*entry_index)?;
+                if let FieldValue::ObjectRef { id, .. } =
+                    &entry.value
+                {
+                    *id
+                } else {
+                    return None;
+                }
+            };
+            let parent_path = &obj_field_path
+                [..obj_field_path.len().saturating_sub(1)];
+            let parent_id =
+                self.resolve_object_at_path(obj_root, parent_path);
+            let field_idx = *obj_field_path.last()?;
+            let fields = self.object_fields.get(&parent_id)?;
+            return fields.get(field_idx);
+        }
+        None
+    }
+
+    /// Returns the `ChunkState` for a specific chunk.
+    pub fn chunk_state(&self, collection_id: u64, chunk_offset: usize) -> Option<&ChunkState> {
+        self.collection_chunks
+            .get(&collection_id)?
+            .chunk_pages
+            .get(&chunk_offset)
+    }
+
+    /// If cursor is inside a collection (entry or chunk
+    /// section), returns the collection object ID and the
+    /// `field_path` of the parent ObjectRef field so the
+    /// cursor can be restored there.
+    pub fn cursor_collection_id(&self) -> Option<(u64, StackCursor)> {
+        match &self.cursor {
+            StackCursor::OnCollectionEntry {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                ..
+            }
+            | StackCursor::OnChunkSection {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                ..
+            }
+            | StackCursor::OnCollectionEntryObjField {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                ..
+            } => Some((
+                *collection_id,
+                StackCursor::OnObjectField {
+                    frame_idx: *frame_idx,
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                },
+            )),
+            _ => None,
+        }
+    }
+
     /// Returns the expansion phase for `object_id` (defaults to `Collapsed`).
     pub fn expansion_state(&self, object_id: u64) -> ExpansionPhase {
         self.object_phases
@@ -289,60 +561,6 @@ impl StackState {
         self.object_errors.remove(&object_id);
     }
 
-    /// Returns the current [`StringPhase`] for `id` (defaults to `Unloaded`).
-    pub fn string_phase(&self, id: u64) -> StringPhase {
-        self.string_phases
-            .get(&id)
-            .cloned()
-            .unwrap_or(StringPhase::Unloaded)
-    }
-
-    /// Marks a string as loading.
-    pub fn start_string_loading(&mut self, id: u64) {
-        self.string_phases.insert(id, StringPhase::Loading);
-    }
-
-    /// Marks a string as loaded with its resolved value.
-    pub fn set_string_loaded(&mut self, id: u64, value: String) {
-        self.string_errors.remove(&id);
-        self.string_phases.insert(id, StringPhase::Loaded);
-        self.string_values.insert(id, value);
-    }
-
-    /// Marks a string as failed with an error message.
-    pub fn set_string_failed(&mut self, id: u64, err: String) {
-        self.string_phases.insert(id, StringPhase::Failed);
-        self.string_errors.insert(id, err);
-    }
-
-    /// Returns the `StringRef` id if the cursor is on an `OnObjectField` with
-    /// a `StringRef` field whose phase is `Unloaded` or `Failed`.
-    pub fn selected_field_string_id(&self) -> Option<u64> {
-        if let StackCursor::OnObjectField {
-            frame_idx,
-            var_idx,
-            field_path,
-        } = &self.cursor
-        {
-            let frame = self.frames.get(*frame_idx)?;
-            let vars = self.vars.get(&frame.frame_id)?;
-            let var = vars.get(*var_idx)?;
-            if let VariableValue::ObjectRef { id: root_id, .. } = var.value {
-                let parent_path = &field_path[..field_path.len().saturating_sub(1)];
-                let parent_id = self.resolve_object_at_path(root_id, parent_path);
-                let field_idx = *field_path.last()?;
-                let fields = self.object_fields.get(&parent_id)?;
-                let field = fields.get(field_idx)?;
-                if let FieldValue::StringRef { id } = field.value {
-                    let phase = self.string_phase(id);
-                    if phase == StringPhase::Unloaded || phase == StringPhase::Failed {
-                        return Some(id);
-                    }
-                }
-            }
-        }
-        None
-    }
 
     /// Collapses an expanded object.
     pub fn collapse_object(&mut self, object_id: u64) {
@@ -351,11 +569,12 @@ impl StackState {
         self.object_errors.remove(&object_id);
     }
 
-    /// Recursively collapses `object_id` and all nested expanded descendants.
+    /// Recursively collapses `object_id` and all nested
+    /// expanded descendants.
     ///
-    /// Also clears string state for any `StringRef` fields in collapsed objects.
-    /// Uses a visited set to guard against cycles in corrupted heap metadata.
-    /// After collapse, resyncs the cursor if it became orphaned.
+    /// Uses a visited set to guard against cycles in corrupted
+    /// heap metadata. After collapse, resyncs the cursor if it
+    /// became orphaned.
     pub fn collapse_object_recursive(&mut self, object_id: u64) {
         let mut to_remove: Vec<u64> = Vec::new();
         let mut visited: HashSet<u64> = HashSet::new();
@@ -365,26 +584,6 @@ impl StackState {
             &mut visited,
             &mut to_remove,
         );
-        // Clear string state for any StringRef fields in descendants.
-        for &desc_id in &to_remove {
-            if let Some(fields) = self.object_fields.get(&desc_id) {
-                let string_ids: Vec<u64> = fields
-                    .iter()
-                    .filter_map(|f| {
-                        if let FieldValue::StringRef { id } = f.value {
-                            Some(id)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                for sid in string_ids {
-                    self.string_phases.remove(&sid);
-                    self.string_values.remove(&sid);
-                    self.string_errors.remove(&sid);
-                }
-            }
-        }
         for id in to_remove {
             self.collapse_object(id);
         }
@@ -399,22 +598,16 @@ impl StackState {
         if flat.contains(&self.cursor) {
             return;
         }
-        // Try falling back to OnVar
+        // Try falling back to OnVar or OnCollectionEntry
         match &self.cursor {
             StackCursor::OnObjectField {
-                frame_idx,
-                var_idx,
-                ..
+                frame_idx, var_idx, ..
             }
             | StackCursor::OnCyclicNode {
-                frame_idx,
-                var_idx,
-                ..
+                frame_idx, var_idx, ..
             }
             | StackCursor::OnObjectLoadingNode {
-                frame_idx,
-                var_idx,
-                ..
+                frame_idx, var_idx, ..
             } => {
                 let fallback = StackCursor::OnVar {
                     frame_idx: *frame_idx,
@@ -423,8 +616,28 @@ impl StackState {
                 if flat.contains(&fallback) {
                     self.cursor = fallback;
                 } else {
-                    self.cursor =
-                        StackCursor::OnFrame(*frame_idx);
+                    self.cursor = StackCursor::OnFrame(*frame_idx);
+                }
+            }
+            StackCursor::OnCollectionEntryObjField {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                ..
+            } => {
+                let fallback = StackCursor::OnCollectionEntry {
+                    frame_idx: *frame_idx,
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                    collection_id: *collection_id,
+                    entry_index: *entry_index,
+                };
+                if flat.contains(&fallback) {
+                    self.cursor = fallback;
+                } else {
+                    self.cursor = StackCursor::OnFrame(*frame_idx);
                 }
             }
             _ => {}
@@ -432,32 +645,6 @@ impl StackState {
         self.sync_list_state();
     }
 
-    /// Returns all `StringRef` object IDs reachable from `object_id` in the
-    /// current expansion tree.
-    ///
-    /// Used by `App` to cancel in-flight string loads before collapsing a
-    /// subtree, preventing stale completions from re-populating cleared state.
-    pub fn string_ids_in_subtree(&self, object_id: u64) -> Vec<u64> {
-        let mut descendants = Vec::new();
-        let mut visited = HashSet::new();
-        collect_descendants(
-            object_id,
-            &self.object_fields,
-            &mut visited,
-            &mut descendants,
-        );
-        let mut string_ids = Vec::new();
-        for &desc_id in &descendants {
-            if let Some(fields) = self.object_fields.get(&desc_id) {
-                for f in fields {
-                    if let FieldValue::StringRef { id } = f.value {
-                        string_ids.push(id);
-                    }
-                }
-            }
-        }
-        string_ids
-    }
 
     /// Loads vars for `frame_id` into internal cache and toggles expand/collapse.
     ///
@@ -487,7 +674,10 @@ impl StackState {
             if let StackCursor::OnVar { frame_idx, .. }
             | StackCursor::OnObjectField { frame_idx, .. }
             | StackCursor::OnObjectLoadingNode { frame_idx, .. }
-            | StackCursor::OnCyclicNode { frame_idx, .. } = self.cursor
+            | StackCursor::OnCyclicNode { frame_idx, .. }
+            | StackCursor::OnChunkSection { frame_idx, .. }
+            | StackCursor::OnCollectionEntry { frame_idx, .. }
+            | StackCursor::OnCollectionEntryObjField { frame_idx, .. } = self.cursor
             {
                 self.cursor = StackCursor::OnFrame(frame_idx);
             }
@@ -524,6 +714,35 @@ impl StackState {
             self.cursor = flat[prev].clone();
             self.list_state.select(Some(prev));
         }
+    }
+
+    /// Sets the visible height (called during render).
+    pub fn set_visible_height(&mut self, h: u16) {
+        self.visible_height = h;
+    }
+
+    /// Moves the cursor forward by `visible_height` items.
+    pub fn move_page_down(&mut self) {
+        let flat = self.flat_items();
+        if flat.is_empty() {
+            return;
+        }
+        let current = flat.iter().position(|c| c == &self.cursor).unwrap_or(0);
+        let target = (current + self.visible_height as usize).min(flat.len() - 1);
+        self.cursor = flat[target].clone();
+        self.list_state.select(Some(target));
+    }
+
+    /// Moves the cursor backward by `visible_height` items.
+    pub fn move_page_up(&mut self) {
+        let flat = self.flat_items();
+        if flat.is_empty() {
+            return;
+        }
+        let current = flat.iter().position(|c| c == &self.cursor).unwrap_or(0);
+        let target = current.saturating_sub(self.visible_height as usize);
+        self.cursor = flat[target].clone();
+        self.list_state.select(Some(target));
     }
 
     /// Returns the flattened cursor index (position in the rendered list).
@@ -624,6 +843,17 @@ impl StackState {
                             var_idx: vi,
                             field_path: path.clone(),
                         });
+                        // Check for collection expansion.
+                        if let FieldValue::ObjectRef {
+                            id,
+                            entry_count: Some(_),
+                            ..
+                        } = field.value
+                            && let Some(cc) = self.collection_chunks.get(&id)
+                        {
+                            self.emit_collection_children(fi, vi, &path, id, cc, out);
+                            continue;
+                        }
                         if let FieldValue::ObjectRef { id, .. } = field.value {
                             self.emit_object_children(fi, vi, id, path, visited, out);
                         }
@@ -637,6 +867,151 @@ impl StackState {
                     var_idx: vi,
                     field_path: parent_path,
                 });
+            }
+        }
+    }
+
+    /// Emits cursors for collection entries and chunk
+    /// sections.
+    fn emit_collection_children(
+        &self,
+        fi: usize,
+        vi: usize,
+        field_path: &[usize],
+        collection_id: u64,
+        cc: &CollectionChunks,
+        out: &mut Vec<StackCursor>,
+    ) {
+        let emit_entry = |entry: &hprof_engine::EntryInfo,
+                          out: &mut Vec<StackCursor>| {
+            out.push(StackCursor::OnCollectionEntry {
+                frame_idx: fi,
+                var_idx: vi,
+                field_path: field_path.to_vec(),
+                collection_id,
+                entry_index: entry.index,
+            });
+            // If this entry's value is an expanded ObjectRef, emit its
+            // fields as OnCollectionEntryObjField cursors.
+            if let FieldValue::ObjectRef { id, .. } = &entry.value {
+                let mut visited = HashSet::new();
+                self.emit_collection_entry_obj_children(
+                    fi,
+                    vi,
+                    field_path,
+                    collection_id,
+                    entry.index,
+                    *id,
+                    &[],
+                    &mut visited,
+                    out,
+                );
+            }
+        };
+        // Eager page entries.
+        if let Some(page) = &cc.eager_page {
+            for entry in &page.entries {
+                emit_entry(entry, out);
+            }
+        }
+        // Chunk sections in offset order.
+        let ranges = compute_chunk_ranges(cc.total_count);
+        for (offset, _) in &ranges {
+            out.push(StackCursor::OnChunkSection {
+                frame_idx: fi,
+                var_idx: vi,
+                field_path: field_path.to_vec(),
+                collection_id,
+                chunk_offset: *offset,
+            });
+            // If loaded, emit entries.
+            if let Some(ChunkState::Loaded(page)) = cc.chunk_pages.get(offset) {
+                for entry in &page.entries {
+                    emit_entry(entry, out);
+                }
+            }
+        }
+    }
+
+    /// Emits [`StackCursor::OnCollectionEntryObjField`] nodes for
+    /// the fields of an object expanded from a collection entry value.
+    ///
+    /// Guards against runaway recursion: stops at depth 16.
+    fn emit_collection_entry_obj_children(
+        &self,
+        fi: usize,
+        vi: usize,
+        field_path: &[usize],
+        collection_id: u64,
+        entry_index: usize,
+        obj_id: u64,
+        obj_path: &[usize],
+        visited: &mut HashSet<u64>,
+        out: &mut Vec<StackCursor>,
+    ) {
+        if obj_path.len() >= 16 {
+            return;
+        }
+        match self.expansion_state(obj_id) {
+            ExpansionPhase::Collapsed => {}
+            ExpansionPhase::Loading | ExpansionPhase::Failed => {
+                out.push(StackCursor::OnCollectionEntryObjField {
+                    frame_idx: fi,
+                    var_idx: vi,
+                    field_path: field_path.to_vec(),
+                    collection_id,
+                    entry_index,
+                    obj_field_path: obj_path.to_vec(),
+                });
+            }
+            ExpansionPhase::Expanded => {
+                let fields = self.object_fields.get(&obj_id);
+                let field_count = fields.map(|f| f.len()).unwrap_or(0);
+                if field_count == 0 {
+                    out.push(StackCursor::OnCollectionEntryObjField {
+                        frame_idx: fi,
+                        var_idx: vi,
+                        field_path: field_path.to_vec(),
+                        collection_id,
+                        entry_index,
+                        obj_field_path: obj_path.to_vec(),
+                    });
+                } else {
+                    visited.insert(obj_id);
+                    let field_list = fields.unwrap();
+                    for (idx, field) in field_list.iter().enumerate() {
+                        let mut path = obj_path.to_vec();
+                        path.push(idx);
+                        if let FieldValue::ObjectRef { id, .. } = field.value
+                            && visited.contains(&id)
+                        {
+                            // Cyclic — emit as non-navigable leaf (no cursor)
+                            continue;
+                        }
+                        out.push(StackCursor::OnCollectionEntryObjField {
+                            frame_idx: fi,
+                            var_idx: vi,
+                            field_path: field_path.to_vec(),
+                            collection_id,
+                            entry_index,
+                            obj_field_path: path.clone(),
+                        });
+                        if let FieldValue::ObjectRef { id, .. } = field.value {
+                            self.emit_collection_entry_obj_children(
+                                fi,
+                                vi,
+                                field_path,
+                                collection_id,
+                                entry_index,
+                                id,
+                                &path,
+                                visited,
+                                out,
+                            );
+                        }
+                    }
+                    visited.remove(&obj_id);
+                }
             }
         }
     }
@@ -661,56 +1036,44 @@ impl StackState {
         }
     }
 
-    /// Truncates a string for display: max 80 chars, appended `..` if longer.
-    fn truncate_string_display(s: &str) -> String {
-        const MAX_STRING_DISPLAY: usize = 80;
-        if s.chars().count() <= MAX_STRING_DISPLAY {
-            s.to_string()
-        } else {
-            let end = s
-                .char_indices()
-                .nth(MAX_STRING_DISPLAY)
-                .map(|(i, _)| i)
-                .unwrap_or(s.len());
-            format!("{}..", &s[..end])
-        }
-    }
-
-    /// Formats a [`FieldValue`] for display in field rows (depth ≥ 1).
-    ///
-    /// For `StringRef`, the `string_phase` and optional `string_value` control
-    /// the display.
+    /// Formats a [`FieldValue`] for display in field rows.
     fn format_field_value(
         v: &FieldValue,
         phase: Option<&ExpansionPhase>,
-        string_phase: Option<(&StringPhase, Option<&str>)>,
     ) -> String {
         match v {
             FieldValue::Null => "null".to_string(),
-            FieldValue::StringRef { .. } => match string_phase {
-                Some((StringPhase::Loaded, Some(val))) => {
-                    format!("String = \"{}\"", Self::truncate_string_display(val))
-                }
-                Some((StringPhase::Failed, _)) => "String = <unresolved>".to_string(),
-                Some((StringPhase::Loading, _)) => "String = \"~\"".to_string(),
-                _ => "String = \"...\"".to_string(),
-            },
             FieldValue::ObjectRef {
                 class_name,
                 entry_count,
+                inline_value,
                 ..
-            } => match phase {
-                Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => {
-                    let display_name = if class_name.is_empty() {
-                        "Object"
-                    } else {
-                        class_name
-                    };
-                    let short = display_name.rsplit('.').next().unwrap_or(display_name);
-                    short.to_string()
+            } => {
+                let base = match phase {
+                    Some(ExpansionPhase::Expanded)
+                    | Some(ExpansionPhase::Loading) => {
+                        let display_name = if class_name.is_empty()
+                        {
+                            "Object"
+                        } else {
+                            class_name
+                        };
+                        display_name
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or(display_name)
+                            .to_string()
+                    }
+                    _ => Self::format_object_ref_collapsed(
+                        class_name,
+                        *entry_count,
+                    ),
+                };
+                match inline_value {
+                    Some(v) => format!("{base} = {v}"),
+                    None => base,
                 }
-                _ => Self::format_object_ref_collapsed(class_name, *entry_count),
-            },
+            }
             FieldValue::Bool(b) => b.to_string(),
             FieldValue::Char(c) => format!("'{c}'"),
             FieldValue::Byte(n) => n.to_string(),
@@ -719,6 +1082,340 @@ impl StackState {
             FieldValue::Long(n) => n.to_string(),
             FieldValue::Float(f) => format!("{f}"),
             FieldValue::Double(d) => format!("{d}"),
+        }
+    }
+
+    /// Formats a `FieldValue` for inline display in collection entries.
+    ///
+    /// `value_phase` is used for `ObjectRef` values: when present and
+    /// `Expanded` / `Loading`, the toggle shows `-`; otherwise `+`.
+    fn format_entry_value(v: &FieldValue) -> String {
+        match v {
+            FieldValue::Null => "null".to_string(),
+            FieldValue::ObjectRef {
+                class_name,
+                entry_count,
+                inline_value,
+                ..
+            } => {
+                let display_name = if class_name.is_empty() {
+                    "Object"
+                } else {
+                    class_name
+                };
+                let short = display_name
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(display_name);
+                let base = match entry_count {
+                    Some(n) => format!("{short} ({n} entries)"),
+                    None => short.to_string(),
+                };
+                match inline_value {
+                    Some(v) => format!("{base} = {v}"),
+                    None => base,
+                }
+            }
+            FieldValue::Bool(b) => b.to_string(),
+            FieldValue::Char(c) => format!("'{c}'"),
+            FieldValue::Byte(n) => n.to_string(),
+            FieldValue::Short(n) => n.to_string(),
+            FieldValue::Int(n) => n.to_string(),
+            FieldValue::Long(n) => n.to_string(),
+            FieldValue::Float(f) => format!("{f}"),
+            FieldValue::Double(d) => format!("{d}"),
+        }
+    }
+
+    /// Renders collection entries and chunk sections.
+    #[allow(clippy::too_many_arguments)]
+    fn build_collection_items(
+        &self,
+        fi: usize,
+        vi: usize,
+        field_path: &[usize],
+        collection_id: u64,
+        cc: &CollectionChunks,
+        parent_indent: &str,
+        items: &mut Vec<ListItem<'static>>,
+    ) {
+        let indent = format!("{parent_indent}  ");
+        let render_entry = |entry: &hprof_engine::EntryInfo,
+                            items: &mut Vec<ListItem<'static>>,
+                            sel: bool| {
+            let value_phase = if let FieldValue::ObjectRef { id, .. } = &entry.value {
+                Some(self.expansion_state(*id))
+            } else {
+                None
+            };
+            let text = Self::format_entry_line(entry, &indent, value_phase.as_ref());
+            let s = if sel {
+                theme::SELECTED
+            } else {
+                ratatui::style::Style::default()
+            };
+            items.push(ListItem::new(Line::from(Span::styled(text, s))));
+            // Render expanded entry ObjectRef children.
+            if let FieldValue::ObjectRef { id, .. } = &entry.value {
+                let mut visited = HashSet::new();
+                self.build_collection_entry_obj_items(
+                    fi,
+                    vi,
+                    field_path,
+                    collection_id,
+                    entry.index,
+                    *id,
+                    &[],
+                    &indent,
+                    &mut visited,
+                    items,
+                );
+            }
+        };
+        // Eager page entries.
+        if let Some(page) = &cc.eager_page {
+            for entry in &page.entries {
+                let sel = matches!(
+                    &self.cursor,
+                    StackCursor::OnCollectionEntry {
+                        collection_id: cid,
+                        entry_index: ei,
+                        ..
+                    }
+                    if *cid == collection_id && *ei == entry.index
+                );
+                render_entry(entry, items, sel);
+            }
+        }
+        // Chunk sections.
+        let ranges = compute_chunk_ranges(cc.total_count);
+        for (offset, limit) in &ranges {
+            let end = offset + limit - 1;
+            let chunk_state = cc.chunk_pages.get(offset);
+            let (toggle, label) = match chunk_state {
+                Some(ChunkState::Loading) => ("~ ", format!("Loading [{offset}...{end}]")),
+                Some(ChunkState::Loaded(_)) => ("- ", format!("[{offset}...{end}]")),
+                _ => ("+ ", format!("[{offset}...{end}]")),
+            };
+            let text = format!("{indent}{toggle}{label}");
+            let sel = matches!(
+                &self.cursor,
+                StackCursor::OnChunkSection {
+                    collection_id: cid,
+                    chunk_offset: co,
+                    ..
+                }
+                if *cid == collection_id && *co == *offset
+            );
+            let s = if sel { theme::SELECTED } else { theme::SEARCH_HINT };
+            items.push(ListItem::new(Line::from(Span::styled(text, s))));
+            // Loaded chunk entries.
+            if let Some(ChunkState::Loaded(page)) = chunk_state {
+                for entry in &page.entries {
+                    let sel = matches!(
+                        &self.cursor,
+                        StackCursor::OnCollectionEntry {
+                            collection_id: cid,
+                            entry_index: ei,
+                            ..
+                        }
+                        if *cid == collection_id && *ei == entry.index
+                    );
+                    render_entry(entry, items, sel);
+                }
+            }
+        }
+    }
+
+    /// Renders fields of an object expanded from a collection entry value.
+    #[allow(clippy::too_many_arguments)]
+    fn build_collection_entry_obj_items(
+        &self,
+        fi: usize,
+        vi: usize,
+        field_path: &[usize],
+        collection_id: u64,
+        entry_index: usize,
+        obj_id: u64,
+        obj_path: &[usize],
+        parent_indent: &str,
+        visited: &mut HashSet<u64>,
+        items: &mut Vec<ListItem<'static>>,
+    ) {
+        if obj_path.len() >= 16 {
+            return;
+        }
+        let indent = format!("{parent_indent}  ");
+        match self.expansion_state(obj_id) {
+            ExpansionPhase::Collapsed => {}
+            ExpansionPhase::Loading => {
+                let sel = matches!(&self.cursor,
+                    StackCursor::OnCollectionEntryObjField {
+                        collection_id: cid,
+                        entry_index: ei,
+                        obj_field_path,
+                        ..
+                    }
+                    if *cid == collection_id
+                        && *ei == entry_index
+                        && *obj_field_path == obj_path
+                );
+                let s = if sel { theme::SELECTED } else { theme::SEARCH_HINT };
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!("{indent}~ Loading..."),
+                    s,
+                ))));
+            }
+            ExpansionPhase::Expanded => {
+                visited.insert(obj_id);
+                let empty: Vec<FieldInfo> = vec![];
+                let field_list = self
+                    .object_fields
+                    .get(&obj_id)
+                    .map(|f| f.as_slice())
+                    .unwrap_or(empty.as_slice());
+                if field_list.is_empty() {
+                    let sel = matches!(&self.cursor,
+                        StackCursor::OnCollectionEntryObjField {
+                            collection_id: cid,
+                            entry_index: ei,
+                            obj_field_path,
+                            ..
+                        }
+                        if *cid == collection_id
+                            && *ei == entry_index
+                            && *obj_field_path == obj_path
+                    );
+                    let s = if sel { theme::SELECTED } else { theme::SEARCH_HINT };
+                    items.push(ListItem::new(Line::from(Span::styled(
+                        format!("{indent}(no fields)"),
+                        s,
+                    ))));
+                } else {
+                    for (fidx, field) in field_list.iter().enumerate() {
+                        let mut child_path = obj_path.to_vec();
+                        child_path.push(fidx);
+                        let child_phase = if let FieldValue::ObjectRef { id, .. } = field.value {
+                            Some(self.expansion_state(id))
+                        } else {
+                            None
+                        };
+                        let cycle = if let FieldValue::ObjectRef { id, .. } = &field.value {
+                            visited.contains(id)
+                        } else {
+                            false
+                        };
+                        let sel = !cycle
+                            && matches!(&self.cursor,
+                                StackCursor::OnCollectionEntryObjField {
+                                    collection_id: cid,
+                                    entry_index: ei,
+                                    obj_field_path,
+                                    ..
+                                }
+                                if *cid == collection_id
+                                    && *ei == entry_index
+                                    && *obj_field_path == child_path
+                            );
+                        let s = if sel {
+                            theme::SELECTED
+                        } else if cycle {
+                            theme::SEARCH_HINT
+                        } else {
+                            ratatui::style::Style::default()
+                        };
+                        let toggle = if cycle {
+                            "  "
+                        } else {
+                            match &child_phase {
+                                Some(ExpansionPhase::Expanded)
+                                | Some(ExpansionPhase::Loading) => "- ",
+                                Some(ExpansionPhase::Collapsed)
+                                | Some(ExpansionPhase::Failed) => "+ ",
+                                None => "  ",
+                            }
+                        };
+                        let val = Self::format_field_value(
+                            &field.value,
+                            child_phase.as_ref(),
+                        );
+                        let text = format!("{indent}{toggle}{}: {}", field.name, val);
+                        items.push(ListItem::new(Line::from(Span::styled(text, s))));
+                        if !cycle {
+                            if let FieldValue::ObjectRef { id, .. } = field.value {
+                                self.build_collection_entry_obj_items(
+                                    fi,
+                                    vi,
+                                    field_path,
+                                    collection_id,
+                                    entry_index,
+                                    id,
+                                    &child_path,
+                                    &indent,
+                                    visited,
+                                    items,
+                                );
+                            }
+                        }
+                    }
+                }
+                visited.remove(&obj_id);
+            }
+            ExpansionPhase::Failed => {
+                let err = self
+                    .object_errors
+                    .get(&obj_id)
+                    .cloned()
+                    .unwrap_or_else(|| "Failed to resolve object".to_string());
+                let sel = matches!(&self.cursor,
+                    StackCursor::OnCollectionEntryObjField {
+                        collection_id: cid,
+                        entry_index: ei,
+                        obj_field_path,
+                        ..
+                    }
+                    if *cid == collection_id
+                        && *ei == entry_index
+                        && *obj_field_path == obj_path
+                );
+                let s = if sel { theme::SELECTED } else { theme::SEARCH_HINT };
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!("{indent}! {err}"),
+                    s,
+                ))));
+            }
+        }
+    }
+
+    /// Formats one collection entry as a display line.
+    ///
+    /// `value_phase` controls the expand toggle for `ObjectRef` values:
+    /// pass the current [`ExpansionPhase`] of the entry's value object
+    /// so that `+` / `-` is rendered correctly.
+    pub(crate) fn format_entry_line(
+        entry: &hprof_engine::EntryInfo,
+        indent: &str,
+        value_phase: Option<&ExpansionPhase>,
+    ) -> String {
+        let toggle = match value_phase {
+            Some(ExpansionPhase::Expanded)
+            | Some(ExpansionPhase::Loading) => "- ",
+            Some(ExpansionPhase::Collapsed)
+            | Some(ExpansionPhase::Failed) => "+ ",
+            None => "  ",
+        };
+        let val = Self::format_entry_value(&entry.value);
+        if let Some(key) = &entry.key {
+            let k = Self::format_entry_value(key);
+            format!(
+                "{indent}{toggle}[{}] {} => {}",
+                entry.index, k, val
+            )
+        } else {
+            format!(
+                "{indent}{toggle}[{}] {}",
+                entry.index, val
+            )
         }
     }
 
@@ -742,6 +1439,9 @@ impl StackState {
                     | StackCursor::OnObjectField { frame_idx, .. }
                     | StackCursor::OnObjectLoadingNode { frame_idx, .. }
                     | StackCursor::OnCyclicNode { frame_idx, .. }
+                    | StackCursor::OnChunkSection { frame_idx, .. }
+                    | StackCursor::OnCollectionEntry { frame_idx, .. }
+                    | StackCursor::OnCollectionEntryObjField { frame_idx, .. }
                     if *frame_idx == fi);
             let style = if is_selected {
                 theme::SELECTED
@@ -922,28 +1622,14 @@ impl StackState {
                         } else {
                             None
                         };
-                        let string_phase_info = if let FieldValue::StringRef { id } = field.value {
-                            let phase = self.string_phase(id);
-                            let value = self.string_values.get(&id).map(|s| s.as_str());
-                            Some((phase, value))
-                        } else {
-                            None
-                        };
                         let s = if selected {
-                            if matches!(string_phase_info, Some((StringPhase::Failed, _))) {
-                                theme::STATUS_WARNING
-                            } else {
-                                theme::SELECTED
-                            }
-                        } else if matches!(string_phase_info, Some((StringPhase::Failed, _))) {
-                            theme::STATUS_WARNING
+                            theme::SELECTED
                         } else {
                             ratatui::style::Style::default()
                         };
                         let val = Self::format_field_value(
                             &field.value,
                             child_phase.as_ref(),
-                            string_phase_info.as_ref().map(|(p, v)| (p, *v)),
                         );
                         let toggle = match &child_phase {
                             Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
@@ -953,6 +1639,25 @@ impl StackState {
                         let text = format!("{indent}{toggle}{}: {}", field.name, val,);
                         items.push(ListItem::new(Line::from(Span::styled(text, s))));
 
+                        // Collection rendering.
+                        if let FieldValue::ObjectRef {
+                            id,
+                            entry_count: Some(_),
+                            ..
+                        } = field.value
+                            && let Some(cc) = self.collection_chunks.get(&id)
+                        {
+                            self.build_collection_items(
+                                fi,
+                                vi,
+                                &child_path,
+                                id,
+                                cc,
+                                &indent,
+                                items,
+                            );
+                            continue;
+                        }
                         if let FieldValue::ObjectRef { id, .. } = field.value {
                             self.build_object_items(fi, vi, id, &child_path, visited, items);
                         }
@@ -1338,6 +2043,7 @@ mod tests {
                 id: 200,
                 class_name: "Foo".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(100, fields_100);
@@ -1375,6 +2081,7 @@ mod tests {
                 id: 200,
                 class_name: "Bar".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(100, fields);
@@ -1421,6 +2128,7 @@ mod tests {
                 id: 200,
                 class_name: "Foo".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(100, fields_100);
@@ -1440,39 +2148,6 @@ mod tests {
     }
 
     #[test]
-    fn string_ids_in_subtree_collects_string_ref_ids_from_descendants() {
-        use hprof_engine::{FieldInfo, FieldValue};
-        let frames = vec![make_frame(10)];
-        let mut state = StackState::new(frames);
-        // Root 100 has a StringRef field 42 and an ObjectRef child 200.
-        let fields_100 = vec![
-            FieldInfo {
-                name: "label".to_string(),
-                value: FieldValue::StringRef { id: 42 },
-            },
-            FieldInfo {
-                name: "child".to_string(),
-                value: FieldValue::ObjectRef {
-                    id: 200,
-                    class_name: "Foo".to_string(),
-                    entry_count: None,
-                },
-            },
-        ];
-        state.set_expansion_done(100, fields_100);
-        // Child 200 has a StringRef field 99.
-        let fields_200 = vec![FieldInfo {
-            name: "name".to_string(),
-            value: FieldValue::StringRef { id: 99 },
-        }];
-        state.set_expansion_done(200, fields_200);
-
-        let mut ids = state.string_ids_in_subtree(100);
-        ids.sort();
-        assert_eq!(ids, vec![42, 99]);
-    }
-
-    #[test]
     fn collapse_object_recursive_cycle_guard_does_not_infinite_loop() {
         use hprof_engine::{FieldInfo, FieldValue};
         let frames = vec![make_frame(10)];
@@ -1484,6 +2159,7 @@ mod tests {
                 id: 200,
                 class_name: "A".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(100, fields_100);
@@ -1493,6 +2169,7 @@ mod tests {
                 id: 100,
                 class_name: "B".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(200, fields_200);
@@ -1500,139 +2177,6 @@ mod tests {
         state.collapse_object_recursive(100);
         assert_eq!(state.expansion_state(100), ExpansionPhase::Collapsed);
         assert_eq!(state.expansion_state(200), ExpansionPhase::Collapsed);
-    }
-
-    // --- Task 5: StringPhase and string state tests ---
-
-    #[test]
-    fn string_phase_returns_unloaded_for_unknown_id() {
-        let state = StackState::new(vec![]);
-        assert_eq!(state.string_phase(42), StringPhase::Unloaded);
-    }
-
-    #[test]
-    fn start_string_loading_sets_loading_phase() {
-        let mut state = StackState::new(vec![]);
-        state.start_string_loading(42);
-        assert_eq!(state.string_phase(42), StringPhase::Loading);
-    }
-
-    #[test]
-    fn set_string_loaded_sets_loaded_phase_and_value() {
-        let mut state = StackState::new(vec![]);
-        state.set_string_loaded(42, "hello".to_string());
-        assert_eq!(state.string_phase(42), StringPhase::Loaded);
-        assert_eq!(
-            state.string_values.get(&42).map(|s| s.as_str()),
-            Some("hello")
-        );
-    }
-
-    #[test]
-    fn set_string_failed_sets_failed_phase_and_error() {
-        let mut state = StackState::new(vec![]);
-        state.set_string_failed(42, "unresolved".to_string());
-        assert_eq!(state.string_phase(42), StringPhase::Failed);
-    }
-
-    #[test]
-    fn build_items_string_ref_unloaded_shows_placeholder() {
-        use hprof_engine::{FieldInfo, FieldValue};
-        let frames = vec![make_frame(10)];
-        let mut state = StackState::new(frames);
-        let vars = vec![make_var(0, 99)];
-        state.toggle_expand(10, vars);
-        let fields = vec![FieldInfo {
-            name: "name".to_string(),
-            value: FieldValue::StringRef { id: 200 },
-        }];
-        state.set_expansion_done(99, fields);
-        let items = state.build_items();
-        let text = item_text(items[2].clone());
-        assert!(
-            text.contains("\"...\""),
-            "unloaded string must show placeholder, got: {text:?}"
-        );
-    }
-
-    #[test]
-    fn build_items_string_ref_loaded_shows_value() {
-        use hprof_engine::{FieldInfo, FieldValue};
-        let frames = vec![make_frame(10)];
-        let mut state = StackState::new(frames);
-        let vars = vec![make_var(0, 99)];
-        state.toggle_expand(10, vars);
-        let fields = vec![FieldInfo {
-            name: "name".to_string(),
-            value: FieldValue::StringRef { id: 200 },
-        }];
-        state.set_expansion_done(99, fields);
-        state.set_string_loaded(200, "hello".to_string());
-        let items = state.build_items();
-        let text = item_text(items[2].clone());
-        assert!(
-            text.contains("\"hello\""),
-            "loaded string must show value, got: {text:?}"
-        );
-    }
-
-    #[test]
-    fn build_items_string_ref_loaded_long_value_shows_truncated() {
-        use hprof_engine::{FieldInfo, FieldValue};
-        let frames = vec![make_frame(10)];
-        let mut state = StackState::new(frames);
-        let vars = vec![make_var(0, 99)];
-        state.toggle_expand(10, vars);
-        let fields = vec![FieldInfo {
-            name: "name".to_string(),
-            value: FieldValue::StringRef { id: 200 },
-        }];
-        state.set_expansion_done(99, fields);
-        let long_str = "a".repeat(101);
-        state.set_string_loaded(200, long_str);
-        let items = state.build_items();
-        let text = item_text(items[2].clone());
-        assert!(
-            text.contains(".."),
-            "long string must be truncated with .., got: {text:?}"
-        );
-    }
-
-    #[test]
-    fn build_items_string_ref_failed_shows_unresolved() {
-        use hprof_engine::{FieldInfo, FieldValue};
-        let frames = vec![make_frame(10)];
-        let mut state = StackState::new(frames);
-        let vars = vec![make_var(0, 99)];
-        state.toggle_expand(10, vars);
-        let fields = vec![FieldInfo {
-            name: "name".to_string(),
-            value: FieldValue::StringRef { id: 200 },
-        }];
-        state.set_expansion_done(99, fields);
-        state.set_string_failed(200, "unresolved".to_string());
-        let items = state.build_items();
-        let text = item_text(items[2].clone());
-        assert!(
-            text.contains("<unresolved>"),
-            "failed string must show <unresolved>, got: {text:?}"
-        );
-    }
-
-    #[test]
-    fn collapse_object_recursive_clears_string_state_for_string_ref_fields() {
-        use hprof_engine::{FieldInfo, FieldValue};
-        let frames = vec![make_frame(10)];
-        let mut state = StackState::new(frames);
-        let fields = vec![FieldInfo {
-            name: "name".to_string(),
-            value: FieldValue::StringRef { id: 200 },
-        }];
-        state.set_expansion_done(99, fields);
-        state.set_string_loaded(200, "hello".to_string());
-        assert_eq!(state.string_phase(200), StringPhase::Loaded);
-        state.collapse_object_recursive(99);
-        assert_eq!(state.string_phase(200), StringPhase::Unloaded);
     }
 
     // --- Task 8.2: frame collapse clears nested expansion ---
@@ -1708,6 +2252,7 @@ mod tests {
                 id: 200,
                 class_name: "Foo".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(99, fields_99);
@@ -1769,6 +2314,7 @@ mod tests {
                 id: 100,
                 class_name: "Node".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(100, fields);
@@ -1806,6 +2352,7 @@ mod tests {
                     id: 100,
                     class_name: "Node".to_string(),
                     entry_count: None,
+                    inline_value: None,
                 },
             },
             FieldInfo {
@@ -1814,6 +2361,7 @@ mod tests {
                     id: 100,
                     class_name: "Node".to_string(),
                     entry_count: None,
+                    inline_value: None,
                 },
             },
         ];
@@ -1839,6 +2387,7 @@ mod tests {
                 id: 100,
                 class_name: "java.lang.Thread".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(100, fields);
@@ -1873,6 +2422,7 @@ mod tests {
                 id: 200,
                 class_name: "B".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(100, fields_a);
@@ -1883,6 +2433,7 @@ mod tests {
                 id: 100,
                 class_name: "A".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(200, fields_b);
@@ -1918,6 +2469,7 @@ mod tests {
                 id: 200,
                 class_name: "B".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(100, fields_a);
@@ -1927,6 +2479,7 @@ mod tests {
                 id: 100,
                 class_name: "A".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(200, fields_b);
@@ -1963,6 +2516,7 @@ mod tests {
                     id: 100,
                     class_name: "Node".to_string(),
                     entry_count: None,
+                    inline_value: None,
                 },
             },
             FieldInfo {
@@ -2021,6 +2575,7 @@ mod tests {
                 id: 200,
                 class_name: "B".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(100, fields_a);
@@ -2030,6 +2585,7 @@ mod tests {
                 id: 300,
                 class_name: "C".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(200, fields_b);
@@ -2077,6 +2633,7 @@ mod tests {
                     id: 300,
                     class_name: "C".to_string(),
                     entry_count: None,
+                    inline_value: None,
                 },
             },
             FieldInfo {
@@ -2085,6 +2642,7 @@ mod tests {
                     id: 300,
                     class_name: "C".to_string(),
                     entry_count: None,
+                    inline_value: None,
                 },
             },
         ];
@@ -2098,9 +2656,7 @@ mod tests {
         // C is shared but NOT an ancestor — no cyclic nodes
         let cyclic_count = flat
             .iter()
-            .filter(|c| {
-                matches!(c, StackCursor::OnCyclicNode { .. })
-            })
+            .filter(|c| matches!(c, StackCursor::OnCyclicNode { .. }))
             .count();
         assert_eq!(
             cyclic_count, 0,
@@ -2133,6 +2689,7 @@ mod tests {
                 id: 2000,
                 class_name: "Coroutine".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(1000, thread_fields);
@@ -2143,6 +2700,7 @@ mod tests {
                 id: 1000,
                 class_name: "Thread".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(2000, coroutine_fields);
@@ -2205,6 +2763,7 @@ mod tests {
                 id: 2000,
                 class_name: "Coroutine".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(1000, thread_fields);
@@ -2215,6 +2774,7 @@ mod tests {
                 id: 1000,
                 class_name: "Thread".to_string(),
                 entry_count: None,
+                inline_value: None,
             },
         }];
         state.set_expansion_done(2000, coroutine_fields);
@@ -2237,21 +2797,119 @@ mod tests {
             "parent object must remain expanded"
         );
         // Coroutine(2000) must be collapsed
-        assert_eq!(
-            state.expansion_state(2000),
-            ExpansionPhase::Collapsed,
-        );
+        assert_eq!(state.expansion_state(2000), ExpansionPhase::Collapsed,);
         // Cursor stays on the parkBlocker field
         let flat = state.flat_items();
-        assert!(
-            flat.contains(&state.cursor),
-            "cursor must still be valid"
-        );
+        assert!(flat.contains(&state.cursor), "cursor must still be valid");
         assert!(matches!(
             &state.cursor,
             StackCursor::OnObjectField {
                 field_path, ..
             } if *field_path == vec![0]
         ));
+    }
+
+    #[test]
+    fn chunk_ranges_total_50_no_sections() {
+        let ranges = compute_chunk_ranges(50);
+        assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn chunk_ranges_total_100_no_sections() {
+        let ranges = compute_chunk_ranges(100);
+        assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn chunk_ranges_total_150() {
+        let ranges = compute_chunk_ranges(150);
+        assert_eq!(ranges, vec![(100, 50)]);
+    }
+
+    #[test]
+    fn chunk_ranges_total_500() {
+        let ranges = compute_chunk_ranges(500);
+        assert_eq!(
+            ranges,
+            vec![(100, 100), (200, 100), (300, 100), (400, 100),]
+        );
+    }
+
+    #[test]
+    fn chunk_ranges_total_1000() {
+        let ranges = compute_chunk_ranges(1000);
+        assert_eq!(ranges.len(), 9);
+        assert_eq!(ranges[0], (100, 100));
+        assert_eq!(ranges[8], (900, 100));
+    }
+
+    #[test]
+    fn chunk_ranges_total_3000() {
+        let ranges = compute_chunk_ranges(3000);
+        // 9 sections of 100 (100..999) + 2 of 1000
+        assert_eq!(ranges.len(), 11);
+        assert_eq!(ranges[0], (100, 100));
+        assert_eq!(ranges[8], (900, 100));
+        assert_eq!(ranges[9], (1000, 1000));
+        assert_eq!(ranges[10], (2000, 1000));
+    }
+
+    #[test]
+    fn chunk_ranges_total_2348() {
+        let ranges = compute_chunk_ranges(2348);
+        assert_eq!(ranges.len(), 11);
+        assert_eq!(ranges[9], (1000, 1000));
+        assert_eq!(ranges[10], (2000, 348));
+    }
+
+    #[test]
+    fn page_down_jumps_by_visible_height() {
+        // 30 frames, cursor at frame 5, height 20 → frame 25
+        let frames: Vec<_> = (1..=30).map(make_frame).collect();
+        let mut state = StackState::new(frames);
+        state.set_visible_height(20);
+        // Move cursor to frame 5
+        for _ in 0..5 {
+            state.move_down();
+        }
+        assert_eq!(state.cursor, StackCursor::OnFrame(5));
+        state.move_page_down();
+        assert_eq!(state.cursor, StackCursor::OnFrame(25));
+    }
+
+    #[test]
+    fn page_up_jumps_by_visible_height() {
+        // 30 frames, cursor at frame 25, height 20 → frame 5
+        let frames: Vec<_> = (1..=30).map(make_frame).collect();
+        let mut state = StackState::new(frames);
+        state.set_visible_height(20);
+        for _ in 0..25 {
+            state.move_down();
+        }
+        assert_eq!(state.cursor, StackCursor::OnFrame(25));
+        state.move_page_up();
+        assert_eq!(state.cursor, StackCursor::OnFrame(5));
+    }
+
+    #[test]
+    fn page_down_clamps_to_last_item() {
+        let frames: Vec<_> = (1..=10).map(make_frame).collect();
+        let mut state = StackState::new(frames);
+        state.set_visible_height(20);
+        state.move_page_down();
+        assert_eq!(state.cursor, StackCursor::OnFrame(9));
+    }
+
+    #[test]
+    fn page_up_clamps_to_first_item() {
+        let frames: Vec<_> = (1..=10).map(make_frame).collect();
+        let mut state = StackState::new(frames);
+        state.set_visible_height(20);
+        for _ in 0..3 {
+            state.move_down();
+        }
+        state.move_page_up();
+        assert_eq!(state.cursor, StackCursor::OnFrame(0));
     }
 }

@@ -18,8 +18,8 @@ use hprof_parser::jvm_to_java;
 use crate::{
     EngineConfig, HprofError,
     engine::{
-        EntryInfo, FieldInfo, FrameInfo, LineNumber, NavigationEngine, ThreadInfo, ThreadState,
-        VariableInfo, VariableValue,
+        CollectionPage, FieldInfo, FrameInfo, LineNumber, NavigationEngine, ThreadInfo,
+        ThreadState, VariableInfo, VariableValue,
     },
 };
 
@@ -145,6 +145,85 @@ fn field_byte_size(type_code: u8, id_size: u32) -> usize {
         10 => 4,
         11 => 8,
         _ => 0,
+    }
+}
+
+/// Returns a human-readable type name for a primitive array
+/// element type code.
+fn prim_array_type_name(elem_type: u8) -> &'static str {
+    match elem_type {
+        4 => "boolean",
+        5 => "char",
+        6 => "float",
+        7 => "double",
+        8 => "byte",
+        9 => "short",
+        10 => "int",
+        11 => "long",
+        _ => "unknown",
+    }
+}
+
+/// Resolves an inline display value for wrapper types
+/// (`String`, `Integer`, `Boolean`, …).
+///
+/// Returns `Some("\"text\""`) for strings, `Some("42")` for
+/// boxed primitives, `None` for other classes.
+pub(crate) fn resolve_inline_value(
+    class_name: &str,
+    hfile: &HprofFile,
+    object_id: u64,
+) -> Option<String> {
+    if class_name == "java.lang.String" {
+        let s = Engine::resolve_string_static(hfile, object_id)?;
+        return Some(format!("\"{}\"", truncate_inline(s)));
+    }
+    if !matches!(
+        class_name,
+        "java.lang.Boolean"
+            | "java.lang.Byte"
+            | "java.lang.Short"
+            | "java.lang.Integer"
+            | "java.lang.Long"
+            | "java.lang.Float"
+            | "java.lang.Double"
+            | "java.lang.Character"
+    ) {
+        return None;
+    }
+    let raw = Engine::read_instance(hfile, object_id)?;
+    let fields = crate::resolver::decode_fields(
+        &raw,
+        &hfile.index,
+        hfile.header.id_size,
+        hfile.records_bytes(),
+    );
+    fields.iter().find(|f| f.name == "value").map(|f| {
+        match &f.value {
+            crate::engine::FieldValue::Bool(b) => b.to_string(),
+            crate::engine::FieldValue::Char(c) => format!("'{c}'"),
+            crate::engine::FieldValue::Byte(n) => n.to_string(),
+            crate::engine::FieldValue::Short(n) => n.to_string(),
+            crate::engine::FieldValue::Int(n) => n.to_string(),
+            crate::engine::FieldValue::Long(n) => n.to_string(),
+            crate::engine::FieldValue::Float(n) => format!("{n}"),
+            crate::engine::FieldValue::Double(n) => format!("{n}"),
+            _ => "?".to_string(),
+        }
+    })
+}
+
+/// Truncates a string for inline display (max 80 chars).
+fn truncate_inline(s: String) -> String {
+    if s.chars().count() <= 80 {
+        s
+    } else {
+        let end = s
+            .char_indices()
+            .nth(78)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        format!("{}..", &s[..end])
     }
 }
 
@@ -352,6 +431,34 @@ impl Engine {
                 None
             }
         })
+    }
+
+    /// Reads an instance, accessible to sibling modules.
+    pub(crate) fn read_instance_public(hfile: &HprofFile, obj_id: u64) -> Option<RawInstance> {
+        Self::read_instance(hfile, obj_id)
+    }
+
+    /// Resolves a `java.lang.String` object to its content.
+    ///
+    /// Accessible to sibling modules (pagination).
+    pub(crate) fn resolve_string_static(hfile: &HprofFile, object_id: u64) -> Option<String> {
+        let raw = Self::read_instance(hfile, object_id)?;
+        let fields = crate::resolver::decode_fields(
+            &raw,
+            &hfile.index,
+            hfile.header.id_size,
+            hfile.records_bytes(),
+        );
+        let value_id = fields.iter().find_map(|f| {
+            if f.name == "value"
+                && let crate::engine::FieldValue::ObjectRef { id, .. } = f.value
+            {
+                return Some(id);
+            }
+            None
+        })?;
+        let (elem_type, bytes) = hfile.find_prim_array(value_id)?;
+        Some(decode_prim_array_as_string(elem_type, &bytes))
     }
 
     /// Reads an instance by offset if available, falling back to
@@ -572,23 +679,27 @@ impl NavigationEngine for Engine {
     }
 
     fn expand_object(&self, object_id: u64) -> Option<Vec<FieldInfo>> {
-        let raw = self.hfile.find_instance(object_id)?;
+        let raw = Self::read_instance(&self.hfile, object_id)?;
         let mut fields = crate::resolver::decode_fields(
             &raw,
             &self.hfile.index,
             self.hfile.header.id_size,
             self.hfile.records_bytes(),
         );
-        // Enrichment pass: resolve class name and entry count for ObjectRef fields.
+        // Enrichment pass: resolve class name, entry count,
+        // and inline values for ObjectRef fields.
         for field in &mut fields {
             if let crate::engine::FieldValue::ObjectRef {
                 id,
                 class_name,
                 entry_count,
+                inline_value,
             } = &mut field.value
             {
                 let child_id = *id;
-                if let Some(child_raw) = self.hfile.find_instance(child_id) {
+                if let Some(child_raw) =
+                    Self::read_instance(&self.hfile, child_id)
+                {
                     let name = self
                         .hfile
                         .index
@@ -596,10 +707,8 @@ impl NavigationEngine for Engine {
                         .get(&child_raw.class_object_id)
                         .cloned()
                         .unwrap_or_else(|| "Object".to_string());
-                    if name == "java.lang.String" {
-                        field.value = crate::engine::FieldValue::StringRef { id: child_id };
-                        continue;
-                    }
+                    *inline_value =
+                        resolve_inline_value(&name, &self.hfile, child_id);
                     *entry_count = collection_entry_count(
                         &child_raw,
                         &self.hfile.index,
@@ -607,6 +716,23 @@ impl NavigationEngine for Engine {
                         self.hfile.records_bytes(),
                     );
                     *class_name = name;
+                } else if let Some((_class_id, elems)) =
+                    self.hfile.find_object_array(child_id)
+                {
+                    *class_name = "Object[]".to_string();
+                    *entry_count = Some(elems.len() as u64);
+                } else if let Some((elem_type, bytes)) =
+                    self.hfile.find_prim_array(child_id)
+                {
+                    let type_name = prim_array_type_name(elem_type);
+                    let elem_size = field_byte_size(elem_type, 0);
+                    let count = if elem_size > 0 {
+                        bytes.len() / elem_size
+                    } else {
+                        0
+                    };
+                    *class_name = format!("{type_name}[]");
+                    *entry_count = Some(count as u64);
                 } else {
                     *class_name = "Object".to_string();
                 }
@@ -615,12 +741,12 @@ impl NavigationEngine for Engine {
         Some(fields)
     }
 
-    fn get_page(&self, _collection_id: u64, _offset: usize, _limit: usize) -> Vec<EntryInfo> {
-        vec![]
+    fn get_page(&self, collection_id: u64, offset: usize, limit: usize) -> Option<CollectionPage> {
+        crate::pagination::get_page(&self.hfile, collection_id, offset, limit)
     }
 
     fn resolve_string(&self, object_id: u64) -> Option<String> {
-        let raw = self.hfile.find_instance(object_id)?;
+        let raw = Self::read_instance(&self.hfile, object_id)?;
         let fields = crate::resolver::decode_fields(
             &raw,
             &self.hfile.index,
@@ -1411,9 +1537,10 @@ mod tests {
         }
 
         #[test]
-        fn expand_object_string_field_produces_string_ref() {
+        fn expand_object_string_field_without_array_has_no_inline_value() {
             // Parent (0xABC) has one ObjectRef field pointing to child (0xDEAD).
             // child class_object_id=1000, LOAD_CLASS with name "java/lang/String".
+            // No backing array → inline_value is None.
             let child_id: u64 = 0xDEAD;
             let field_data = child_id.to_be_bytes().to_vec();
             let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
@@ -1428,7 +1555,15 @@ mod tests {
             let engine = engine_from_bytes(&bytes);
             let fields = engine.expand_object(0xABC).expect("must find instance");
             assert_eq!(fields.len(), 1);
-            assert_eq!(fields[0].value, FieldValue::StringRef { id: 0xDEAD });
+            assert_eq!(
+                fields[0].value,
+                FieldValue::ObjectRef {
+                    id: 0xDEAD,
+                    class_name: "java.lang.String".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                }
+            );
         }
 
         #[test]
@@ -1470,8 +1605,276 @@ mod tests {
                     id: 0xDEAD,
                     class_name: "Object".to_string(),
                     entry_count: None,
+                    inline_value: None,
                 }
             );
+        }
+    }
+
+    mod truncate_inline_tests {
+        use super::truncate_inline;
+
+        #[test]
+        fn short_ascii_string_returned_unchanged() {
+            let s = "hello".to_string();
+            assert_eq!(truncate_inline(s), "hello");
+        }
+
+        #[test]
+        fn exactly_80_chars_returned_unchanged() {
+            let s = "a".repeat(80);
+            let result = truncate_inline(s.clone());
+            assert_eq!(result, s);
+        }
+
+        #[test]
+        fn over_80_ascii_chars_truncated_with_dotdot() {
+            let s = "a".repeat(90);
+            let result = truncate_inline(s);
+            assert!(result.ends_with(".."));
+            assert_eq!(result.chars().count(), 80); // 78 chars + ".."
+        }
+
+        #[test]
+        fn multi_byte_utf8_does_not_panic_and_truncates_at_char_boundary() {
+            // Each '中' is 3 UTF-8 bytes — byte-slicing would panic
+            let s = "中".repeat(85);
+            let result = truncate_inline(s);
+            assert!(result.ends_with(".."));
+            // Result must be valid UTF-8 (no panic = success, but also verify)
+            assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+        }
+
+        #[test]
+        fn multi_byte_utf8_exactly_80_chars_returned_unchanged() {
+            let s = "é".repeat(80); // 2 bytes each in UTF-8
+            let result = truncate_inline(s.clone());
+            assert_eq!(result, s);
+        }
+    }
+
+    mod resolve_inline_value_tests {
+        use std::io::Write as IoWrite;
+
+        use hprof_parser::HprofTestBuilder;
+
+        use super::*;
+        use crate::engine::FieldValue;
+
+        fn engine_from_bytes(bytes: &[u8]) -> Engine {
+            let mut tmp = tempfile::NamedTempFile::new().unwrap();
+            tmp.write_all(bytes).unwrap();
+            tmp.flush().unwrap();
+            Engine::from_file(tmp.path(), &EngineConfig).unwrap()
+        }
+
+        /// Builds a parent object with one ObjectRef field pointing to a
+        /// boxed-type child. Returns the engine and the child's class name.
+        fn expand_boxed_child(
+            class_name: &str,
+            value_type_byte: u8,
+            value_bytes: Vec<u8>,
+        ) -> crate::engine::FieldValue {
+            let value_bytes_len = value_bytes.len();
+            let child_id: u64 = 0xBBBB;
+            let field_data = child_id.to_be_bytes().to_vec();
+            let class_name_slashes = class_name.replace('.', "/");
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "field")
+                .add_string(2, &class_name_slashes)
+                .add_string(3, "value")
+                .add_class(1, 200, 0, 2)
+                .add_class_dump(100, 0, 8, &[(1, 2u8)])
+                .add_class_dump(
+                    200,
+                    0,
+                    value_bytes_len as u32,
+                    &[(3, value_type_byte)],
+                )
+                .add_instance(0xAAAA, 0, 100, &field_data)
+                .add_instance(child_id, 0, 200, &value_bytes)
+                .build();
+            let engine = engine_from_bytes(&bytes);
+            let fields = engine.expand_object(0xAAAA).unwrap();
+            fields.into_iter().next().unwrap().value
+        }
+
+        #[test]
+        fn integer_field_shows_inline_value() {
+            let v = expand_boxed_child("java.lang.Integer", 10, 42i32.to_be_bytes().to_vec());
+            if let FieldValue::ObjectRef { inline_value, .. } = v {
+                assert_eq!(inline_value.as_deref(), Some("42"));
+            } else {
+                panic!("expected ObjectRef");
+            }
+        }
+
+        #[test]
+        fn boolean_true_field_shows_inline_value() {
+            let v = expand_boxed_child("java.lang.Boolean", 4, vec![1u8]);
+            if let FieldValue::ObjectRef { inline_value, .. } = v {
+                assert_eq!(inline_value.as_deref(), Some("true"));
+            } else {
+                panic!("expected ObjectRef");
+            }
+        }
+
+        #[test]
+        fn boolean_false_field_shows_inline_value() {
+            let v = expand_boxed_child("java.lang.Boolean", 4, vec![0u8]);
+            if let FieldValue::ObjectRef { inline_value, .. } = v {
+                assert_eq!(inline_value.as_deref(), Some("false"));
+            } else {
+                panic!("expected ObjectRef");
+            }
+        }
+
+        #[test]
+        fn character_field_shows_inline_value() {
+            let v =
+                expand_boxed_child("java.lang.Character", 5, (b'A' as u16).to_be_bytes().to_vec());
+            if let FieldValue::ObjectRef { inline_value, .. } = v {
+                assert_eq!(inline_value.as_deref(), Some("'A'"));
+            } else {
+                panic!("expected ObjectRef");
+            }
+        }
+
+        #[test]
+        fn long_field_shows_inline_value() {
+            let v = expand_boxed_child(
+                "java.lang.Long",
+                11,
+                9_876_543_210i64.to_be_bytes().to_vec(),
+            );
+            if let FieldValue::ObjectRef { inline_value, .. } = v {
+                assert_eq!(inline_value.as_deref(), Some("9876543210"));
+            } else {
+                panic!("expected ObjectRef");
+            }
+        }
+
+        #[test]
+        fn unknown_class_returns_no_inline_value() {
+            let v =
+                expand_boxed_child("com.example.Foo", 10, 1i32.to_be_bytes().to_vec());
+            if let FieldValue::ObjectRef { inline_value, .. } = v {
+                assert_eq!(inline_value, None);
+            } else {
+                panic!("expected ObjectRef");
+            }
+        }
+
+        #[test]
+        fn float_field_shows_inline_value() {
+            let v = expand_boxed_child(
+                "java.lang.Float",
+                6,
+                3.14f32.to_be_bytes().to_vec(),
+            );
+            if let FieldValue::ObjectRef { inline_value, .. } = v {
+                assert!(
+                    inline_value.is_some(),
+                    "expected Some for Float"
+                );
+                let s = inline_value.unwrap();
+                assert!(
+                    s.starts_with("3.14"),
+                    "expected float repr, got {s}"
+                );
+            } else {
+                panic!("expected ObjectRef");
+            }
+        }
+
+        #[test]
+        fn double_field_shows_inline_value() {
+            let v = expand_boxed_child(
+                "java.lang.Double",
+                7,
+                2.718281828f64.to_be_bytes().to_vec(),
+            );
+            if let FieldValue::ObjectRef { inline_value, .. } = v {
+                assert!(
+                    inline_value.is_some(),
+                    "expected Some for Double"
+                );
+                let s = inline_value.unwrap();
+                assert!(
+                    s.starts_with("2.718"),
+                    "expected double repr, got {s}"
+                );
+            } else {
+                panic!("expected ObjectRef");
+            }
+        }
+
+        #[test]
+        fn byte_field_shows_inline_value() {
+            let v = expand_boxed_child(
+                "java.lang.Byte",
+                8,
+                vec![127u8],
+            );
+            if let FieldValue::ObjectRef { inline_value, .. } = v {
+                assert_eq!(inline_value.as_deref(), Some("127"));
+            } else {
+                panic!("expected ObjectRef");
+            }
+        }
+
+        #[test]
+        fn short_field_shows_inline_value() {
+            let v = expand_boxed_child(
+                "java.lang.Short",
+                9,
+                (-1234i16).to_be_bytes().to_vec(),
+            );
+            if let FieldValue::ObjectRef { inline_value, .. } = v {
+                assert_eq!(
+                    inline_value.as_deref(),
+                    Some("-1234")
+                );
+            } else {
+                panic!("expected ObjectRef");
+            }
+        }
+
+        #[test]
+        fn boxed_type_without_value_field_returns_none() {
+            // Integer class but no "value" field — only "dummy"
+            let child_id: u64 = 0xBBBB;
+            let field_data = child_id.to_be_bytes().to_vec();
+            let bytes =
+                HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                    .add_string(1, "field")
+                    .add_string(2, "java/lang/Integer")
+                    .add_string(3, "dummy")
+                    .add_class(1, 200, 0, 2)
+                    .add_class_dump(100, 0, 8, &[(1, 2u8)])
+                    .add_class_dump(200, 0, 4, &[(3, 10u8)])
+                    .add_instance(0xAAAA, 0, 100, &field_data)
+                    .add_instance(
+                        child_id,
+                        0,
+                        200,
+                        &99i32.to_be_bytes(),
+                    )
+                    .build();
+            let engine = engine_from_bytes(&bytes);
+            let fields =
+                engine.expand_object(0xAAAA).unwrap();
+            if let FieldValue::ObjectRef {
+                inline_value, ..
+            } = &fields[0].value
+            {
+                assert_eq!(
+                    *inline_value, None,
+                    "no 'value' field means no inline"
+                );
+            } else {
+                panic!("expected ObjectRef");
+            }
         }
     }
 

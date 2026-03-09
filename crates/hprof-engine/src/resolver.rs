@@ -102,6 +102,7 @@ fn read_field_value(cursor: &mut Cursor<&[u8]>, type_code: u8, id_size: u32) -> 
                     id,
                     class_name: String::new(),
                     entry_count: None,
+                    inline_value: None,
                 }
             })
         }
@@ -256,6 +257,7 @@ mod tests {
                 id: 0xDEAD,
                 class_name: String::new(),
                 entry_count: None,
+                inline_value: None,
             }
         );
     }

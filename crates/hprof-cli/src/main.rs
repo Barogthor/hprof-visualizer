@@ -33,11 +33,35 @@ where
 {
     #[cfg(feature = "dev-profiling")]
     let _guard = {
-        use tracing_chrome::ChromeLayerBuilder;
         use tracing_subscriber::prelude::*;
-        let (chrome_layer, guard) = ChromeLayerBuilder::new().file("trace.json").build();
-        tracing_subscriber::registry().with(chrome_layer).init();
-        guard
+        use tracing_subscriber::{EnvFilter, fmt};
+
+        let chrome_layer = {
+            let (layer, guard) =
+                tracing_chrome::ChromeLayerBuilder::new()
+                    .file("trace.json")
+                    .build();
+            (layer, guard)
+        };
+
+        let file_appender = tracing_appender::rolling::never(
+            ".", "hprof-debug.log",
+        );
+        let file_layer = fmt::layer()
+            .with_writer(file_appender)
+            .with_ansi(false)
+            .with_target(true);
+
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("debug"));
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(chrome_layer.0)
+            .with(file_layer)
+            .init();
+        tracing::debug!("=== hprof-debug logging active ===");
+        chrome_layer.1
     };
 
     let path = parse_hprof_path(args)?;

@@ -13,8 +13,8 @@ use super::hprof_primitives::{
 use super::{
     ClassDumpEntry, FilterEntry, FirstPassContext, ObjectOffset, RawFrameRoot, RawThreadObject,
 };
-use crate::tags::HeapSubTag;
 use crate::read_id;
+use crate::tags::HeapSubTag;
 
 /// Per-worker output from heap segment extraction.
 pub(super) struct HeapSegmentResult {

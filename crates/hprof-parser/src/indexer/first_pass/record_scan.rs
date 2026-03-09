@@ -7,8 +7,8 @@ use hprof_api::ProgressNotifier;
 
 use super::FirstPassContext;
 use super::hprof_primitives::maybe_report_progress;
-use crate::tags::RecordTag;
 use crate::indexer::HeapRecordRange;
+use crate::tags::RecordTag;
 use crate::{
     ClassDef, HprofError, HprofStringRef, HprofThread, StackFrame, StackTrace, parse_load_class,
     parse_record_header, parse_stack_frame, parse_stack_trace, parse_start_thread,

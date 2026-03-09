@@ -188,6 +188,57 @@ impl HprofFile {
         None
     }
 
+    /// Finds an `OBJECT_ARRAY_DUMP` (sub-tag `0x22`) for `array_id`.
+    ///
+    /// Uses BinaryFuse8 segment filters like [`find_prim_array`].
+    /// Returns `(element_class_id, element_ids)`.
+    ///
+    /// Returns `None` if not found (absent or filter
+    /// false-positive).
+    pub fn find_object_array(&self, array_id: u64) -> Option<(u64, Vec<u64>)> {
+        use crate::indexer::segment::SEGMENT_SIZE;
+
+        let records = self.records_bytes();
+        let id_size = self.header.id_size;
+
+        let candidate_segs: Vec<usize> = self
+            .segment_filters
+            .iter()
+            .filter(|f| f.contains(array_id))
+            .map(|f| f.segment_index)
+            .collect();
+
+        if candidate_segs.is_empty() {
+            return None;
+        }
+
+        for r in &self.heap_record_ranges {
+            let payload_end = r.payload_start + r.payload_length;
+
+            let overlaps = candidate_segs.iter().any(|&seg| {
+                let seg_start = seg as u64 * SEGMENT_SIZE as u64;
+                let seg_end = seg_start + SEGMENT_SIZE as u64;
+                r.payload_start < seg_end && payload_end > seg_start
+            });
+
+            if !overlaps {
+                continue;
+            }
+
+            let start = r.payload_start as usize;
+            let end = (payload_end as usize).min(records.len());
+            if start >= records.len() {
+                continue;
+            }
+
+            if let Some(result) = scan_for_object_array(&records[start..end], array_id, id_size) {
+                return Some(result);
+            }
+        }
+
+        None
+    }
+
     /// Reads an `INSTANCE_DUMP` sub-record at a known byte offset.
     ///
     /// `offset` is relative to the records section and must point to the
@@ -393,6 +444,55 @@ fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u8,
             }
             if arr_id == target_id {
                 return Some((elem_type, data[pos..pos + byte_count].to_vec()));
+            }
+            cursor.set_position((pos + byte_count) as u64);
+        } else if !skip_sub_record(&mut cursor, sub_tag, id_size) {
+            return None;
+        }
+    }
+}
+
+fn scan_for_object_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u64, Vec<u64>)> {
+    use std::io::Cursor;
+
+    let mut cursor = Cursor::new(data);
+    loop {
+        let sub_tag = match cursor.read_u8() {
+            Ok(t) => HeapSubTag::from(t),
+            Err(_) => return None,
+        };
+        if sub_tag == HeapSubTag::ObjectArrayDump {
+            let arr_id = match read_id(&mut cursor, id_size) {
+                Ok(id) => id,
+                Err(_) => return None,
+            };
+            let _stack_serial = match cursor.read_u32::<BigEndian>() {
+                Ok(v) => v,
+                Err(_) => return None,
+            };
+            let num_elements = match cursor.read_u32::<BigEndian>() {
+                Ok(n) => n as usize,
+                Err(_) => return None,
+            };
+            let class_id = match read_id(&mut cursor, id_size) {
+                Ok(id) => id,
+                Err(_) => return None,
+            };
+            let byte_count = num_elements.checked_mul(id_size as usize)?;
+            let pos = cursor.position() as usize;
+            if pos + byte_count > data.len() {
+                return None;
+            }
+            if arr_id == target_id {
+                let mut elements = Vec::with_capacity(num_elements);
+                let mut elem_cursor = Cursor::new(&data[pos..pos + byte_count]);
+                for _ in 0..num_elements {
+                    match read_id(&mut elem_cursor, id_size) {
+                        Ok(id) => elements.push(id),
+                        Err(_) => return None,
+                    }
+                }
+                return Some((class_id, elements));
             }
             cursor.set_position((pos + byte_count) as u64);
         } else if !skip_sub_record(&mut cursor, sub_tag, id_size) {

@@ -107,26 +107,25 @@ pub struct VariableInfo {
 pub enum FieldValue {
     /// Object reference with ID 0 (null).
     Null,
-    /// Non-null reference to a `java.lang.String` object.
-    ///
-    /// Value is loaded lazily via [`NavigationEngine::resolve_string`].
-    StringRef {
-        id: u64,
-    },
     /// Non-null object reference.
     ///
     /// - `id`: heap object ID
-    /// - `class_name`: Java dot-notation class name (e.g. `"java.util.HashMap"`),
+    /// - `class_name`: Java dot-notation class name
+    ///   (e.g. `"java.util.HashMap"`),
     ///   or `"Object"` when not resolved
-    /// - `entry_count`: collection element count if the object is a known
-    ///   collection type, `None` otherwise
+    /// - `entry_count`: collection element count if the object
+    ///   is a known collection type, `None` otherwise
+    /// - `inline_value`: eagerly resolved display value for
+    ///   wrapper types (String, Integer, Boolean …)
     ObjectRef {
         id: u64,
         class_name: String,
         entry_count: Option<u64>,
+        inline_value: Option<String>,
     },
     Bool(bool),
-    /// UTF-16 code unit decoded to Rust `char` (replacement char on invalid).
+    /// UTF-16 code unit decoded to Rust `char`
+    /// (replacement char on invalid).
     Char(char),
     Float(f32),
     Double(f64),
@@ -145,9 +144,30 @@ pub struct FieldInfo {
     pub value: FieldValue,
 }
 
-/// Placeholder for collection entry display — implemented in Story 4.2.
-#[derive(Debug)]
-pub struct EntryInfo {}
+/// One entry in a paginated collection view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntryInfo {
+    /// 0-based position of this entry in the collection.
+    pub index: usize,
+    /// Key for map-like collections, `None` for lists/arrays.
+    pub key: Option<FieldValue>,
+    /// The entry value.
+    pub value: FieldValue,
+}
+
+/// A page of collection entries returned by
+/// [`NavigationEngine::get_page`].
+#[derive(Debug, Clone)]
+pub struct CollectionPage {
+    /// Resolved entries for this page.
+    pub entries: Vec<EntryInfo>,
+    /// Total number of entries in the collection.
+    pub total_count: u64,
+    /// Offset of the first entry in this page.
+    pub offset: usize,
+    /// Whether more entries exist beyond this page.
+    pub has_more: bool,
+}
 
 /// High-level navigation API consumed by the TUI frontend.
 ///
@@ -177,9 +197,11 @@ pub trait NavigationEngine {
     /// BinaryFuse8 false positive).
     fn expand_object(&self, object_id: u64) -> Option<Vec<FieldInfo>>;
 
-    /// Returns a page of entries from a collection.
-    /// Stub — implemented in Story 4.2.
-    fn get_page(&self, collection_id: u64, offset: usize, limit: usize) -> Vec<EntryInfo>;
+    /// Returns a page of entries from a paginated collection.
+    ///
+    /// Returns `None` if the object is not found, not a
+    /// supported collection type, or cannot be paginated.
+    fn get_page(&self, collection_id: u64, offset: usize, limit: usize) -> Option<CollectionPage>;
 
     /// Resolves the content of a `java.lang.String` object from the hprof file.
     ///
@@ -223,8 +245,13 @@ mod tests {
         fn expand_object(&self, _object_id: u64) -> Option<Vec<FieldInfo>> {
             Some(vec![])
         }
-        fn get_page(&self, _collection_id: u64, _offset: usize, _limit: usize) -> Vec<EntryInfo> {
-            vec![]
+        fn get_page(
+            &self,
+            _collection_id: u64,
+            _offset: usize,
+            _limit: usize,
+        ) -> Option<CollectionPage> {
+            None
         }
         fn resolve_string(&self, _object_id: u64) -> Option<String> {
             None
@@ -234,11 +261,11 @@ mod tests {
     #[test]
     fn field_value_variants_exist() {
         let _null = FieldValue::Null;
-        let _sref = FieldValue::StringRef { id: 1 };
         let _obj = FieldValue::ObjectRef {
             id: 42,
             class_name: "Object".to_string(),
             entry_count: None,
+            inline_value: None,
         };
         let _b = FieldValue::Bool(true);
         let _c = FieldValue::Char('A');
@@ -249,18 +276,6 @@ mod tests {
         let _int = FieldValue::Int(42);
         let _long = FieldValue::Long(i64::MAX);
         assert_eq!(_null, FieldValue::Null);
-    }
-
-    #[test]
-    fn string_ref_variant_is_distinct_from_object_ref() {
-        let sref = FieldValue::StringRef { id: 1 };
-        let oref = FieldValue::ObjectRef {
-            id: 1,
-            class_name: "java.lang.String".to_string(),
-            entry_count: None,
-        };
-        assert_ne!(sref, oref);
-        assert_eq!(sref, FieldValue::StringRef { id: 1 });
     }
 
     #[test]
@@ -282,7 +297,7 @@ mod tests {
         assert_eq!(engine.get_stack_frames(0).len(), 1);
         assert_eq!(engine.get_local_variables(0).len(), 1);
         assert!(engine.expand_object(0).unwrap().is_empty());
-        assert!(engine.get_page(0, 0, 10).is_empty());
+        assert!(engine.get_page(0, 0, 10).is_none());
     }
 
     #[test]

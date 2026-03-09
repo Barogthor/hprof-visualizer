@@ -124,6 +124,28 @@ impl ThreadListState {
         self.selected_serial = self.filtered_serials.last().copied();
     }
 
+    /// Moves selection down by `n` items (clamps at end).
+    pub fn page_down(&mut self, n: usize) {
+        if self.filtered_serials.is_empty() {
+            return;
+        }
+        let current = self.list_state.selected().unwrap_or(0);
+        let next = (current + n).min(self.filtered_serials.len() - 1);
+        self.list_state.select(Some(next));
+        self.selected_serial = self.filtered_serials.get(next).copied();
+    }
+
+    /// Moves selection up by `n` items (clamps at start).
+    pub fn page_up(&mut self, n: usize) {
+        if self.filtered_serials.is_empty() {
+            return;
+        }
+        let current = self.list_state.selected().unwrap_or(0);
+        let prev = current.saturating_sub(n);
+        self.list_state.select(Some(prev));
+        self.selected_serial = self.filtered_serials.get(prev).copied();
+    }
+
     /// Returns the serial of the currently highlighted thread, or `None`
     /// when the filtered list is empty.
     pub fn selected_serial(&self) -> Option<u32> {
@@ -345,5 +367,39 @@ mod tests {
         let mut state = ThreadListState::new(make_threads(&["main", "worker-1"]));
         state.apply_filter("xyz");
         assert_eq!(state.selected_serial(), None);
+    }
+
+    #[test]
+    fn page_down_jumps_by_n_items() {
+        let mut state =
+            ThreadListState::new(make_threads(&["t1", "t2", "t3", "t4", "t5", "t6"]));
+        state.page_down(3);
+        assert_eq!(state.selected_serial(), Some(4));
+    }
+
+    #[test]
+    fn page_down_clamps_at_last_item() {
+        let mut state =
+            ThreadListState::new(make_threads(&["t1", "t2", "t3"]));
+        state.page_down(10);
+        assert_eq!(state.selected_serial(), Some(3));
+    }
+
+    #[test]
+    fn page_up_jumps_by_n_items() {
+        let mut state =
+            ThreadListState::new(make_threads(&["t1", "t2", "t3", "t4", "t5", "t6"]));
+        state.move_end();
+        state.page_up(3);
+        assert_eq!(state.selected_serial(), Some(3));
+    }
+
+    #[test]
+    fn page_up_clamps_at_first_item() {
+        let mut state =
+            ThreadListState::new(make_threads(&["t1", "t2", "t3"]));
+        state.move_end();
+        state.page_up(10);
+        assert_eq!(state.selected_serial(), Some(1));
     }
 }

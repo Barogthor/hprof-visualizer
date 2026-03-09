@@ -14,7 +14,7 @@ use std::{
 };
 
 use crossterm::event::{self, Event, KeyEventKind};
-use hprof_engine::{FieldInfo, NavigationEngine};
+use hprof_engine::{CollectionPage, FieldInfo, NavigationEngine};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -24,7 +24,10 @@ use ratatui::{
 use crate::{
     input::{self, InputEvent},
     views::{
-        stack_view::{ExpansionPhase, StackCursor, StackState, StackView},
+        stack_view::{
+            ChunkState, CollectionChunks, ExpansionPhase, StackCursor, StackState, StackView,
+            compute_chunk_ranges,
+        },
         status_bar::StatusBar,
         thread_list::{SearchableList, ThreadListState},
     },
@@ -60,10 +63,13 @@ pub struct App<E: NavigationEngine> {
     stack_state: Option<StackState>,
     /// In-flight object expansion receivers keyed by `object_id`.
     pending_expansions: HashMap<u64, Receiver<Option<Vec<FieldInfo>>>>,
-    /// In-flight string load receivers keyed by `string object_id`.
-    pending_strings: HashMap<u64, Receiver<Option<String>>>,
+    /// In-flight collection page load receivers keyed by
+    /// `(collection_id, chunk_offset)`.
+    pending_pages: HashMap<(u64, usize), Receiver<Option<CollectionPage>>>,
     /// Warnings accumulated during the session (e.g. unresolved string backing arrays).
     app_warnings: Vec<String>,
+    /// Visible height of the thread list panel (set during render).
+    thread_list_height: u16,
 }
 
 impl<E: NavigationEngine> App<E> {
@@ -88,8 +94,9 @@ impl<E: NavigationEngine> App<E> {
             preview_stack_state: StackState::new(preview_frames),
             stack_state: None,
             pending_expansions: HashMap::new(),
-            pending_strings: HashMap::new(),
+            pending_pages: HashMap::new(),
             app_warnings: Vec::new(),
+            thread_list_height: 0,
         }
     }
 
@@ -150,6 +157,16 @@ impl<E: NavigationEngine> App<E> {
                     self.thread_list.move_end();
                     refresh_preview = true;
                 }
+                InputEvent::PageDown => {
+                    let h = self.thread_list_height as usize;
+                    self.thread_list.page_down(h);
+                    refresh_preview = true;
+                }
+                InputEvent::PageUp => {
+                    let h = self.thread_list_height as usize;
+                    self.thread_list.page_up(h);
+                    refresh_preview = true;
+                }
                 InputEvent::Quit => return AppAction::Quit,
                 _ => {}
             }
@@ -169,6 +186,16 @@ impl<E: NavigationEngine> App<E> {
                 }
                 InputEvent::End => {
                     self.thread_list.move_end();
+                    refresh_preview = true;
+                }
+                InputEvent::PageDown => {
+                    let h = self.thread_list_height as usize;
+                    self.thread_list.page_down(h);
+                    refresh_preview = true;
+                }
+                InputEvent::PageUp => {
+                    let h = self.thread_list_height as usize;
+                    self.thread_list.page_up(h);
                     refresh_preview = true;
                 }
                 InputEvent::SearchActivate => {
@@ -197,7 +224,21 @@ impl<E: NavigationEngine> App<E> {
     {
         match event {
             InputEvent::Escape => {
-                // If cursor is on a loading node, cancel that expansion instead of going back.
+                // If inside a collection, collapse it and
+                // return cursor to the parent field.
+                let coll_info = self
+                    .stack_state
+                    .as_ref()
+                    .and_then(|s| s.cursor_collection_id());
+                if let Some((cid, restore_cursor)) = coll_info {
+                    self.pending_pages.retain(|&(id, _), _| id != cid);
+                    if let Some(s) = &mut self.stack_state {
+                        s.collection_chunks.remove(&cid);
+                        s.set_cursor(restore_cursor);
+                    }
+                    return AppAction::Continue;
+                }
+                // If cursor is on a loading node, cancel.
                 let loading_id = self
                     .stack_state
                     .as_ref()
@@ -223,6 +264,16 @@ impl<E: NavigationEngine> App<E> {
                     s.move_down();
                 }
             }
+            InputEvent::PageDown => {
+                if let Some(s) = &mut self.stack_state {
+                    s.move_page_down();
+                }
+            }
+            InputEvent::PageUp => {
+                if let Some(s) = &mut self.stack_state {
+                    s.move_page_up();
+                }
+            }
             InputEvent::Enter => {
                 // Collect the intended command from an immutable borrow, then act on it.
                 enum Cmd {
@@ -232,7 +283,12 @@ impl<E: NavigationEngine> App<E> {
                     CollapseObj(u64),
                     StartNestedObj(u64),
                     CollapseNestedObj(u64),
-                    LoadString(u64),
+                    StartCollection(u64, u64),
+                    CollapseCollection(u64),
+                    LoadChunk(u64, usize, usize),
+                    ToggleChunk(u64, usize),
+                    StartEntryObj(u64),
+                    CollapseEntryObj(u64),
                 }
                 let cmd = self.stack_state.as_ref().and_then(|s| {
                     Some(match s.cursor().clone() {
@@ -246,25 +302,76 @@ impl<E: NavigationEngine> App<E> {
                         }
                         StackCursor::OnVar { .. } => {
                             let oid = s.selected_object_id()?;
+                            dbg_log!(
+                                "OnVar Enter: oid=0x{:X} phase={:?}",
+                                oid, s.expansion_state(oid)
+                            );
                             match s.expansion_state(oid) {
                                 ExpansionPhase::Collapsed | ExpansionPhase::Failed => {
                                     Cmd::StartObj(oid)
                                 }
                                 ExpansionPhase::Expanded => Cmd::CollapseObj(oid),
-                                ExpansionPhase::Loading => return None, // no-op
+                                ExpansionPhase::Loading => {
+                                    return None;
+                                }
                             }
                         }
                         StackCursor::OnObjectField { .. } => {
-                            if let Some(sid) = s.selected_field_string_id() {
-                                return Some(Cmd::LoadString(sid));
+                            // Check for collection field.
+                            let coll_info = s.selected_field_collection_info();
+                            dbg_log!(
+                                "OnObjectField Enter: coll_info={:?}",
+                                coll_info
+                            );
+                            if let Some((cid, ec)) = coll_info {
+                                if s.collection_chunks.contains_key(&cid) {
+                                    return Some(Cmd::CollapseCollection(cid));
+                                }
+                                return Some(Cmd::StartCollection(cid, ec));
                             }
                             let nested_id = s.selected_field_ref_id()?;
+                            dbg_log!(
+                                "OnObjectField Enter: nested_id=0x{:X} phase={:?}",
+                                nested_id, s.expansion_state(nested_id)
+                            );
                             match s.expansion_state(nested_id) {
                                 ExpansionPhase::Collapsed | ExpansionPhase::Failed => {
                                     Cmd::StartNestedObj(nested_id)
                                 }
                                 ExpansionPhase::Expanded => Cmd::CollapseNestedObj(nested_id),
-                                ExpansionPhase::Loading => return None, // no-op
+                                ExpansionPhase::Loading => {
+                                    return None;
+                                }
+                            }
+                        }
+                        StackCursor::OnChunkSection { .. } => {
+                            if let Some((cid, co, cl)) = s.selected_chunk_info() {
+                                let cs = s.chunk_state(cid, co);
+                                match cs {
+                                    Some(ChunkState::Collapsed) => Cmd::LoadChunk(cid, co, cl),
+                                    Some(ChunkState::Loaded(_)) => Cmd::ToggleChunk(cid, co),
+                                    _ => return None,
+                                }
+                            } else {
+                                return None;
+                            }
+                        }
+                        StackCursor::OnCollectionEntry { .. } => {
+                            let oid = s.selected_collection_entry_ref_id()?;
+                            match s.expansion_state(oid) {
+                                ExpansionPhase::Collapsed
+                                | ExpansionPhase::Failed => Cmd::StartEntryObj(oid),
+                                ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
+                                ExpansionPhase::Loading => return None,
+                            }
+                        }
+                        StackCursor::OnCollectionEntryObjField { .. } => {
+                            let oid = s.selected_collection_entry_obj_field_ref_id()?;
+                            match s.expansion_state(oid) {
+                                ExpansionPhase::Collapsed
+                                | ExpansionPhase::Failed => Cmd::StartEntryObj(oid),
+                                ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
+                                ExpansionPhase::Loading => return None,
                             }
                         }
                         StackCursor::OnCyclicNode { .. }
@@ -288,9 +395,6 @@ impl<E: NavigationEngine> App<E> {
                     Some(Cmd::CollapseObj(oid)) => {
                         self.pending_expansions.remove(&oid);
                         if let Some(s) = &mut self.stack_state {
-                            for sid in s.string_ids_in_subtree(oid) {
-                                self.pending_strings.remove(&sid);
-                            }
                             s.collapse_object_recursive(oid);
                         }
                     }
@@ -298,13 +402,58 @@ impl<E: NavigationEngine> App<E> {
                     Some(Cmd::CollapseNestedObj(oid)) => {
                         self.pending_expansions.remove(&oid);
                         if let Some(s) = &mut self.stack_state {
-                            // Non-recursive: only collapse this object,
-                            // not ancestors reachable via cyclic back-refs.
-                            // Children retain their state (harmless cache).
                             s.collapse_object(oid);
                         }
                     }
-                    Some(Cmd::LoadString(sid)) => self.start_string_loading(sid),
+                    Some(Cmd::StartCollection(cid, ec)) => {
+                        dbg_log!(
+                            "StartCollection cid=0x{:X} ec={}",
+                            cid, ec
+                        );
+                        let limit = (ec as usize).min(100);
+                        let chunks = CollectionChunks {
+                            total_count: ec,
+                            eager_page: None,
+                            chunk_pages: compute_chunk_ranges(ec)
+                                .into_iter()
+                                .map(|(o, _)| (o, ChunkState::Collapsed))
+                                .collect(),
+                        };
+                        if let Some(s) = &mut self.stack_state {
+                            s.collection_chunks.insert(cid, chunks);
+                        }
+                        self.start_collection_page_load(cid, 0, limit);
+                    }
+                    Some(Cmd::LoadChunk(cid, offset, limit)) => {
+                        if let Some(s) = &mut self.stack_state
+                            && let Some(cc) = s.collection_chunks.get_mut(&cid)
+                        {
+                            cc.chunk_pages.insert(offset, ChunkState::Loading);
+                        }
+                        self.start_collection_page_load(cid, offset, limit);
+                    }
+                    Some(Cmd::ToggleChunk(cid, offset)) => {
+                        if let Some(s) = &mut self.stack_state
+                            && let Some(cc) = s.collection_chunks.get_mut(&cid)
+                        {
+                            cc.chunk_pages.insert(offset, ChunkState::Collapsed);
+                        }
+                    }
+                    Some(Cmd::StartEntryObj(oid)) => self.start_object_expansion(oid),
+                    Some(Cmd::CollapseEntryObj(oid)) => {
+                        self.pending_expansions.remove(&oid);
+                        if let Some(s) = &mut self.stack_state {
+                            s.collapse_object_recursive(oid);
+                        }
+                    }
+                    Some(Cmd::CollapseCollection(cid)) => {
+                        if let Some(s) = &mut self.stack_state {
+                            s.collection_chunks.remove(&cid);
+                        }
+                        // Remove pending page loads for
+                        // this collection.
+                        self.pending_pages.retain(|&(id, _), _| id != cid);
+                    }
                     None => {}
                 }
             }
@@ -337,62 +486,77 @@ impl<E: NavigationEngine> App<E> {
         }
     }
 
-    /// Spawns a worker thread to load the string value for `string_id`.
+    /// Spawns a worker to load a collection page.
     ///
-    /// If `string_id` is already pending, this is a no-op (AC4).
-    fn start_string_loading(&mut self, string_id: u64)
+    /// If the `(collection_id, offset)` key is already
+    /// pending, this is a no-op.
+    fn start_collection_page_load(&mut self, collection_id: u64, offset: usize, limit: usize)
     where
         E: Send + Sync + 'static,
     {
-        if self.pending_strings.contains_key(&string_id) {
+        let key = (collection_id, offset);
+        if self.pending_pages.contains_key(&key) {
             return;
         }
-        let Some(s) = &mut self.stack_state else {
-            return;
-        };
-        s.start_string_loading(string_id);
         let (tx, rx) = mpsc::channel();
         let engine = Arc::clone(&self.engine);
         std::thread::spawn(move || {
-            let result = engine.resolve_string(string_id);
+            let result = engine.get_page(collection_id, offset, limit);
             let _ = tx.send(result);
         });
-        self.pending_strings.insert(string_id, rx);
+        self.pending_pages.insert(key, rx);
     }
 
-    /// Polls all in-flight string load receivers and updates `StackState`.
+    /// Polls in-flight collection page receivers.
     ///
-    /// `None` results emit a warning (unresolved backing array).
-    pub fn poll_strings(&mut self) {
+    /// Returns object IDs that need fallback expansion
+    /// (unsupported collection types where `get_page`
+    /// returned `None`).
+    pub fn poll_pages(&mut self) -> Vec<u64> {
         let mut done = Vec::new();
-        for (&string_id, rx) in &self.pending_strings {
+        let mut fallback = Vec::new();
+        for (&(cid, offset), rx) in &self.pending_pages {
             match rx.try_recv() {
-                Ok(Some(val)) => {
-                    if let Some(s) = &mut self.stack_state {
-                        s.set_string_loaded(string_id, val);
+                Ok(Some(page)) => {
+                    dbg_log!(
+                        "poll_pages: 0x{:X}+{} → {} entries",
+                        cid, offset, page.entries.len()
+                    );
+                    if let Some(s) = &mut self.stack_state
+                        && let Some(cc) = s.collection_chunks.get_mut(&cid)
+                    {
+                        if offset == 0 {
+                            cc.eager_page = Some(page);
+                        } else {
+                            cc.chunk_pages.insert(offset, ChunkState::Loaded(page));
+                        }
                     }
-                    done.push(string_id);
+                    done.push((cid, offset));
                 }
                 Ok(None) => {
+                    dbg_log!(
+                        "poll_pages: 0x{:X}+{} → None (fallback)",
+                        cid, offset
+                    );
                     if let Some(s) = &mut self.stack_state {
-                        s.set_string_failed(string_id, "unresolved".to_string());
+                        s.collection_chunks.remove(&cid);
                     }
-                    self.app_warnings
-                        .push(format!("String 0x{:X}: backing array not found", string_id));
-                    done.push(string_id);
+                    fallback.push(cid);
+                    done.push((cid, offset));
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
-                        s.set_string_failed(string_id, "Worker thread disconnected".to_string());
+                        s.collection_chunks.remove(&cid);
                     }
-                    done.push(string_id);
+                    done.push((cid, offset));
                 }
             }
         }
-        for id in done {
-            self.pending_strings.remove(&id);
+        for key in done {
+            self.pending_pages.remove(&key);
         }
+        fallback
     }
 
     /// Polls all in-flight expansion receivers and updates `StackState`.
@@ -409,15 +573,25 @@ impl<E: NavigationEngine> App<E> {
                     done.push(object_id);
                 }
                 Ok(None) => {
+                    dbg_log!(
+                        "expand_object(0x{:X}) → None",
+                        object_id
+                    );
                     if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_failed(object_id, "Failed to resolve object".to_string());
+                        s.set_expansion_failed(
+                            object_id,
+                            "Failed to resolve object".to_string(),
+                        );
                     }
                     done.push(object_id);
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_failed(object_id, "Worker thread disconnected".to_string());
+                        s.set_expansion_failed(
+                            object_id,
+                            "Worker thread disconnected".to_string(),
+                        );
                     }
                     done.push(object_id);
                 }
@@ -429,9 +603,15 @@ impl<E: NavigationEngine> App<E> {
     }
 
     /// Renders the current state into a ratatui `Frame`.
-    pub fn render(&mut self, frame: &mut ratatui::Frame) {
+    pub fn render(&mut self, frame: &mut ratatui::Frame)
+    where
+        E: Send + Sync + 'static,
+    {
         self.poll_expansions();
-        self.poll_strings();
+        let page_fallbacks = self.poll_pages();
+        for cid in page_fallbacks {
+            self.start_object_expansion(cid);
+        }
 
         let area = frame.area();
 
@@ -443,6 +623,14 @@ impl<E: NavigationEngine> App<E> {
         let [list_area, stack_area] =
             Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
                 .areas(main_area);
+
+        // Store visible heights for PageUp/PageDown.
+        self.thread_list_height = list_area.height.saturating_sub(2);
+        if let Some(ref mut ss) = self.stack_state {
+            ss.set_visible_height(stack_area.height.saturating_sub(2));
+        }
+        self.preview_stack_state
+            .set_visible_height(stack_area.height.saturating_sub(2));
 
         // Thread list
         let list_focused = self.focus == Focus::ThreadList;
@@ -566,8 +754,8 @@ fn run_loop<E: NavigationEngine + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use hprof_engine::{
-        EntryInfo, FieldInfo, FieldValue, FrameInfo, LineNumber, NavigationEngine, ThreadInfo,
-        ThreadState, VariableInfo, VariableValue,
+        CollectionPage, EntryInfo, FieldInfo, FieldValue, FrameInfo, LineNumber, NavigationEngine,
+        ThreadInfo, ThreadState, VariableInfo, VariableValue,
     };
     use std::collections::HashMap;
 
@@ -578,6 +766,7 @@ mod tests {
         frames: Vec<FrameInfo>,
         frames_by_thread: HashMap<u32, Vec<FrameInfo>>,
         vars_by_frame: HashMap<u64, Vec<VariableInfo>>,
+        expand_results: HashMap<u64, Option<Vec<FieldInfo>>>,
     }
 
     impl StubEngine {
@@ -595,6 +784,7 @@ mod tests {
                 frames: vec![],
                 frames_by_thread: HashMap::new(),
                 vars_by_frame: HashMap::new(),
+                expand_results: HashMap::new(),
             }
         }
 
@@ -618,6 +808,11 @@ mod tests {
 
         fn with_vars(mut self, frame_id: u64, vars: Vec<VariableInfo>) -> Self {
             self.vars_by_frame.insert(frame_id, vars);
+            self
+        }
+
+        fn with_expand(mut self, oid: u64, fields: Option<Vec<FieldInfo>>) -> Self {
+            self.expand_results.insert(oid, fields);
             self
         }
     }
@@ -647,7 +842,10 @@ mod tests {
                 .cloned()
                 .unwrap_or_default()
         }
-        fn expand_object(&self, _: u64) -> Option<Vec<FieldInfo>> {
+        fn expand_object(&self, oid: u64) -> Option<Vec<FieldInfo>> {
+            if let Some(result) = self.expand_results.get(&oid) {
+                return result.clone();
+            }
             Some(vec![
                 FieldInfo {
                     name: "x".to_string(),
@@ -657,14 +855,64 @@ mod tests {
                     name: "child".to_string(),
                     value: FieldValue::ObjectRef {
                         id: 999,
-                        class_name: "java.util.ArrayList".to_string(),
-                        entry_count: Some(3),
+                        class_name: "Child".to_string(),
+                        entry_count: None,
+                        inline_value: None,
                     },
                 },
             ])
         }
-        fn get_page(&self, _: u64, _: usize, _: usize) -> Vec<EntryInfo> {
-            vec![]
+        fn get_page(
+            &self,
+            collection_id: u64,
+            offset: usize,
+            limit: usize,
+        ) -> Option<CollectionPage> {
+            match collection_id {
+                888 => {
+                    // Int entries
+                    let total: u64 = 250;
+                    let end = (offset + limit).min(total as usize);
+                    let entries = (offset..end)
+                        .map(|i| EntryInfo {
+                            index: i,
+                            key: None,
+                            value: FieldValue::Int(i as i32),
+                        })
+                        .collect();
+                    Some(CollectionPage {
+                        entries,
+                        total_count: total,
+                        offset,
+                        has_more: end < total as usize,
+                    })
+                }
+                889 => {
+                    // ObjectRef entries — used for AC10 expansion tests.
+                    // Entry 0 has value ObjectRef(id=700), entry 1 etc.
+                    let total: u64 = 3;
+                    let end = (offset + limit).min(total as usize);
+                    let entries = (offset..end)
+                        .map(|i| EntryInfo {
+                            index: i,
+                            key: None,
+                            value: FieldValue::ObjectRef {
+                                id: 700 + i as u64,
+                                class_name: "SomeItem".to_string(),
+                                entry_count: None,
+                                inline_value: None,
+                            },
+                        })
+                        .collect();
+                    Some(CollectionPage {
+                        entries,
+                        total_count: total,
+                        offset,
+                        has_more: end < total as usize,
+                    })
+                }
+                _ => None,
+            }
         }
         fn resolve_string(&self, _: u64) -> Option<String> {
             Some("value".to_string())
@@ -998,157 +1246,6 @@ mod tests {
         );
     }
 
-    // --- Task 6: async string loading tests ---
-
-    fn make_string_ref_field(name: &str, string_id: u64) -> FieldInfo {
-        FieldInfo {
-            name: name.to_string(),
-            value: FieldValue::StringRef { id: string_id },
-        }
-    }
-
-    #[test]
-    fn enter_on_string_ref_field_sets_loading_state() {
-        let frames = vec![make_frame(10)];
-        let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter); // → StackFrames
-        app.handle_input(InputEvent::Enter); // expand frame 10
-        app.handle_input(InputEvent::Down); // → OnVar{0,0}
-        app.handle_input(InputEvent::Enter); // start expansion of object 42
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
-            app.poll_expansions();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        // Inject a StringRef field into StackState directly
-        if let Some(s) = &mut app.stack_state {
-            s.set_expansion_done(42, vec![make_string_ref_field("name", 200)]);
-        }
-        // Navigate to the StringRef field (field_path=[0])
-        app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[0]} (StringRef 200)
-        assert_eq!(
-            app.stack_state.as_ref().unwrap().cursor(),
-            &crate::views::stack_view::StackCursor::OnObjectField {
-                frame_idx: 0,
-                var_idx: 0,
-                field_path: vec![0],
-            }
-        );
-        app.handle_input(InputEvent::Enter); // start_string_loading(200)
-        use crate::views::stack_view::StringPhase;
-        assert_eq!(
-            app.stack_state.as_ref().unwrap().string_phase(200),
-            StringPhase::Loading
-        );
-    }
-
-    #[test]
-    fn poll_strings_with_completed_channel_sets_loaded() {
-        use crate::views::stack_view::StringPhase;
-        let frames = vec![make_frame(10)];
-        let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter);
-        app.handle_input(InputEvent::Enter);
-        app.handle_input(InputEvent::Down);
-        // Directly inject string loading state
-        if let Some(s) = &mut app.stack_state {
-            s.start_string_loading(200);
-        }
-        let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
-        app.pending_strings.insert(200, rx);
-        tx.send(Some("hello".to_string())).unwrap();
-        app.poll_strings();
-        assert_eq!(
-            app.stack_state.as_ref().unwrap().string_phase(200),
-            StringPhase::Loaded
-        );
-        assert!(app.pending_strings.is_empty());
-    }
-
-    #[test]
-    fn enter_on_loading_string_ref_is_noop() {
-        use crate::views::stack_view::StringPhase;
-        let frames = vec![make_frame(10)];
-        let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter);
-        app.handle_input(InputEvent::Enter);
-        app.handle_input(InputEvent::Down);
-        if let Some(s) = &mut app.stack_state {
-            s.set_expansion_done(42, vec![make_string_ref_field("name", 200)]);
-            s.start_string_loading(200);
-        }
-        // Cursor at OnVar, navigate to field
-        app.handle_input(InputEvent::Down); // → OnVar{0,0}
-        app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[0]}
-        // Already loading — enter must be no-op
-        app.handle_input(InputEvent::Enter);
-        // pending_strings must NOT grow (still Loading, not a new spawn)
-        assert_eq!(
-            app.stack_state.as_ref().unwrap().string_phase(200),
-            StringPhase::Loading
-        );
-    }
-
-    #[test]
-    fn poll_strings_with_none_result_sets_failed_and_emits_warning() {
-        use crate::views::stack_view::StringPhase;
-        let frames = vec![make_frame(10)];
-        let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter);
-        if let Some(s) = &mut app.stack_state {
-            s.start_string_loading(200);
-        }
-        let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
-        app.pending_strings.insert(200, rx);
-        tx.send(None).unwrap();
-        app.poll_strings();
-        assert_eq!(
-            app.stack_state.as_ref().unwrap().string_phase(200),
-            StringPhase::Failed
-        );
-        assert!(
-            app.app_warnings.iter().any(|w| w.contains("0xC8")),
-            "must emit warning mentioning the hex id"
-        );
-    }
-
-    #[test]
-    fn moving_cursor_while_string_ref_loading_does_not_start_new_load() {
-        use crate::views::stack_view::StringPhase;
-        let frames = vec![make_frame(10)];
-        let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter); // → StackFrames
-        app.handle_input(InputEvent::Enter); // expand frame 10
-        app.handle_input(InputEvent::Down); // → OnVar{0,0}
-        // Inject StringRef in Loading state directly
-        if let Some(s) = &mut app.stack_state {
-            s.set_expansion_done(42, vec![make_string_ref_field("name", 200)]);
-            s.start_string_loading(200);
-        }
-        // Navigate to the field, then move cursor — must not spawn a new load
-        app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[0]}
-        app.handle_input(InputEvent::Up);
-        app.handle_input(InputEvent::Down);
-        assert!(
-            app.pending_strings.is_empty(),
-            "cursor movement must not spawn string loads"
-        );
-        assert_eq!(
-            app.stack_state.as_ref().unwrap().string_phase(200),
-            StringPhase::Loading
-        );
-    }
-
     #[test]
     fn escape_on_loading_node_cancels_expansion_without_leaving_stack_frames() {
         let frames = vec![make_frame(10)];
@@ -1167,5 +1264,479 @@ mod tests {
         );
         // Focus must remain in StackFrames.
         assert_eq!(app.focus, Focus::StackFrames);
+    }
+
+    // --- Collection pagination tests ---
+
+    /// Builds an App with a frame that has one var
+    /// (object 42) whose expand returns a field "items"
+    /// = ObjectRef(888, ArrayList, entry_count=ec).
+    /// StubEngine.get_page(888, ..) returns test entries.
+    fn make_collection_app(ec: u64) -> App<StubEngine> {
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let vars = vec![make_obj_var(0, 42)];
+        let expand_fields = Some(vec![FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 888,
+                class_name: "java.util.ArrayList".to_string(),
+                entry_count: Some(ec),
+                inline_value: None,
+            },
+        }]);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(42, expand_fields);
+        App::new(engine, "test.hprof".to_string())
+    }
+
+    /// Navigate from thread list into the collection
+    /// field. Returns app positioned on the "items"
+    /// ObjectField.
+    fn nav_to_collection_field(app: &mut App<StubEngine>) {
+        app.handle_input(InputEvent::Enter); // StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.handle_input(InputEvent::Down); // → OnVar
+        app.handle_input(InputEvent::Enter); // expand obj 42
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        app.handle_input(InputEvent::Down); // → items field
+    }
+
+    fn poll_all_pages(app: &mut App<StubEngine>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_pages.is_empty() && std::time::Instant::now() < deadline {
+            let _fallbacks = app.poll_pages();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn collection_enter_triggers_get_page_not_expand() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        // Enter on collection field → StartCollection
+        app.handle_input(InputEvent::Enter);
+        // Should have pending_pages, not pending_expansions
+        // for collection 888.
+        assert!(
+            !app.pending_pages.is_empty(),
+            "collection load should be pending"
+        );
+        assert!(
+            !app.pending_expansions.contains_key(&888),
+            "should NOT use expand_object for collection"
+        );
+    }
+
+    #[test]
+    fn collection_small_no_chunk_sections() {
+        let mut app = make_collection_app(50);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        let ss = app.stack_state.as_ref().unwrap();
+        let cc = ss.collection_chunks.get(&888).unwrap();
+        assert!(cc.eager_page.is_some());
+        assert_eq!(cc.eager_page.as_ref().unwrap().entries.len(), 50);
+        assert!(
+            cc.chunk_pages.is_empty(),
+            "<= 100 entries → no chunk sections"
+        );
+    }
+
+    #[test]
+    fn collection_250_chunk_layout() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        let ss = app.stack_state.as_ref().unwrap();
+        let cc = ss.collection_chunks.get(&888).unwrap();
+        // Eager page: 100 entries.
+        assert_eq!(cc.eager_page.as_ref().unwrap().entries.len(), 100);
+        // Chunk sections: [100..199], [200..249].
+        let ranges = compute_chunk_ranges(250);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], (100, 100));
+        assert_eq!(ranges[1], (200, 50));
+        // All chunk sections start as Collapsed.
+        for (offset, _) in &ranges {
+            assert!(matches!(
+                cc.chunk_pages.get(offset),
+                Some(ChunkState::Collapsed)
+            ));
+        }
+    }
+
+    #[test]
+    fn collection_3000_chunk_layout() {
+        let ranges = compute_chunk_ranges(3000);
+        // 9 sections of 100 + 2 sections of 1000
+        assert_eq!(ranges.len(), 11);
+        assert_eq!(ranges[0], (100, 100));
+        assert_eq!(ranges[8], (900, 100));
+        assert_eq!(ranges[9], (1000, 1000));
+        assert_eq!(ranges[10], (2000, 1000));
+    }
+
+    #[test]
+    fn collection_2348_last_chunk_truncated() {
+        let ranges = compute_chunk_ranges(2348);
+        let last = ranges.last().unwrap();
+        assert_eq!(*last, (2000, 348));
+    }
+
+    #[test]
+    fn chunk_section_enter_loads_correct_range() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Navigate down past eager entries to first chunk
+        // section: 100 entries + 1 to pass them.
+        for _ in 0..101 {
+            app.handle_input(InputEvent::Down);
+        }
+        let ss = app.stack_state.as_ref().unwrap();
+        // Should be on first chunk section [100..199].
+        assert!(matches!(
+            ss.cursor(),
+            StackCursor::OnChunkSection {
+                chunk_offset: 100,
+                ..
+            }
+        ));
+        // Enter on chunk → LoadChunk(888, 100, 100).
+        app.handle_input(InputEvent::Enter);
+        assert!(
+            app.pending_pages.contains_key(&(888, 100)),
+            "chunk load should be pending"
+        );
+        poll_all_pages(&mut app);
+        let ss = app.stack_state.as_ref().unwrap();
+        let cc = ss.collection_chunks.get(&888).unwrap();
+        assert!(matches!(
+            cc.chunk_pages.get(&100),
+            Some(ChunkState::Loaded(_))
+        ));
+    }
+
+    #[test]
+    fn chunk_loading_indicator() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Navigate to first chunk.
+        for _ in 0..101 {
+            app.handle_input(InputEvent::Down);
+        }
+        app.handle_input(InputEvent::Enter);
+        // Before polling, chunk should be Loading.
+        let ss = app.stack_state.as_ref().unwrap();
+        let cc = ss.collection_chunks.get(&888).unwrap();
+        assert!(matches!(
+            cc.chunk_pages.get(&100),
+            Some(ChunkState::Loading)
+        ));
+    }
+
+    #[test]
+    fn escape_collapses_collection() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Move into collection entries.
+        app.handle_input(InputEvent::Down);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(matches!(ss.cursor(), StackCursor::OnCollectionEntry { .. }));
+        // Escape → collapse collection.
+        app.handle_input(InputEvent::Escape);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            ss.collection_chunks.get(&888).is_none(),
+            "collection should be removed"
+        );
+        // Cursor returns to the collection field.
+        assert!(matches!(ss.cursor(), StackCursor::OnObjectField { .. }));
+        // Focus stays in StackFrames.
+        assert_eq!(app.focus, Focus::StackFrames);
+    }
+
+    #[test]
+    fn escape_from_chunk_section_collapses_collection() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Navigate to first chunk section (past 100 eager entries + 1 entry node).
+        for _ in 0..101 {
+            app.handle_input(InputEvent::Down);
+        }
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            matches!(ss.cursor(), StackCursor::OnChunkSection { .. }),
+            "should be on chunk section, got {:?}",
+            ss.cursor()
+        );
+        // Escape from chunk section should collapse the collection.
+        app.handle_input(InputEvent::Escape);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            ss.collection_chunks.get(&888).is_none(),
+            "collection should be removed after escape from chunk section"
+        );
+        assert!(matches!(ss.cursor(), StackCursor::OnObjectField { .. }));
+    }
+
+    #[test]
+    fn unsupported_type_falls_back_to_expand_object() {
+        // Use collection ID 777 which StubEngine.get_page
+        // returns None for.
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let vars = vec![make_obj_var(0, 42)];
+        let expand_fields = Some(vec![FieldInfo {
+            name: "tree".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 777,
+                class_name: "java.util.TreeMap".to_string(),
+                entry_count: Some(50),
+                inline_value: None,
+            },
+        }]);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(42, expand_fields);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        // poll_pages will get None and fall back to
+        // expand_object.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while (!app.pending_pages.is_empty() || !app.pending_expansions.is_empty())
+            && std::time::Instant::now() < deadline
+        {
+            let fallbacks = app.poll_pages();
+            for cid in fallbacks {
+                app.start_object_expansion(cid);
+            }
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let ss = app.stack_state.as_ref().unwrap();
+        // Collection chunks should be gone.
+        assert!(ss.collection_chunks.get(&777).is_none());
+        // Should have fallen back to expand_object →
+        // expansion state should be Expanded.
+        assert_eq!(ss.expansion_state(777), ExpansionPhase::Expanded);
+    }
+
+    #[test]
+    fn re_enter_on_loaded_chunk_toggles_collapse() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Navigate to first chunk, load it.
+        for _ in 0..101 {
+            app.handle_input(InputEvent::Down);
+        }
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Chunk is now Loaded.
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(matches!(
+            ss.collection_chunks
+                .get(&888)
+                .unwrap()
+                .chunk_pages
+                .get(&100),
+            Some(ChunkState::Loaded(_))
+        ));
+        // Enter again → ToggleChunk → Collapsed.
+        app.handle_input(InputEvent::Enter);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(matches!(
+            ss.collection_chunks
+                .get(&888)
+                .unwrap()
+                .chunk_pages
+                .get(&100),
+            Some(ChunkState::Collapsed)
+        ));
+    }
+
+    #[test]
+    fn entry_rendering_map_vs_list_format() {
+        use crate::views::stack_view::StackState;
+        // Verify format_entry_line for map entry.
+        let map_entry = EntryInfo {
+            index: 5,
+            key: Some(FieldValue::Int(42)),
+            value: FieldValue::Int(100),
+        };
+        let line = StackState::format_entry_line(&map_entry, "  ", None);
+        assert!(line.contains("[5] 42 => 100"), "map entry format: {}", line);
+        // List entry.
+        let list_entry = EntryInfo {
+            index: 3,
+            key: None,
+            value: FieldValue::Int(77),
+        };
+        let line = StackState::format_entry_line(&list_entry, "  ", None);
+        assert!(line.contains("[3] 77"), "list entry format: {}", line);
+        assert!(
+            !line.contains("=>"),
+            "list entry should not have =>: {}",
+            line
+        );
+        // ObjectRef value shows "+" toggle when collapsed.
+        let obj_entry = EntryInfo {
+            index: 0,
+            key: None,
+            value: FieldValue::ObjectRef {
+                id: 999,
+                class_name: "java.lang.String".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        };
+        let line_collapsed = StackState::format_entry_line(
+            &obj_entry,
+            "  ",
+            Some(&crate::views::stack_view::ExpansionPhase::Collapsed),
+        );
+        assert!(
+            line_collapsed.contains("+ [0]")
+                && line_collapsed.contains("String"),
+            "ObjectRef collapsed should show '+ [0] ...': {}",
+            line_collapsed
+        );
+        let line_expanded = StackState::format_entry_line(
+            &obj_entry,
+            "  ",
+            Some(&crate::views::stack_view::ExpansionPhase::Expanded),
+        );
+        assert!(
+            line_expanded.contains("- [0]")
+                && line_expanded.contains("String"),
+            "ObjectRef expanded should show '- [0] ...': {}",
+            line_expanded
+        );
+    }
+
+    /// Builds an App with collection 889 (entries are ObjectRef values).
+    fn make_obj_entry_collection_app() -> App<StubEngine> {
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let vars = vec![make_obj_var(0, 42)];
+        let expand_fields = Some(vec![FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 889,
+                class_name: "java.util.ArrayList".to_string(),
+                entry_count: Some(3),
+                inline_value: None,
+            },
+        }]);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(42, expand_fields);
+        App::new(engine, "test.hprof".to_string())
+    }
+
+    #[test]
+    fn collection_entry_objectref_shows_plus_prefix() {
+        let mut app = make_obj_entry_collection_app();
+        // Navigate to collection field "items" (collection 889).
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let _ = frames; // already built in app
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter); // start collection load
+        poll_all_pages(&mut app);
+        // Navigate down to first entry (index 0).
+        app.handle_input(InputEvent::Down);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            matches!(ss.cursor(), StackCursor::OnCollectionEntry { entry_index: 0, .. }),
+            "should be on entry 0, got {:?}",
+            ss.cursor()
+        );
+        // The entry rendering is verified through format_entry_line above;
+        // here we verify Enter triggers start_object_expansion.
+        app.handle_input(InputEvent::Enter);
+        // pending_expansions should contain ObjectRef id 700 (entry 0's value).
+        assert!(
+            app.pending_expansions.contains_key(&700),
+            "entering on ObjectRef entry should start expansion of id 700"
+        );
+    }
+
+    #[test]
+    fn collection_entry_objectref_expanded_fields_appear_in_tree() {
+        let mut app = make_obj_entry_collection_app();
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Navigate to entry 0 and expand it.
+        app.handle_input(InputEvent::Down);
+        app.handle_input(InputEvent::Enter); // start expand of id=700
+        // Poll until expansion done.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // Navigate down — should enter OnCollectionEntryObjField.
+        app.handle_input(InputEvent::Down);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            matches!(
+                ss.cursor(),
+                StackCursor::OnCollectionEntryObjField { entry_index: 0, .. }
+            ),
+            "after expanding entry 0, down should reach OnCollectionEntryObjField, \
+             got {:?}",
+            ss.cursor()
+        );
+    }
+
+    #[test]
+    fn page_up_down_scrolls_tree_by_visible_height() {
+        // This is a general tree scroll test, not
+        // collection-specific.
+        use crate::views::stack_view::StackState;
+        let frames: Vec<_> = (1..=30).map(|i| make_frame(i)).collect();
+        let mut state = StackState::new(frames);
+        state.set_visible_height(10);
+        // Move to frame 5.
+        for _ in 0..5 {
+            state.move_down();
+        }
+        assert_eq!(*state.cursor(), StackCursor::OnFrame(5));
+        state.move_page_down();
+        assert_eq!(*state.cursor(), StackCursor::OnFrame(15));
+        state.move_page_up();
+        assert_eq!(*state.cursor(), StackCursor::OnFrame(5));
     }
 }

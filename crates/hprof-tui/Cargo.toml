@@ -7,3 +7,7 @@ edition = "2024"
 hprof-engine = { path = "../hprof-engine" }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+tracing = { version = "0.1", optional = true }
+
+[features]
+dev-profiling = ["hprof-engine/dev-profiling", "dep:tracing"]
