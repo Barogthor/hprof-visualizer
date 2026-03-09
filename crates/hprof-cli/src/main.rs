@@ -45,7 +45,7 @@ where
         };
 
         let file_appender = tracing_appender::rolling::never(
-            ".", "hprof-debug.log",
+            ".", "logs/hprof-debug.log",
         );
         let file_layer = fmt::layer()
             .with_writer(file_appender)
