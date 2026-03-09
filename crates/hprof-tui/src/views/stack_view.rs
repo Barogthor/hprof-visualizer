@@ -2013,4 +2013,61 @@ mod tests {
             field_path: vec![0, 0, 0],
         }));
     }
+
+    #[test]
+    fn flat_items_diamond_shared_object_no_false_positive() {
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 100)];
+        state.toggle_expand(10, vars);
+        // A(100) has two fields both pointing to C(300)
+        let fields_a = vec![
+            FieldInfo {
+                name: "left".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 300,
+                    class_name: "C".to_string(),
+                    entry_count: None,
+                },
+            },
+            FieldInfo {
+                name: "right".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 300,
+                    class_name: "C".to_string(),
+                    entry_count: None,
+                },
+            },
+        ];
+        state.set_expansion_done(100, fields_a);
+        let fields_c = vec![FieldInfo {
+            name: "val".to_string(),
+            value: FieldValue::Int(42),
+        }];
+        state.set_expansion_done(300, fields_c);
+        let flat = state.flat_items();
+        // C is shared but NOT an ancestor — no cyclic nodes
+        let cyclic_count = flat
+            .iter()
+            .filter(|c| {
+                matches!(c, StackCursor::OnCyclicNode { .. })
+            })
+            .count();
+        assert_eq!(
+            cyclic_count, 0,
+            "diamond/shared object must not be a false positive"
+        );
+        // C's field should appear under both left and right
+        assert!(flat.contains(&StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![0, 0],
+        }));
+        assert!(flat.contains(&StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![1, 0],
+        }));
+    }
 }

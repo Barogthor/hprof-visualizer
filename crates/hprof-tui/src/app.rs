@@ -268,10 +268,8 @@ impl<E: NavigationEngine> App<E> {
                             }
                         }
                         StackCursor::OnCyclicNode { .. }
-                        | StackCursor::OnObjectLoadingNode { .. } => {
-                            return None;
-                        }
-                        _ => return None,
+                        | StackCursor::OnObjectLoadingNode { .. }
+                        | StackCursor::NoFrames => return None,
                     })
                 });
                 match cmd {
