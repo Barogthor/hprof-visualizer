@@ -298,10 +298,10 @@ impl<E: NavigationEngine> App<E> {
                     Some(Cmd::CollapseNestedObj(oid)) => {
                         self.pending_expansions.remove(&oid);
                         if let Some(s) = &mut self.stack_state {
-                            for sid in s.string_ids_in_subtree(oid) {
-                                self.pending_strings.remove(&sid);
-                            }
-                            s.collapse_object_recursive(oid);
+                            // Non-recursive: only collapse this object,
+                            // not ancestors reachable via cyclic back-refs.
+                            // Children retain their state (harmless cache).
+                            s.collapse_object(oid);
                         }
                     }
                     Some(Cmd::LoadString(sid)) => self.start_string_loading(sid),

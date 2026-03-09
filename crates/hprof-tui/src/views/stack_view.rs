@@ -2190,4 +2190,68 @@ mod tests {
             "move_down must move away from OnVar"
         );
     }
+
+    #[test]
+    fn collapse_nested_non_recursive_preserves_parent() {
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 1000)];
+        state.toggle_expand(10, vars);
+        // Thread(1000) → parkBlocker → Coroutine(2000)
+        let thread_fields = vec![FieldInfo {
+            name: "parkBlocker".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 2000,
+                class_name: "Coroutine".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(1000, thread_fields);
+        // Coroutine(2000) → blockedThread → Thread(1000)
+        let coroutine_fields = vec![FieldInfo {
+            name: "blockedThread".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 1000,
+                class_name: "Thread".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.set_expansion_done(2000, coroutine_fields);
+
+        // Cursor on parkBlocker field
+        state.cursor = StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![0],
+        };
+
+        // Non-recursive collapse (CollapseNestedObj path):
+        // only collapses 2000, NOT 1000.
+        state.collapse_object(2000);
+
+        // Thread(1000) must still be expanded
+        assert_eq!(
+            state.expansion_state(1000),
+            ExpansionPhase::Expanded,
+            "parent object must remain expanded"
+        );
+        // Coroutine(2000) must be collapsed
+        assert_eq!(
+            state.expansion_state(2000),
+            ExpansionPhase::Collapsed,
+        );
+        // Cursor stays on the parkBlocker field
+        let flat = state.flat_items();
+        assert!(
+            flat.contains(&state.cursor),
+            "cursor must still be valid"
+        );
+        assert!(matches!(
+            &state.cursor,
+            StackCursor::OnObjectField {
+                field_path, ..
+            } if *field_path == vec![0]
+        ));
+    }
 }
