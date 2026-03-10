@@ -2456,5 +2456,50 @@ mod tests {
                 "must return fields even with tiny budget"
             );
         }
+
+        #[test]
+        fn re_parse_after_eviction_produces_identical_fields() {
+            // Budget = 1 → every expand triggers immediate full eviction
+            // A is evicted as soon as it is inserted (it becomes the sole
+            // LRU entry and the eviction loop drains the cache).
+            let engine = engine_two_objects(1);
+            let fields_first =
+                engine.expand_object(0xAAA).unwrap();
+            // Expand B to confirm eviction and internal state remain sane
+            engine.expand_object(0xBBB).unwrap();
+            // Re-expand A: must be a cache miss → re-parse from mmap
+            let fields_second =
+                engine.expand_object(0xAAA).unwrap();
+            assert_eq!(
+                fields_first, fields_second,
+                "re-parse must produce byte-identical fields (AC2 / NFR8)"
+            );
+        }
+
+        #[test]
+        fn multi_cycle_no_panic_no_counter_overflow() {
+            // Budget = 1 → each expand evicts all cached data.
+            // 50 cycles of alternating A/B expansion must not panic
+            // and must not overflow the MemoryCounter.
+            let engine = engine_two_objects(1);
+            for _ in 0..50 {
+                let r_a = engine.expand_object(0xAAA);
+                assert!(
+                    r_a.is_some(),
+                    "A must always return Some across all cycles"
+                );
+                let r_b = engine.expand_object(0xBBB);
+                assert!(
+                    r_b.is_some(),
+                    "B must always return Some across all cycles"
+                );
+            }
+            // usize::MAX / 2 is a conservative sentinel: real usage is
+            // at most a few KB; any value above this indicates underflow.
+            assert!(
+                engine.memory_used() < usize::MAX / 2,
+                "MemoryCounter must not underflow to usize::MAX"
+            );
+        }
     }
 }

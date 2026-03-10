@@ -138,7 +138,7 @@ pub enum FieldValue {
 }
 
 /// One field of an expanded object instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldInfo {
     /// Human-readable field name resolved from structural strings.
     pub name: String,
