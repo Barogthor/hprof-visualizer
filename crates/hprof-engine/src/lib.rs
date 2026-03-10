@@ -30,6 +30,7 @@ macro_rules! dbg_log {
     ($($arg:tt)*) => {()};
 }
 
+pub mod cache;
 mod engine;
 mod engine_impl;
 mod pagination;

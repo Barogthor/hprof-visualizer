@@ -7,6 +7,8 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
 
+use hprof_api::MemorySize;
+
 use crate::{HprofError, read_id};
 
 /// A parsed `LOAD_CLASS` record (tag `0x02`).
@@ -103,6 +105,53 @@ pub struct RawInstance {
     pub class_object_id: u64,
     /// Field data bytes, ordered as declared in the class hierarchy.
     pub data: Vec<u8>,
+}
+
+impl MemorySize for ClassDef {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl MemorySize for HprofThread {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl MemorySize for StackFrame {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl MemorySize for StackTrace {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.frame_ids.capacity()
+                * std::mem::size_of::<u64>()
+    }
+}
+
+impl MemorySize for FieldDef {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl MemorySize for ClassDumpInfo {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.instance_fields.capacity()
+                * std::mem::size_of::<FieldDef>()
+    }
+}
+
+impl MemorySize for RawInstance {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.data.capacity()
+    }
 }
 
 /// Parses a `LOAD_CLASS` record payload from `cursor`.
@@ -239,6 +288,113 @@ pub fn parse_stack_trace(
         thread_serial,
         frame_ids,
     })
+}
+
+#[cfg(test)]
+mod memory_size_tests {
+    use super::*;
+    use std::mem::size_of;
+
+    #[test]
+    fn class_def_returns_static_size() {
+        let c = ClassDef {
+            class_serial: 1,
+            class_object_id: 100,
+            stack_trace_serial: 0,
+            class_name_string_id: 200,
+        };
+        assert_eq!(c.memory_size(), size_of::<ClassDef>());
+    }
+
+    #[test]
+    fn hprof_thread_returns_static_size() {
+        let t = HprofThread {
+            thread_serial: 1,
+            object_id: 100,
+            stack_trace_serial: 0,
+            name_string_id: 10,
+            group_name_string_id: 20,
+            group_parent_name_string_id: 30,
+        };
+        assert_eq!(t.memory_size(), size_of::<HprofThread>());
+    }
+
+    #[test]
+    fn stack_frame_returns_static_size() {
+        let f = StackFrame {
+            frame_id: 1,
+            method_name_string_id: 2,
+            method_sig_string_id: 3,
+            source_file_string_id: 4,
+            class_serial: 5,
+            line_number: 42,
+        };
+        assert_eq!(f.memory_size(), size_of::<StackFrame>());
+    }
+
+    #[test]
+    fn stack_trace_includes_vec_capacity() {
+        let mut frame_ids = Vec::with_capacity(10);
+        frame_ids.push(1);
+        frame_ids.push(2);
+        let st = StackTrace {
+            stack_trace_serial: 1,
+            thread_serial: 1,
+            frame_ids,
+        };
+        let expected = size_of::<StackTrace>()
+            + 10 * size_of::<u64>();
+        assert_eq!(st.memory_size(), expected);
+    }
+
+    #[test]
+    fn field_def_returns_static_size() {
+        let f = FieldDef {
+            name_string_id: 1,
+            field_type: 10,
+        };
+        assert_eq!(f.memory_size(), size_of::<FieldDef>());
+    }
+
+    #[test]
+    fn class_dump_info_includes_fields_capacity() {
+        let mut fields = Vec::with_capacity(5);
+        fields.push(FieldDef {
+            name_string_id: 1,
+            field_type: 10,
+        });
+        let c = ClassDumpInfo {
+            class_object_id: 100,
+            super_class_id: 50,
+            instance_size: 16,
+            instance_fields: fields,
+        };
+        let expected = size_of::<ClassDumpInfo>()
+            + 5 * size_of::<FieldDef>();
+        assert_eq!(c.memory_size(), expected);
+    }
+
+    #[test]
+    fn raw_instance_includes_data_capacity() {
+        let mut data = Vec::with_capacity(100);
+        data.extend_from_slice(&[1, 2, 3]);
+        let r = RawInstance {
+            class_object_id: 200,
+            data,
+        };
+        let expected = size_of::<RawInstance>() + 100;
+        assert_eq!(r.memory_size(), expected);
+    }
+
+    #[test]
+    fn empty_stack_trace_returns_static_size() {
+        let st = StackTrace {
+            stack_trace_serial: 1,
+            thread_serial: 1,
+            frame_ids: Vec::new(),
+        };
+        assert_eq!(st.memory_size(), size_of::<StackTrace>());
+    }
 }
 
 #[cfg(test)]

@@ -254,6 +254,12 @@ struct ThreadMetadata {
     state: ThreadState,
 }
 
+impl hprof_api::MemorySize for ThreadMetadata {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.name.capacity()
+    }
+}
+
 /// Navigation engine backed by a memory-mapped hprof file.
 ///
 /// Constructed via [`Engine::from_file`]. Implements [`NavigationEngine`]
@@ -263,6 +269,8 @@ pub struct Engine {
     /// Pre-resolved thread metadata (serial → name + state).
     /// Built once at construction to avoid repeated heap scans.
     thread_cache: HashMap<u32, ThreadMetadata>,
+    /// Tracks total heap memory consumed by parsed/cached data.
+    memory_counter: Arc<crate::cache::MemoryCounter>,
 }
 
 impl Engine {
@@ -278,9 +286,12 @@ impl Engine {
         let hfile = Arc::new(HprofFile::from_path(path)?);
         let mut notifier = ProgressNotifier::new(&mut null_obs);
         let thread_cache = Self::build_thread_cache(&hfile, &mut notifier);
+        let counter = Arc::new(crate::cache::MemoryCounter::new());
+        counter.add(Self::initial_memory(&hfile, &thread_cache));
         Ok(Self {
             hfile,
             thread_cache,
+            memory_counter: counter,
         })
     }
 
@@ -301,9 +312,12 @@ impl Engine {
         let hfile = Arc::new(HprofFile::from_path_with_progress(path, observer)?);
         let mut notifier = ProgressNotifier::new(observer);
         let thread_cache = Self::build_thread_cache(&hfile, &mut notifier);
+        let counter = Arc::new(crate::cache::MemoryCounter::new());
+        counter.add(Self::initial_memory(&hfile, &thread_cache));
         Ok(Self {
             hfile,
             thread_cache,
+            memory_counter: counter,
         })
     }
 
@@ -351,6 +365,25 @@ impl Engine {
             notifier.names_resolved(cache.len(), total);
         }
         cache
+    }
+
+    /// Computes initial memory usage from PreciseIndex +
+    /// thread_cache at construction time.
+    fn initial_memory(
+        hfile: &HprofFile,
+        thread_cache: &HashMap<u32, ThreadMetadata>,
+    ) -> usize {
+        use hprof_api::MemorySize;
+        let index_size = hfile.index.memory_size();
+        let cache_size: usize = thread_cache
+            .values()
+            .map(|tm| tm.memory_size())
+            .sum();
+        let cache_overhead =
+            hprof_api::fxhashmap_memory_size::<u32, ThreadMetadata>(
+                thread_cache.capacity(),
+            );
+        index_size + cache_size + cache_overhead
     }
 
     /// Resolves thread name and state from the heap Thread object.
@@ -764,6 +797,10 @@ impl NavigationEngine for Engine {
         let (elem_type, bytes) = self.hfile.find_prim_array(value_id)?;
         Some(decode_prim_array_as_string(elem_type, &bytes))
     }
+
+    fn memory_used(&self) -> usize {
+        self.memory_counter.current()
+    }
 }
 
 #[cfg(test)]
@@ -777,6 +814,20 @@ mod tests {
         bytes.extend_from_slice(&8u32.to_be_bytes());
         bytes.extend_from_slice(&0u64.to_be_bytes());
         bytes
+    }
+
+    #[test]
+    fn memory_used_positive_after_from_file() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&minimal_hprof_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig;
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        assert!(
+            engine.memory_used() > 0,
+            "memory_used must be > 0 after construction"
+        );
     }
 
     #[test]
@@ -932,6 +983,29 @@ mod tests {
             tmp.flush().unwrap();
             let config = EngineConfig;
             Engine::from_file(tmp.path(), &config).unwrap()
+        }
+
+        #[test]
+        fn memory_used_with_populated_fixture() {
+            let bytes = HprofTestBuilder::new(
+                "JAVA PROFILE 1.0.2",
+                8,
+            )
+            .add_string(1, "run")
+            .add_string(2, "()")
+            .add_string(3, "Thread.java")
+            .add_string(4, "java/lang/Thread")
+            .add_class(1, 100, 0, 4)
+            .add_stack_frame(10, 1, 2, 3, 1, 42)
+            .add_stack_trace(1, 1, &[10])
+            .add_thread(1, 200, 1, 1, 0, 0)
+            .build();
+            let engine = engine_from_bytes(&bytes);
+            let used = engine.memory_used();
+            assert!(
+                used > 0,
+                "memory_used ({used}) must be positive"
+            );
         }
 
         #[test]

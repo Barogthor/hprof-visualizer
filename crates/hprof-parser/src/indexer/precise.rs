@@ -18,6 +18,8 @@
 
 use rustc_hash::FxHashMap;
 
+use hprof_api::{MemorySize, fxhashmap_memory_size};
+
 use crate::{ClassDef, ClassDumpInfo, HprofStringRef, HprofThread, StackFrame, StackTrace};
 
 /// O(1) lookup index populated by a single sequential pass over an hprof file.
@@ -112,6 +114,56 @@ impl PreciseIndex {
     }
 }
 
+impl MemorySize for PreciseIndex {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + fxhashmap_memory_size::<u64, HprofStringRef>(
+                self.strings.capacity(),
+            )
+            + fxhashmap_memory_size::<u32, ClassDef>(
+                self.classes.capacity(),
+            )
+            + fxhashmap_memory_size::<u32, HprofThread>(
+                self.threads.capacity(),
+            )
+            + fxhashmap_memory_size::<u64, StackFrame>(
+                self.stack_frames.capacity(),
+            )
+            + fxhashmap_memory_size::<u32, StackTrace>(
+                self.stack_traces.capacity(),
+            )
+            + self.stack_traces.values().map(|st| {
+                st.frame_ids.capacity()
+                    * std::mem::size_of::<u64>()
+            }).sum::<usize>()
+            + fxhashmap_memory_size::<u64, Vec<u64>>(
+                self.java_frame_roots.capacity(),
+            )
+            + self.java_frame_roots.values().map(|v| {
+                v.capacity() * std::mem::size_of::<u64>()
+            }).sum::<usize>()
+            + fxhashmap_memory_size::<u64, ClassDumpInfo>(
+                self.class_dumps.capacity(),
+            )
+            + self.class_dumps.values().map(|cd| {
+                cd.instance_fields.capacity()
+                    * std::mem::size_of::<crate::FieldDef>()
+            }).sum::<usize>()
+            + fxhashmap_memory_size::<u32, u64>(
+                self.thread_object_ids.capacity(),
+            )
+            + fxhashmap_memory_size::<u64, String>(
+                self.class_names_by_id.capacity(),
+            )
+            + self.class_names_by_id.values().map(|s| {
+                s.capacity()
+            }).sum::<usize>()
+            + fxhashmap_memory_size::<u64, u64>(
+                self.instance_offsets.capacity(),
+            )
+    }
+}
+
 impl Default for PreciseIndex {
     fn default() -> Self {
         Self::new()
@@ -122,6 +174,63 @@ impl Default for PreciseIndex {
 mod tests {
     use super::*;
     use crate::{ClassDef, HprofStringRef, HprofThread, StackFrame, StackTrace};
+
+    #[test]
+    fn memory_size_empty_index_equals_static_size() {
+        let index = PreciseIndex::new();
+        assert_eq!(
+            index.memory_size(),
+            std::mem::size_of::<PreciseIndex>()
+        );
+    }
+
+    #[test]
+    fn memory_size_populated_exceeds_static_size() {
+        let mut index = PreciseIndex::new();
+        index.strings.insert(
+            1,
+            HprofStringRef {
+                id: 1,
+                offset: 0,
+                len: 5,
+            },
+        );
+        index.class_names_by_id.insert(
+            100,
+            "java.lang.String".to_string(),
+        );
+        index.java_frame_roots.insert(
+            10,
+            vec![1, 2, 3],
+        );
+        index.stack_traces.insert(
+            1,
+            StackTrace {
+                stack_trace_serial: 1,
+                thread_serial: 1,
+                frame_ids: vec![10, 20],
+            },
+        );
+        let total = index.memory_size();
+        let static_size = std::mem::size_of::<PreciseIndex>();
+        assert!(
+            total > static_size,
+            "populated index ({total}) must exceed \
+             static size ({static_size})"
+        );
+    }
+
+    #[test]
+    fn memory_size_accounts_for_string_capacity() {
+        let mut index = PreciseIndex::new();
+        let long_name = "a".repeat(200);
+        index.class_names_by_id.insert(1, long_name.clone());
+        let total = index.memory_size();
+        assert!(
+            total >= 200,
+            "must include string capacity ({total})"
+        );
+    }
 
     #[test]
     fn new_creates_empty_index() {

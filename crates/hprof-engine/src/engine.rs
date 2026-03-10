@@ -4,6 +4,8 @@
 //! `hprof-parser` internals. All concrete types returned by the trait are
 //! defined here alongside the trait itself.
 
+use hprof_api::MemorySize;
+
 /// Thread execution state, inferred from heap dump object data.
 ///
 /// `Unknown` is returned until Story 3.4 resolves state from the
@@ -169,6 +171,107 @@ pub struct CollectionPage {
     pub has_more: bool,
 }
 
+impl MemorySize for ThreadInfo {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.name.capacity()
+    }
+}
+
+impl MemorySize for FrameInfo {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.method_name.capacity()
+            + self.class_name.capacity()
+            + self.source_file.capacity()
+    }
+}
+
+impl MemorySize for VariableValue {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + match self {
+                VariableValue::Null => 0,
+                VariableValue::ObjectRef { class_name, .. } => {
+                    class_name.capacity()
+                }
+            }
+    }
+}
+
+impl MemorySize for VariableInfo {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + match &self.value {
+                VariableValue::Null => 0,
+                VariableValue::ObjectRef { class_name, .. } => {
+                    class_name.capacity()
+                }
+            }
+    }
+}
+
+impl MemorySize for FieldValue {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + match self {
+                FieldValue::ObjectRef {
+                    class_name,
+                    inline_value,
+                    ..
+                } => {
+                    class_name.capacity()
+                        + inline_value
+                            .as_ref()
+                            .map_or(0, |s| s.capacity())
+                }
+                _ => 0,
+            }
+    }
+}
+
+impl MemorySize for FieldInfo {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.name.capacity()
+            + match &self.value {
+                FieldValue::ObjectRef {
+                    class_name,
+                    inline_value,
+                    ..
+                } => {
+                    class_name.capacity()
+                        + inline_value
+                            .as_ref()
+                            .map_or(0, |s| s.capacity())
+                }
+                _ => 0,
+            }
+    }
+}
+
+impl MemorySize for EntryInfo {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.key.as_ref().map_or(0, |k| {
+                k.memory_size() - std::mem::size_of::<FieldValue>()
+            })
+            + self.value.memory_size()
+            - std::mem::size_of::<FieldValue>()
+    }
+}
+
+impl MemorySize for CollectionPage {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.entries.capacity()
+                * std::mem::size_of::<EntryInfo>()
+            + self.entries.iter().map(|e| {
+                e.memory_size()
+                    - std::mem::size_of::<EntryInfo>()
+            }).sum::<usize>()
+    }
+}
+
 /// High-level navigation API consumed by the TUI frontend.
 ///
 /// Implemented by [`crate::Engine`]. All methods are pure reads; the engine
@@ -208,6 +311,11 @@ pub trait NavigationEngine {
     /// Returns `Some(value)` if the String's backing primitive array is found and
     /// decoded, `None` if the object or its backing array cannot be located.
     fn resolve_string(&self, object_id: u64) -> Option<String>;
+
+    /// Returns total bytes currently tracked by the memory
+    /// budget counter (PreciseIndex + thread cache + any
+    /// expanded objects/pages).
+    fn memory_used(&self) -> usize;
 }
 
 #[cfg(test)]
@@ -255,6 +363,9 @@ mod tests {
         }
         fn resolve_string(&self, _object_id: u64) -> Option<String> {
             None
+        }
+        fn memory_used(&self) -> usize {
+            0
         }
     }
 
@@ -400,5 +511,133 @@ mod tests {
         assert_ne!(ThreadState::Unknown, ThreadState::Runnable);
         assert_ne!(ThreadState::Runnable, ThreadState::Waiting);
         assert_ne!(ThreadState::Waiting, ThreadState::Blocked);
+    }
+
+    #[test]
+    fn thread_info_memory_size_includes_name() {
+        let info = ThreadInfo {
+            thread_serial: 1,
+            name: String::from("main-thread"),
+            state: ThreadState::Runnable,
+        };
+        let expected = std::mem::size_of::<ThreadInfo>()
+            + info.name.capacity();
+        assert_eq!(info.memory_size(), expected);
+    }
+
+    #[test]
+    fn frame_info_memory_size_includes_strings() {
+        let f = FrameInfo {
+            frame_id: 1,
+            method_name: "run".to_string(),
+            class_name: "Thread".to_string(),
+            source_file: "Thread.java".to_string(),
+            line: LineNumber::Line(42),
+            has_variables: false,
+        };
+        let expected = std::mem::size_of::<FrameInfo>()
+            + f.method_name.capacity()
+            + f.class_name.capacity()
+            + f.source_file.capacity();
+        assert_eq!(f.memory_size(), expected);
+    }
+
+    #[test]
+    fn field_value_null_returns_static_size() {
+        let v = FieldValue::Null;
+        assert_eq!(
+            v.memory_size(),
+            std::mem::size_of::<FieldValue>()
+        );
+    }
+
+    #[test]
+    fn field_value_object_ref_includes_strings() {
+        let v = FieldValue::ObjectRef {
+            id: 42,
+            class_name: "java.lang.String".to_string(),
+            entry_count: None,
+            inline_value: Some("hello".to_string()),
+        };
+        let expected = std::mem::size_of::<FieldValue>()
+            + "java.lang.String".len()
+            + "hello".len();
+        assert!(v.memory_size() >= expected);
+    }
+
+    #[test]
+    fn field_info_memory_size_includes_name_and_value() {
+        let f = FieldInfo {
+            name: "count".to_string(),
+            value: FieldValue::Int(42),
+        };
+        let expected = std::mem::size_of::<FieldInfo>()
+            + f.name.capacity();
+        assert_eq!(f.memory_size(), expected);
+    }
+
+    #[test]
+    fn variable_value_null_returns_static_size() {
+        let v = VariableValue::Null;
+        assert_eq!(
+            v.memory_size(),
+            std::mem::size_of::<VariableValue>()
+        );
+    }
+
+    #[test]
+    fn variable_value_obj_ref_includes_class_name() {
+        let v = VariableValue::ObjectRef {
+            id: 1,
+            class_name: "Object".to_string(),
+        };
+        let expected = std::mem::size_of::<VariableValue>()
+            + "Object".len();
+        assert!(v.memory_size() >= expected);
+    }
+
+    #[test]
+    fn variable_info_memory_size() {
+        let v = VariableInfo {
+            index: 0,
+            value: VariableValue::Null,
+        };
+        assert_eq!(
+            v.memory_size(),
+            std::mem::size_of::<VariableInfo>()
+        );
+    }
+
+    #[test]
+    fn entry_info_memory_size() {
+        let e = EntryInfo {
+            index: 0,
+            key: None,
+            value: FieldValue::Int(1),
+        };
+        assert_eq!(
+            e.memory_size(),
+            std::mem::size_of::<EntryInfo>()
+        );
+    }
+
+    #[test]
+    fn collection_page_memory_size_includes_entries() {
+        let page = CollectionPage {
+            entries: vec![
+                EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::Int(1),
+                },
+            ],
+            total_count: 1,
+            offset: 0,
+            has_more: false,
+        };
+        assert!(
+            page.memory_size()
+                > std::mem::size_of::<CollectionPage>()
+        );
     }
 }

@@ -917,6 +917,9 @@ mod tests {
         fn resolve_string(&self, _: u64) -> Option<String> {
             Some("value".to_string())
         }
+        fn memory_used(&self) -> usize {
+            0
+        }
     }
 
     fn make_frame(frame_id: u64) -> FrameInfo {
