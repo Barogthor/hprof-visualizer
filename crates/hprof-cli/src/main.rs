@@ -47,7 +47,7 @@ fn run() -> Result<(), CliError> {
     #[cfg(feature = "dev-profiling")]
     let _guard = {
         use tracing_subscriber::prelude::*;
-        use tracing_subscriber::{EnvFilter, fmt};
+        use tracing_subscriber::{fmt, EnvFilter};
 
         let chrome_layer = {
             let (layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
@@ -161,7 +161,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidMemoryLimit(msg) => {
-                write!(f, "invalid --memory-limit: {msg}")
+                write!(f, "invalid memory limit: {msg}")
             }
             Self::MetadataFailed(err) => {
                 write!(f, "failed to read file metadata: {err}")

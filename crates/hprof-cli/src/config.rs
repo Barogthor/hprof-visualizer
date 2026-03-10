@@ -5,6 +5,7 @@
 //! directly to inject explicit paths and avoid reading an ambient
 //! `config.toml` from the real process working directory.
 
+use std::io::ErrorKind;
 use std::path::Path;
 
 /// Application-level configuration loaded from a `config.toml` file.
@@ -26,6 +27,44 @@ pub fn load(binary_path: &Path) -> AppConfig {
     load_from(&cwd, binary_path)
 }
 
+fn load_from_with<F>(cwd: &Path, binary_path: &Path, mut warn: F) -> AppConfig
+where
+    F: FnMut(String),
+{
+    let bin_dir_config = {
+        let resolved = binary_path
+            .canonicalize()
+            .unwrap_or_else(|_| binary_path.to_path_buf());
+        resolved.parent().map(|p| p.join("config.toml"))
+    };
+
+    let candidates: &[&dyn Fn() -> Option<std::path::PathBuf>] =
+        &[&|| Some(cwd.join("config.toml")), &|| {
+            bin_dir_config.clone()
+        }];
+
+    for candidate_fn in candidates {
+        let Some(path) = candidate_fn() else { continue };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            Err(err) => {
+                warn(format!("[warn] config: {}: {}", path.display(), err));
+                return AppConfig::default();
+            }
+        };
+        return match toml::from_str::<AppConfig>(&content) {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                warn(format!("[warn] config: {}: {}", path.display(), err));
+                AppConfig::default()
+            }
+        };
+    }
+
+    AppConfig::default()
+}
+
 /// Testable core: resolves config with explicitly injected `cwd` and
 /// `binary_path`.
 ///
@@ -37,34 +76,7 @@ pub fn load(binary_path: &Path) -> AppConfig {
 /// If a candidate file exists but contains malformed TOML, a warning is
 /// printed to **stderr** and `AppConfig::default()` is returned (AC4).
 pub(crate) fn load_from(cwd: &Path, binary_path: &Path) -> AppConfig {
-    let bin_dir_config = {
-        let resolved = binary_path
-            .canonicalize()
-            .unwrap_or_else(|_| binary_path.to_path_buf());
-        resolved.parent().map(|p| p.join("config.toml"))
-    };
-
-    let candidates: &[&dyn Fn() -> Option<std::path::PathBuf>] = &[
-        &|| Some(cwd.join("config.toml")),
-        &|| bin_dir_config.clone(),
-    ];
-
-    for candidate_fn in candidates {
-        let Some(path) = candidate_fn() else { continue };
-        let content = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue, // file does not exist or unreadable — skip
-        };
-        return match toml::from_str::<AppConfig>(&content) {
-            Ok(cfg) => cfg,
-            Err(err) => {
-                eprintln!("[warn] config: {}: {}", path.display(), err);
-                AppConfig::default()
-            }
-        };
-    }
-
-    AppConfig::default()
+    load_from_with(cwd, binary_path, |msg| eprintln!("{msg}"))
 }
 
 #[cfg(test)]
@@ -123,6 +135,40 @@ mod tests {
         write_config(dir.path(), "not valid toml !!!");
         let cfg = load_from(dir.path(), std::path::Path::new("/nonexistent/bin"));
         assert!(cfg.memory_limit.is_none());
+    }
+
+    #[test]
+    fn malformed_toml_emits_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "not valid toml !!!");
+        let mut warnings = Vec::new();
+
+        let cfg = load_from_with(
+            dir.path(),
+            std::path::Path::new("/nonexistent/bin"),
+            |msg| warnings.push(msg),
+        );
+
+        assert!(cfg.memory_limit.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("[warn] config:"));
+    }
+
+    #[test]
+    fn unreadable_config_emits_warning_and_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("config.toml")).unwrap();
+        let mut warnings = Vec::new();
+
+        let cfg = load_from_with(
+            dir.path(),
+            std::path::Path::new("/nonexistent/bin"),
+            |msg| warnings.push(msg),
+        );
+
+        assert!(cfg.memory_limit.is_none());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("[warn] config:"));
     }
 
     #[test]

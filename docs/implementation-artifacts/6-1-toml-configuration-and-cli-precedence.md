@@ -1,6 +1,6 @@
 # Story 6.1: TOML Configuration & CLI Precedence
 
-Status: review
+Status: done
 
 ## Story
 
@@ -211,9 +211,42 @@ claude-sonnet-4-6
 - Precedence merge in `run()` via `.or()` — CLI always wins (AC5).
 - Source-aware error message distinguishes `--memory-limit` from
   `config file memory_limit` for better UX.
+- Code review fixes applied:
+  - Memory-limit validation error message now avoids hardcoding
+    `--memory-limit` and preserves the real source context.
+  - Config loader now warns on non-`NotFound` read errors instead of
+    silently ignoring them.
+  - Added tests to assert malformed TOML warning emission and unreadable
+    config warning behavior.
 
 ### File List
 
 - crates/hprof-cli/Cargo.toml
 - crates/hprof-cli/src/config.rs
 - crates/hprof-cli/src/main.rs
+- docs/implementation-artifacts/6-1-toml-configuration-and-cli-precedence.md
+- docs/implementation-artifacts/sprint-status.yaml
+- docs/code-review/codex-story-6.1-code-review.md
+
+## Senior Developer Review (AI)
+
+- Reviewer: Codex (gpt-5.3-codex)
+- Date: 2026-03-10
+- Outcome: Changes Requested -> Addressed
+
+### Findings addressed
+
+1. Error message source labeling was misleading (`invalid --memory-limit` even
+   for config-driven errors) -> fixed in `crates/hprof-cli/src/main.rs`.
+2. Read errors for existing config paths were silently ignored -> fixed with
+   explicit warning + default fallback in `crates/hprof-cli/src/config.rs`.
+3. AC4 warning path was not asserted in tests -> added warning-capture tests in
+   `crates/hprof-cli/src/config.rs`.
+
+### Validation
+
+- Ran `cargo test -p hprof-cli` -> 29 passed, 0 failed.
+
+### Change Log
+
+- 2026-03-10: Applied code-review remediation for Story 6.1; updated status to done and synced sprint tracking.
