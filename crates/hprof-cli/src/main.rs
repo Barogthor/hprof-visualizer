@@ -47,7 +47,7 @@ fn run() -> Result<(), CliError> {
     #[cfg(feature = "dev-profiling")]
     let _guard = {
         use tracing_subscriber::prelude::*;
-        use tracing_subscriber::{fmt, EnvFilter};
+        use tracing_subscriber::{EnvFilter, fmt};
 
         let chrome_layer = {
             let (layer, guard) = tracing_chrome::ChromeLayerBuilder::new()

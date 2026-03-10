@@ -629,9 +629,7 @@ impl<E: NavigationEngine> App<E> {
                     done.push(object_id);
                 }
                 Err(mpsc::TryRecvError::Empty) => {
-                    if !pe.loading_shown
-                        && pe.started.elapsed() >= EXPANSION_LOADING_THRESHOLD
-                    {
+                    if !pe.loading_shown && pe.started.elapsed() >= EXPANSION_LOADING_THRESHOLD {
                         if let Some(s) = &mut self.stack_state {
                             s.set_expansion_loading(object_id);
                         }
@@ -640,14 +638,10 @@ impl<E: NavigationEngine> App<E> {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_failed(
-                            object_id,
-                            "Worker thread disconnected".to_string(),
-                        );
+                        s.set_expansion_failed(object_id, "Worker thread disconnected".to_string());
                     }
-                    self.warnings.add(format!(
-                        "Worker disconnected for object 0x{object_id:X}"
-                    ));
+                    self.warnings
+                        .add(format!("Worker disconnected for object 0x{object_id:X}"));
                     done.push(object_id);
                 }
             }
@@ -674,11 +668,7 @@ impl<E: NavigationEngine> App<E> {
                 let cache_bytes = self.engine.memory_used().saturating_sub(skeleton_bytes);
                 mem_log!(
                     "{}",
-                    format_memory_log(
-                        cache_bytes,
-                        self.engine.memory_budget(),
-                        skeleton_bytes,
-                    )
+                    format_memory_log(cache_bytes, self.engine.memory_budget(), skeleton_bytes,)
                 );
             }
             self.last_memory_log = Instant::now();
@@ -1592,8 +1582,7 @@ mod tests {
         }
         // Simulate threshold elapsed.
         if let Some(pp) = app.pending_pages.get_mut(&(888, 100)) {
-            pp.started =
-                Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
+            pp.started = Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
         }
         // Poll once — threshold triggers ChunkState::Loading.
         app.poll_pages();
@@ -1619,8 +1608,7 @@ mod tests {
             );
         }
         if let Some(pp) = app.pending_pages.get_mut(&(888, 0)) {
-            pp.started =
-                Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
+            pp.started = Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
         }
         app.poll_pages();
         let ss = app.stack_state.as_ref().unwrap();
@@ -2046,6 +2034,9 @@ mod tests {
         app.poll_expansions();
         // Verify loading_shown was set.
         let pe = app.pending_expansions.get(&99).unwrap();
-        assert!(pe.loading_shown, "loading_shown must be set after threshold");
+        assert!(
+            pe.loading_shown,
+            "loading_shown must be set after threshold"
+        );
     }
 }

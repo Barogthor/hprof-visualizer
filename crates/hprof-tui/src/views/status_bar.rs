@@ -58,7 +58,10 @@ impl Widget for StatusBar<'_> {
                 }
             });
             if let Some(w) = last {
-                format!("  |  [!] {} warnings ({w}) — see stderr", self.warning_count)
+                format!(
+                    "  |  [!] {} warnings ({w}) — see stderr",
+                    self.warning_count
+                )
             } else {
                 format!("  |  [!] {} warnings — see stderr", self.warning_count)
             }
@@ -245,6 +248,9 @@ mod tests {
             !content.contains(&"A".repeat(41)),
             "must not contain 41 chars (must be truncated); got: {content:?}"
         );
-        assert!(content.contains('…'), "must contain ellipsis; got: {content:?}");
+        assert!(
+            content.contains('…'),
+            "must contain ellipsis; got: {content:?}"
+        );
     }
 }
