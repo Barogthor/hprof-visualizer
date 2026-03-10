@@ -4,7 +4,7 @@
 //! navigation API. Parser internals are fully encapsulated — callers only
 //! depend on `hprof-engine`.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,6 +17,7 @@ use hprof_parser::jvm_to_java;
 
 use crate::{
     EngineConfig, HprofError,
+    cache::lru::{EVICTION_TARGET, EVICTION_TRIGGER},
     engine::{
         CollectionPage, FieldInfo, FrameInfo, LineNumber, NavigationEngine, ThreadInfo,
         ThreadState, VariableInfo, VariableValue,
@@ -198,8 +199,10 @@ pub(crate) fn resolve_inline_value(
         hfile.header.id_size,
         hfile.records_bytes(),
     );
-    fields.iter().find(|f| f.name == "value").map(|f| {
-        match &f.value {
+    fields
+        .iter()
+        .find(|f| f.name == "value")
+        .map(|f| match &f.value {
             crate::engine::FieldValue::Bool(b) => b.to_string(),
             crate::engine::FieldValue::Char(c) => format!("'{c}'"),
             crate::engine::FieldValue::Byte(n) => n.to_string(),
@@ -209,8 +212,7 @@ pub(crate) fn resolve_inline_value(
             crate::engine::FieldValue::Float(n) => format!("{n}"),
             crate::engine::FieldValue::Double(n) => format!("{n}"),
             _ => "?".to_string(),
-        }
-    })
+        })
 }
 
 /// Truncates a string for inline display (max 80 chars).
@@ -218,11 +220,7 @@ fn truncate_inline(s: String) -> String {
     if s.chars().count() <= 80 {
         s
     } else {
-        let end = s
-            .char_indices()
-            .nth(78)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
+        let end = s.char_indices().nth(78).map(|(i, _)| i).unwrap_or(s.len());
         format!("{}..", &s[..end])
     }
 }
@@ -254,6 +252,12 @@ struct ThreadMetadata {
     state: ThreadState,
 }
 
+impl hprof_api::MemorySize for ThreadMetadata {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>() + self.name.capacity()
+    }
+}
+
 /// Navigation engine backed by a memory-mapped hprof file.
 ///
 /// Constructed via [`Engine::from_file`]. Implements [`NavigationEngine`]
@@ -262,7 +266,11 @@ pub struct Engine {
     hfile: Arc<HprofFile>,
     /// Pre-resolved thread metadata (serial → name + state).
     /// Built once at construction to avoid repeated heap scans.
-    thread_cache: HashMap<u32, ThreadMetadata>,
+    thread_cache: FxHashMap<u32, ThreadMetadata>,
+    /// Tracks total heap memory consumed by parsed/cached data.
+    memory_counter: Arc<crate::cache::MemoryCounter>,
+    /// LRU cache for expanded object fields.
+    object_cache: crate::cache::ObjectCache,
 }
 
 impl Engine {
@@ -273,14 +281,19 @@ impl Engine {
     /// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
     /// - [`HprofError::UnsupportedVersion`] — unrecognised version string.
     /// - [`HprofError::TruncatedRecord`] — file header is truncated.
-    pub fn from_file(path: &Path, _config: &EngineConfig) -> Result<Self, HprofError> {
+    pub fn from_file(path: &Path, config: &EngineConfig) -> Result<Self, HprofError> {
         let mut null_obs = NullProgressObserver;
         let hfile = Arc::new(HprofFile::from_path(path)?);
         let mut notifier = ProgressNotifier::new(&mut null_obs);
         let thread_cache = Self::build_thread_cache(&hfile, &mut notifier);
+        let budget = config.effective_budget();
+        let counter = Arc::new(crate::cache::MemoryCounter::new(budget));
+        counter.add(Self::initial_memory(&hfile, &thread_cache));
         Ok(Self {
             hfile,
             thread_cache,
+            memory_counter: counter,
+            object_cache: crate::cache::ObjectCache::new(),
         })
     }
 
@@ -295,15 +308,20 @@ impl Engine {
     /// See [`Engine::from_file`].
     pub fn from_file_with_progress(
         path: &Path,
-        _config: &EngineConfig,
+        config: &EngineConfig,
         observer: &mut dyn ParseProgressObserver,
     ) -> Result<Self, HprofError> {
         let hfile = Arc::new(HprofFile::from_path_with_progress(path, observer)?);
         let mut notifier = ProgressNotifier::new(observer);
         let thread_cache = Self::build_thread_cache(&hfile, &mut notifier);
+        let budget = config.effective_budget();
+        let counter = Arc::new(crate::cache::MemoryCounter::new(budget));
+        counter.add(Self::initial_memory(&hfile, &thread_cache));
         Ok(Self {
             hfile,
             thread_cache,
+            memory_counter: counter,
+            object_cache: crate::cache::ObjectCache::new(),
         })
     }
 
@@ -315,14 +333,14 @@ impl Engine {
     fn build_thread_cache(
         hfile: &HprofFile,
         notifier: &mut ProgressNotifier,
-    ) -> HashMap<u32, ThreadMetadata> {
+    ) -> FxHashMap<u32, ThreadMetadata> {
         let total = hfile.index.threads.len();
         if total == 0 {
-            return HashMap::new();
+            return FxHashMap::default();
         }
         let thread_list: Vec<_> = hfile.index.threads.iter().collect();
         let chunk_size = (total / 10).clamp(1, 50);
-        let mut cache = HashMap::with_capacity(total);
+        let mut cache = FxHashMap::with_capacity_and_hasher(total, Default::default());
         for chunk in thread_list.chunks(chunk_size) {
             let results: Vec<(u32, ThreadMetadata)> = chunk
                 .par_iter()
@@ -351,6 +369,17 @@ impl Engine {
             notifier.names_resolved(cache.len(), total);
         }
         cache
+    }
+
+    /// Computes initial memory usage from PreciseIndex +
+    /// thread_cache at construction time.
+    fn initial_memory(hfile: &HprofFile, thread_cache: &FxHashMap<u32, ThreadMetadata>) -> usize {
+        use hprof_api::MemorySize;
+        let index_size = hfile.index.memory_size();
+        let cache_size: usize = thread_cache.values().map(|tm| tm.memory_size()).sum();
+        let cache_overhead =
+            hprof_api::fxhashmap_memory_size::<u32, ThreadMetadata>(thread_cache.capacity());
+        index_size + cache_size + cache_overhead
     }
 
     /// Resolves thread name and state from the heap Thread object.
@@ -562,6 +591,64 @@ impl Engine {
                 state: ThreadState::Unknown,
             })
     }
+
+    /// Decodes an object's fields from mmap (no caching).
+    ///
+    /// This is the full decode + enrichment pass extracted
+    /// from the previous `expand_object` body.
+    fn decode_object_fields(&self, object_id: u64) -> Option<Vec<FieldInfo>> {
+        let raw = Self::read_instance(&self.hfile, object_id)?;
+        let mut fields = crate::resolver::decode_fields(
+            &raw,
+            &self.hfile.index,
+            self.hfile.header.id_size,
+            self.hfile.records_bytes(),
+        );
+        for field in &mut fields {
+            if let crate::engine::FieldValue::ObjectRef {
+                id,
+                class_name,
+                entry_count,
+                inline_value,
+            } = &mut field.value
+            {
+                let child_id = *id;
+                if let Some(child_raw) = Self::read_instance(&self.hfile, child_id) {
+                    let name = self
+                        .hfile
+                        .index
+                        .class_names_by_id
+                        .get(&child_raw.class_object_id)
+                        .cloned()
+                        .unwrap_or_else(|| "Object".to_string());
+                    *inline_value = resolve_inline_value(&name, &self.hfile, child_id);
+                    *entry_count = collection_entry_count(
+                        &child_raw,
+                        &self.hfile.index,
+                        self.hfile.header.id_size,
+                        self.hfile.records_bytes(),
+                    );
+                    *class_name = name;
+                } else if let Some((_class_id, elems)) = self.hfile.find_object_array(child_id) {
+                    *class_name = "Object[]".to_string();
+                    *entry_count = Some(elems.len() as u64);
+                } else if let Some((elem_type, bytes)) = self.hfile.find_prim_array(child_id) {
+                    let type_name = prim_array_type_name(elem_type);
+                    let elem_size = field_byte_size(elem_type, 0);
+                    let count = if elem_size > 0 {
+                        bytes.len() / elem_size
+                    } else {
+                        0
+                    };
+                    *class_name = format!("{type_name}[]");
+                    *entry_count = Some(count as u64);
+                } else {
+                    *class_name = "Object".to_string();
+                }
+            }
+        }
+        Some(fields)
+    }
 }
 
 impl NavigationEngine for Engine {
@@ -679,63 +766,25 @@ impl NavigationEngine for Engine {
     }
 
     fn expand_object(&self, object_id: u64) -> Option<Vec<FieldInfo>> {
-        let raw = Self::read_instance(&self.hfile, object_id)?;
-        let mut fields = crate::resolver::decode_fields(
-            &raw,
-            &self.hfile.index,
-            self.hfile.header.id_size,
-            self.hfile.records_bytes(),
-        );
-        // Enrichment pass: resolve class name, entry count,
-        // and inline values for ObjectRef fields.
-        for field in &mut fields {
-            if let crate::engine::FieldValue::ObjectRef {
-                id,
-                class_name,
-                entry_count,
-                inline_value,
-            } = &mut field.value
-            {
-                let child_id = *id;
-                if let Some(child_raw) =
-                    Self::read_instance(&self.hfile, child_id)
-                {
-                    let name = self
-                        .hfile
-                        .index
-                        .class_names_by_id
-                        .get(&child_raw.class_object_id)
-                        .cloned()
-                        .unwrap_or_else(|| "Object".to_string());
-                    *inline_value =
-                        resolve_inline_value(&name, &self.hfile, child_id);
-                    *entry_count = collection_entry_count(
-                        &child_raw,
-                        &self.hfile.index,
-                        self.hfile.header.id_size,
-                        self.hfile.records_bytes(),
-                    );
-                    *class_name = name;
-                } else if let Some((_class_id, elems)) =
-                    self.hfile.find_object_array(child_id)
-                {
-                    *class_name = "Object[]".to_string();
-                    *entry_count = Some(elems.len() as u64);
-                } else if let Some((elem_type, bytes)) =
-                    self.hfile.find_prim_array(child_id)
-                {
-                    let type_name = prim_array_type_name(elem_type);
-                    let elem_size = field_byte_size(elem_type, 0);
-                    let count = if elem_size > 0 {
-                        bytes.len() / elem_size
-                    } else {
-                        0
-                    };
-                    *class_name = format!("{type_name}[]");
-                    *entry_count = Some(count as u64);
-                } else {
-                    *class_name = "Object".to_string();
+        // Cache hit: return clone, entry promoted to MRU
+        if let Some(fields) = self.object_cache.get(object_id) {
+            return Some(fields);
+        }
+        // Cache miss: decode from mmap
+        let fields = self.decode_object_fields(object_id)?;
+        // Insert into cache, track memory
+        let mem = self.object_cache.insert(object_id, fields.clone());
+        self.memory_counter.add(mem);
+        // Evict LRU entries: trigger at 80%, target 60%
+        while self.memory_counter.usage_ratio() >= EVICTION_TRIGGER {
+            if let Some(freed) = self.object_cache.evict_lru() {
+                let current = self.memory_counter.current();
+                self.memory_counter.subtract(freed.min(current));
+                if self.memory_counter.usage_ratio() < EVICTION_TARGET {
+                    break;
                 }
+            } else {
+                break; // cache empty
             }
         }
         Some(fields)
@@ -764,6 +813,14 @@ impl NavigationEngine for Engine {
         let (elem_type, bytes) = self.hfile.find_prim_array(value_id)?;
         Some(decode_prim_array_as_string(elem_type, &bytes))
     }
+
+    fn memory_used(&self) -> usize {
+        self.memory_counter.current()
+    }
+
+    fn memory_budget(&self) -> u64 {
+        self.memory_counter.budget()
+    }
 }
 
 #[cfg(test)]
@@ -780,12 +837,48 @@ mod tests {
     }
 
     #[test]
+    fn memory_used_positive_after_from_file() {
+        let bytes = minimal_hprof_bytes();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig::default();
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        let used = engine.memory_used();
+        assert!(used > 0, "memory_used must be > 0 after construction");
+        assert!(
+            used < bytes.len() * 1000,
+            "memory_used ({used}) must be < file_size * 1000 ({})",
+            bytes.len() * 1000
+        );
+    }
+
+    #[test]
+    fn memory_used_equals_precise_index_static_size_for_empty_file() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&minimal_hprof_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig::default();
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        // Empty index: all maps have 0 capacity → memory_size() = size_of::<PreciseIndex>()
+        // Empty thread_cache: cache_size=0, cache_overhead=0
+        let expected = std::mem::size_of::<hprof_parser::PreciseIndex>();
+        assert_eq!(
+            engine.memory_used(),
+            expected,
+            "empty file: memory_used must equal PreciseIndex static size"
+        );
+    }
+
+    #[test]
     fn warnings_returns_empty_slice_for_clean_file() {
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         assert!(engine.warnings().is_empty());
     }
@@ -816,7 +909,7 @@ mod tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let mut obs = CountingObserver { call_count: 0 };
         let result = Engine::from_file_with_progress(tmp.path(), &config, &mut obs);
         assert!(result.is_ok());
@@ -851,7 +944,7 @@ mod tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let mut obs = CapturingObserver::default();
         let result = Engine::from_file_with_progress(tmp.path(), &config, &mut obs);
 
@@ -880,7 +973,7 @@ mod tests {
         let missing = tmp.path().to_path_buf();
         drop(tmp);
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let result = Engine::from_file(&missing, &config);
         assert!(matches!(result, Err(HprofError::MmapFailed(_))));
     }
@@ -891,7 +984,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let result = Engine::from_file(tmp.path(), &config);
         assert!(result.is_ok());
     }
@@ -902,7 +995,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         assert!(engine.list_threads().is_empty());
     }
@@ -913,7 +1006,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         assert!(engine.select_thread(999).is_none());
     }
@@ -930,8 +1023,30 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             Engine::from_file(tmp.path(), &config).unwrap()
+        }
+
+        #[test]
+        fn memory_used_with_populated_fixture() {
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "run")
+                .add_string(2, "()")
+                .add_string(3, "Thread.java")
+                .add_string(4, "java/lang/Thread")
+                .add_class(1, 100, 0, 4)
+                .add_stack_frame(10, 1, 2, 3, 1, 42)
+                .add_stack_trace(1, 1, &[10])
+                .add_thread(1, 200, 1, 1, 0, 0)
+                .build();
+            let engine = engine_from_bytes(&bytes);
+            let used = engine.memory_used();
+            assert!(used > 0, "memory_used ({used}) must be positive");
+            assert!(
+                used < bytes.len() * 1000,
+                "memory_used ({used}) must be < file_size * 1000 ({})",
+                bytes.len() * 1000
+            );
         }
 
         #[test]
@@ -1260,7 +1375,7 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             Engine::from_file(tmp.path(), &config).unwrap()
         }
 
@@ -1456,7 +1571,7 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             Engine::from_file(tmp.path(), &config).unwrap()
         }
 
@@ -1665,7 +1780,7 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            Engine::from_file(tmp.path(), &EngineConfig).unwrap()
+            Engine::from_file(tmp.path(), &EngineConfig::default()).unwrap()
         }
 
         /// Builds a parent object with one ObjectRef field pointing to a
@@ -1685,12 +1800,7 @@ mod tests {
                 .add_string(3, "value")
                 .add_class(1, 200, 0, 2)
                 .add_class_dump(100, 0, 8, &[(1, 2u8)])
-                .add_class_dump(
-                    200,
-                    0,
-                    value_bytes_len as u32,
-                    &[(3, value_type_byte)],
-                )
+                .add_class_dump(200, 0, value_bytes_len as u32, &[(3, value_type_byte)])
                 .add_instance(0xAAAA, 0, 100, &field_data)
                 .add_instance(child_id, 0, 200, &value_bytes)
                 .build();
@@ -1731,8 +1841,11 @@ mod tests {
 
         #[test]
         fn character_field_shows_inline_value() {
-            let v =
-                expand_boxed_child("java.lang.Character", 5, (b'A' as u16).to_be_bytes().to_vec());
+            let v = expand_boxed_child(
+                "java.lang.Character",
+                5,
+                (b'A' as u16).to_be_bytes().to_vec(),
+            );
             if let FieldValue::ObjectRef { inline_value, .. } = v {
                 assert_eq!(inline_value.as_deref(), Some("'A'"));
             } else {
@@ -1756,8 +1869,7 @@ mod tests {
 
         #[test]
         fn unknown_class_returns_no_inline_value() {
-            let v =
-                expand_boxed_child("com.example.Foo", 10, 1i32.to_be_bytes().to_vec());
+            let v = expand_boxed_child("com.example.Foo", 10, 1i32.to_be_bytes().to_vec());
             if let FieldValue::ObjectRef { inline_value, .. } = v {
                 assert_eq!(inline_value, None);
             } else {
@@ -1770,18 +1882,12 @@ mod tests {
             let v = expand_boxed_child(
                 "java.lang.Float",
                 6,
-                3.14f32.to_be_bytes().to_vec(),
+                std::f32::consts::PI.to_be_bytes().to_vec(),
             );
             if let FieldValue::ObjectRef { inline_value, .. } = v {
-                assert!(
-                    inline_value.is_some(),
-                    "expected Some for Float"
-                );
+                assert!(inline_value.is_some(), "expected Some for Float");
                 let s = inline_value.unwrap();
-                assert!(
-                    s.starts_with("3.14"),
-                    "expected float repr, got {s}"
-                );
+                assert!(s.starts_with("3.14"), "expected float repr, got {s}");
             } else {
                 panic!("expected ObjectRef");
             }
@@ -1792,18 +1898,12 @@ mod tests {
             let v = expand_boxed_child(
                 "java.lang.Double",
                 7,
-                2.718281828f64.to_be_bytes().to_vec(),
+                std::f64::consts::E.to_be_bytes().to_vec(),
             );
             if let FieldValue::ObjectRef { inline_value, .. } = v {
-                assert!(
-                    inline_value.is_some(),
-                    "expected Some for Double"
-                );
+                assert!(inline_value.is_some(), "expected Some for Double");
                 let s = inline_value.unwrap();
-                assert!(
-                    s.starts_with("2.718"),
-                    "expected double repr, got {s}"
-                );
+                assert!(s.starts_with("2.718"), "expected double repr, got {s}");
             } else {
                 panic!("expected ObjectRef");
             }
@@ -1811,11 +1911,7 @@ mod tests {
 
         #[test]
         fn byte_field_shows_inline_value() {
-            let v = expand_boxed_child(
-                "java.lang.Byte",
-                8,
-                vec![127u8],
-            );
+            let v = expand_boxed_child("java.lang.Byte", 8, vec![127u8]);
             if let FieldValue::ObjectRef { inline_value, .. } = v {
                 assert_eq!(inline_value.as_deref(), Some("127"));
             } else {
@@ -1825,16 +1921,9 @@ mod tests {
 
         #[test]
         fn short_field_shows_inline_value() {
-            let v = expand_boxed_child(
-                "java.lang.Short",
-                9,
-                (-1234i16).to_be_bytes().to_vec(),
-            );
+            let v = expand_boxed_child("java.lang.Short", 9, (-1234i16).to_be_bytes().to_vec());
             if let FieldValue::ObjectRef { inline_value, .. } = v {
-                assert_eq!(
-                    inline_value.as_deref(),
-                    Some("-1234")
-                );
+                assert_eq!(inline_value.as_deref(), Some("-1234"));
             } else {
                 panic!("expected ObjectRef");
             }
@@ -1845,33 +1934,20 @@ mod tests {
             // Integer class but no "value" field — only "dummy"
             let child_id: u64 = 0xBBBB;
             let field_data = child_id.to_be_bytes().to_vec();
-            let bytes =
-                HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
-                    .add_string(1, "field")
-                    .add_string(2, "java/lang/Integer")
-                    .add_string(3, "dummy")
-                    .add_class(1, 200, 0, 2)
-                    .add_class_dump(100, 0, 8, &[(1, 2u8)])
-                    .add_class_dump(200, 0, 4, &[(3, 10u8)])
-                    .add_instance(0xAAAA, 0, 100, &field_data)
-                    .add_instance(
-                        child_id,
-                        0,
-                        200,
-                        &99i32.to_be_bytes(),
-                    )
-                    .build();
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "field")
+                .add_string(2, "java/lang/Integer")
+                .add_string(3, "dummy")
+                .add_class(1, 200, 0, 2)
+                .add_class_dump(100, 0, 8, &[(1, 2u8)])
+                .add_class_dump(200, 0, 4, &[(3, 10u8)])
+                .add_instance(0xAAAA, 0, 100, &field_data)
+                .add_instance(child_id, 0, 200, &99i32.to_be_bytes())
+                .build();
             let engine = engine_from_bytes(&bytes);
-            let fields =
-                engine.expand_object(0xAAAA).unwrap();
-            if let FieldValue::ObjectRef {
-                inline_value, ..
-            } = &fields[0].value
-            {
-                assert_eq!(
-                    *inline_value, None,
-                    "no 'value' field means no inline"
-                );
+            let fields = engine.expand_object(0xAAAA).unwrap();
+            if let FieldValue::ObjectRef { inline_value, .. } = &fields[0].value {
+                assert_eq!(*inline_value, None, "no 'value' field means no inline");
             } else {
                 panic!("expected ObjectRef");
             }
@@ -1898,7 +1974,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -1923,7 +1999,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -1948,7 +2024,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -1969,7 +2045,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -1989,7 +2065,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
 
             let found = engine.select_thread(1);
@@ -2063,7 +2139,7 @@ mod tests {
             eprintln!("skip: dump not found");
             return;
         }
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let engine = Engine::from_file(path, &config).unwrap();
         let threads = engine.list_threads();
         for t in &threads {
@@ -2077,5 +2153,241 @@ mod tests {
             has_non_unknown,
             "expected at least one non-Unknown thread state"
         );
+    }
+
+    #[test]
+    fn memory_budget_default_uses_auto_calc() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&minimal_hprof_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig::default();
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        assert!(engine.memory_budget() > 0, "auto-calc budget must be > 0");
+    }
+
+    #[test]
+    fn memory_budget_explicit_override() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&minimal_hprof_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig {
+            budget_bytes: Some(1_000_000),
+        };
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        assert_eq!(engine.memory_budget(), 1_000_000);
+    }
+
+    mod lru_eviction_tests {
+        use std::io::Write as IoWrite;
+
+        use hprof_parser::HprofTestBuilder;
+
+        use super::*;
+
+        /// Builds an engine with two distinct expandable
+        /// objects (0xAAA, 0xBBB) and the given budget.
+        fn engine_two_objects(budget: u64) -> Engine {
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "x")
+                .add_string(2, "y")
+                .add_class_dump(100, 0, 4, &[(1, 10u8)])
+                .add_class_dump(200, 0, 4, &[(2, 10u8)])
+                .add_instance(0xAAA, 0, 100, &7i32.to_be_bytes())
+                .add_instance(0xBBB, 0, 200, &8i32.to_be_bytes())
+                .build();
+            let mut tmp = tempfile::NamedTempFile::new().unwrap();
+            tmp.write_all(&bytes).unwrap();
+            tmp.flush().unwrap();
+            let config = EngineConfig {
+                budget_bytes: Some(budget),
+            };
+            Engine::from_file(tmp.path(), &config).unwrap()
+        }
+
+        /// Builds an engine with four expandable objects.
+        fn engine_four_objects(budget: u64) -> Engine {
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "a")
+                .add_string(2, "b")
+                .add_string(3, "c")
+                .add_string(4, "d")
+                .add_class_dump(100, 0, 4, &[(1, 10u8)])
+                .add_class_dump(200, 0, 4, &[(2, 10u8)])
+                .add_class_dump(300, 0, 4, &[(3, 10u8)])
+                .add_class_dump(400, 0, 4, &[(4, 10u8)])
+                .add_instance(0xAAA, 0, 100, &1i32.to_be_bytes())
+                .add_instance(0xBBB, 0, 200, &2i32.to_be_bytes())
+                .add_instance(0xCCC, 0, 300, &3i32.to_be_bytes())
+                .add_instance(0xDDD, 0, 400, &4i32.to_be_bytes())
+                .build();
+            let mut tmp = tempfile::NamedTempFile::new().unwrap();
+            tmp.write_all(&bytes).unwrap();
+            tmp.flush().unwrap();
+            let config = EngineConfig {
+                budget_bytes: Some(budget),
+            };
+            Engine::from_file(tmp.path(), &config).unwrap()
+        }
+
+        #[test]
+        fn expand_object_cached_does_not_double_count_memory() {
+            let engine = engine_two_objects(10_000_000);
+            engine.expand_object(0xAAA).expect("first expand");
+            let mem_after_first = engine.memory_used();
+            engine
+                .expand_object(0xAAA)
+                .expect("second expand (cache hit)");
+            let mem_after_second = engine.memory_used();
+            assert_eq!(
+                mem_after_first, mem_after_second,
+                "cache hit must not increase memory_used"
+            );
+        }
+
+        #[test]
+        fn expand_object_with_tiny_budget_triggers_eviction() {
+            let engine = engine_two_objects(1);
+            engine.expand_object(0xAAA).expect("expand A");
+            engine.expand_object(0xBBB).expect("expand B");
+            assert!(engine.memory_used() > 0, "something must be tracked");
+            // Cache may be empty (eviction drained it)
+            // or have 1 entry (last insert survived).
+            // Either way, the loop terminated without
+            // hanging.
+        }
+
+        #[test]
+        fn expand_object_lru_order_respected() {
+            // Large budget: no automatic eviction —
+            // we control eviction manually via cache API.
+            let engine = engine_four_objects(10_000_000);
+
+            // Insert A, B, C (insertion order = LRU order)
+            // After inserts: LRU → A < B < C ← MRU
+            engine.expand_object(0xAAA).unwrap();
+            engine.expand_object(0xBBB).unwrap();
+            engine.expand_object(0xCCC).unwrap();
+            assert_eq!(engine.object_cache.len(), 3);
+
+            // Promote A to MRU via cache hit
+            // New LRU order: B < C < A (MRU)
+            let mem_before_a = engine.memory_used();
+            engine.expand_object(0xAAA).unwrap();
+            assert_eq!(
+                engine.memory_used(),
+                mem_before_a,
+                "A promote: must be a cache hit"
+            );
+
+            // Manually evict LRU — must be B
+            let b_evicted = engine.object_cache.evict_lru();
+            assert!(b_evicted.is_some(), "first evict must return B's size");
+
+            // Manually evict LRU — must be C
+            let c_evicted = engine.object_cache.evict_lru();
+            assert!(c_evicted.is_some(), "second evict must return C's size");
+
+            // A (MRU) is the sole survivor
+            assert_eq!(
+                engine.object_cache.len(),
+                1,
+                "only A (MRU) must remain after two evictions"
+            );
+
+            // A is a cache hit → memory_used unchanged
+            let mem_before = engine.memory_used();
+            engine.expand_object(0xAAA).unwrap();
+            assert_eq!(
+                engine.memory_used(),
+                mem_before,
+                "A: cache hit must not increase memory_used"
+            );
+
+            // B was LRU and was evicted → cache miss →
+            // re-parse from mmap → memory_used increases
+            // (note: direct evict_lru didn't adjust counter,
+            //  so add() on re-insert is still visible)
+            let mem_before_b = engine.memory_used();
+            engine.expand_object(0xBBB).unwrap();
+            assert!(
+                engine.memory_used() > mem_before_b,
+                "B was LRU-evicted → re-expand must \
+                 increase memory_used (cache miss)"
+            );
+        }
+
+        #[test]
+        fn expand_object_ac4_usage_below_target_after_eviction() {
+            // Budget = 1 byte: baseline already exceeds
+            // budget. After expand, either usage < 60%
+            // or cache is empty (FM-2 behavior).
+            let engine = engine_two_objects(1);
+            engine.expand_object(0xAAA).unwrap();
+            engine.expand_object(0xBBB).unwrap();
+            let ratio = engine.memory_used() as f64 / engine.memory_budget() as f64;
+            let cache_empty = engine.object_cache.is_empty();
+            assert!(
+                ratio < 0.60 || cache_empty,
+                "AC4: usage {ratio:.2} must be < 0.60 \
+                 or cache must be empty"
+            );
+        }
+
+        #[test]
+        fn eviction_loop_terminates_when_cache_empty() {
+            // Budget so small baseline alone exceeds
+            // EVICTION_TARGET. expand_object must still
+            // return Some and not hang.
+            let engine = engine_two_objects(1);
+            let result = engine.expand_object(0xAAA);
+            assert!(result.is_some(), "must return fields even with tiny budget");
+        }
+
+        #[test]
+        fn re_parse_after_eviction_produces_identical_fields() {
+            // Budget = 1 → every expand triggers immediate full eviction
+            // A is evicted as soon as it is inserted (it becomes the sole
+            // LRU entry and the eviction loop drains the cache).
+            let engine = engine_two_objects(1);
+            let fields_first = engine.expand_object(0xAAA).unwrap();
+            assert!(
+                engine.object_cache.is_empty(),
+                "A must be evicted immediately with budget=1"
+            );
+            // Expand B to confirm eviction and internal state remain sane
+            engine.expand_object(0xBBB).unwrap();
+            assert!(
+                engine.object_cache.is_empty(),
+                "B must also be evicted immediately with budget=1"
+            );
+            // Re-expand A: must be a cache miss → re-parse from mmap
+            let fields_second = engine.expand_object(0xAAA).unwrap();
+            assert_eq!(
+                fields_first, fields_second,
+                "re-parse must produce byte-identical fields (AC2 / NFR8)"
+            );
+        }
+
+        #[test]
+        fn multi_cycle_no_panic_no_counter_overflow() {
+            // Budget = 1 → each expand evicts all cached data.
+            // 50 cycles of alternating A/B expansion must not panic
+            // and must not overflow the MemoryCounter.
+            let engine = engine_two_objects(1);
+            for _ in 0..50 {
+                let r_a = engine.expand_object(0xAAA);
+                assert!(r_a.is_some(), "A must always return Some across all cycles");
+                let r_b = engine.expand_object(0xBBB);
+                assert!(r_b.is_some(), "B must always return Some across all cycles");
+            }
+            // usize::MAX / 2 is a conservative sentinel: real usage is
+            // at most a few KB; any value above this indicates underflow.
+            assert!(
+                engine.memory_used() < usize::MAX / 2,
+                "MemoryCounter must not underflow to usize::MAX"
+            );
+        }
     }
 }

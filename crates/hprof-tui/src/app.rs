@@ -304,7 +304,8 @@ impl<E: NavigationEngine> App<E> {
                             let oid = s.selected_object_id()?;
                             dbg_log!(
                                 "OnVar Enter: oid=0x{:X} phase={:?}",
-                                oid, s.expansion_state(oid)
+                                oid,
+                                s.expansion_state(oid)
                             );
                             match s.expansion_state(oid) {
                                 ExpansionPhase::Collapsed | ExpansionPhase::Failed => {
@@ -319,10 +320,7 @@ impl<E: NavigationEngine> App<E> {
                         StackCursor::OnObjectField { .. } => {
                             // Check for collection field.
                             let coll_info = s.selected_field_collection_info();
-                            dbg_log!(
-                                "OnObjectField Enter: coll_info={:?}",
-                                coll_info
-                            );
+                            dbg_log!("OnObjectField Enter: coll_info={:?}", coll_info);
                             if let Some((cid, ec)) = coll_info {
                                 if s.collection_chunks.contains_key(&cid) {
                                     return Some(Cmd::CollapseCollection(cid));
@@ -332,7 +330,8 @@ impl<E: NavigationEngine> App<E> {
                             let nested_id = s.selected_field_ref_id()?;
                             dbg_log!(
                                 "OnObjectField Enter: nested_id=0x{:X} phase={:?}",
-                                nested_id, s.expansion_state(nested_id)
+                                nested_id,
+                                s.expansion_state(nested_id)
                             );
                             match s.expansion_state(nested_id) {
                                 ExpansionPhase::Collapsed | ExpansionPhase::Failed => {
@@ -359,8 +358,9 @@ impl<E: NavigationEngine> App<E> {
                         StackCursor::OnCollectionEntry { .. } => {
                             let oid = s.selected_collection_entry_ref_id()?;
                             match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed
-                                | ExpansionPhase::Failed => Cmd::StartEntryObj(oid),
+                                ExpansionPhase::Collapsed | ExpansionPhase::Failed => {
+                                    Cmd::StartEntryObj(oid)
+                                }
                                 ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
                                 ExpansionPhase::Loading => return None,
                             }
@@ -368,8 +368,9 @@ impl<E: NavigationEngine> App<E> {
                         StackCursor::OnCollectionEntryObjField { .. } => {
                             let oid = s.selected_collection_entry_obj_field_ref_id()?;
                             match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed
-                                | ExpansionPhase::Failed => Cmd::StartEntryObj(oid),
+                                ExpansionPhase::Collapsed | ExpansionPhase::Failed => {
+                                    Cmd::StartEntryObj(oid)
+                                }
                                 ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
                                 ExpansionPhase::Loading => return None,
                             }
@@ -406,10 +407,7 @@ impl<E: NavigationEngine> App<E> {
                         }
                     }
                     Some(Cmd::StartCollection(cid, ec)) => {
-                        dbg_log!(
-                            "StartCollection cid=0x{:X} ec={}",
-                            cid, ec
-                        );
+                        dbg_log!("StartCollection cid=0x{:X} ec={}", cid, ec);
                         let limit = (ec as usize).min(100);
                         let chunks = CollectionChunks {
                             total_count: ec,
@@ -520,7 +518,9 @@ impl<E: NavigationEngine> App<E> {
                 Ok(Some(page)) => {
                     dbg_log!(
                         "poll_pages: 0x{:X}+{} → {} entries",
-                        cid, offset, page.entries.len()
+                        cid,
+                        offset,
+                        page.entries.len()
                     );
                     if let Some(s) = &mut self.stack_state
                         && let Some(cc) = s.collection_chunks.get_mut(&cid)
@@ -534,10 +534,7 @@ impl<E: NavigationEngine> App<E> {
                     done.push((cid, offset));
                 }
                 Ok(None) => {
-                    dbg_log!(
-                        "poll_pages: 0x{:X}+{} → None (fallback)",
-                        cid, offset
-                    );
+                    dbg_log!("poll_pages: 0x{:X}+{} → None (fallback)", cid, offset);
                     if let Some(s) = &mut self.stack_state {
                         s.collection_chunks.remove(&cid);
                     }
@@ -573,25 +570,16 @@ impl<E: NavigationEngine> App<E> {
                     done.push(object_id);
                 }
                 Ok(None) => {
-                    dbg_log!(
-                        "expand_object(0x{:X}) → None",
-                        object_id
-                    );
+                    dbg_log!("expand_object(0x{:X}) → None", object_id);
                     if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_failed(
-                            object_id,
-                            "Failed to resolve object".to_string(),
-                        );
+                        s.set_expansion_failed(object_id, "Failed to resolve object".to_string());
                     }
                     done.push(object_id);
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_failed(
-                            object_id,
-                            "Worker thread disconnected".to_string(),
-                        );
+                        s.set_expansion_failed(object_id, "Worker thread disconnected".to_string());
                     }
                     done.push(object_id);
                 }
@@ -916,6 +904,12 @@ mod tests {
         }
         fn resolve_string(&self, _: u64) -> Option<String> {
             Some("value".to_string())
+        }
+        fn memory_used(&self) -> usize {
+            0
+        }
+        fn memory_budget(&self) -> u64 {
+            u64::MAX
         }
     }
 
@@ -1463,7 +1457,7 @@ mod tests {
         app.handle_input(InputEvent::Escape);
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            ss.collection_chunks.get(&888).is_none(),
+            !ss.collection_chunks.contains_key(&888),
             "collection should be removed"
         );
         // Cursor returns to the collection field.
@@ -1492,7 +1486,7 @@ mod tests {
         app.handle_input(InputEvent::Escape);
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            ss.collection_chunks.get(&888).is_none(),
+            !ss.collection_chunks.contains_key(&888),
             "collection should be removed after escape from chunk section"
         );
         assert!(matches!(ss.cursor(), StackCursor::OnObjectField { .. }));
@@ -1538,7 +1532,7 @@ mod tests {
         }
         let ss = app.stack_state.as_ref().unwrap();
         // Collection chunks should be gone.
-        assert!(ss.collection_chunks.get(&777).is_none());
+        assert!(!ss.collection_chunks.contains_key(&777));
         // Should have fallen back to expand_object →
         // expansion state should be Expanded.
         assert_eq!(ss.expansion_state(777), ExpansionPhase::Expanded);
@@ -1620,8 +1614,7 @@ mod tests {
             Some(&crate::views::stack_view::ExpansionPhase::Collapsed),
         );
         assert!(
-            line_collapsed.contains("+ [0]")
-                && line_collapsed.contains("String"),
+            line_collapsed.contains("+ [0]") && line_collapsed.contains("String"),
             "ObjectRef collapsed should show '+ [0] ...': {}",
             line_collapsed
         );
@@ -1631,8 +1624,7 @@ mod tests {
             Some(&crate::views::stack_view::ExpansionPhase::Expanded),
         );
         assert!(
-            line_expanded.contains("- [0]")
-                && line_expanded.contains("String"),
+            line_expanded.contains("- [0]") && line_expanded.contains("String"),
             "ObjectRef expanded should show '- [0] ...': {}",
             line_expanded
         );
@@ -1678,7 +1670,10 @@ mod tests {
         app.handle_input(InputEvent::Down);
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            matches!(ss.cursor(), StackCursor::OnCollectionEntry { entry_index: 0, .. }),
+            matches!(
+                ss.cursor(),
+                StackCursor::OnCollectionEntry { entry_index: 0, .. }
+            ),
             "should be on entry 0, got {:?}",
             ss.cursor()
         );
@@ -1726,7 +1721,7 @@ mod tests {
         // This is a general tree scroll test, not
         // collection-specific.
         use crate::views::stack_view::StackState;
-        let frames: Vec<_> = (1..=30).map(|i| make_frame(i)).collect();
+        let frames: Vec<_> = (1..=30).map(make_frame).collect();
         let mut state = StackState::new(frames);
         state.set_visible_height(10);
         // Move to frame 5.

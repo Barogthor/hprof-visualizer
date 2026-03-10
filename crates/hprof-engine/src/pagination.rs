@@ -22,14 +22,20 @@ pub(crate) fn get_page(
     if let Some(page) = try_object_array(hfile, collection_id, offset, limit) {
         dbg_log!(
             "get_page(0x{:X}, {}, {}): Object[] → {} entries",
-            collection_id, offset, limit, page.entries.len()
+            collection_id,
+            offset,
+            limit,
+            page.entries.len()
         );
         return Some(page);
     }
     if let Some(page) = try_prim_array(hfile, collection_id, offset, limit) {
         dbg_log!(
             "get_page(0x{:X}, {}, {}): prim[] → {} entries",
-            collection_id, offset, limit, page.entries.len()
+            collection_id,
+            offset,
+            limit,
+            page.entries.len()
         );
         return Some(page);
     }
@@ -38,46 +44,25 @@ pub(crate) fn get_page(
     let raw = match Engine::read_instance_public(hfile, collection_id) {
         Some(r) => r,
         None => {
-            dbg_log!(
-                "get_page(0x{:X}): instance not found",
-                collection_id
-            );
+            dbg_log!("get_page(0x{:X}): instance not found", collection_id);
             return None;
         }
     };
-    let class_name = match hfile
-        .index
-        .class_names_by_id
-        .get(&raw.class_object_id)
-    {
+    let class_name = match hfile.index.class_names_by_id.get(&raw.class_object_id) {
         Some(cn) => cn,
         None => {
             dbg_log!(
                 "get_page(0x{:X}): class_name missing \
                  for class_obj=0x{:X}",
-                collection_id, raw.class_object_id
+                collection_id,
+                raw.class_object_id
             );
             return None;
         }
     };
-    let short = class_name
-        .rsplit('.')
-        .next()
-        .unwrap_or(class_name.as_str());
+    let short = class_name.rsplit('.').next().unwrap_or(class_name.as_str());
 
-    let result =
-        match_extractor(short, hfile, &raw, offset, limit);
-    match &result {
-        Some(page) => dbg_log!(
-            "get_page(0x{:X}): {} ({}) → {} entries",
-            collection_id, class_name, short, page.entries.len()
-        ),
-        None => dbg_log!(
-            "get_page(0x{:X}): {} ({}) → extractor None",
-            collection_id, class_name, short
-        ),
-    }
-    result
+    match_extractor(short, hfile, &raw, offset, limit)
 }
 
 fn match_extractor(
@@ -500,24 +485,16 @@ fn id_to_field_value(id: u64, hfile: &HprofFile) -> FieldValue {
     if id == 0 {
         return FieldValue::Null;
     }
-    let class_name = Engine::read_instance_public(hfile, id)
-        .and_then(|raw| {
-            hfile
-                .index
-                .class_names_by_id
-                .get(&raw.class_object_id)
-                .cloned()
-        });
-    dbg_log!(
-        "id_to_field_value(0x{:X}): class={:?}",
-        id, class_name
-    );
-    let class_name = class_name
-        .unwrap_or_else(|| "Object".to_string());
-    let inline_value =
-        crate::engine_impl::resolve_inline_value(
-            &class_name, hfile, id,
-        );
+    let class_name = Engine::read_instance_public(hfile, id).and_then(|raw| {
+        hfile
+            .index
+            .class_names_by_id
+            .get(&raw.class_object_id)
+            .cloned()
+    });
+    dbg_log!("id_to_field_value(0x{:X}): class={:?}", id, class_name);
+    let class_name = class_name.unwrap_or_else(|| "Object".to_string());
+    let inline_value = crate::engine_impl::resolve_inline_value(&class_name, hfile, id);
     FieldValue::ObjectRef {
         id,
         class_name,
@@ -707,18 +684,13 @@ mod tests {
             .add_class(2, 2000, 0, str_nodename)
             // HashMap class dump: size(Int=10),
             // table(Obj=2)
-            .add_class_dump(
-                1000,
-                0,
-                (4 + id_size) as u32,
-                &[(str_size, 10), (str_table, 2)],
-            )
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_table, 2)])
             // Node class dump: key(Obj=2),
             // value(Obj=2), next(Obj=2)
             .add_class_dump(
                 2000,
                 0,
-                (id_size * 3) as u32,
+                id_size * 3,
                 &[(str_key, 2), (str_value, 2), (str_next, 2)],
             )
             // HashMap instance
@@ -759,12 +731,7 @@ mod tests {
             .add_string(str_ed, "elementData")
             .add_string(str_cn, "java/util/ArrayList")
             .add_class(1, 1000, 0, str_cn)
-            .add_class_dump(
-                1000,
-                0,
-                (4 + id_size) as u32,
-                &[(str_size, 10), (str_ed, 2)],
-            )
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_ed, 2)])
             .add_instance(0x100, 0, 1000, &data)
             // elementData: 4 slots but only 2 used
             .add_object_array(0x500, 0, 100, &[0x10, 0x20, 0, 0])
@@ -938,13 +905,13 @@ mod tests {
             .add_class_dump(
                 1000,
                 0,
-                (4 + id_size * 2) as u32,
+                4 + id_size * 2,
                 &[(str_size, 10), (str_first, 2), (str_last, 2)],
             )
             .add_class_dump(
                 2000,
                 0,
-                (id_size * 3) as u32,
+                id_size * 3,
                 &[(str_item, 2), (str_next, 2), (str_prev, 2)],
             )
             .add_instance(0x100, 0, 1000, &ll_data)
@@ -1007,16 +974,11 @@ mod tests {
             .add_string(str_node_cn, "java/util/concurrent/ConcurrentHashMap$Node")
             .add_class(1, 1000, 0, str_cn)
             .add_class(2, 2000, 0, str_node_cn)
-            .add_class_dump(
-                1000,
-                0,
-                (4 + id_size) as u32,
-                &[(str_size, 10), (str_table, 2)],
-            )
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_table, 2)])
             .add_class_dump(
                 2000,
                 0,
-                (id_size * 3) as u32,
+                id_size * 3,
                 &[(str_key, 2), (str_val, 2), (str_next, 2)],
             )
             .add_instance(0x100, 0, 1000, &chm_data)
@@ -1083,16 +1045,11 @@ mod tests {
             .add_class(2, 2000, 0, str_map_cn)
             .add_class(3, 3000, 0, str_node_cn)
             .add_class_dump(1000, 0, id_size, &[(str_map, 2)])
-            .add_class_dump(
-                2000,
-                0,
-                (4 + id_size) as u32,
-                &[(str_size, 10), (str_table, 2)],
-            )
+            .add_class_dump(2000, 0, 4 + id_size, &[(str_size, 10), (str_table, 2)])
             .add_class_dump(
                 3000,
                 0,
-                (id_size * 3) as u32,
+                id_size * 3,
                 &[(str_key, 2), (str_value, 2), (str_next, 2)],
             )
             .add_instance(0x100, 0, 1000, &hs_data)
@@ -1145,16 +1102,11 @@ mod tests {
             .add_string(str_node_cn, "java/util/LinkedHashMap$Entry")
             .add_class(1, 1000, 0, str_cn)
             .add_class(2, 2000, 0, str_node_cn)
-            .add_class_dump(
-                1000,
-                0,
-                (4 + id_size) as u32,
-                &[(str_size, 10), (str_table, 2)],
-            )
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_table, 2)])
             .add_class_dump(
                 2000,
                 0,
-                (id_size * 3) as u32,
+                id_size * 3,
                 &[(str_key, 2), (str_value, 2), (str_next, 2)],
             )
             .add_instance(0x100, 0, 1000, &lhm_data)
@@ -1188,12 +1140,7 @@ mod tests {
             .add_string(str_ed, "elementData")
             .add_string(str_cn, "java/util/Vector")
             .add_class(1, 1000, 0, str_cn)
-            .add_class_dump(
-                1000,
-                0,
-                (4 + id_size) as u32,
-                &[(str_count, 10), (str_ed, 2)],
-            )
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_count, 10), (str_ed, 2)])
             .add_instance(0x100, 0, 1000, &data)
             .add_object_array(0x500, 0, 100, &[0x10, 0x20, 0, 0])
             .build();

@@ -9,6 +9,7 @@
 //! See Story 8.0 Dev Notes for rationale.
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use hprof_api::{NullProgressObserver, ProgressNotifier};
 use hprof_parser::indexer::first_pass::run_first_pass;
 use hprof_parser::parse_header;
 
@@ -52,7 +53,11 @@ fn bench_first_pass_total(c: &mut Criterion) {
         return;
     };
     c.bench_function("first_pass_total", |b| {
-        b.iter(|| run_first_pass(&data[start..], id_size, |_| {}));
+        b.iter(|| {
+            let mut obs = NullProgressObserver;
+            let mut notifier = ProgressNotifier::new(&mut obs);
+            run_first_pass(&data[start..], id_size, 0, &mut notifier);
+        });
     });
 }
 

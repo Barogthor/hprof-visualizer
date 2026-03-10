@@ -8,6 +8,7 @@ name = "hprof-visualizer"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 hprof-api    = { path = "../hprof-api" }
 hprof-engine = { path = "../hprof-engine" }
 hprof-tui    = { path = "../hprof-tui" }

@@ -6,6 +6,8 @@
 
 use std::io::Cursor;
 
+use hprof_api::MemorySize;
+
 use crate::{HprofError, read_id};
 
 /// A lazy reference to a `STRING_IN_UTF8` record's content.
@@ -23,6 +25,12 @@ pub struct HprofStringRef {
     pub id: u64,
     pub offset: u64,
     pub len: u32,
+}
+
+impl MemorySize for HprofStringRef {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
 
 impl HprofStringRef {
@@ -92,6 +100,16 @@ pub fn parse_string_ref(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn hprof_string_ref_returns_static_size() {
+        let s = HprofStringRef {
+            id: 5,
+            offset: 100,
+            len: 5,
+        };
+        assert_eq!(s.memory_size(), std::mem::size_of::<HprofStringRef>());
+    }
 
     #[test]
     fn parse_string_ref_id_size_8() {
