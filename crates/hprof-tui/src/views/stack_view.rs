@@ -1321,9 +1321,7 @@ impl StackState {
                         let val = Self::format_field_value(&field.value, child_phase.as_ref());
                         let text = format!("{indent}{toggle}{}: {}", field.name, val);
                         items.push(ListItem::new(Line::from(Span::styled(text, s))));
-                        if !cycle
-                            && let FieldValue::ObjectRef { id, .. } = field.value
-                        {
+                        if !cycle && let FieldValue::ObjectRef { id, .. } = field.value {
                             self.build_collection_entry_obj_items(
                                 _fi,
                                 _vi,
