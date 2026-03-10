@@ -102,10 +102,10 @@ development_status:
   epic-5-retrospective: optional
 
   # Epic 6: Configuration & Error Resilience
-  epic-6: in-progress
+  epic-6: done
   6-1-toml-configuration-and-cli-precedence: done
-  6-2-loading-indicators-and-status-bar-warnings: review
-  epic-6-retrospective: optional
+  6-2-loading-indicators-and-status-bar-warnings: done
+  epic-6-retrospective: done
 
   # Epic 7: TUI UX & Interaction Design
   epic-7: backlog

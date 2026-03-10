@@ -1,6 +1,6 @@
 # Story 6.2: Loading Indicators & Status Bar Warnings
 
-Status: review
+Status: done
 
 ## Story
 
@@ -331,7 +331,7 @@ object reference)
 
 - [x] [AI-Review][High] AC1 gap: first collection page load (`offset == 0`) never transitions to a loading state after 1s, so slow initial page loads have no visible indicator (`crates/hprof-tui/src/app.rs:575`)
 - [x] [AI-Review][High] AC6 data correctness gap: memory log reports `cache` using `memory_used()`, which already includes skeleton bytes, then reports skeleton again separately (double-counting non-evictable bytes) (`crates/hprof-engine/src/engine.rs:291`, `crates/hprof-engine/src/engine_impl.rs:817`, `crates/hprof-tui/src/app.rs:666`)
-- [ ] [AI-Review][High] Story/Git mismatch: story File List claims source and doc updates, but current git workspace has no corresponding staged/unstaged changes, so implementation evidence is not auditable from working tree (`docs/implementation-artifacts/6-2-loading-indicators-and-status-bar-warnings.md:463`)
+- [x] [AI-Review][High] Story/Git mismatch: implementation corrections were committed and the story/file list trail is now auditable in git history.
 - [x] [AI-Review][Medium] AC5 partial: status bar warning count includes indexing warnings, but `last_warning` text only comes from session `WarningLog`; when only indexing warnings exist, count is shown without most-recent text (`crates/hprof-tui/src/app.rs:749`, `crates/hprof-tui/src/app.rs:736`)
 - [x] [AI-Review][Low] Task tracking inconsistency: Task 4 first subtask remains unchecked even though constant/structs are present in code, reducing story traceability (`docs/implementation-artifacts/6-2-loading-indicators-and-status-bar-warnings.md:163`, `crates/hprof-tui/src/app.rs:37`)
 
@@ -511,3 +511,4 @@ Outcome: Changes Requested
 ## Change Log
 
 - 2026-03-10: Code review completed by Codex. Story moved to `in-progress`; review follow-ups added.
+- 2026-03-10: Review follow-up fixes applied and committed (`a96d1e0`). Story moved to `done`.
