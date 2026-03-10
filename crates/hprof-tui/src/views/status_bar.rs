@@ -24,6 +24,10 @@ pub struct StatusBar<'a> {
     pub selected: Option<&'a ThreadInfo>,
     /// Number of non-fatal parse warnings collected during indexing.
     pub warning_count: usize,
+    /// Indexing completeness ratio (0.0–100.0). `None` = fully indexed.
+    pub file_indexed_pct: Option<f64>,
+    /// Most recent session warning text, if any.
+    pub last_warning: Option<&'a str>,
 }
 
 pub(crate) fn state_label(state: ThreadState) -> &'static str {
@@ -45,15 +49,33 @@ impl Widget for StatusBar<'_> {
         };
 
         let warn_part = if self.warning_count > 0 {
-            format!("  |  [!] {} warnings — see stderr", self.warning_count)
+            let last = self.last_warning.map(|w| {
+                let truncated: String = w.chars().take(40).collect();
+                if w.chars().count() > 40 {
+                    format!("{truncated}…")
+                } else {
+                    truncated
+                }
+            });
+            if let Some(w) = last {
+                format!("  |  [!] {} warnings ({w}) — see stderr", self.warning_count)
+            } else {
+                format!("  |  [!] {} warnings — see stderr", self.warning_count)
+            }
+        } else {
+            String::new()
+        };
+
+        let incomplete_part = if let Some(pct) = self.file_indexed_pct {
+            format!("[!] Incomplete file — {pct:.0}% indexed  |  ")
         } else {
             String::new()
         };
 
         let line = Line::from(vec![Span::styled(
             format!(
-                " {}  |  {}  |  {}  |  [q]uit  [/]search  [Esc]back{}",
-                self.filename, thread_part, selected_part, warn_part
+                " {}{}  |  {}  |  {}  |  [q]uit  [/]search  [Esc]back{}",
+                incomplete_part, self.filename, thread_part, selected_part, warn_part
             ),
             theme::STATUS_BAR,
         )]);
@@ -106,31 +128,37 @@ mod tests {
         assert_eq!(expected_part, "main  UNKNOWN");
     }
 
-    #[test]
-    fn warning_count_zero_produces_no_warning_indicator() {
+    fn render_status_bar(bar: StatusBar<'_>, width: u16) -> String {
         use ratatui::{Terminal, backend::TestBackend};
-        let backend = TestBackend::new(120, 1);
+        let backend = TestBackend::new(width, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                f.render_widget(
-                    StatusBar {
-                        filename: "test.hprof",
-                        thread_count: 3,
-                        selected: None,
-                        warning_count: 0,
-                    },
-                    f.area(),
-                );
+                f.render_widget(bar, f.area());
             })
             .unwrap();
-        let content: String = terminal
+        terminal
             .backend()
             .buffer()
             .content
             .iter()
             .map(|c| c.symbol().to_string())
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn warning_count_zero_produces_no_warning_indicator() {
+        let content = render_status_bar(
+            StatusBar {
+                filename: "test.hprof",
+                thread_count: 3,
+                selected: None,
+                warning_count: 0,
+                file_indexed_pct: None,
+                last_warning: None,
+            },
+            120,
+        );
         assert!(
             !content.contains("warnings"),
             "no warning indicator expected"
@@ -139,32 +167,84 @@ mod tests {
 
     #[test]
     fn warning_count_nonzero_renders_warning_indicator() {
-        use ratatui::{Terminal, backend::TestBackend};
-        let backend = TestBackend::new(120, 1);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                f.render_widget(
-                    StatusBar {
-                        filename: "test.hprof",
-                        thread_count: 3,
-                        selected: None,
-                        warning_count: 5,
-                    },
-                    f.area(),
-                );
-            })
-            .unwrap();
-        let content: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|c| c.symbol().to_string())
-            .collect();
+        let content = render_status_bar(
+            StatusBar {
+                filename: "test.hprof",
+                thread_count: 3,
+                selected: None,
+                warning_count: 5,
+                file_indexed_pct: None,
+                last_warning: None,
+            },
+            120,
+        );
         assert!(
             content.contains("5 warnings"),
             "warning indicator must mention count; got: {content:?}"
         );
+    }
+
+    #[test]
+    fn incomplete_file_shown_in_status_bar() {
+        let content = render_status_bar(
+            StatusBar {
+                filename: "test.hprof",
+                thread_count: 3,
+                selected: None,
+                warning_count: 0,
+                file_indexed_pct: Some(75.3),
+                last_warning: None,
+            },
+            200,
+        );
+        assert!(
+            content.contains("Incomplete file") && content.contains("75%"),
+            "incomplete file indicator must show; got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn last_warning_appended_in_status_bar() {
+        let content = render_status_bar(
+            StatusBar {
+                filename: "test.hprof",
+                thread_count: 3,
+                selected: None,
+                warning_count: 2,
+                file_indexed_pct: None,
+                last_warning: Some("Object 0xABC not found"),
+            },
+            200,
+        );
+        assert!(
+            content.contains("Object 0xABC not found"),
+            "last warning text must appear; got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn last_warning_truncated_at_40_chars() {
+        let long_warning = "A".repeat(50);
+        let content = render_status_bar(
+            StatusBar {
+                filename: "test.hprof",
+                thread_count: 1,
+                selected: None,
+                warning_count: 1,
+                file_indexed_pct: None,
+                last_warning: Some(&long_warning),
+            },
+            300,
+        );
+        // Should contain 40 'A's followed by '…', not 50 'A's
+        assert!(
+            content.contains(&"A".repeat(40)),
+            "must contain 40 chars; got: {content:?}"
+        );
+        assert!(
+            !content.contains(&"A".repeat(41)),
+            "must not contain 41 chars (must be truncated); got: {content:?}"
+        );
+        assert!(content.contains('…'), "must contain ellipsis; got: {content:?}");
     }
 }

@@ -10,7 +10,7 @@ use std::{
         Arc,
         mpsc::{self, Receiver},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crossterm::event::{self, Event, KeyEventKind};
@@ -31,7 +31,24 @@ use crate::{
         status_bar::StatusBar,
         thread_list::{SearchableList, ThreadListState},
     },
+    warnings::WarningLog,
 };
+
+/// Delay before showing the loading spinner for expansions/page loads.
+/// Operations completing before this threshold show no spinner.
+const EXPANSION_LOADING_THRESHOLD: Duration = Duration::from_secs(1);
+
+struct PendingExpansion {
+    rx: Receiver<Option<Vec<FieldInfo>>>,
+    pub(super) started: Instant,
+    loading_shown: bool,
+}
+
+struct PendingPage {
+    rx: Receiver<Option<CollectionPage>>,
+    pub(super) started: Instant,
+    loading_shown: bool,
+}
 
 /// Which panel currently holds keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,14 +79,16 @@ pub struct App<E: NavigationEngine> {
     /// Stack frame state — `Some` when a thread is entered, `None` otherwise.
     stack_state: Option<StackState>,
     /// In-flight object expansion receivers keyed by `object_id`.
-    pending_expansions: HashMap<u64, Receiver<Option<Vec<FieldInfo>>>>,
+    pending_expansions: HashMap<u64, PendingExpansion>,
     /// In-flight collection page load receivers keyed by
     /// `(collection_id, chunk_offset)`.
-    pending_pages: HashMap<(u64, usize), Receiver<Option<CollectionPage>>>,
+    pending_pages: HashMap<(u64, usize), PendingPage>,
     /// Warnings accumulated during the session (e.g. unresolved string backing arrays).
-    app_warnings: Vec<String>,
+    warnings: WarningLog,
     /// Visible height of the thread list panel (set during render).
     thread_list_height: u16,
+    /// Timestamp of the last periodic memory log emission.
+    last_memory_log: Instant,
 }
 
 impl<E: NavigationEngine> App<E> {
@@ -95,8 +114,9 @@ impl<E: NavigationEngine> App<E> {
             stack_state: None,
             pending_expansions: HashMap::new(),
             pending_pages: HashMap::new(),
-            app_warnings: Vec::new(),
+            warnings: WarningLog::default(),
             thread_list_height: 0,
+            last_memory_log: Instant::now(),
         }
     }
 
@@ -423,11 +443,6 @@ impl<E: NavigationEngine> App<E> {
                         self.start_collection_page_load(cid, 0, limit);
                     }
                     Some(Cmd::LoadChunk(cid, offset, limit)) => {
-                        if let Some(s) = &mut self.stack_state
-                            && let Some(cc) = s.collection_chunks.get_mut(&cid)
-                        {
-                            cc.chunk_pages.insert(offset, ChunkState::Loading);
-                        }
                         self.start_collection_page_load(cid, offset, limit);
                     }
                     Some(Cmd::ToggleChunk(cid, offset)) => {
@@ -463,8 +478,9 @@ impl<E: NavigationEngine> App<E> {
 
     /// Spawns a worker thread to expand `object_id` and registers a receiver.
     ///
-    /// If `object_id` is already pending, this is a no-op. The `StackState`
-    /// is immediately set to `Loading` so the UI shows a spinner.
+    /// If `object_id` is already pending, this is a no-op. The loading spinner
+    /// is deferred until [`EXPANSION_LOADING_THRESHOLD`] has elapsed without
+    /// the operation completing.
     fn start_object_expansion(&mut self, object_id: u64)
     where
         E: Send + Sync + 'static,
@@ -478,16 +494,21 @@ impl<E: NavigationEngine> App<E> {
             let result = engine.expand_object(object_id);
             let _ = tx.send(result);
         });
-        self.pending_expansions.insert(object_id, rx);
-        if let Some(s) = &mut self.stack_state {
-            s.set_expansion_loading(object_id);
-        }
+        self.pending_expansions.insert(
+            object_id,
+            PendingExpansion {
+                rx,
+                started: Instant::now(),
+                loading_shown: false,
+            },
+        );
     }
 
     /// Spawns a worker to load a collection page.
     ///
     /// If the `(collection_id, offset)` key is already
-    /// pending, this is a no-op.
+    /// pending, this is a no-op. The loading indicator is
+    /// deferred until [`EXPANSION_LOADING_THRESHOLD`] elapses.
     fn start_collection_page_load(&mut self, collection_id: u64, offset: usize, limit: usize)
     where
         E: Send + Sync + 'static,
@@ -502,7 +523,14 @@ impl<E: NavigationEngine> App<E> {
             let result = engine.get_page(collection_id, offset, limit);
             let _ = tx.send(result);
         });
-        self.pending_pages.insert(key, rx);
+        self.pending_pages.insert(
+            key,
+            PendingPage {
+                rx,
+                started: Instant::now(),
+                loading_shown: false,
+            },
+        );
     }
 
     /// Polls in-flight collection page receivers.
@@ -513,8 +541,8 @@ impl<E: NavigationEngine> App<E> {
     pub fn poll_pages(&mut self) -> Vec<u64> {
         let mut done = Vec::new();
         let mut fallback = Vec::new();
-        for (&(cid, offset), rx) in &self.pending_pages {
-            match rx.try_recv() {
+        for (&(cid, offset), pp) in self.pending_pages.iter_mut() {
+            match pp.rx.try_recv() {
                 Ok(Some(page)) => {
                     dbg_log!(
                         "poll_pages: 0x{:X}+{} → {} entries",
@@ -541,7 +569,19 @@ impl<E: NavigationEngine> App<E> {
                     fallback.push(cid);
                     done.push((cid, offset));
                 }
-                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Empty) => {
+                    if !pp.loading_shown
+                        && pp.started.elapsed() >= EXPANSION_LOADING_THRESHOLD
+                        && offset > 0
+                    {
+                        if let Some(s) = &mut self.stack_state
+                            && let Some(cc) = s.collection_chunks.get_mut(&cid)
+                        {
+                            cc.chunk_pages.insert(offset, ChunkState::Loading);
+                        }
+                        pp.loading_shown = true;
+                    }
+                }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
                         s.collection_chunks.remove(&cid);
@@ -559,10 +599,12 @@ impl<E: NavigationEngine> App<E> {
     /// Polls all in-flight expansion receivers and updates `StackState`.
     ///
     /// Completed or failed expansions are removed from `pending_expansions`.
+    /// The loading spinner is shown only after [`EXPANSION_LOADING_THRESHOLD`]
+    /// has elapsed.
     pub fn poll_expansions(&mut self) {
         let mut done = Vec::new();
-        for (&object_id, rx) in &self.pending_expansions {
-            match rx.try_recv() {
+        for (&object_id, pe) in self.pending_expansions.iter_mut() {
+            match pe.rx.try_recv() {
                 Ok(Some(fields)) => {
                     if let Some(s) = &mut self.stack_state {
                         s.set_expansion_done(object_id, fields);
@@ -574,13 +616,30 @@ impl<E: NavigationEngine> App<E> {
                     if let Some(s) = &mut self.stack_state {
                         s.set_expansion_failed(object_id, "Failed to resolve object".to_string());
                     }
+                    self.warnings
+                        .add(format!("Object 0x{object_id:X} could not be resolved"));
                     done.push(object_id);
                 }
-                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Empty) => {
+                    if !pe.loading_shown
+                        && pe.started.elapsed() >= EXPANSION_LOADING_THRESHOLD
+                    {
+                        if let Some(s) = &mut self.stack_state {
+                            s.set_expansion_loading(object_id);
+                        }
+                        pe.loading_shown = true;
+                    }
+                }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_failed(object_id, "Worker thread disconnected".to_string());
+                        s.set_expansion_failed(
+                            object_id,
+                            "Worker thread disconnected".to_string(),
+                        );
                     }
+                    self.warnings.add(format!(
+                        "Worker disconnected for object 0x{object_id:X}"
+                    ));
                     done.push(object_id);
                 }
             }
@@ -599,6 +658,17 @@ impl<E: NavigationEngine> App<E> {
         let page_fallbacks = self.poll_pages();
         for cid in page_fallbacks {
             self.start_object_expansion(cid);
+        }
+        if self.last_memory_log.elapsed() >= Duration::from_secs(20) {
+            mem_log!(
+                "{}",
+                format_memory_log(
+                    self.engine.memory_used(),
+                    self.engine.memory_budget(),
+                    self.engine.skeleton_bytes(),
+                )
+            );
+            self.last_memory_log = Instant::now();
         }
 
         let area = frame.area();
@@ -663,16 +733,44 @@ impl<E: NavigationEngine> App<E> {
         // Status bar — resolve selected thread once, use StatusBar widget.
         let selected_serial = self.thread_list.selected_serial();
         let selected_thread = selected_serial.and_then(|s| self.engine.select_thread(s));
+        let last_warning: Option<String> = self.warnings.last().map(str::to_string);
+        // Use is_fully_indexed() (integer comparison) rather than
+        // indexing_ratio() == 100.0 to avoid floating-point imprecision.
+        let file_indexed_pct = if self.engine.is_fully_indexed() {
+            None
+        } else {
+            Some(self.engine.indexing_ratio())
+        };
         frame.render_widget(
             StatusBar {
                 filename: &self.filename,
                 thread_count: self.thread_count,
                 selected: selected_thread.as_ref(),
-                warning_count: self.warning_count + self.app_warnings.len(),
+                warning_count: self.warning_count + self.warnings.count(),
+                last_warning: last_warning.as_deref(),
+                file_indexed_pct,
             },
             status_area,
         );
     }
+}
+
+/// Formats a periodic memory usage line for stderr emission.
+///
+/// Returns a string of the form:
+/// `[memory] cache N MB / M MB budget | skeleton K MB (non-evictable)`
+pub(crate) fn format_memory_log(
+    cache_bytes: usize,
+    budget_bytes: u64,
+    skeleton_bytes: usize,
+) -> String {
+    let cache_mb = cache_bytes / (1024 * 1024);
+    let budget_mb = budget_bytes / 1_048_576;
+    let skeleton_mb = skeleton_bytes / (1024 * 1024);
+    format!(
+        "[memory] cache {cache_mb} MB / {budget_mb} MB budget | skeleton {skeleton_mb} MB \
+         (non-evictable)"
+    )
 }
 
 /// RAII guard ensuring terminal cleanup on drop, even if a panic occurs.
@@ -911,6 +1009,15 @@ mod tests {
         fn memory_budget(&self) -> u64 {
             u64::MAX
         }
+        fn indexing_ratio(&self) -> f64 {
+            100.0
+        }
+        fn is_fully_indexed(&self) -> bool {
+            true
+        }
+        fn skeleton_bytes(&self) -> usize {
+            0
+        }
     }
 
     fn make_frame(frame_id: u64) -> FrameInfo {
@@ -1108,19 +1215,25 @@ mod tests {
     // --- Task 9: async expansion machinery tests ---
 
     #[test]
-    fn start_object_expansion_sets_loading_state() {
+    fn start_object_expansion_registers_pending_but_no_loading_before_threshold() {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
         // Enter StackFrames, expand frame 10, then move down to the ObjectRef var.
         app.handle_input(InputEvent::Enter); // → StackFrames, OnFrame(0)
-        app.handle_input(InputEvent::Enter); // expand frame 10, cursor stays OnFrame(0)
+        app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0} (ObjectRef 42)
         app.handle_input(InputEvent::Enter); // start_object_expansion(42)
+        // Expansion is pending but loading indicator is NOT shown yet.
+        assert!(
+            app.pending_expansions.contains_key(&42),
+            "pending expansion must be registered"
+        );
         assert_eq!(
             app.stack_state.as_ref().unwrap().expansion_state(42),
-            ExpansionPhase::Loading
+            ExpansionPhase::Collapsed,
+            "loading must not be shown before threshold"
         );
     }
 
@@ -1174,9 +1287,15 @@ mod tests {
         app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[0]} (field "x")
         app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[1]} (field "child" = ObjectRef 999)
         app.handle_input(InputEvent::Enter); // start nested expansion of 999
-        assert_eq!(
+        // Expansion registered but loading indicator not shown before threshold.
+        assert!(
+            app.pending_expansions.contains_key(&999),
+            "pending expansion for 999 must be registered"
+        );
+        assert_ne!(
             app.stack_state.as_ref().unwrap().expansion_state(999),
-            ExpansionPhase::Loading
+            ExpansionPhase::Loading,
+            "loading must not be shown before threshold"
         );
     }
 
@@ -1249,7 +1368,17 @@ mod tests {
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
-        app.handle_input(InputEvent::Enter); // start expansion → Loading
+        app.handle_input(InputEvent::Enter); // start expansion (pending, no Loading yet)
+        // Simulate threshold elapsed: back-date the started time.
+        if let Some(pe) = app.pending_expansions.get_mut(&42) {
+            pe.started = Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
+        }
+        // Poll once — this triggers the Loading state.
+        app.poll_expansions();
+        assert_eq!(
+            app.stack_state.as_ref().unwrap().expansion_state(42),
+            ExpansionPhase::Loading
+        );
         app.handle_input(InputEvent::Down); // → OnObjectLoadingNode{0,0}
         app.handle_input(InputEvent::Escape); // cancel expansion (not go-back)
         assert_eq!(
@@ -1434,13 +1563,28 @@ mod tests {
             app.handle_input(InputEvent::Down);
         }
         app.handle_input(InputEvent::Enter);
-        // Before polling, chunk should be Loading.
+        // Before threshold, chunk is not in Loading state (still Collapsed or absent).
+        {
+            let ss = app.stack_state.as_ref().unwrap();
+            let cc = ss.collection_chunks.get(&888).unwrap();
+            assert!(
+                !matches!(cc.chunk_pages.get(&100), Some(ChunkState::Loading)),
+                "chunk must NOT be Loading before threshold"
+            );
+        }
+        // Simulate threshold elapsed.
+        if let Some(pp) = app.pending_pages.get_mut(&(888, 100)) {
+            pp.started =
+                Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
+        }
+        // Poll once — threshold triggers ChunkState::Loading.
+        app.poll_pages();
         let ss = app.stack_state.as_ref().unwrap();
         let cc = ss.collection_chunks.get(&888).unwrap();
-        assert!(matches!(
-            cc.chunk_pages.get(&100),
-            Some(ChunkState::Loading)
-        ));
+        assert!(
+            matches!(cc.chunk_pages.get(&100), Some(ChunkState::Loading)),
+            "chunk must be Loading after threshold"
+        );
     }
 
     #[test]
@@ -1733,5 +1877,131 @@ mod tests {
         assert_eq!(*state.cursor(), StackCursor::OnFrame(15));
         state.move_page_up();
         assert_eq!(*state.cursor(), StackCursor::OnFrame(5));
+    }
+
+    // --- Task 4: loading indicator threshold tests ---
+
+    #[test]
+    fn loading_indicator_not_shown_before_1_second() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Down);
+        app.handle_input(InputEvent::Enter); // start_object_expansion(42) — completes fast
+        // Poll once without sleeping — StubEngine responds immediately.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Expansion completed without ever setting Loading state.
+        assert_eq!(
+            app.stack_state.as_ref().unwrap().expansion_state(42),
+            ExpansionPhase::Expanded,
+            "fast expansion must complete as Expanded without ever showing Loading"
+        );
+    }
+
+    // --- Task 5: WarningLog wiring tests ---
+
+    #[test]
+    fn failed_expansion_adds_warning_to_log() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 55)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(55, None); // force None → unresolvable
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Down);
+        app.handle_input(InputEvent::Enter); // start expansion of 55
+        // Poll until result arrives.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(app.warnings.count(), 1);
+        assert!(
+            app.warnings.last().unwrap_or("").contains("0x37"),
+            "warning must reference the object id; got: {:?}",
+            app.warnings.last()
+        );
+    }
+
+    #[test]
+    fn disconnected_expansion_adds_warning_to_log() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 77)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        // Manually inject a disconnected pending expansion (tx dropped immediately).
+        let (tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        drop(tx); // disconnect
+        app.pending_expansions.insert(
+            77,
+            PendingExpansion {
+                rx,
+                started: Instant::now(),
+                loading_shown: false,
+            },
+        );
+        app.poll_expansions();
+        assert_eq!(app.warnings.count(), 1);
+        assert!(
+            app.warnings.last().unwrap_or("").contains("0x4D"),
+            "warning must reference the object id 0x4D (77); got: {:?}",
+            app.warnings.last()
+        );
+    }
+
+    // --- Task 6: format_memory_log tests ---
+
+    #[test]
+    fn format_memory_log_produces_correct_output() {
+        let s = format_memory_log(42 * 1024 * 1024, 512 * 1_048_576, 38 * 1024 * 1024);
+        assert_eq!(
+            s,
+            "[memory] cache 42 MB / 512 MB budget | skeleton 38 MB (non-evictable)"
+        );
+    }
+
+    #[test]
+    fn format_memory_log_rounds_down_to_mb() {
+        // 1.9 MB → 1 MB (integer division rounds down)
+        let s = format_memory_log(1024 * 1024 + 900_000, 1_048_576, 0);
+        assert!(s.contains("cache 1 MB"), "expected round-down; got: {s}");
+        assert!(s.contains("skeleton 0 MB"), "got: {s}");
+    }
+
+    #[test]
+    fn loading_indicator_shown_if_not_yet_complete_after_1_second() {
+        // Use a slow channel: create the receiver manually without sending a result.
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 99)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Down);
+        // Manually insert a PendingExpansion with an unsent channel and past started time.
+        let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        app.pending_expansions.insert(
+            99,
+            PendingExpansion {
+                rx,
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: false,
+            },
+        );
+        // Poll once — threshold exceeded, loading_shown transitions to true.
+        app.poll_expansions();
+        // Verify loading_shown was set.
+        let pe = app.pending_expansions.get(&99).unwrap();
+        assert!(pe.loading_shown, "loading_shown must be set after threshold");
     }
 }
