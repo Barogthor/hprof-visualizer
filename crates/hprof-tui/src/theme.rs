@@ -1,41 +1,102 @@
-//! Centralized style constants for the hprof-visualizer TUI.
+//! Centralized theme for the hprof-visualizer TUI.
 //!
-//! All colors use the 16 ANSI base colors only (no 256-color or RGB).
-//! Widgets MUST import styles from here — never hardcode colors or
-//! modifiers elsewhere.
+//! Defines [`Theme`] — a struct grouping all [`ratatui::style::Style`]
+//! semantic roles — and the [`THEME`] constant singleton.
+//!
+//! All colors use the 16-color ANSI palette only (no 256-color or RGB).
+//! Widgets MUST reference colors via `THEME` — never hardcode `Color::*`
+//! literals elsewhere.
 //!
 //! ## Semantic color vocabulary
-//! - Thread state: green (RUNNABLE), yellow (WAITING), red (BLOCKED),
-//!   dark-gray (UNKNOWN)
-//! - Panel: focused border (bold white), unfocused border (dark-gray)
-//! - Search: active input area (cyan fg)
-//! - Selection: reversed video
+//!
+//! | Role | Color | Usage |
+//! |---|---|---|
+//! | `thread_runnable` | Green | Runnable thread state dot |
+//! | `thread_waiting` | Yellow | Waiting thread state dot |
+//! | `thread_blocked` | Red | Blocked thread state dot |
+//! | `thread_unknown` | DarkGray | Unknown thread state dot |
+//! | `primitive_value` | Yellow | Numeric / bool / char field values |
+//! | `string_value` | Green | String wrapper field values |
+//! | `null_value` | DarkGray | Null values, secondary info |
+//! | `expand_indicator` | DarkGray | `+`/`-` expand toggle prefix |
+//! | `loading_indicator` | Cyan | `~ Loading...` row text |
+//! | `error_indicator` | Red | Failed expansion rows |
+//! | `warning` | Yellow | Warning text in status bar |
+//! | `selection_bg` | REVERSED | Selected row background |
+//! | `selection_fg` | Default | (Reserved for future use) |
+//! | `border_focused` | Bold White | Focused panel border |
+//! | `border_unfocused` | DarkGray | Unfocused panel border |
+//! | `status_bar_bg` | White on DarkGray | Status bar background |
+//! | `search_active` | Cyan | Active search input text |
 
 use ratatui::style::{Color, Modifier, Style};
 
-// --- Thread state dots ---
-pub const STATE_RUNNABLE: Style = Style::new().fg(Color::Green);
-pub const STATE_WAITING: Style = Style::new().fg(Color::Yellow);
-pub const STATE_BLOCKED: Style = Style::new().fg(Color::Red);
-pub const STATE_UNKNOWN: Style = Style::new().fg(Color::DarkGray);
+/// Semantic style roles for the hprof-visualizer TUI.
+///
+/// All fields are [`Style`] values using the 16-color ANSI palette.
+/// Instantiate via the [`THEME`] constant.
+pub struct Theme {
+    /// Runnable thread state dot color.
+    pub thread_runnable: Style,
+    /// Waiting thread state dot color.
+    pub thread_waiting: Style,
+    /// Blocked thread state dot color.
+    pub thread_blocked: Style,
+    /// Unknown thread state dot color.
+    pub thread_unknown: Style,
+    /// Numeric / bool / char field value row style.
+    pub primitive_value: Style,
+    /// String wrapper field value row style.
+    pub string_value: Style,
+    /// Null value and secondary info style.
+    pub null_value: Style,
+    /// Expand/collapse toggle prefix style (`+` / `-`).
+    pub expand_indicator: Style,
+    /// Loading indicator row style (`~ Loading...`).
+    pub loading_indicator: Style,
+    /// Failed expansion row style.
+    pub error_indicator: Style,
+    /// Warning text style.
+    pub warning: Style,
+    /// Selected row background (reversed video).
+    pub selection_bg: Style,
+    /// Selected row foreground — reserved for future multi-panel use.
+    pub selection_fg: Style,
+    /// Focused panel border style.
+    pub border_focused: Style,
+    /// Unfocused panel border style.
+    pub border_unfocused: Style,
+    /// Status bar background style.
+    pub status_bar_bg: Style,
+    /// Active search input style.
+    pub search_active: Style,
+}
 
-// --- Selection ---
-pub const SELECTED: Style = Style::new().add_modifier(Modifier::REVERSED);
-
-// --- Panel borders ---
-pub const BORDER_FOCUSED: Style = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
-pub const BORDER_UNFOCUSED: Style = Style::new().fg(Color::DarkGray);
-
-// --- Search input ---
-pub const SEARCH_ACTIVE: Style = Style::new().fg(Color::Cyan);
-pub const SEARCH_HINT: Style = Style::new().fg(Color::DarkGray);
-
-// --- Status bar ---
-pub const STATUS_BAR: Style = Style::new().fg(Color::White).bg(Color::DarkGray);
-pub const STATUS_WARNING: Style = Style::new().fg(Color::Yellow);
-
-// --- Legend ---
-pub const LEGEND: Style = Style::new().fg(Color::DarkGray);
+/// Singleton theme instance. Widgets reference colors via this constant.
+///
+/// ```rust
+/// use hprof_tui::theme::THEME;
+/// let style = THEME.thread_runnable;
+/// ```
+pub const THEME: Theme = Theme {
+    thread_runnable: Style::new().fg(Color::Green),
+    thread_waiting: Style::new().fg(Color::Yellow),
+    thread_blocked: Style::new().fg(Color::Red),
+    thread_unknown: Style::new().fg(Color::DarkGray),
+    primitive_value: Style::new().fg(Color::Yellow),
+    string_value: Style::new().fg(Color::Green),
+    null_value: Style::new().fg(Color::DarkGray),
+    expand_indicator: Style::new().fg(Color::DarkGray),
+    loading_indicator: Style::new().fg(Color::Cyan),
+    error_indicator: Style::new().fg(Color::Red),
+    warning: Style::new().fg(Color::Yellow),
+    selection_bg: Style::new().add_modifier(Modifier::REVERSED),
+    selection_fg: Style::new(),
+    border_focused: Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+    border_unfocused: Style::new().fg(Color::DarkGray),
+    status_bar_bg: Style::new().fg(Color::White).bg(Color::DarkGray),
+    search_active: Style::new().fg(Color::Cyan),
+};
 
 #[cfg(test)]
 mod tests {
@@ -44,19 +105,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_style_constants_are_of_type_style() {
+    fn all_theme_fields_are_of_type_style() {
         fn assert_style(_: Style) {}
-        assert_style(STATE_RUNNABLE);
-        assert_style(STATE_WAITING);
-        assert_style(STATE_BLOCKED);
-        assert_style(STATE_UNKNOWN);
-        assert_style(SELECTED);
-        assert_style(BORDER_FOCUSED);
-        assert_style(BORDER_UNFOCUSED);
-        assert_style(SEARCH_ACTIVE);
-        assert_style(SEARCH_HINT);
-        assert_style(STATUS_BAR);
-        assert_style(STATUS_WARNING);
-        assert_style(LEGEND);
+        assert_style(THEME.thread_runnable);
+        assert_style(THEME.thread_waiting);
+        assert_style(THEME.thread_blocked);
+        assert_style(THEME.thread_unknown);
+        assert_style(THEME.primitive_value);
+        assert_style(THEME.string_value);
+        assert_style(THEME.null_value);
+        assert_style(THEME.expand_indicator);
+        assert_style(THEME.loading_indicator);
+        assert_style(THEME.error_indicator);
+        assert_style(THEME.warning);
+        assert_style(THEME.selection_bg);
+        assert_style(THEME.selection_fg);
+        assert_style(THEME.border_focused);
+        assert_style(THEME.border_unfocused);
+        assert_style(THEME.status_bar_bg);
+        assert_style(THEME.search_active);
     }
 }

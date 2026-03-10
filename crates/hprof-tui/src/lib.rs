@@ -32,6 +32,7 @@ macro_rules! mem_log {
 }
 
 pub mod app;
+pub mod favorites;
 pub mod input;
 pub mod theme;
 pub mod views;

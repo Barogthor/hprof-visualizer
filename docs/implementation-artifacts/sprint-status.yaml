@@ -102,14 +102,27 @@ development_status:
   epic-5-retrospective: optional
 
   # Epic 6: Configuration & Error Resilience
-  epic-6: in-progress
+  epic-6: done
   6-1-toml-configuration-and-cli-precedence: done
-  6-2-loading-indicators-and-status-bar-warnings: review
-  epic-6-retrospective: optional
+  6-2-loading-indicators-and-status-bar-warnings: done
+  epic-6-retrospective: done
 
   # Epic 7: TUI UX & Interaction Design
-  epic-7: backlog
-  7-1-favorites-panel: backlog
-  7-2-theme-system: backlog
-  7-3-keyboard-navigation-map: backlog
+  epic-7: done
+  7-1-favorites-panel: done
+  7-2-theme-system: done
+  7-3-keyboard-navigation-map: done
   epic-7-retrospective: optional
+
+  # Epic 9: Navigation & Data Fidelity (sourced from user testing 2026-03-10)
+  epic-9: backlog
+  9-1-expand-state-bugs-and-failed-resolve-non-navigable: backlog
+  9-2-collection-data-fidelity: backlog
+  9-3-arrow-expand-unexpand-parent-navigation: backlog
+  9-4-camera-scroll: backlog
+  9-5-stack-frame-variable-names-and-static-fields: backlog
+  9-6-search-and-favorites-ux-polish: backlog
+  9-7-help-footer-context-and-visibility: backlog
+  9-8-pinned-item-navigation-and-array-expansion: backlog
+  9-9-value-hiding-and-reset-in-pinned-snapshots: backlog
+  epic-9-retrospective: optional
