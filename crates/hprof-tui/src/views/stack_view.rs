@@ -1086,7 +1086,7 @@ impl StackState {
         }
         match self.expansion_state(obj_id) {
             ExpansionPhase::Collapsed => {}
-            ExpansionPhase::Loading | ExpansionPhase::Failed => {
+            ExpansionPhase::Loading => {
                 out.push(StackCursor::OnCollectionEntryObjField {
                     frame_idx: fi,
                     var_idx: vi,
@@ -1095,6 +1095,9 @@ impl StackState {
                     entry_index,
                     obj_field_path: obj_path.to_vec(),
                 });
+            }
+            ExpansionPhase::Failed => {
+                // Error state is styled on the parent entry row — no child cursor emitted here.
             }
             ExpansionPhase::Expanded => {
                 let fields = self.object_fields.get(&obj_id);
@@ -2661,6 +2664,78 @@ mod tests {
                 StackCursor::OnCollectionEntry { entry_index: 0, .. }
             )),
             "collection entry must remain in flat_items: {flat:?}"
+        );
+    }
+
+    /// Navigation: a Failed collection entry object must not emit a phantom
+    /// cursor — flat_items and build_items must stay equal length and
+    /// move_down from the entry row must reach the next frame, not stall.
+    #[test]
+    fn failed_collection_entry_obj_no_phantom_cursor() {
+        use hprof_engine::{CollectionPage, EntryInfo, FieldInfo, FieldValue};
+        let frames = vec![make_frame(10), make_frame(20)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 99)];
+        state.toggle_expand(10, vars);
+        state.set_expansion_done(
+            99,
+            vec![FieldInfo {
+                name: "items".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 200,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(1),
+                    inline_value: None,
+                },
+            }],
+        );
+        let eager_page = CollectionPage {
+            entries: vec![EntryInfo {
+                index: 0,
+                key: None,
+                value: FieldValue::ObjectRef {
+                    id: 300,
+                    class_name: "String".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            }],
+            total_count: 1,
+            offset: 0,
+            has_more: false,
+        };
+        state.collection_chunks.insert(
+            200,
+            CollectionChunks {
+                total_count: 1,
+                eager_page: Some(eager_page),
+                chunk_pages: std::collections::HashMap::new(),
+            },
+        );
+        state.set_expansion_failed(300, "not found".to_string());
+
+        // AC5: no phantom cursor — lengths must be equal.
+        assert_eq!(
+            state.flat_items().len(),
+            state.build_items().len(),
+            "phantom OnCollectionEntryObjField must not be emitted for Failed"
+        );
+
+        // Navigate to the collection entry row, then Down must reach Frame(1).
+        // flat: [Frame(0), Var{0,0}, ObjField{[0]}, CollEntry{0}, Frame(1)]
+        state.move_down(); // → Var{0,0}
+        state.move_down(); // → ObjField{[0]}
+        state.move_down(); // → CollEntry{entry_index=0}
+        assert!(
+            matches!(state.cursor, StackCursor::OnCollectionEntry { entry_index: 0, .. }),
+            "expected OnCollectionEntry, got {:?}",
+            state.cursor
+        );
+        state.move_down(); // must skip phantom and reach Frame(1)
+        assert_eq!(
+            state.cursor,
+            StackCursor::OnFrame(1),
+            "move_down from Failed collection entry must reach next frame"
         );
     }
 
