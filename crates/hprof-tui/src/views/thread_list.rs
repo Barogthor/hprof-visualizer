@@ -16,7 +16,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, StatefulWidget, Widget},
 };
 
-use crate::theme;
+use crate::theme::THEME;
 
 /// Owns all thread list state: full data, active filter, and selection.
 pub struct ThreadListState {
@@ -184,10 +184,10 @@ impl ThreadListState {
 
 fn state_style(state: ThreadState) -> Style {
     match state {
-        ThreadState::Runnable => theme::STATE_RUNNABLE,
-        ThreadState::Waiting => theme::STATE_WAITING,
-        ThreadState::Blocked => theme::STATE_BLOCKED,
-        ThreadState::Unknown => theme::STATE_UNKNOWN,
+        ThreadState::Runnable => THEME.thread_runnable,
+        ThreadState::Waiting => THEME.thread_waiting,
+        ThreadState::Blocked => THEME.thread_blocked,
+        ThreadState::Unknown => THEME.thread_unknown,
     }
 }
 
@@ -203,9 +203,9 @@ impl StatefulWidget for SearchableList {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let border_style = if self.focused {
-            theme::BORDER_FOCUSED
+            THEME.border_focused
         } else {
-            theme::BORDER_UNFOCUSED
+            THEME.border_unfocused
         };
 
         let title = format!("Threads ({})", state.filtered_count());
@@ -229,12 +229,12 @@ impl StatefulWidget for SearchableList {
         // Search row
         let search_line = if state.is_search_active() {
             Line::from(vec![
-                Span::styled("/ ", theme::SEARCH_ACTIVE),
-                Span::styled(state.filter(), theme::SEARCH_ACTIVE),
-                Span::styled("_", theme::SEARCH_ACTIVE),
+                Span::styled("/ ", THEME.search_active),
+                Span::styled(state.filter(), THEME.search_active),
+                Span::styled("_", THEME.search_active),
             ])
         } else {
-            Line::from(Span::styled("Press / to search", theme::SEARCH_HINT))
+            Line::from(Span::styled("Press / to search", THEME.null_value))
         };
         search_line.render(search_area, buf);
 
@@ -245,7 +245,7 @@ impl StatefulWidget for SearchableList {
             } else {
                 format!("No threads match \"{}\"", state.filter())
             };
-            Line::from(Span::styled(msg, theme::SEARCH_HINT)).render(list_area, buf);
+            Line::from(Span::styled(msg, THEME.null_value)).render(list_area, buf);
         } else {
             let items: Vec<ListItem> = state
                 .filtered_serials
@@ -258,20 +258,20 @@ impl StatefulWidget for SearchableList {
                 })
                 .collect();
 
-            let list = List::new(items).highlight_style(theme::SELECTED);
+            let list = List::new(items).highlight_style(THEME.selection_bg);
             StatefulWidget::render(list, list_area, buf, &mut state.list_state);
         }
 
         // Legend row
         let legend = Line::from(vec![
-            Span::styled("o", theme::STATE_RUNNABLE),
+            Span::styled("o", THEME.thread_runnable),
             Span::raw(" Run  "),
-            Span::styled("o", theme::STATE_WAITING),
+            Span::styled("o", THEME.thread_waiting),
             Span::raw(" Wt  "),
-            Span::styled("o", theme::STATE_BLOCKED),
+            Span::styled("o", THEME.thread_blocked),
             Span::raw(" Blk  "),
-            Span::styled("o", theme::STATE_UNKNOWN),
-            Span::styled(" Unknown", theme::LEGEND),
+            Span::styled("o", THEME.thread_unknown),
+            Span::styled(" Unknown", THEME.null_value),
         ]);
         legend.render(legend_area, buf);
     }

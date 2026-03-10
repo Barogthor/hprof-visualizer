@@ -11,12 +11,12 @@ use hprof_engine::{
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::Modifier,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, StatefulWidget, Widget},
 };
 
-use crate::theme;
+use crate::theme::THEME;
 
 /// Phase of an object expansion driven by `App`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1098,6 +1098,31 @@ impl StackState {
         }
     }
 
+    /// Returns the [`Style`] to apply to a rendered [`FieldValue`] row.
+    ///
+    /// Priority (highest first):
+    /// 1. `ExpansionPhase::Failed` → caller applies `THEME.error_indicator`
+    /// 2. Selected → caller patches with `THEME.selection_bg`
+    /// 3. Default → this function's return value
+    fn value_style(v: &FieldValue) -> Style {
+        match v {
+            FieldValue::Null => THEME.null_value,
+            FieldValue::Bool(_)
+            | FieldValue::Byte(_)
+            | FieldValue::Short(_)
+            | FieldValue::Int(_)
+            | FieldValue::Long(_)
+            | FieldValue::Float(_)
+            | FieldValue::Double(_)
+            | FieldValue::Char(_) => THEME.primitive_value,
+            FieldValue::ObjectRef {
+                inline_value: Some(_),
+                ..
+            } => THEME.string_value,
+            FieldValue::ObjectRef { .. } => Style::new(),
+        }
+    }
+
     /// Renders collection entries and chunk sections.
     #[allow(clippy::too_many_arguments)]
     fn build_collection_items(
@@ -1119,10 +1144,11 @@ impl StackState {
                     None
                 };
                 let text = Self::format_entry_line(entry, &indent, value_phase.as_ref());
+                let row_style = Self::value_style(&entry.value);
                 let s = if sel {
-                    theme::SELECTED
+                    row_style.patch(THEME.selection_bg)
                 } else {
-                    ratatui::style::Style::default()
+                    row_style
                 };
                 items.push(ListItem::new(Line::from(Span::styled(text, s))));
                 // Render expanded entry ObjectRef children.
@@ -1177,10 +1203,15 @@ impl StackState {
                 }
                 if *cid == collection_id && *co == *offset
             );
-            let s = if sel {
-                theme::SELECTED
+            let row_style = if matches!(chunk_state, Some(ChunkState::Loading)) {
+                THEME.loading_indicator
             } else {
-                theme::SEARCH_HINT
+                THEME.expand_indicator
+            };
+            let s = if sel {
+                row_style.patch(THEME.selection_bg)
+            } else {
+                row_style
             };
             items.push(ListItem::new(Line::from(Span::styled(text, s))));
             // Loaded chunk entries.
@@ -1235,9 +1266,9 @@ impl StackState {
                         && *obj_field_path == obj_path
                 );
                 let s = if sel {
-                    theme::SELECTED
+                    THEME.loading_indicator.patch(THEME.selection_bg)
                 } else {
-                    theme::SEARCH_HINT
+                    THEME.loading_indicator
                 };
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!("{indent}~ Loading..."),
@@ -1265,9 +1296,9 @@ impl StackState {
                             && *obj_field_path == obj_path
                     );
                     let s = if sel {
-                        theme::SELECTED
+                        THEME.null_value.patch(THEME.selection_bg)
                     } else {
-                        theme::SEARCH_HINT
+                        THEME.null_value
                     };
                     items.push(ListItem::new(Line::from(Span::styled(
                         format!("{indent}(no fields)"),
@@ -1299,12 +1330,17 @@ impl StackState {
                                     && *ei == entry_index
                                     && *obj_field_path == child_path
                             );
-                        let s = if sel {
-                            theme::SELECTED
-                        } else if cycle {
-                            theme::SEARCH_HINT
+                        let row_style = if cycle {
+                            THEME.null_value
+                        } else if matches!(child_phase, Some(ExpansionPhase::Failed)) {
+                            THEME.error_indicator
                         } else {
-                            ratatui::style::Style::default()
+                            Self::value_style(&field.value)
+                        };
+                        let s = if sel {
+                            row_style.patch(THEME.selection_bg)
+                        } else {
+                            row_style
                         };
                         let toggle =
                             if cycle {
@@ -1357,9 +1393,9 @@ impl StackState {
                         && *obj_field_path == obj_path
                 );
                 let s = if sel {
-                    theme::SELECTED
+                    THEME.error_indicator.patch(THEME.selection_bg)
                 } else {
-                    theme::SEARCH_HINT
+                    THEME.error_indicator
                 };
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!("{indent}! {err}"),
@@ -1418,9 +1454,9 @@ impl StackState {
                     | StackCursor::OnCollectionEntryObjField { frame_idx, .. }
                     if *frame_idx == fi);
             let style = if is_selected {
-                theme::SELECTED
+                THEME.selection_bg
             } else {
-                ratatui::style::Style::default()
+                Style::new()
             };
             items.push(ListItem::new(Line::from(Span::styled(text, style))));
 
@@ -1431,9 +1467,9 @@ impl StackState {
                     let var_style = if matches!(&self.cursor,
                         StackCursor::OnVar { frame_idx, .. } if *frame_idx == fi)
                     {
-                        theme::SELECTED
+                        THEME.selection_bg
                     } else {
-                        theme::SEARCH_HINT
+                        THEME.null_value
                     };
                     items.push(ListItem::new(Line::from(Span::styled(
                         "  (no locals)",
@@ -1462,9 +1498,9 @@ impl StackState {
                             StackCursor::OnVar { frame_idx: ffi, var_idx: vvi }
                             if *ffi == fi && *vvi == vi);
                         let var_style = if var_selected {
-                            theme::SELECTED
+                            THEME.selection_bg
                         } else {
-                            ratatui::style::Style::default()
+                            Style::new()
                         };
                         items.push(ListItem::new(Line::from(Span::styled(var_text, var_style))));
 
@@ -1486,7 +1522,7 @@ impl StackState {
         if items.is_empty() {
             items.push(ListItem::new(Line::from(Span::styled(
                 "(no frames)",
-                theme::SEARCH_HINT,
+                THEME.null_value,
             ))));
         }
         items
@@ -1520,9 +1556,9 @@ impl StackState {
                     StackCursor::OnObjectLoadingNode { frame_idx: ffi, var_idx: vvi, field_path }
                     if *ffi == fi && *vvi == vi && *field_path == cur_path);
                 let s = if selected {
-                    theme::SELECTED
+                    THEME.loading_indicator.patch(THEME.selection_bg)
                 } else {
-                    theme::SEARCH_HINT
+                    THEME.loading_indicator
                 };
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!("{indent}~ Loading..."),
@@ -1543,9 +1579,9 @@ impl StackState {
                         StackCursor::OnObjectLoadingNode { frame_idx: ffi, var_idx: vvi, field_path }
                         if *ffi == fi && *vvi == vi && *field_path == cur_path);
                     let s = if selected {
-                        theme::SELECTED
+                        THEME.null_value.patch(THEME.selection_bg)
                     } else {
-                        theme::SEARCH_HINT
+                        THEME.null_value
                     };
                     items.push(ListItem::new(Line::from(Span::styled(
                         format!("{indent}(no fields)"),
@@ -1580,9 +1616,9 @@ impl StackState {
                                     && *field_path == child_path
                             );
                             let s = if sel {
-                                theme::SELECTED
+                                THEME.null_value.patch(THEME.selection_bg)
                             } else {
-                                theme::SEARCH_HINT
+                                THEME.null_value
                             };
                             items.push(ListItem::new(Line::from(Span::styled(text, s))));
                             continue;
@@ -1596,10 +1632,15 @@ impl StackState {
                         } else {
                             None
                         };
-                        let s = if selected {
-                            theme::SELECTED
+                        let row_style = if matches!(child_phase, Some(ExpansionPhase::Failed)) {
+                            THEME.error_indicator
                         } else {
-                            ratatui::style::Style::default()
+                            Self::value_style(&field.value)
+                        };
+                        let s = if selected {
+                            row_style.patch(THEME.selection_bg)
+                        } else {
+                            row_style
                         };
                         let val = Self::format_field_value(&field.value, child_phase.as_ref());
                         let toggle = match &child_phase {
@@ -1647,9 +1688,9 @@ impl StackState {
                     StackCursor::OnObjectLoadingNode { frame_idx: ffi, var_idx: vvi, field_path }
                     if *ffi == fi && *vvi == vi && *field_path == cur_path);
                 let s = if selected {
-                    theme::SELECTED
+                    THEME.error_indicator.patch(THEME.selection_bg)
                 } else {
-                    theme::SEARCH_HINT
+                    THEME.error_indicator
                 };
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!("{indent}! {msg}"),
@@ -1671,9 +1712,9 @@ impl StatefulWidget for StackView {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let border_style = if self.focused {
-            theme::BORDER_FOCUSED
+            THEME.border_focused
         } else {
-            theme::BORDER_UNFOCUSED
+            THEME.border_unfocused
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -1692,9 +1733,10 @@ impl StatefulWidget for StackView {
 
 #[cfg(test)]
 mod tests {
-    use hprof_engine::{FrameInfo, LineNumber, VariableInfo, VariableValue};
+    use hprof_engine::{FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue};
 
     use super::*;
+    use crate::theme::THEME;
 
     fn make_frame(frame_id: u64) -> FrameInfo {
         FrameInfo {
@@ -2882,5 +2924,48 @@ mod tests {
         }
         state.move_page_up();
         assert_eq!(state.cursor, StackCursor::OnFrame(0));
+    }
+
+    #[test]
+    fn value_style_null_returns_null_value() {
+        assert_eq!(StackState::value_style(&FieldValue::Null), THEME.null_value);
+    }
+
+    #[test]
+    fn value_style_int_returns_primitive_value() {
+        assert_eq!(
+            StackState::value_style(&FieldValue::Int(42)),
+            THEME.primitive_value
+        );
+    }
+
+    #[test]
+    fn value_style_bool_returns_primitive_value() {
+        assert_eq!(
+            StackState::value_style(&FieldValue::Bool(true)),
+            THEME.primitive_value
+        );
+    }
+
+    #[test]
+    fn value_style_object_ref_with_inline_value_returns_string_value() {
+        let v = FieldValue::ObjectRef {
+            id: 1,
+            class_name: "java.lang.String".to_string(),
+            entry_count: None,
+            inline_value: Some("hello".to_string()),
+        };
+        assert_eq!(StackState::value_style(&v), THEME.string_value);
+    }
+
+    #[test]
+    fn value_style_object_ref_without_inline_returns_default() {
+        let v = FieldValue::ObjectRef {
+            id: 1,
+            class_name: "java.util.HashMap".to_string(),
+            entry_count: None,
+            inline_value: None,
+        };
+        assert_eq!(StackState::value_style(&v), ratatui::style::Style::new());
     }
 }

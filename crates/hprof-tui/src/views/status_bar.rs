@@ -12,7 +12,7 @@ use ratatui::{
     widgets::Widget,
 };
 
-use crate::theme;
+use crate::theme::THEME;
 
 /// One-line status bar for the bottom of the TUI.
 pub struct StatusBar<'a> {
@@ -80,7 +80,7 @@ impl Widget for StatusBar<'_> {
                 " {}{}  |  {}  |  {}  |  [q]uit  [/]search  [Esc]back{}",
                 incomplete_part, self.filename, thread_part, selected_part, warn_part
             ),
-            theme::STATUS_BAR,
+            THEME.status_bar_bg,
         )]);
         line.render(area, buf);
     }
