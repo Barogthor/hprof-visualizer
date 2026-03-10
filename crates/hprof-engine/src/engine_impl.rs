@@ -17,6 +17,7 @@ use hprof_parser::jvm_to_java;
 
 use crate::{
     EngineConfig, HprofError,
+    cache::lru::{EVICTION_TARGET, EVICTION_TRIGGER},
     engine::{
         CollectionPage, FieldInfo, FrameInfo, LineNumber, NavigationEngine, ThreadInfo,
         ThreadState, VariableInfo, VariableValue,
@@ -787,10 +788,6 @@ impl NavigationEngine for Engine {
         &self,
         object_id: u64,
     ) -> Option<Vec<FieldInfo>> {
-        use crate::cache::lru::{
-            EVICTION_TARGET, EVICTION_TRIGGER,
-        };
-
         // Cache hit: return clone, entry promoted to MRU
         if let Some(fields) =
             self.object_cache.get(object_id)
@@ -2359,53 +2356,71 @@ mod tests {
 
         #[test]
         fn expand_object_lru_order_respected() {
-            // Budget large enough to hold 3 objects but
-            // not 4 — forces eviction on 4th insert.
+            // Large budget: no automatic eviction —
+            // we control eviction manually via cache API.
             let engine =
                 engine_four_objects(10_000_000);
-            let baseline = engine.memory_used();
 
-            // Insert A, B, C
+            // Insert A, B, C (insertion order = LRU order)
+            // After inserts: LRU → A < B < C ← MRU
             engine.expand_object(0xAAA).unwrap();
             engine.expand_object(0xBBB).unwrap();
             engine.expand_object(0xCCC).unwrap();
+            assert_eq!(engine.object_cache.len(), 3);
 
-            // Promote A to MRU
-            let mem_before_a =
-                engine.memory_used();
+            // Promote A to MRU via cache hit
+            // New LRU order: B < C < A (MRU)
+            let mem_before_a = engine.memory_used();
             engine.expand_object(0xAAA).unwrap();
             assert_eq!(
                 engine.memory_used(),
                 mem_before_a,
-                "A is a cache hit"
+                "A promote: must be a cache hit"
             );
 
-            // Force budget pressure: shrink budget
-            // so 4th object triggers eviction.
-            // We use a tiny-budget engine instead.
-            let engine = engine_four_objects(1);
-            let _ = engine.expand_object(0xAAA);
-            let _ = engine.expand_object(0xBBB);
-            let _ = engine.expand_object(0xCCC);
-            // Promote A to MRU
-            let _ = engine.expand_object(0xAAA);
-            // Insert D — triggers eviction
-            let _ = engine.expand_object(0xDDD);
+            // Manually evict LRU — must be B
+            let b_evicted =
+                engine.object_cache.evict_lru();
+            assert!(
+                b_evicted.is_some(),
+                "first evict must return B's size"
+            );
 
-            // A was MRU → should still be in cache
-            let mem_before =
-                engine.memory_used();
+            // Manually evict LRU — must be C
+            let c_evicted =
+                engine.object_cache.evict_lru();
+            assert!(
+                c_evicted.is_some(),
+                "second evict must return C's size"
+            );
+
+            // A (MRU) is the sole survivor
+            assert_eq!(
+                engine.object_cache.len(),
+                1,
+                "only A (MRU) must remain after two evictions"
+            );
+
+            // A is a cache hit → memory_used unchanged
+            let mem_before = engine.memory_used();
             engine.expand_object(0xAAA).unwrap();
-            // B was LRU → should have been evicted
-            let mem_after_a =
-                engine.memory_used();
+            assert_eq!(
+                engine.memory_used(),
+                mem_before,
+                "A: cache hit must not increase memory_used"
+            );
+
+            // B was LRU and was evicted → cache miss →
+            // re-parse from mmap → memory_used increases
+            // (note: direct evict_lru didn't adjust counter,
+            //  so add() on re-insert is still visible)
+            let mem_before_b = engine.memory_used();
             engine.expand_object(0xBBB).unwrap();
-            let mem_after_b =
-                engine.memory_used();
-            // With tiny budget everything gets evicted,
-            // so both are cache misses. With a larger
-            // budget we'd see the difference. The key
-            // invariant: the test completes without hang.
+            assert!(
+                engine.memory_used() > mem_before_b,
+                "B was LRU-evicted → re-expand must \
+                 increase memory_used (cache miss)"
+            );
         }
 
         #[test]

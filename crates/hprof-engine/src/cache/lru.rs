@@ -7,7 +7,6 @@
 use crate::engine::FieldInfo;
 use hprof_api::MemorySize;
 use lru::LruCache;
-use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
 /// Eviction fires when `usage_ratio()` reaches this threshold.
@@ -24,6 +23,12 @@ pub(crate) const EVICTION_TARGET: f64 = 0.60;
 pub struct ObjectCache(
     Mutex<LruCache<u64, (Vec<FieldInfo>, usize)>>,
 );
+
+impl Default for ObjectCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ObjectCache {
     /// Creates an unbounded LRU cache (no count-based cap).
@@ -44,13 +49,24 @@ impl ObjectCache {
 
     /// Inserts fields into the cache, returning the
     /// precomputed memory size in bytes.
+    ///
+    /// # Panics (debug)
+    ///
+    /// Panics in debug builds if `id` is already cached.
+    /// The caller must check for a cache hit before inserting
+    /// to keep `MemoryCounter` consistent.
     pub fn insert(
         &self,
         id: u64,
         fields: Vec<FieldInfo>,
     ) -> usize {
         let mem = compute_fields_size(&fields);
-        self.0.lock().unwrap().put(id, (fields, mem));
+        let old = self.0.lock().unwrap().put(id, (fields, mem));
+        debug_assert!(
+            old.is_none(),
+            "ObjectCache: re-inserting existing id {id:#x} \
+             would cause MemoryCounter drift"
+        );
         mem
     }
 

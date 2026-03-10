@@ -1,6 +1,6 @@
 # Story 5.3: LRU Eviction Core
 
-Status: review
+Status: done
 
 ## Story
 
@@ -402,6 +402,7 @@ None — clean implementation, no debugging required.
 ### Change Log
 
 - 2026-03-10: Story 5.3 implementation complete — LRU eviction core with ObjectCache, hysteresis eviction loop, 13 new tests (8 unit + 5 integration)
+- 2026-03-10: Code review fixes — remove unused `NonZeroUsize` import, add `Default` impl for `ObjectCache`, add `debug_assert` in `insert` against re-insertion drift, move EVICTION constants import to module level, rewrite `expand_object_lru_order_respected` to assert actual LRU eviction order (AC2). 161 tests pass, 0 new clippy warnings.
 
 ### File List
 
@@ -409,6 +410,7 @@ New:
 - `crates/hprof-engine/src/cache/lru.rs`
 
 Modified:
+- `Cargo.lock`
 - `crates/hprof-engine/Cargo.toml`
 - `crates/hprof-engine/src/cache/mod.rs`
 - `crates/hprof-engine/src/engine_impl.rs`
