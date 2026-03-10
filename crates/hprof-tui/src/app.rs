@@ -156,10 +156,17 @@ impl<E: NavigationEngine> App<E> {
                 }
             }
             Focus::StackFrames => {
+                if self.favorites_visible() {
+                    self.focus = Focus::Favorites;
+                } else {
+                    self.focus = Focus::ThreadList;
+                    self.refresh_preview_stack();
+                }
+            }
+            Focus::Favorites => {
                 self.focus = Focus::ThreadList;
                 self.refresh_preview_stack();
             }
-            Focus::Favorites => {}
         }
     }
 
@@ -243,6 +250,9 @@ impl<E: NavigationEngine> App<E> {
             InputEvent::FocusFavorites | InputEvent::Escape => {
                 self.focus = self.prev_focus;
             }
+            InputEvent::Tab => {
+                self.cycle_focus();
+            }
             InputEvent::Quit => return AppAction::Quit,
             _ => {}
         }
@@ -312,6 +322,9 @@ impl<E: NavigationEngine> App<E> {
                     q.push('F');
                     self.thread_list.apply_filter(&q);
                     refresh_preview = true;
+                }
+                InputEvent::Tab => {
+                    self.cycle_focus();
                 }
                 InputEvent::Quit => return AppAction::Quit,
                 _ => {}
@@ -2388,5 +2401,45 @@ mod tests {
         let mut app = App::new(engine, "test.hprof".to_string());
         app.handle_input(InputEvent::Enter); // → StackFrames
         assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
+    }
+
+    #[test]
+    fn tab_from_thread_list_with_search_active_moves_to_stack_frames() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.focus = Focus::ThreadList;
+        app.handle_input(InputEvent::SearchActivate);
+        assert!(app.thread_list.is_search_active());
+
+        app.handle_input(InputEvent::Tab);
+        assert_eq!(app.focus, Focus::StackFrames);
+    }
+
+    #[test]
+    fn tab_from_favorites_cycles_to_thread_list() {
+        use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.pinned.push(PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Thread.run()".to_string(),
+            item_label: "var[0]".to_string(),
+            snapshot: PinnedSnapshot::Primitive {
+                value_label: "42".to_string(),
+            },
+            key: PinKey::Var {
+                frame_id: 1,
+                thread_name: "main".to_string(),
+                var_idx: 0,
+            },
+        });
+        app.last_area_width = MIN_WIDTH_FAVORITES_PANEL;
+        app.focus = Focus::Favorites;
+
+        app.handle_input(InputEvent::Tab);
+        assert_eq!(app.focus, Focus::ThreadList);
     }
 }

@@ -1,6 +1,6 @@
 # Story 7.3: Keyboard Navigation Map
 
-Status: review
+Status: done
 
 ## Story
 
@@ -329,6 +329,8 @@ claude-sonnet-4-6
 - Implemented Task 5: `pub mod help_bar;` added to `views/mod.rs`.
 - Task 6: 13 new tests added (3 in `help_bar`, 10 in `app`). All 178 hprof-tui tests pass.
 - Task 7: `cargo test` ✓, `cargo clippy --all-targets -- -D warnings` ✓, `cargo fmt` ✓.
+- Code review follow-up (2026-03-10): fixed `Tab` handling in thread-list search-active mode and in favorites panel so focus cycling is consistent with the keymap.
+- Added tests for `Tab` in search-active thread list and `Tab` from favorites focus.
 
 ### File List
 
@@ -338,3 +340,34 @@ claude-sonnet-4-6
 - `crates/hprof-tui/src/views/help_bar.rs` (NEW)
 - `docs/implementation-artifacts/7-3-keyboard-navigation-map.md`
 - `docs/implementation-artifacts/sprint-status.yaml`
+- `docs/story-review/codex-story-7-3-keyboard-navigation-map.md`
+
+## Senior Developer Review (AI)
+
+### Reviewer
+
+Codex
+
+### Date
+
+2026-03-10
+
+### Outcome
+
+Changes requested, then fixed in same review pass.
+
+### Findings addressed
+
+- Fixed: `Tab` no-op in `Focus::ThreadList` when search is active.
+- Fixed: `Tab` no-op in `Focus::Favorites`.
+- Added regression tests for both scenarios.
+
+### Validation
+
+- `cargo test` passed
+- `cargo clippy --all-targets -- -D warnings` passed
+- `cargo fmt --check` passed
+
+## Change Log
+
+- 2026-03-10: Senior AI review completed; fixed Tab focus cycling gaps (search-active thread list and favorites), added tests, set status to done.
