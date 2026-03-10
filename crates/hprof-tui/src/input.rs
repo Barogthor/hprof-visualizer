@@ -35,6 +35,10 @@ pub enum InputEvent {
     ToggleFavorite,
     /// Move focus to/from the favorites panel.
     FocusFavorites,
+    /// Cycle keyboard focus to the next panel.
+    Tab,
+    /// Toggle the keyboard shortcut help panel.
+    ToggleHelp,
     /// Quit the application.
     Quit,
 }
@@ -59,6 +63,10 @@ pub fn from_key(key: KeyEvent) -> Option<InputEvent> {
         (KeyCode::Backspace, _) => Some(InputEvent::SearchBackspace),
         (KeyCode::Char('f'), KeyModifiers::NONE) => Some(InputEvent::ToggleFavorite),
         (KeyCode::Char('F'), KeyModifiers::SHIFT) => Some(InputEvent::FocusFavorites),
+        (KeyCode::Tab, _) => Some(InputEvent::Tab),
+        (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            Some(InputEvent::ToggleHelp)
+        }
         (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             Some(InputEvent::SearchChar(c))
         }
@@ -178,6 +186,34 @@ mod tests {
         assert_eq!(
             from_key(key(KeyCode::Char('F'), KeyModifiers::SHIFT)),
             Some(InputEvent::FocusFavorites)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_tab_to_tab() {
+        assert_eq!(
+            from_key(key(KeyCode::Tab, KeyModifiers::NONE)),
+            Some(InputEvent::Tab)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_question_mark_to_toggle_help() {
+        assert_eq!(
+            from_key(key(KeyCode::Char('?'), KeyModifiers::NONE)),
+            Some(InputEvent::ToggleHelp)
+        );
+        assert_eq!(
+            from_key(key(KeyCode::Char('?'), KeyModifiers::SHIFT)),
+            Some(InputEvent::ToggleHelp)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_s_to_search_char() {
+        assert_eq!(
+            from_key(key(KeyCode::Char('s'), KeyModifiers::NONE)),
+            Some(InputEvent::SearchChar('s'))
         );
     }
 

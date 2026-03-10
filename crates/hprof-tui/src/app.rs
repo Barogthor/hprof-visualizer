@@ -26,6 +26,7 @@ use crate::{
     input::{self, InputEvent},
     views::{
         favorites_panel::{FavoritesPanel, FavoritesPanelState},
+        help_bar::{self, HelpBar},
         stack_view::{
             ChunkState, CollectionChunks, ExpansionPhase, StackCursor, StackState, StackView,
             compute_chunk_ranges,
@@ -107,6 +108,8 @@ pub struct App<E: NavigationEngine> {
     ui_status: Option<String>,
     /// Terminal width as of the last render call.
     last_area_width: u16,
+    /// Whether the keyboard shortcut help panel is visible.
+    show_help: bool,
 }
 
 impl<E: NavigationEngine> App<E> {
@@ -141,6 +144,22 @@ impl<E: NavigationEngine> App<E> {
             prev_focus: Focus::ThreadList,
             ui_status: None,
             last_area_width: 0,
+            show_help: false,
+        }
+    }
+
+    fn cycle_focus(&mut self) {
+        match self.focus {
+            Focus::ThreadList => {
+                if self.stack_state.is_some() {
+                    self.focus = Focus::StackFrames;
+                }
+            }
+            Focus::StackFrames => {
+                self.focus = Focus::ThreadList;
+                self.refresh_preview_stack();
+            }
+            Focus::Favorites => {}
         }
     }
 
@@ -158,6 +177,10 @@ impl<E: NavigationEngine> App<E> {
     where
         E: Send + Sync + 'static,
     {
+        if event == InputEvent::ToggleHelp {
+            self.show_help = !self.show_help;
+            return AppAction::Continue;
+        }
         match self.focus {
             Focus::ThreadList => self.handle_thread_list_input(event),
             Focus::StackFrames => self.handle_stack_frames_input(event),
@@ -338,6 +361,12 @@ impl<E: NavigationEngine> App<E> {
                     } else if !self.pinned.is_empty() {
                         self.ui_status = Some("Terminal trop étroit (< 120 cols)".to_string());
                     }
+                }
+                InputEvent::Tab => {
+                    self.cycle_focus();
+                }
+                InputEvent::SearchChar('s') => {
+                    self.thread_list.activate_search();
                 }
                 InputEvent::Quit => return AppAction::Quit,
                 _ => {}
@@ -597,6 +626,9 @@ impl<E: NavigationEngine> App<E> {
                     self.ui_status = Some("Terminal trop étroit (< 120 cols)".to_string());
                 }
             }
+            InputEvent::Tab => {
+                self.cycle_focus();
+            }
             InputEvent::Quit => return AppAction::Quit,
             _ => {}
         }
@@ -805,8 +837,20 @@ impl<E: NavigationEngine> App<E> {
         self.last_area_width = area.width;
 
         // Carve out status bar at the bottom.
-        let [main_area, status_area] =
+        let [content_area, status_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+
+        // Carve out help bar above status bar when visible.
+        let (main_area, help_area) = if self.show_help {
+            let [m, h] = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(help_bar::required_height()),
+            ])
+            .areas(content_area);
+            (m, Some(h))
+        } else {
+            (content_area, None)
+        };
 
         // Determine if the favorites panel should be shown.
         let show_favorites = !self.pinned.is_empty() && area.width >= MIN_WIDTH_FAVORITES_PANEL;
@@ -921,6 +965,10 @@ impl<E: NavigationEngine> App<E> {
             },
             status_area,
         );
+
+        if let Some(area) = help_area {
+            frame.render_widget(HelpBar, area);
+        }
     }
 }
 
@@ -2245,5 +2293,100 @@ mod tests {
             Focus::StackFrames,
             "focus must return to previous panel when favorites is hidden"
         );
+    }
+
+    #[test]
+    fn toggle_help_sets_show_help_true() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        assert!(!app.show_help);
+        let action = app.handle_input(InputEvent::ToggleHelp);
+        assert_eq!(action, AppAction::Continue);
+        assert!(app.show_help);
+    }
+
+    #[test]
+    fn toggle_help_twice_sets_show_help_false() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::ToggleHelp);
+        app.handle_input(InputEvent::ToggleHelp);
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn up_still_routes_when_show_help_is_true() {
+        let engine = StubEngine::with_threads(&["main", "worker"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Down); // selection moves to worker
+        app.show_help = true;
+        app.handle_input(InputEvent::Up); // selection moves back to main
+        assert_eq!(app.thread_list.selected_serial(), Some(1));
+    }
+
+    #[test]
+    fn quit_returns_app_action_quit_when_show_help_is_true() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.show_help = true;
+        assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
+    }
+
+    #[test]
+    fn tab_from_thread_list_with_no_stack_state_is_noop() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        assert_eq!(app.focus, Focus::ThreadList);
+        app.handle_input(InputEvent::Tab);
+        assert_eq!(app.focus, Focus::ThreadList);
+    }
+
+    #[test]
+    fn tab_from_thread_list_with_stack_state_moves_to_stack_frames() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames, stack_state = Some(...)
+        app.focus = Focus::ThreadList; // simulate returning to thread list
+        app.handle_input(InputEvent::Tab);
+        assert_eq!(app.focus, Focus::StackFrames);
+    }
+
+    #[test]
+    fn tab_from_stack_frames_returns_to_thread_list() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        assert_eq!(app.focus, Focus::StackFrames);
+        app.handle_input(InputEvent::Tab);
+        assert_eq!(app.focus, Focus::ThreadList);
+    }
+
+    #[test]
+    fn search_char_s_in_non_search_mode_activates_search() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        assert!(!app.thread_list.is_search_active());
+        app.handle_input(InputEvent::SearchChar('s'));
+        assert!(app.thread_list.is_search_active());
+    }
+
+    #[test]
+    fn quit_from_thread_list_with_search_active_returns_quit() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::SearchActivate);
+        assert!(app.thread_list.is_search_active());
+        assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
+    }
+
+    #[test]
+    fn quit_from_stack_frames_returns_quit() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
     }
 }
