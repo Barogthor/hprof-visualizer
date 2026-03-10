@@ -529,6 +529,42 @@ impl StackState {
         None
     }
 
+    /// Returns `Some(entry_count)` if the currently selected variable is a collection
+    /// or array, `None` otherwise.
+    pub fn selected_var_entry_count(&self) -> Option<u64> {
+        let StackCursor::OnVar { frame_idx, var_idx } = self.cursor else {
+            return None;
+        };
+        let frame = self.frames.get(frame_idx)?;
+        let vars = self.vars.get(&frame.frame_id)?;
+        let var = vars.get(var_idx)?;
+        if let VariableValue::ObjectRef { entry_count, .. } = &var.value {
+            *entry_count
+        } else {
+            None
+        }
+    }
+
+    /// Returns `Some(entry_count)` if the currently selected collection entry is itself
+    /// a collection or array, `None` otherwise.
+    pub fn selected_collection_entry_count(&self) -> Option<u64> {
+        let StackCursor::OnCollectionEntry {
+            collection_id,
+            entry_index,
+            ..
+        } = self.cursor
+        else {
+            return None;
+        };
+        let cc = self.collection_chunks.get(&collection_id)?;
+        let entry = cc.find_entry(entry_index)?;
+        if let FieldValue::ObjectRef { entry_count, .. } = &entry.value {
+            *entry_count
+        } else {
+            None
+        }
+    }
+
     /// Returns `(collection_id, chunk_offset, chunk_limit)`
     /// if cursor is on a chunk section.
     pub fn selected_chunk_info(&self) -> Option<(u64, usize, usize)> {
@@ -1281,6 +1317,7 @@ mod tests {
                 VariableValue::ObjectRef {
                     id: object_id,
                     class_name: "Object".to_string(),
+                    entry_count: None,
                 }
             },
         }
@@ -1420,6 +1457,7 @@ mod tests {
             value: VariableValue::ObjectRef {
                 id: object_id,
                 class_name: "Object".to_string(),
+                entry_count: None,
             },
         }
     }
@@ -2850,5 +2888,152 @@ mod tests {
                 "(f) nested Failed field"
             );
         }
+    }
+
+    // --- selected_var_entry_count tests ---
+
+    #[test]
+    fn selected_var_entry_count_returns_some_when_on_var_with_entry_count() {
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![VariableInfo {
+            index: 0,
+            value: VariableValue::ObjectRef {
+                id: 0xA00,
+                class_name: "Object[]".to_string(),
+                entry_count: Some(42),
+            },
+        }];
+        state.toggle_expand(10, vars);
+        state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
+        assert_eq!(state.selected_var_entry_count(), Some(42));
+    }
+
+    #[test]
+    fn selected_var_entry_count_returns_none_when_on_var_without_entry_count() {
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![VariableInfo {
+            index: 0,
+            value: VariableValue::ObjectRef {
+                id: 0xA01,
+                class_name: "Foo".to_string(),
+                entry_count: None,
+            },
+        }];
+        state.toggle_expand(10, vars);
+        state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
+        assert_eq!(state.selected_var_entry_count(), None);
+    }
+
+    #[test]
+    fn selected_var_entry_count_returns_none_when_cursor_not_on_var() {
+        let frames = vec![make_frame(10)];
+        let state = StackState::new(frames);
+        // cursor is OnFrame(0)
+        assert_eq!(state.selected_var_entry_count(), None);
+    }
+
+    #[test]
+    fn object_array_var_has_correct_entry_count_and_object_id() {
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![VariableInfo {
+            index: 0,
+            value: VariableValue::ObjectRef {
+                id: 0xA00,
+                class_name: "Object[]".to_string(),
+                entry_count: Some(3),
+            },
+        }];
+        state.toggle_expand(10, vars);
+        state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
+        assert_eq!(state.selected_var_entry_count(), Some(3));
+        assert_eq!(state.selected_object_id(), Some(0xA00));
+    }
+
+    // --- selected_collection_entry_count tests ---
+
+    #[test]
+    fn selected_collection_entry_count_returns_some_for_nested_array_entry() {
+        let coll_id = 0xC011u64;
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+        state.collection_chunks.insert(
+            coll_id,
+            CollectionChunks {
+                total_count: 1,
+                eager_page: Some(CollectionPage {
+                    entries: vec![hprof_engine::EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::ObjectRef {
+                            id: 0xBB01,
+                            class_name: "Object[]".to_string(),
+                            entry_count: Some(3),
+                            inline_value: None,
+                        },
+                    }],
+                    total_count: 1,
+                    offset: 0,
+                    has_more: false,
+                }),
+                chunk_pages: std::collections::HashMap::new(),
+            },
+        );
+        state.set_cursor(StackCursor::OnCollectionEntry {
+            collection_id: coll_id,
+            entry_index: 0,
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+        });
+        assert_eq!(state.selected_collection_entry_count(), Some(3));
+    }
+
+    #[test]
+    fn selected_collection_entry_count_returns_none_when_entry_not_collection() {
+        let coll_id = 0xC012u64;
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+        state.collection_chunks.insert(
+            coll_id,
+            CollectionChunks {
+                total_count: 1,
+                eager_page: Some(CollectionPage {
+                    entries: vec![hprof_engine::EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::ObjectRef {
+                            id: 0xBB01,
+                            class_name: "Foo".to_string(),
+                            entry_count: None,
+                            inline_value: None,
+                        },
+                    }],
+                    total_count: 1,
+                    offset: 0,
+                    has_more: false,
+                }),
+                chunk_pages: std::collections::HashMap::new(),
+            },
+        );
+        state.set_cursor(StackCursor::OnCollectionEntry {
+            collection_id: coll_id,
+            entry_index: 0,
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+        });
+        assert_eq!(state.selected_collection_entry_count(), None);
+    }
+
+    #[test]
+    fn selected_collection_entry_count_returns_none_when_cursor_not_on_entry() {
+        let frames = vec![make_frame(10)];
+        let state = StackState::new(frames);
+        assert_eq!(state.selected_collection_entry_count(), None);
     }
 }

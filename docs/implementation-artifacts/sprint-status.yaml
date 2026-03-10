@@ -117,8 +117,8 @@ development_status:
   # Epic 9: Navigation & Data Fidelity (sourced from user testing 2026-03-10)
   epic-9: in-progress
   9-1-expand-state-bugs-and-failed-resolve-non-navigable: done
-  9-2-collection-data-fidelity: ready-for-dev
-  9-3-arrow-expand-unexpand-parent-navigation: backlog
+  9-2-collection-data-fidelity: review
+  9-3-arrow-expand-unexpand-parent-navigation: ready-for-dev
   9-4-camera-scroll: backlog
   9-5-stack-frame-variable-names-and-static-fields: backlog
   9-6-search-and-favorites-ux-polish: backlog

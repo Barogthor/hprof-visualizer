@@ -18,6 +18,7 @@ use crate::theme::THEME;
 use super::stack_view::{
     ChunkState, CollectionChunks, ExpansionPhase, FAILED_LABEL_SEP, StackState,
     compute_chunk_ranges, field_value_style, format_field_value_display,
+    format_object_ref_collapsed,
 };
 
 /// Root of a variable tree to render.
@@ -121,11 +122,16 @@ fn append_var(
             let label = format!("{short}{FAILED_LABEL_SEP}{err}");
             ("! ", label, THEME.error_indicator)
         }
-        (VariableValue::ObjectRef { class_name, .. }, ExpansionPhase::Collapsed) => {
-            ("+ ", format!("local variable: {class_name}"), Style::new())
+        (
+            VariableValue::ObjectRef { class_name, entry_count, .. },
+            ExpansionPhase::Collapsed,
+        ) => {
+            let label = format_object_ref_collapsed(class_name, *entry_count);
+            ("+ ", format!("local variable: {label}"), Style::new())
         }
-        (VariableValue::ObjectRef { class_name, .. }, _) => {
-            ("- ", format!("local variable: {class_name}"), Style::new())
+        (VariableValue::ObjectRef { class_name, entry_count, .. }, _) => {
+            let label = format_object_ref_collapsed(class_name, *entry_count);
+            ("- ", format!("local variable: {label}"), Style::new())
         }
     };
 
@@ -547,6 +553,7 @@ mod tests {
                 VariableValue::ObjectRef {
                     id: object_id,
                     class_name: "Object".to_string(),
+                    entry_count: None,
                 }
             },
         }

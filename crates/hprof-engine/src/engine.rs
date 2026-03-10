@@ -89,6 +89,8 @@ pub enum VariableValue {
         id: u64,
         /// Resolved class name, or `"Object"` if unresolvable.
         class_name: String,
+        /// Element count if the object is a collection or array, `None` otherwise.
+        entry_count: Option<u64>,
     },
 }
 
@@ -458,6 +460,7 @@ mod tests {
             value: VariableValue::ObjectRef {
                 id: 0xDEAD,
                 class_name: "Object".to_string(),
+                entry_count: None,
             },
         };
         assert_eq!(v.index, 2);
@@ -466,6 +469,7 @@ mod tests {
             VariableValue::ObjectRef {
                 id: 0xDEAD,
                 class_name: "Object".to_string(),
+                entry_count: None,
             }
         );
     }
@@ -476,12 +480,14 @@ mod tests {
         let oref = VariableValue::ObjectRef {
             id: 1,
             class_name: "Object".to_string(),
+            entry_count: None,
         };
         assert_eq!(
             oref,
             VariableValue::ObjectRef {
                 id: 1,
                 class_name: "Object".to_string(),
+                entry_count: None,
             }
         );
         assert_ne!(
@@ -489,6 +495,7 @@ mod tests {
             VariableValue::ObjectRef {
                 id: 0,
                 class_name: "Object".to_string(),
+                entry_count: None,
             }
         );
     }
@@ -603,6 +610,7 @@ mod tests {
         let v = VariableValue::ObjectRef {
             id: 1,
             class_name: "Object".to_string(),
+            entry_count: None,
         };
         let expected = std::mem::size_of::<VariableValue>() + "Object".len();
         assert!(v.memory_size() >= expected);

@@ -48,7 +48,7 @@ const COLLECTION_CLASS_SUFFIXES: &[&str] = &[
 /// against [`COLLECTION_CLASS_SUFFIXES`]. Then searches the immediate class
 /// fields for an `Int` or `Long` field named `size`, `elementCount`, or
 /// `count`.
-fn collection_entry_count(
+pub(crate) fn collection_entry_count(
     raw: &RawInstance,
     index: &PreciseIndex,
     id_size: u32,
@@ -134,7 +134,7 @@ fn collection_entry_count(
 }
 
 /// Returns the byte size of a field given its type code.
-fn field_byte_size(type_code: u8, id_size: u32) -> usize {
+pub(crate) fn field_byte_size(type_code: u8, id_size: u32) -> usize {
     match type_code {
         2 => id_size as usize,
         4 => 1,
@@ -151,7 +151,7 @@ fn field_byte_size(type_code: u8, id_size: u32) -> usize {
 
 /// Returns a human-readable type name for a primitive array
 /// element type code.
-fn prim_array_type_name(elem_type: u8) -> &'static str {
+pub(crate) fn prim_array_type_name(elem_type: u8) -> &'static str {
     match elem_type {
         4 => "boolean",
         5 => "char",
@@ -744,20 +744,40 @@ impl NavigationEngine for Engine {
                     value: if object_id == 0 {
                         VariableValue::Null
                     } else {
-                        let class_name = self
-                            .hfile
-                            .find_instance(object_id)
-                            .and_then(|raw| {
-                                self.hfile
+                        let (class_name, entry_count) =
+                            if let Some(raw) = self.hfile.find_instance(object_id) {
+                                let cn = self
+                                    .hfile
                                     .index
                                     .class_names_by_id
                                     .get(&raw.class_object_id)
                                     .cloned()
-                            })
-                            .unwrap_or_else(|| "Object".to_string());
+                                    .unwrap_or_else(|| "Object".to_string());
+                                let ec = collection_entry_count(
+                                    &raw,
+                                    &self.hfile.index,
+                                    self.hfile.header.id_size,
+                                    self.hfile.records_bytes(),
+                                );
+                                (cn, ec)
+                            } else if let Some((_cid, elems)) =
+                                self.hfile.find_object_array(object_id)
+                            {
+                                ("Object[]".to_string(), Some(elems.len() as u64))
+                            } else if let Some((etype, bytes)) =
+                                self.hfile.find_prim_array(object_id)
+                            {
+                                let type_name = prim_array_type_name(etype).to_string();
+                                let esz = field_byte_size(etype, self.hfile.header.id_size);
+                                let cnt = if esz > 0 { bytes.len() / esz } else { 0 };
+                                (format!("{type_name}[]"), Some(cnt as u64))
+                            } else {
+                                ("Object".to_string(), None)
+                            };
                         VariableValue::ObjectRef {
                             id: object_id,
                             class_name,
+                            entry_count,
                         }
                     },
                 })
@@ -1339,6 +1359,7 @@ mod tests {
                 VariableValue::ObjectRef {
                     id: 42,
                     class_name: "sun.misc.NativeReferenceQueue".to_string(),
+                    entry_count: None,
                 }
             );
         }
@@ -1366,8 +1387,141 @@ mod tests {
                 VariableValue::ObjectRef {
                     id: 0x999,
                     class_name: "Object".to_string(),
+                    entry_count: None,
                 }
             );
+        }
+
+        #[test]
+        fn get_local_variables_object_array_root_has_entry_count() {
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "foo")
+                .add_string(2, "()")
+                .add_string(3, "")
+                .add_string(4, "Obj")
+                .add_class(1, 100, 0, 4)
+                .add_stack_frame(50, 1, 2, 3, 1, 1)
+                .add_stack_trace(10, 1, &[50])
+                .add_thread(1, 200, 10, 1, 0, 0)
+                .add_object_array(0xBBB, 0, 0xCC, &[0xC01, 0xC02, 0xC03])
+                .add_java_frame_root(0xBBB, 1, 0)
+                .build();
+            let engine = engine_from_bytes(&bytes);
+            let vars = engine.get_local_variables(50);
+            assert_eq!(vars.len(), 1);
+            match &vars[0].value {
+                VariableValue::ObjectRef { class_name, entry_count, .. } => {
+                    assert_eq!(class_name, "Object[]");
+                    assert_eq!(*entry_count, Some(3));
+                }
+                _ => panic!("expected ObjectRef"),
+            }
+        }
+
+        #[test]
+        fn get_local_variables_prim_array_root_has_entry_count() {
+            let int_bytes: Vec<u8> = (0u32..5).flat_map(|n| n.to_be_bytes()).collect();
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "foo")
+                .add_string(2, "()")
+                .add_string(3, "")
+                .add_string(4, "Obj")
+                .add_class(1, 100, 0, 4)
+                .add_stack_frame(50, 1, 2, 3, 1, 1)
+                .add_stack_trace(10, 1, &[50])
+                .add_thread(1, 200, 10, 1, 0, 0)
+                .add_prim_array(0xCCC, 0, 5, 10, &int_bytes)
+                .add_java_frame_root(0xCCC, 1, 0)
+                .build();
+            let engine = engine_from_bytes(&bytes);
+            let vars = engine.get_local_variables(50);
+            assert_eq!(vars.len(), 1);
+            match &vars[0].value {
+                VariableValue::ObjectRef { class_name, entry_count, .. } => {
+                    assert_eq!(class_name, "int[]");
+                    assert_eq!(*entry_count, Some(5));
+                }
+                _ => panic!("expected ObjectRef"),
+            }
+        }
+
+        #[test]
+        fn get_local_variables_plain_object_has_no_entry_count() {
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "foo")
+                .add_string(2, "()")
+                .add_string(3, "")
+                .add_string(4, "Foo")
+                .add_class(1, 100, 0, 4)
+                .add_stack_frame(50, 1, 2, 3, 1, 1)
+                .add_stack_trace(10, 1, &[50])
+                .add_thread(1, 300, 10, 1, 0, 0)
+                .add_class_dump(100, 0, 0, &[])
+                .add_instance(42, 0, 100, &[])
+                .add_java_frame_root(42, 1, 0)
+                .build();
+            let engine = engine_from_bytes(&bytes);
+            let vars = engine.get_local_variables(50);
+            assert_eq!(vars.len(), 1);
+            match &vars[0].value {
+                VariableValue::ObjectRef { entry_count, .. } => {
+                    assert_eq!(*entry_count, None);
+                }
+                _ => panic!("expected ObjectRef"),
+            }
+        }
+
+        #[test]
+        fn get_local_variables_empty_object_array_has_entry_count_zero() {
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "foo")
+                .add_string(2, "()")
+                .add_string(3, "")
+                .add_string(4, "Obj")
+                .add_class(1, 100, 0, 4)
+                .add_stack_frame(50, 1, 2, 3, 1, 1)
+                .add_stack_trace(10, 1, &[50])
+                .add_thread(1, 200, 10, 1, 0, 0)
+                .add_object_array(0xEEE, 0, 0xCC, &[])
+                .add_java_frame_root(0xEEE, 1, 0)
+                .build();
+            let engine = engine_from_bytes(&bytes);
+            let vars = engine.get_local_variables(50);
+            match &vars[0].value {
+                VariableValue::ObjectRef { entry_count, .. } => {
+                    assert_eq!(*entry_count, Some(0));
+                }
+                _ => panic!("expected ObjectRef"),
+            }
+        }
+
+        #[test]
+        fn get_local_variables_linked_list_root_has_entry_count() {
+            let size_bytes = 3i32.to_be_bytes();
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "foo")
+                .add_string(2, "()")
+                .add_string(3, "")
+                .add_string(4, "java/util/LinkedList")
+                .add_string(5, "size")
+                .add_class(1, 0xAA01, 0, 4)
+                .add_stack_frame(50, 1, 2, 3, 1, 1)
+                .add_stack_trace(10, 1, &[50])
+                .add_thread(1, 200, 10, 1, 0, 0)
+                .add_class_dump(0xAA01, 0, 4, &[(5, 10)])
+                .add_instance(0xAA02, 0, 0xAA01, &size_bytes)
+                .add_java_frame_root(0xAA02, 1, 0)
+                .build();
+            let engine = engine_from_bytes(&bytes);
+            let vars = engine.get_local_variables(50);
+            assert_eq!(vars.len(), 1);
+            match &vars[0].value {
+                VariableValue::ObjectRef { class_name, entry_count, .. } => {
+                    assert_eq!(class_name, "java.util.LinkedList");
+                    assert_eq!(*entry_count, Some(3));
+                }
+                _ => panic!("expected ObjectRef"),
+            }
         }
 
         #[test]

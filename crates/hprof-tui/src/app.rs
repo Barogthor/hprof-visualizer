@@ -480,6 +480,12 @@ impl<E: NavigationEngine> App<E> {
                                 oid,
                                 s.expansion_state(oid)
                             );
+                            if let Some(ec) = s.selected_var_entry_count() {
+                                if s.collection_chunks.contains_key(&oid) {
+                                    return Some(Cmd::CollapseCollection(oid));
+                                }
+                                return Some(Cmd::StartCollection(oid, ec));
+                            }
                             match s.expansion_state(oid) {
                                 ExpansionPhase::Collapsed => Cmd::StartObj(oid),
                                 ExpansionPhase::Failed => return None,
@@ -528,6 +534,12 @@ impl<E: NavigationEngine> App<E> {
                         }
                         StackCursor::OnCollectionEntry { .. } => {
                             let oid = s.selected_collection_entry_ref_id()?;
+                            if let Some(ec) = s.selected_collection_entry_count() {
+                                if s.collection_chunks.contains_key(&oid) {
+                                    return Some(Cmd::CollapseCollection(oid));
+                                }
+                                return Some(Cmd::StartCollection(oid, ec));
+                            }
                             match s.expansion_state(oid) {
                                 ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
                                 ExpansionPhase::Failed => return None,
@@ -1264,6 +1276,7 @@ mod tests {
             value: VariableValue::ObjectRef {
                 id: object_id,
                 class_name: "Object".to_string(),
+                entry_count: None,
             },
         }
     }

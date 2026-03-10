@@ -485,21 +485,51 @@ fn id_to_field_value(id: u64, hfile: &HprofFile) -> FieldValue {
     if id == 0 {
         return FieldValue::Null;
     }
-    let class_name = Engine::read_instance_public(hfile, id).and_then(|raw| {
-        hfile
+    // Try instance first (covers all regular objects and collections).
+    if let Some(raw) = Engine::read_instance_public(hfile, id) {
+        let class_name = hfile
             .index
             .class_names_by_id
             .get(&raw.class_object_id)
             .cloned()
-    });
-    dbg_log!("id_to_field_value(0x{:X}): class={:?}", id, class_name);
-    let class_name = class_name.unwrap_or_else(|| "Object".to_string());
-    let inline_value = crate::engine_impl::resolve_inline_value(&class_name, hfile, id);
+            .unwrap_or_else(|| "Object".to_string());
+        dbg_log!("id_to_field_value(0x{:X}): class={:?}", id, class_name);
+        let entry_count = crate::engine_impl::collection_entry_count(
+            &raw,
+            &hfile.index,
+            hfile.header.id_size,
+            hfile.records_bytes(),
+        );
+        let inline_value = crate::engine_impl::resolve_inline_value(&class_name, hfile, id);
+        return FieldValue::ObjectRef { id, class_name, entry_count, inline_value };
+    }
+    // Try Object[] array.
+    if let Some((_cid, elems)) = hfile.find_object_array(id) {
+        return FieldValue::ObjectRef {
+            id,
+            class_name: "Object[]".to_string(),
+            entry_count: Some(elems.len() as u64),
+            inline_value: None,
+        };
+    }
+    // Try primitive array.
+    if let Some((etype, bytes)) = hfile.find_prim_array(id) {
+        let type_name = crate::engine_impl::prim_array_type_name(etype);
+        let esz = crate::engine_impl::field_byte_size(etype, hfile.header.id_size);
+        let cnt = if esz > 0 { bytes.len() / esz } else { 0 };
+        return FieldValue::ObjectRef {
+            id,
+            class_name: format!("{type_name}[]"),
+            entry_count: Some(cnt as u64),
+            inline_value: None,
+        };
+    }
+    // Unknown ID.
     FieldValue::ObjectRef {
         id,
-        class_name,
+        class_name: "Object".to_string(),
         entry_count: None,
-        inline_value,
+        inline_value: None,
     }
 }
 
@@ -1151,5 +1181,75 @@ mod tests {
         assert_eq!(page.total_count, 2);
         assert_eq!(page.entries.len(), 2);
         assert!(!page.has_more);
+    }
+
+    #[test]
+    fn id_to_field_value_for_object_array_id_sets_entry_count() {
+        // Outer Object[] contains one element which is itself an inner Object[]
+        let inner_id = 0xBB01u64;
+        let outer_id = 0xBB02u64;
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_object_array(inner_id, 0, 0, &[0x01, 0x02, 0x03])
+            .add_object_array(outer_id, 0, 0, &[inner_id])
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+        let page = get_page(&hfile, outer_id, 0, 100).unwrap();
+        assert_eq!(page.entries.len(), 1);
+        match &page.entries[0].value {
+            FieldValue::ObjectRef { class_name, entry_count, .. } => {
+                assert_eq!(class_name, "Object[]");
+                assert_eq!(*entry_count, Some(3));
+            }
+            other => panic!("expected ObjectRef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn id_to_field_value_for_prim_array_id_sets_entry_count() {
+        // Outer Object[] contains one element which is an int[] of 5 elements
+        let int_bytes: Vec<u8> = (0u32..5).flat_map(|n| n.to_be_bytes()).collect();
+        let inner_id = 0xCC01u64;
+        let outer_id = 0xCC02u64;
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_prim_array(inner_id, 0, 5, 10, &int_bytes)
+            .add_object_array(outer_id, 0, 0, &[inner_id])
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+        let page = get_page(&hfile, outer_id, 0, 100).unwrap();
+        assert_eq!(page.entries.len(), 1);
+        match &page.entries[0].value {
+            FieldValue::ObjectRef { class_name, entry_count, .. } => {
+                assert_eq!(class_name, "int[]");
+                assert_eq!(*entry_count, Some(5));
+            }
+            other => panic!("expected ObjectRef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn get_page_with_arraylist_instance_id_returns_elements() {
+        let id_size: u32 = 8;
+        let str_size = 10u64;
+        let str_ed = 11u64;
+        let str_cn = 12u64;
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&2i32.to_be_bytes()); // size=2
+        data.extend_from_slice(&0x500u64.to_be_bytes()); // elementData=0x500
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_string(str_size, "size")
+            .add_string(str_ed, "elementData")
+            .add_string(str_cn, "java/util/ArrayList")
+            .add_class(1, 1000, 0, str_cn)
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_ed, 2)])
+            .add_instance(0x100, 0, 1000, &data)
+            .add_object_array(0x500, 0, 100, &[0x10, 0x20])
+            .build();
+
+        let hfile = hfile_from_bytes(&bytes);
+        let page = get_page(&hfile, 0x100, 0, 100).unwrap();
+        assert_eq!(page.total_count, 2);
+        assert_eq!(page.entries.len(), 2);
     }
 }

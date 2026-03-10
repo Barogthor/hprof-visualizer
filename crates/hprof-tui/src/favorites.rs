@@ -224,7 +224,7 @@ pub fn snapshot_from_cursor(
             let item_label = format!("var[{var_idx}]");
 
             let snapshot = match &var.value {
-                VariableValue::ObjectRef { id, class_name } => {
+                VariableValue::ObjectRef { id, class_name, .. } => {
                     if state.object_fields().contains_key(id) {
                         let mut reachable = HashSet::new();
                         let (fields, chunks, truncated) =
@@ -493,6 +493,7 @@ mod tests {
                 value: VariableValue::ObjectRef {
                     id: 99,
                     class_name: "java.util.ArrayList".to_string(),
+                    entry_count: None,
                 },
             }],
         );
@@ -516,6 +517,7 @@ mod tests {
                 value: VariableValue::ObjectRef {
                     id: 42,
                     class_name: "Foo".to_string(),
+                    entry_count: None,
                 },
             }],
         );
@@ -546,6 +548,7 @@ mod tests {
                 value: VariableValue::ObjectRef {
                     id: 10,
                     class_name: "Outer".to_string(),
+                    entry_count: None,
                 },
             }],
         );
@@ -614,6 +617,7 @@ mod tests {
                 value: VariableValue::ObjectRef {
                     id: 0,
                     class_name: "Node".to_string(),
+                    entry_count: None,
                 },
             }],
         );
@@ -663,6 +667,7 @@ mod tests {
                 value: VariableValue::ObjectRef {
                     id: 10,
                     class_name: "Root".to_string(),
+                    entry_count: None,
                 },
             }],
         );
