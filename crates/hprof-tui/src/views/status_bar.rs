@@ -66,10 +66,10 @@ impl Widget for StatusBar<'_> {
             String::new()
         };
 
-        let incomplete_part = if let Some(pct) = self.file_indexed_pct {
-            format!("[!] Incomplete file — {pct:.0}% indexed  |  ")
-        } else {
-            String::new()
+        let incomplete_part = match self.file_indexed_pct {
+            Some(pct) if pct < 100.0 => format!("[!] Incomplete file — {pct:.0}% indexed  |  "),
+            Some(_) => "[!] Incomplete file  |  ".to_string(),
+            None => String::new(),
         };
 
         let line = Line::from(vec![Span::styled(
