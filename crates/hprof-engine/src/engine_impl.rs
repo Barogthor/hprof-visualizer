@@ -918,7 +918,6 @@ mod tests {
 
     #[test]
     fn indexing_ratio_partial_for_truncated_file() {
-        use hprof_api::MemorySize;
         // Build a file with 2 attempted, 1 indexed by crafting the Engine fields
         // directly via Arc<HprofFile> is not possible, so we verify via the
         // formula: ratio = indexed / attempted * 100.0
