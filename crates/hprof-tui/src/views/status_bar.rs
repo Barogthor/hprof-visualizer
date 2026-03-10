@@ -28,6 +28,8 @@ pub struct StatusBar<'a> {
     pub file_indexed_pct: Option<f64>,
     /// Most recent session warning text, if any.
     pub last_warning: Option<&'a str>,
+    /// Number of pinned items hidden because terminal is too narrow.
+    pub pinned_hidden_count: usize,
 }
 
 pub(crate) fn state_label(state: ThreadState) -> &'static str {
@@ -75,10 +77,16 @@ impl Widget for StatusBar<'_> {
             None => String::new(),
         };
 
+        let pinned_part = if self.pinned_hidden_count > 0 {
+            format!("  [★ {}]", self.pinned_hidden_count)
+        } else {
+            String::new()
+        };
+
         let line = Line::from(vec![Span::styled(
             format!(
-                " {}{}  |  {}  |  {}  |  [q]uit  [/]search  [Esc]back{}",
-                incomplete_part, self.filename, thread_part, selected_part, warn_part
+                " {}{}  |  {}  |  {}  |  [q]uit  [/]search  [Esc]back{}{}",
+                incomplete_part, self.filename, thread_part, selected_part, pinned_part, warn_part
             ),
             THEME.status_bar_bg,
         )]);
@@ -159,6 +167,7 @@ mod tests {
                 warning_count: 0,
                 file_indexed_pct: None,
                 last_warning: None,
+                pinned_hidden_count: 0,
             },
             120,
         );
@@ -178,6 +187,7 @@ mod tests {
                 warning_count: 5,
                 file_indexed_pct: None,
                 last_warning: None,
+                pinned_hidden_count: 0,
             },
             120,
         );
@@ -197,6 +207,7 @@ mod tests {
                 warning_count: 0,
                 file_indexed_pct: Some(75.3),
                 last_warning: None,
+                pinned_hidden_count: 0,
             },
             200,
         );
@@ -216,6 +227,7 @@ mod tests {
                 warning_count: 2,
                 file_indexed_pct: None,
                 last_warning: Some("Object 0xABC not found"),
+                pinned_hidden_count: 0,
             },
             200,
         );
@@ -236,6 +248,7 @@ mod tests {
                 warning_count: 1,
                 file_indexed_pct: None,
                 last_warning: Some(&long_warning),
+                pinned_hidden_count: 0,
             },
             300,
         );

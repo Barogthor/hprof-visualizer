@@ -177,6 +177,11 @@ impl ThreadListState {
         self.search_active = false;
     }
 
+    /// Returns the [`ThreadInfo`] for the currently selected thread, or `None`.
+    pub fn selected_thread(&self) -> Option<&ThreadInfo> {
+        self.selected_serial.and_then(|s| self.thread_by_serial(s))
+    }
+
     fn thread_by_serial(&self, serial: u32) -> Option<&ThreadInfo> {
         self.threads.iter().find(|t| t.thread_serial == serial)
     }

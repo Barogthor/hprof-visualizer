@@ -1,6 +1,6 @@
 # Story 7.1: Favorites Panel
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -525,10 +525,38 @@ Modified files:
 
 ### Agent Model Used
 
-<!-- filled by dev agent -->
+claude-sonnet-4-6
 
 ### Debug Log References
 
+None — all implementation verified by `cargo test --all-targets`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt -- --check`.
+
 ### Completion Notes List
 
+- Created `crates/hprof-tui/src/views/tree_render.rs` (stack_view.rs was >500 lines):
+  `render_variable_tree`, `TreeRoot`, `append_object_children`, `append_collection_entry_obj`,
+  `append_collection_items`, `append_var`, `get_phase`.
+- Refactored `StackState::build_items()` to delegate to `render_variable_tree` via `TreeRoot::Frame`.
+  `StackView` now applies selection via `List::highlight_style(THEME.selection_bg)`.
+  Minor behavior change: frame headers are highlighted only when cursor is exactly `OnFrame`,
+  not when on sub-items. No tests covered this style detail, change accepted.
+- `format_object_ref_collapsed`, `format_field_value_display`, `format_entry_value_text`,
+  `field_value_style` promoted to `pub(crate)` free functions in `stack_view.rs`.
+- `FavoritesPanelState` uses `#[derive(Default)]` (clippy derivable_impls).
+- `ui_status` transient messages folded into `last_warning` in `StatusBar` construction —
+  shown once then cleared via `Option::take()`.
+- Search-mode `ToggleFavorite`/`FocusFavorites` in thread list treated as `SearchChar('f'/'F')`,
+  matching the existing `SearchChar` pattern exactly (no new method added).
+
 ### File List
+
+- `crates/hprof-tui/src/favorites.rs` — new
+- `crates/hprof-tui/src/views/favorites_panel.rs` — new
+- `crates/hprof-tui/src/views/tree_render.rs` — new
+- `crates/hprof-tui/src/views/stack_view.rs` — modified (accessors, pub(crate) helpers, build_items refactor)
+- `crates/hprof-tui/src/views/status_bar.rs` — modified (pinned_hidden_count)
+- `crates/hprof-tui/src/views/thread_list.rs` — modified (selected_thread accessor)
+- `crates/hprof-tui/src/views/mod.rs` — modified (new modules)
+- `crates/hprof-tui/src/lib.rs` — modified (mod favorites)
+- `crates/hprof-tui/src/input.rs` — modified (ToggleFavorite, FocusFavorites)
+- `crates/hprof-tui/src/app.rs` — modified (Focus, App struct, input routing, conditional layout)

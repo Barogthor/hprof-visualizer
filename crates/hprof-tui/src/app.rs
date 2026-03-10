@@ -22,8 +22,10 @@ use ratatui::{
 };
 
 use crate::{
+    favorites::{PinnedItem, snapshot_from_cursor},
     input::{self, InputEvent},
     views::{
+        favorites_panel::{FavoritesPanel, FavoritesPanelState},
         stack_view::{
             ChunkState, CollectionChunks, ExpansionPhase, StackCursor, StackState, StackView,
             compute_chunk_ranges,
@@ -50,11 +52,15 @@ struct PendingPage {
     loading_shown: bool,
 }
 
+/// Minimum terminal width to show the favorites panel.
+const MIN_WIDTH_FAVORITES_PANEL: u16 = 120;
+
 /// Which panel currently holds keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     ThreadList,
     StackFrames,
+    Favorites,
 }
 
 /// Action returned by `App::handle_input` to drive the event loop.
@@ -89,6 +95,18 @@ pub struct App<E: NavigationEngine> {
     thread_list_height: u16,
     /// Timestamp of the last periodic memory log emission.
     last_memory_log: Instant,
+    /// Pinned items in the favorites panel.
+    pinned: Vec<PinnedItem>,
+    /// Index of the selected item in `pinned` (0-based, not a list row index).
+    pinned_cursor: usize,
+    /// ratatui list state for the favorites panel scroll position.
+    favorites_list_state: FavoritesPanelState,
+    /// Focus before entering `Focus::Favorites`, restored on `Esc` / `F`.
+    prev_focus: Focus,
+    /// Transient status bar message (e.g. "Terminal trop étroit"). Taken on render.
+    ui_status: Option<String>,
+    /// Terminal width as of the last render call.
+    last_area_width: u16,
 }
 
 impl<E: NavigationEngine> App<E> {
@@ -117,6 +135,12 @@ impl<E: NavigationEngine> App<E> {
             warnings: WarningLog::default(),
             thread_list_height: 0,
             last_memory_log: Instant::now(),
+            pinned: Vec::new(),
+            pinned_cursor: 0,
+            favorites_list_state: FavoritesPanelState::default(),
+            prev_focus: Focus::ThreadList,
+            ui_status: None,
+            last_area_width: 0,
         }
     }
 
@@ -137,7 +161,74 @@ impl<E: NavigationEngine> App<E> {
         match self.focus {
             Focus::ThreadList => self.handle_thread_list_input(event),
             Focus::StackFrames => self.handle_stack_frames_input(event),
+            Focus::Favorites => self.handle_favorites_input(event),
         }
+    }
+
+    /// Returns the name of the currently active thread, or an empty string.
+    fn active_thread_name(&self) -> String {
+        self.thread_list
+            .selected_thread()
+            .map(|t| t.name.clone())
+            .unwrap_or_default()
+    }
+
+    /// Adds or removes a `PinnedItem` by key (toggle semantics).
+    fn toggle_pin(&mut self, item: PinnedItem) {
+        if let Some(pos) = self.pinned.iter().position(|p| p.key == item.key) {
+            self.pinned.remove(pos);
+            self.pinned_cursor = self.pinned_cursor.min(self.pinned.len().saturating_sub(1));
+        } else {
+            self.pinned.push(item);
+        }
+        self.sync_favorites_list_state();
+    }
+
+    fn sync_favorites_list_state(&mut self) {
+        let sel = if self.pinned.is_empty() {
+            None
+        } else {
+            Some(self.pinned_cursor)
+        };
+        self.favorites_list_state.list_state.select(sel);
+    }
+
+    fn handle_favorites_input(&mut self, event: InputEvent) -> AppAction {
+        match event {
+            InputEvent::Up => {
+                self.pinned_cursor = self.pinned_cursor.saturating_sub(1);
+                self.sync_favorites_list_state();
+            }
+            InputEvent::Down => {
+                if !self.pinned.is_empty() {
+                    self.pinned_cursor = (self.pinned_cursor + 1).min(self.pinned.len() - 1);
+                    self.sync_favorites_list_state();
+                }
+            }
+            InputEvent::ToggleFavorite => {
+                if !self.pinned.is_empty() {
+                    let key = self.pinned[self.pinned_cursor].key.clone();
+                    self.pinned.retain(|i| i.key != key);
+                    self.pinned_cursor =
+                        self.pinned_cursor.min(self.pinned.len().saturating_sub(1));
+                    self.sync_favorites_list_state();
+                    if self.pinned.is_empty() {
+                        self.focus = self.prev_focus;
+                    }
+                }
+            }
+            InputEvent::FocusFavorites | InputEvent::Escape => {
+                self.focus = self.prev_focus;
+            }
+            InputEvent::Quit => return AppAction::Quit,
+            _ => {}
+        }
+        AppAction::Continue
+    }
+
+    /// Returns whether the favorites panel is visible given the current state.
+    fn favorites_visible(&self) -> bool {
+        !self.pinned.is_empty() && self.last_area_width >= MIN_WIDTH_FAVORITES_PANEL
     }
 
     fn handle_thread_list_input(&mut self, event: InputEvent) -> AppAction {
@@ -187,6 +278,18 @@ impl<E: NavigationEngine> App<E> {
                     self.thread_list.page_up(h);
                     refresh_preview = true;
                 }
+                InputEvent::ToggleFavorite => {
+                    let mut q = self.thread_list.filter().to_string();
+                    q.push('f');
+                    self.thread_list.apply_filter(&q);
+                    refresh_preview = true;
+                }
+                InputEvent::FocusFavorites => {
+                    let mut q = self.thread_list.filter().to_string();
+                    q.push('F');
+                    self.thread_list.apply_filter(&q);
+                    refresh_preview = true;
+                }
                 InputEvent::Quit => return AppAction::Quit,
                 _ => {}
             }
@@ -226,6 +329,14 @@ impl<E: NavigationEngine> App<E> {
                         let frames = self.engine.get_stack_frames(serial);
                         self.stack_state = Some(StackState::new(frames));
                         self.focus = Focus::StackFrames;
+                    }
+                }
+                InputEvent::FocusFavorites => {
+                    if self.favorites_visible() {
+                        self.prev_focus = self.focus;
+                        self.focus = Focus::Favorites;
+                    } else if !self.pinned.is_empty() {
+                        self.ui_status = Some("Terminal trop étroit (< 120 cols)".to_string());
                     }
                 }
                 InputEvent::Quit => return AppAction::Quit,
@@ -470,6 +581,22 @@ impl<E: NavigationEngine> App<E> {
                     None => {}
                 }
             }
+            InputEvent::ToggleFavorite => {
+                if let Some(state) = &self.stack_state {
+                    let thread_name = self.active_thread_name();
+                    if let Some(item) = snapshot_from_cursor(state.cursor(), state, &thread_name) {
+                        self.toggle_pin(item);
+                    }
+                }
+            }
+            InputEvent::FocusFavorites => {
+                if self.favorites_visible() {
+                    self.prev_focus = self.focus;
+                    self.focus = Focus::Favorites;
+                } else if !self.pinned.is_empty() {
+                    self.ui_status = Some("Terminal trop étroit (< 120 cols)".to_string());
+                }
+            }
             InputEvent::Quit => return AppAction::Quit,
             _ => {}
         }
@@ -675,15 +802,26 @@ impl<E: NavigationEngine> App<E> {
         }
 
         let area = frame.area();
+        self.last_area_width = area.width;
 
         // Carve out status bar at the bottom.
         let [main_area, status_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
-        // Split main area horizontally: 30% thread list, 70% stack view.
-        let [list_area, stack_area] =
-            Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
-                .areas(main_area);
+        // Determine if the favorites panel should be shown.
+        let show_favorites = !self.pinned.is_empty() && area.width >= MIN_WIDTH_FAVORITES_PANEL;
+
+        // Split main area: 30% thread list | rest for stack (+ optional fav).
+        let [list_area, right_area] =
+            Layout::horizontal([Constraint::Percentage(30), Constraint::Min(0)]).areas(main_area);
+
+        let (stack_area, fav_area) = if show_favorites {
+            let areas = Layout::horizontal([Constraint::Min(0), Constraint::Min(40)])
+                .areas::<2>(right_area);
+            (areas[0], Some(areas[1]))
+        } else {
+            (right_area, None)
+        };
 
         // Store visible heights for PageUp/PageDown.
         self.thread_list_height = list_area.height.saturating_sub(2);
@@ -703,7 +841,7 @@ impl<E: NavigationEngine> App<E> {
             &mut self.thread_list,
         );
 
-        // Stack view — use StackState if available, else create empty state
+        // Stack view — use StackState if available, else preview state.
         let stack_focused = self.focus == Focus::StackFrames;
         if stack_focused {
             if let Some(ref mut ss) = self.stack_state {
@@ -733,6 +871,20 @@ impl<E: NavigationEngine> App<E> {
             );
         }
 
+        // Favorites panel — only when visible.
+        if let Some(fav_area) = fav_area {
+            let fav_focused = self.focus == Focus::Favorites;
+            frame.render_stateful_widget(
+                FavoritesPanel {
+                    focused: fav_focused,
+                    pinned: &self.pinned,
+                    pinned_cursor: self.pinned_cursor,
+                },
+                fav_area,
+                &mut self.favorites_list_state,
+            );
+        }
+
         // Status bar — resolve selected thread once, use StatusBar widget.
         let selected_serial = self.thread_list.selected_serial();
         let selected_thread = selected_serial.and_then(|s| self.engine.select_thread(s));
@@ -740,13 +892,19 @@ impl<E: NavigationEngine> App<E> {
             .warnings
             .last()
             .map(str::to_string)
-            .or_else(|| self.engine.warnings().last().cloned());
+            .or_else(|| self.engine.warnings().last().cloned())
+            .or_else(|| self.ui_status.take());
         // Use is_fully_indexed() (integer comparison) rather than
         // indexing_ratio() == 100.0 to avoid floating-point imprecision.
         let file_indexed_pct = if self.engine.is_fully_indexed() {
             None
         } else {
             Some(self.engine.indexing_ratio())
+        };
+        let pinned_hidden_count = if !self.pinned.is_empty() && !show_favorites {
+            self.pinned.len()
+        } else {
+            0
         };
         frame.render_widget(
             StatusBar {
@@ -756,6 +914,7 @@ impl<E: NavigationEngine> App<E> {
                 warning_count: self.warning_count + self.warnings.count(),
                 last_warning: last_warning.as_deref(),
                 file_indexed_pct,
+                pinned_hidden_count,
             },
             status_area,
         );

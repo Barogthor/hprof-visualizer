@@ -11,7 +11,7 @@ use hprof_engine::{
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, StatefulWidget, Widget},
 };
@@ -191,7 +191,7 @@ pub struct StackState {
 
 /// Collects all descendant object IDs reachable from `root_id` in depth-first
 /// post-order. Cycles are broken via `visited`.
-fn collect_descendants(
+pub(crate) fn collect_descendants(
     root_id: u64,
     fields: &HashMap<u64, Vec<FieldInfo>>,
     visited: &mut HashSet<u64>,
@@ -210,7 +210,119 @@ fn collect_descendants(
     out.push(root_id);
 }
 
-fn format_frame_label(frame: &FrameInfo) -> String {
+/// Formats a collapsed [`FieldValue::ObjectRef`] as `ClassName` or
+/// `ClassName (N entries)` for collections.
+pub(crate) fn format_object_ref_collapsed(class_name: &str, entry_count: Option<u64>) -> String {
+    let display_name = if class_name.is_empty() {
+        "Object"
+    } else {
+        class_name
+    };
+    let short = display_name.rsplit('.').next().unwrap_or(display_name);
+    match entry_count {
+        Some(n) => format!("{short} ({n} entries)"),
+        None => short.to_string(),
+    }
+}
+
+/// Formats a [`FieldValue`] for display in field rows.
+pub(crate) fn format_field_value_display(v: &FieldValue, phase: Option<&ExpansionPhase>) -> String {
+    match v {
+        FieldValue::Null => "null".to_string(),
+        FieldValue::ObjectRef {
+            class_name,
+            entry_count,
+            inline_value,
+            ..
+        } => {
+            let base = match phase {
+                Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => {
+                    let display_name = if class_name.is_empty() {
+                        "Object"
+                    } else {
+                        class_name
+                    };
+                    display_name
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(display_name)
+                        .to_string()
+                }
+                _ => format_object_ref_collapsed(class_name, *entry_count),
+            };
+            match inline_value {
+                Some(v) => format!("{base} = {v}"),
+                None => base,
+            }
+        }
+        FieldValue::Bool(b) => b.to_string(),
+        FieldValue::Char(c) => format!("'{c}'"),
+        FieldValue::Byte(n) => n.to_string(),
+        FieldValue::Short(n) => n.to_string(),
+        FieldValue::Int(n) => n.to_string(),
+        FieldValue::Long(n) => n.to_string(),
+        FieldValue::Float(f) => format!("{f}"),
+        FieldValue::Double(d) => format!("{d}"),
+    }
+}
+
+/// Formats a `FieldValue` for inline display in collection entries.
+pub(crate) fn format_entry_value_text(v: &FieldValue) -> String {
+    match v {
+        FieldValue::Null => "null".to_string(),
+        FieldValue::ObjectRef {
+            class_name,
+            entry_count,
+            inline_value,
+            ..
+        } => {
+            let display_name = if class_name.is_empty() {
+                "Object"
+            } else {
+                class_name
+            };
+            let short = display_name.rsplit('.').next().unwrap_or(display_name);
+            let base = match entry_count {
+                Some(n) => format!("{short} ({n} entries)"),
+                None => short.to_string(),
+            };
+            match inline_value {
+                Some(v) => format!("{base} = {v}"),
+                None => base,
+            }
+        }
+        FieldValue::Bool(b) => b.to_string(),
+        FieldValue::Char(c) => format!("'{c}'"),
+        FieldValue::Byte(n) => n.to_string(),
+        FieldValue::Short(n) => n.to_string(),
+        FieldValue::Int(n) => n.to_string(),
+        FieldValue::Long(n) => n.to_string(),
+        FieldValue::Float(f) => format!("{f}"),
+        FieldValue::Double(d) => format!("{d}"),
+    }
+}
+
+/// Returns the [`Style`] to apply to a rendered [`FieldValue`] row.
+pub(crate) fn field_value_style(v: &FieldValue) -> Style {
+    match v {
+        FieldValue::Null => THEME.null_value,
+        FieldValue::Bool(_)
+        | FieldValue::Byte(_)
+        | FieldValue::Short(_)
+        | FieldValue::Int(_)
+        | FieldValue::Long(_)
+        | FieldValue::Float(_)
+        | FieldValue::Double(_) => THEME.primitive_value,
+        FieldValue::Char(_) => THEME.string_value,
+        FieldValue::ObjectRef {
+            inline_value: Some(_),
+            ..
+        } => THEME.string_value,
+        FieldValue::ObjectRef { .. } => Style::new(),
+    }
+}
+
+pub(crate) fn format_frame_label(frame: &FrameInfo) -> String {
     let line_label = match &frame.line {
         LineNumber::Line(n) => format!(":{}", n),
         LineNumber::NoInfo => String::new(),
@@ -272,6 +384,26 @@ impl StackState {
     /// Returns the current cursor.
     pub fn cursor(&self) -> &StackCursor {
         &self.cursor
+    }
+
+    /// Returns the stack frames slice.
+    pub(crate) fn frames(&self) -> &[FrameInfo] {
+        &self.frames
+    }
+
+    /// Returns the vars map (keyed by `frame_id`).
+    pub(crate) fn vars(&self) -> &HashMap<u64, Vec<VariableInfo>> {
+        &self.vars
+    }
+
+    /// Returns the decoded object fields map.
+    pub(crate) fn object_fields(&self) -> &HashMap<u64, Vec<FieldInfo>> {
+        &self.object_fields
+    }
+
+    /// Returns the collection chunks map.
+    pub(crate) fn collection_chunks_map(&self) -> &HashMap<u64, CollectionChunks> {
+        &self.collection_chunks
     }
 
     /// Sets the cursor to `new_cursor` and syncs the
@@ -1003,421 +1135,6 @@ impl StackState {
         self.list_state.select(idx);
     }
 
-    /// Formats a collapsed [`FieldValue::ObjectRef`] as `ClassName [>]`
-    /// or `ClassName (N entries) [>]` for collections.
-    fn format_object_ref_collapsed(class_name: &str, entry_count: Option<u64>) -> String {
-        let display_name = if class_name.is_empty() {
-            "Object"
-        } else {
-            class_name
-        };
-        let short = display_name.rsplit('.').next().unwrap_or(display_name);
-        match entry_count {
-            Some(n) => format!("{short} ({n} entries)"),
-            None => short.to_string(),
-        }
-    }
-
-    /// Formats a [`FieldValue`] for display in field rows.
-    fn format_field_value(v: &FieldValue, phase: Option<&ExpansionPhase>) -> String {
-        match v {
-            FieldValue::Null => "null".to_string(),
-            FieldValue::ObjectRef {
-                class_name,
-                entry_count,
-                inline_value,
-                ..
-            } => {
-                let base = match phase {
-                    Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => {
-                        let display_name = if class_name.is_empty() {
-                            "Object"
-                        } else {
-                            class_name
-                        };
-                        display_name
-                            .rsplit('.')
-                            .next()
-                            .unwrap_or(display_name)
-                            .to_string()
-                    }
-                    _ => Self::format_object_ref_collapsed(class_name, *entry_count),
-                };
-                match inline_value {
-                    Some(v) => format!("{base} = {v}"),
-                    None => base,
-                }
-            }
-            FieldValue::Bool(b) => b.to_string(),
-            FieldValue::Char(c) => format!("'{c}'"),
-            FieldValue::Byte(n) => n.to_string(),
-            FieldValue::Short(n) => n.to_string(),
-            FieldValue::Int(n) => n.to_string(),
-            FieldValue::Long(n) => n.to_string(),
-            FieldValue::Float(f) => format!("{f}"),
-            FieldValue::Double(d) => format!("{d}"),
-        }
-    }
-
-    /// Formats a `FieldValue` for inline display in collection entries.
-    ///
-    /// `value_phase` is used for `ObjectRef` values: when present and
-    /// `Expanded` / `Loading`, the toggle shows `-`; otherwise `+`.
-    fn format_entry_value(v: &FieldValue) -> String {
-        match v {
-            FieldValue::Null => "null".to_string(),
-            FieldValue::ObjectRef {
-                class_name,
-                entry_count,
-                inline_value,
-                ..
-            } => {
-                let display_name = if class_name.is_empty() {
-                    "Object"
-                } else {
-                    class_name
-                };
-                let short = display_name.rsplit('.').next().unwrap_or(display_name);
-                let base = match entry_count {
-                    Some(n) => format!("{short} ({n} entries)"),
-                    None => short.to_string(),
-                };
-                match inline_value {
-                    Some(v) => format!("{base} = {v}"),
-                    None => base,
-                }
-            }
-            FieldValue::Bool(b) => b.to_string(),
-            FieldValue::Char(c) => format!("'{c}'"),
-            FieldValue::Byte(n) => n.to_string(),
-            FieldValue::Short(n) => n.to_string(),
-            FieldValue::Int(n) => n.to_string(),
-            FieldValue::Long(n) => n.to_string(),
-            FieldValue::Float(f) => format!("{f}"),
-            FieldValue::Double(d) => format!("{d}"),
-        }
-    }
-
-    /// Returns the [`Style`] to apply to a rendered [`FieldValue`] row.
-    ///
-    /// Priority (highest first):
-    /// 1. `ExpansionPhase::Failed` → caller applies `THEME.error_indicator`
-    /// 2. Selected → caller patches with `THEME.selection_bg`
-    /// 3. Default → this function's return value
-    fn value_style(v: &FieldValue) -> Style {
-        match v {
-            FieldValue::Null => THEME.null_value,
-            FieldValue::Bool(_)
-            | FieldValue::Byte(_)
-            | FieldValue::Short(_)
-            | FieldValue::Int(_)
-            | FieldValue::Long(_)
-            | FieldValue::Float(_)
-            | FieldValue::Double(_) => THEME.primitive_value,
-            FieldValue::Char(_) => THEME.string_value,
-            FieldValue::ObjectRef {
-                inline_value: Some(_),
-                ..
-            } => THEME.string_value,
-            FieldValue::ObjectRef { .. } => Style::new(),
-        }
-    }
-
-    /// Renders collection entries and chunk sections.
-    #[allow(clippy::too_many_arguments)]
-    fn build_collection_items(
-        &self,
-        fi: usize,
-        vi: usize,
-        field_path: &[usize],
-        collection_id: u64,
-        cc: &CollectionChunks,
-        parent_indent: &str,
-        items: &mut Vec<ListItem<'static>>,
-    ) {
-        let indent = format!("{parent_indent}  ");
-        let render_entry =
-            |entry: &hprof_engine::EntryInfo, items: &mut Vec<ListItem<'static>>, sel: bool| {
-                let value_phase = if let FieldValue::ObjectRef { id, .. } = &entry.value {
-                    Some(self.expansion_state(*id))
-                } else {
-                    None
-                };
-                let text = Self::format_entry_line(entry, &indent, value_phase.as_ref());
-                let row_style = Self::value_style(&entry.value);
-                let s = if sel {
-                    row_style.patch(THEME.selection_bg)
-                } else {
-                    row_style
-                };
-                items.push(ListItem::new(Line::from(Span::styled(text, s))));
-                // Render expanded entry ObjectRef children.
-                if let FieldValue::ObjectRef { id, .. } = &entry.value {
-                    let mut visited = HashSet::new();
-                    self.build_collection_entry_obj_items(
-                        fi,
-                        vi,
-                        field_path,
-                        collection_id,
-                        entry.index,
-                        *id,
-                        &[],
-                        &indent,
-                        &mut visited,
-                        items,
-                    );
-                }
-            };
-        // Eager page entries.
-        if let Some(page) = &cc.eager_page {
-            for entry in &page.entries {
-                let sel = matches!(
-                    &self.cursor,
-                    StackCursor::OnCollectionEntry {
-                        collection_id: cid,
-                        entry_index: ei,
-                        ..
-                    }
-                    if *cid == collection_id && *ei == entry.index
-                );
-                render_entry(entry, items, sel);
-            }
-        }
-        // Chunk sections.
-        let ranges = compute_chunk_ranges(cc.total_count);
-        for (offset, limit) in &ranges {
-            let end = offset + limit - 1;
-            let chunk_state = cc.chunk_pages.get(offset);
-            let (toggle, label) = match chunk_state {
-                Some(ChunkState::Loading) => ("~ ", format!("Loading [{offset}...{end}]")),
-                Some(ChunkState::Loaded(_)) => ("- ", format!("[{offset}...{end}]")),
-                _ => ("+ ", format!("[{offset}...{end}]")),
-            };
-            let text = format!("{indent}{toggle}{label}");
-            let sel = matches!(
-                &self.cursor,
-                StackCursor::OnChunkSection {
-                    collection_id: cid,
-                    chunk_offset: co,
-                    ..
-                }
-                if *cid == collection_id && *co == *offset
-            );
-            let row_style = if matches!(chunk_state, Some(ChunkState::Loading)) {
-                THEME.loading_indicator
-            } else {
-                THEME.expand_indicator
-            };
-            let s = if sel {
-                row_style.patch(THEME.selection_bg)
-            } else {
-                row_style
-            };
-            items.push(ListItem::new(Line::from(Span::styled(text, s))));
-            // Loaded chunk entries.
-            if let Some(ChunkState::Loaded(page)) = chunk_state {
-                for entry in &page.entries {
-                    let sel = matches!(
-                        &self.cursor,
-                        StackCursor::OnCollectionEntry {
-                            collection_id: cid,
-                            entry_index: ei,
-                            ..
-                        }
-                        if *cid == collection_id && *ei == entry.index
-                    );
-                    render_entry(entry, items, sel);
-                }
-            }
-        }
-    }
-
-    /// Renders fields of an object expanded from a collection entry value.
-    #[allow(clippy::too_many_arguments)]
-    fn build_collection_entry_obj_items(
-        &self,
-        _fi: usize,
-        _vi: usize,
-        _field_path: &[usize],
-        collection_id: u64,
-        entry_index: usize,
-        obj_id: u64,
-        obj_path: &[usize],
-        parent_indent: &str,
-        visited: &mut HashSet<u64>,
-        items: &mut Vec<ListItem<'static>>,
-    ) {
-        if obj_path.len() >= 16 {
-            return;
-        }
-        let indent = format!("{parent_indent}  ");
-        match self.expansion_state(obj_id) {
-            ExpansionPhase::Collapsed => {}
-            ExpansionPhase::Loading => {
-                let sel = matches!(&self.cursor,
-                    StackCursor::OnCollectionEntryObjField {
-                        collection_id: cid,
-                        entry_index: ei,
-                        obj_field_path,
-                        ..
-                    }
-                    if *cid == collection_id
-                        && *ei == entry_index
-                        && *obj_field_path == obj_path
-                );
-                let s = if sel {
-                    THEME.loading_indicator.patch(THEME.selection_bg)
-                } else {
-                    THEME.loading_indicator
-                };
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("{indent}~ Loading..."),
-                    s,
-                ))));
-            }
-            ExpansionPhase::Expanded => {
-                visited.insert(obj_id);
-                let empty: Vec<FieldInfo> = vec![];
-                let field_list = self
-                    .object_fields
-                    .get(&obj_id)
-                    .map(|f| f.as_slice())
-                    .unwrap_or(empty.as_slice());
-                if field_list.is_empty() {
-                    let sel = matches!(&self.cursor,
-                        StackCursor::OnCollectionEntryObjField {
-                            collection_id: cid,
-                            entry_index: ei,
-                            obj_field_path,
-                            ..
-                        }
-                        if *cid == collection_id
-                            && *ei == entry_index
-                            && *obj_field_path == obj_path
-                    );
-                    let s = if sel {
-                        THEME.null_value.patch(THEME.selection_bg)
-                    } else {
-                        THEME.null_value
-                    };
-                    items.push(ListItem::new(Line::from(Span::styled(
-                        format!("{indent}(no fields)"),
-                        s,
-                    ))));
-                } else {
-                    for (fidx, field) in field_list.iter().enumerate() {
-                        let mut child_path = obj_path.to_vec();
-                        child_path.push(fidx);
-                        let child_phase = if let FieldValue::ObjectRef { id, .. } = field.value {
-                            Some(self.expansion_state(id))
-                        } else {
-                            None
-                        };
-                        let cycle = if let FieldValue::ObjectRef { id, .. } = &field.value {
-                            visited.contains(id)
-                        } else {
-                            false
-                        };
-                        let sel = !cycle
-                            && matches!(&self.cursor,
-                                StackCursor::OnCollectionEntryObjField {
-                                    collection_id: cid,
-                                    entry_index: ei,
-                                    obj_field_path,
-                                    ..
-                                }
-                                if *cid == collection_id
-                                    && *ei == entry_index
-                                    && *obj_field_path == child_path
-                            );
-                        let row_style = if cycle {
-                            THEME.null_value
-                        } else if matches!(child_phase, Some(ExpansionPhase::Failed)) {
-                            THEME.error_indicator
-                        } else {
-                            Self::value_style(&field.value)
-                        };
-                        let s = if sel {
-                            row_style.patch(THEME.selection_bg)
-                        } else {
-                            row_style
-                        };
-                        let toggle =
-                            if cycle {
-                                "  "
-                            } else {
-                                match &child_phase {
-                                    Some(ExpansionPhase::Expanded)
-                                    | Some(ExpansionPhase::Loading) => "- ",
-                                    Some(ExpansionPhase::Collapsed)
-                                    | Some(ExpansionPhase::Failed) => "+ ",
-                                    None => "  ",
-                                }
-                            };
-                        let val = Self::format_field_value(&field.value, child_phase.as_ref());
-                        let toggle_style = if toggle.trim().is_empty() {
-                            s
-                        } else {
-                            let base = THEME.expand_indicator;
-                            if sel {
-                                base.patch(THEME.selection_bg)
-                            } else {
-                                base
-                            }
-                        };
-                        items.push(ListItem::new(Line::from(vec![
-                            Span::raw(indent.clone()),
-                            Span::styled(toggle, toggle_style),
-                            Span::styled(format!("{}: {}", field.name, val), s),
-                        ])));
-                        if !cycle && let FieldValue::ObjectRef { id, .. } = field.value {
-                            self.build_collection_entry_obj_items(
-                                _fi,
-                                _vi,
-                                _field_path,
-                                collection_id,
-                                entry_index,
-                                id,
-                                &child_path,
-                                &indent,
-                                visited,
-                                items,
-                            );
-                        }
-                    }
-                }
-                visited.remove(&obj_id);
-            }
-            ExpansionPhase::Failed => {
-                let err = self
-                    .object_errors
-                    .get(&obj_id)
-                    .cloned()
-                    .unwrap_or_else(|| "Failed to resolve object".to_string());
-                let sel = matches!(&self.cursor,
-                    StackCursor::OnCollectionEntryObjField {
-                        collection_id: cid,
-                        entry_index: ei,
-                        obj_field_path,
-                        ..
-                    }
-                    if *cid == collection_id
-                        && *ei == entry_index
-                        && *obj_field_path == obj_path
-                );
-                let s = if sel {
-                    THEME.error_indicator.patch(THEME.selection_bg)
-                } else {
-                    THEME.error_indicator
-                };
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("{indent}! {err}"),
-                    s,
-                ))));
-            }
-        }
-    }
-
     /// Formats one collection entry as a display line.
     ///
     /// `value_phase` controls the expand toggle for `ObjectRef` values:
@@ -1433,9 +1150,9 @@ impl StackState {
             Some(ExpansionPhase::Collapsed) | Some(ExpansionPhase::Failed) => "+ ",
             None => "  ",
         };
-        let val = Self::format_entry_value(&entry.value);
+        let val = format_entry_value_text(&entry.value);
         if let Some(key) = &entry.key {
-            let k = Self::format_entry_value(key);
+            let k = format_entry_value_text(key);
             format!("{indent}{toggle}[{}] {} => {}", entry.index, k, val)
         } else {
             format!("{indent}{toggle}[{}] {}", entry.index, val)
@@ -1443,9 +1160,14 @@ impl StackState {
     }
 
     /// Builds the list items for rendering.
+    ///
+    /// Frame headers are plain items; variable-tree rows are produced by
+    /// [`render_variable_tree`] (no per-item cursor styling — selection is
+    /// applied by ratatui's `List` via [`Self::list_state`]).
     pub fn build_items(&self) -> Vec<ListItem<'static>> {
+        use super::tree_render::{TreeRoot, render_variable_tree};
         let mut items = Vec::new();
-        for (fi, frame) in self.frames.iter().enumerate() {
+        for frame in &self.frames {
             let label = format_frame_label(frame);
             let is_expanded = self.expanded.contains(&frame.frame_id);
             let toggle = if !frame.has_variables {
@@ -1456,93 +1178,18 @@ impl StackState {
                 "+ "
             };
             let text = format!("{toggle}{label}");
-            let is_selected = matches!(&self.cursor, StackCursor::OnFrame(i) if *i == fi)
-                || matches!(&self.cursor,
-                    StackCursor::OnVar { frame_idx, .. }
-                    | StackCursor::OnObjectField { frame_idx, .. }
-                    | StackCursor::OnObjectLoadingNode { frame_idx, .. }
-                    | StackCursor::OnCyclicNode { frame_idx, .. }
-                    | StackCursor::OnChunkSection { frame_idx, .. }
-                    | StackCursor::OnCollectionEntry { frame_idx, .. }
-                    | StackCursor::OnCollectionEntryObjField { frame_idx, .. }
-                    if *frame_idx == fi);
-            let style = if is_selected {
-                THEME.selection_bg
-            } else {
-                Style::new()
-            };
-            items.push(ListItem::new(Line::from(Span::styled(text, style))));
+            items.push(ListItem::new(Line::from(text)));
 
-            if self.expanded.contains(&frame.frame_id) {
+            if is_expanded {
                 let empty = vec![];
                 let vars = self.vars.get(&frame.frame_id).unwrap_or(&empty);
-                if vars.is_empty() {
-                    let var_style = if matches!(&self.cursor,
-                        StackCursor::OnVar { frame_idx, .. } if *frame_idx == fi)
-                    {
-                        THEME.selection_bg
-                    } else {
-                        THEME.null_value
-                    };
-                    items.push(ListItem::new(Line::from(Span::styled(
-                        "  (no locals)",
-                        var_style,
-                    ))));
-                } else {
-                    for (vi, var) in vars.iter().enumerate() {
-                        let phase = if let VariableValue::ObjectRef { id, .. } = var.value {
-                            self.expansion_state(id)
-                        } else {
-                            ExpansionPhase::Collapsed
-                        };
-
-                        let (toggle, val_str) = match (&var.value, &phase) {
-                            (VariableValue::Null, _) => ("  ", "null".to_string()),
-                            (
-                                VariableValue::ObjectRef { class_name, .. },
-                                ExpansionPhase::Collapsed,
-                            ) => ("+ ", format!("local variable: {}", class_name)),
-                            (VariableValue::ObjectRef { class_name, .. }, _) => {
-                                ("- ", format!("local variable: {}", class_name))
-                            }
-                        };
-                        let var_selected = matches!(&self.cursor,
-                            StackCursor::OnVar { frame_idx: ffi, var_idx: vvi }
-                            if *ffi == fi && *vvi == vi);
-                        let var_row_style = if var_selected {
-                            Style::new().patch(THEME.selection_bg)
-                        } else {
-                            Style::new()
-                        };
-                        let toggle_style = if toggle.trim().is_empty() {
-                            var_row_style
-                        } else {
-                            let base = THEME.expand_indicator;
-                            if var_selected {
-                                base.patch(THEME.selection_bg)
-                            } else {
-                                base
-                            }
-                        };
-                        items.push(ListItem::new(Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(toggle, toggle_style),
-                            Span::styled(format!("[{}] {val_str}", var.index), var_row_style),
-                        ])));
-
-                        if let VariableValue::ObjectRef { id: object_id, .. } = var.value {
-                            let mut visited = HashSet::new();
-                            self.build_object_items(
-                                fi,
-                                vi,
-                                object_id,
-                                &[],
-                                &mut visited,
-                                &mut items,
-                            );
-                        }
-                    }
-                }
+                let tree_items = render_variable_tree(
+                    TreeRoot::Frame { vars },
+                    &self.object_fields,
+                    &self.collection_chunks,
+                    &self.object_phases,
+                );
+                items.extend(tree_items);
             }
         }
         if items.is_empty() {
@@ -1552,191 +1199,6 @@ impl StackState {
             ))));
         }
         items
-    }
-
-    /// Recursively appends list items for `object_id` at `parent_path`.
-    ///
-    /// Indentation = `2 + 2 * (parent_path.len() + 1)` spaces for field rows.
-    /// `visited` tracks the ancestor chain for cycle detection.
-    fn build_object_items(
-        &self,
-        fi: usize,
-        vi: usize,
-        object_id: u64,
-        parent_path: &[usize],
-        visited: &mut HashSet<u64>,
-        items: &mut Vec<ListItem<'static>>,
-    ) {
-        // Guard against runaway recursion.
-        if parent_path.len() >= 16 {
-            return;
-        }
-        // Depth: root fields at depth 1 → 4 spaces, depth 2 → 6 spaces, etc.
-        let indent = " ".repeat(2 + 2 * (parent_path.len() + 1));
-        let phase = self.expansion_state(object_id);
-        match phase {
-            ExpansionPhase::Collapsed => {}
-            ExpansionPhase::Loading => {
-                let cur_path: Vec<usize> = parent_path.to_vec();
-                let selected = matches!(&self.cursor,
-                    StackCursor::OnObjectLoadingNode { frame_idx: ffi, var_idx: vvi, field_path }
-                    if *ffi == fi && *vvi == vi && *field_path == cur_path);
-                let s = if selected {
-                    THEME.loading_indicator.patch(THEME.selection_bg)
-                } else {
-                    THEME.loading_indicator
-                };
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("{indent}~ Loading..."),
-                    s,
-                ))));
-            }
-            ExpansionPhase::Expanded => {
-                visited.insert(object_id);
-                let empty: Vec<FieldInfo> = vec![];
-                let field_list = self
-                    .object_fields
-                    .get(&object_id)
-                    .map(|f| f.as_slice())
-                    .unwrap_or(empty.as_slice());
-                if field_list.is_empty() {
-                    let cur_path: Vec<usize> = parent_path.to_vec();
-                    let selected = matches!(&self.cursor,
-                        StackCursor::OnObjectLoadingNode { frame_idx: ffi, var_idx: vvi, field_path }
-                        if *ffi == fi && *vvi == vi && *field_path == cur_path);
-                    let s = if selected {
-                        THEME.null_value.patch(THEME.selection_bg)
-                    } else {
-                        THEME.null_value
-                    };
-                    items.push(ListItem::new(Line::from(Span::styled(
-                        format!("{indent}(no fields)"),
-                        s,
-                    ))));
-                } else {
-                    for (fidx, field) in field_list.iter().enumerate() {
-                        let mut child_path = parent_path.to_vec();
-                        child_path.push(fidx);
-
-                        // Cycle detection for ObjectRef fields
-                        if let FieldValue::ObjectRef { id, class_name, .. } = &field.value
-                            && visited.contains(id)
-                        {
-                            let label = if *id == object_id {
-                                "self-ref"
-                            } else {
-                                "cyclic"
-                            };
-                            let short = class_name.rsplit('.').next().unwrap_or(class_name);
-                            let marker = format!("\u{21BB} {} @ 0x{:X} [{}]", short, id, label,);
-                            let text = format!("{indent}  {}: {}", field.name, marker,);
-                            let sel = matches!(
-                                &self.cursor,
-                                StackCursor::OnCyclicNode {
-                                    frame_idx: ffi,
-                                    var_idx: vvi,
-                                    field_path,
-                                }
-                                if *ffi == fi
-                                    && *vvi == vi
-                                    && *field_path == child_path
-                            );
-                            let s = if sel {
-                                THEME.null_value.patch(THEME.selection_bg)
-                            } else {
-                                THEME.null_value
-                            };
-                            items.push(ListItem::new(Line::from(Span::styled(text, s))));
-                            continue;
-                        }
-
-                        let selected = matches!(&self.cursor,
-                            StackCursor::OnObjectField { frame_idx: ffi, var_idx: vvi, field_path }
-                            if *ffi == fi && *vvi == vi && *field_path == child_path);
-                        let child_phase = if let FieldValue::ObjectRef { id, .. } = field.value {
-                            Some(self.expansion_state(id))
-                        } else {
-                            None
-                        };
-                        let row_style = if matches!(child_phase, Some(ExpansionPhase::Failed)) {
-                            THEME.error_indicator
-                        } else {
-                            Self::value_style(&field.value)
-                        };
-                        let s = if selected {
-                            row_style.patch(THEME.selection_bg)
-                        } else {
-                            row_style
-                        };
-                        let val = Self::format_field_value(&field.value, child_phase.as_ref());
-                        let toggle = match &child_phase {
-                            Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
-                            Some(ExpansionPhase::Collapsed) | Some(ExpansionPhase::Failed) => "+ ",
-                            None => "  ",
-                        };
-                        let toggle_style = if toggle.trim().is_empty() {
-                            s
-                        } else {
-                            let base = THEME.expand_indicator;
-                            if selected {
-                                base.patch(THEME.selection_bg)
-                            } else {
-                                base
-                            }
-                        };
-                        items.push(ListItem::new(Line::from(vec![
-                            Span::raw(indent.clone()),
-                            Span::styled(toggle, toggle_style),
-                            Span::styled(format!("{}: {}", field.name, val), s),
-                        ])));
-
-                        // Collection rendering.
-                        if let FieldValue::ObjectRef {
-                            id,
-                            entry_count: Some(_),
-                            ..
-                        } = field.value
-                            && let Some(cc) = self.collection_chunks.get(&id)
-                        {
-                            self.build_collection_items(
-                                fi,
-                                vi,
-                                &child_path,
-                                id,
-                                cc,
-                                &indent,
-                                items,
-                            );
-                            continue;
-                        }
-                        if let FieldValue::ObjectRef { id, .. } = field.value {
-                            self.build_object_items(fi, vi, id, &child_path, visited, items);
-                        }
-                    }
-                }
-                visited.remove(&object_id);
-            }
-            ExpansionPhase::Failed => {
-                let cur_path: Vec<usize> = parent_path.to_vec();
-                let msg = self
-                    .object_errors
-                    .get(&object_id)
-                    .cloned()
-                    .unwrap_or_else(|| "Failed to resolve object".to_string());
-                let selected = matches!(&self.cursor,
-                    StackCursor::OnObjectLoadingNode { frame_idx: ffi, var_idx: vvi, field_path }
-                    if *ffi == fi && *vvi == vi && *field_path == cur_path);
-                let s = if selected {
-                    THEME.error_indicator.patch(THEME.selection_bg)
-                } else {
-                    THEME.error_indicator
-                };
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("{indent}! {msg}"),
-                    s,
-                ))));
-            }
-        }
     }
 }
 
@@ -1764,8 +1226,7 @@ impl StatefulWidget for StackView {
         block.render(area, buf);
 
         let items = state.build_items();
-        let list = List::new(items)
-            .highlight_style(ratatui::style::Style::default().add_modifier(Modifier::BOLD));
+        let list = List::new(items).highlight_style(THEME.selection_bg);
         StatefulWidget::render(list, inner, buf, &mut state.list_state);
     }
 }
@@ -2967,13 +2428,13 @@ mod tests {
 
     #[test]
     fn value_style_null_returns_null_value() {
-        assert_eq!(StackState::value_style(&FieldValue::Null), THEME.null_value);
+        assert_eq!(field_value_style(&FieldValue::Null), THEME.null_value);
     }
 
     #[test]
     fn value_style_int_returns_primitive_value() {
         assert_eq!(
-            StackState::value_style(&FieldValue::Int(42)),
+            field_value_style(&FieldValue::Int(42)),
             THEME.primitive_value
         );
     }
@@ -2981,7 +2442,7 @@ mod tests {
     #[test]
     fn value_style_bool_returns_primitive_value() {
         assert_eq!(
-            StackState::value_style(&FieldValue::Bool(true)),
+            field_value_style(&FieldValue::Bool(true)),
             THEME.primitive_value
         );
     }
@@ -2989,7 +2450,7 @@ mod tests {
     #[test]
     fn value_style_char_returns_string_value() {
         assert_eq!(
-            StackState::value_style(&FieldValue::Char('x')),
+            field_value_style(&FieldValue::Char('x')),
             THEME.string_value
         );
     }
@@ -3002,7 +2463,7 @@ mod tests {
             entry_count: None,
             inline_value: Some("hello".to_string()),
         };
-        assert_eq!(StackState::value_style(&v), THEME.string_value);
+        assert_eq!(field_value_style(&v), THEME.string_value);
     }
 
     #[test]
@@ -3013,6 +2474,6 @@ mod tests {
             entry_count: None,
             inline_value: None,
         };
-        assert_eq!(StackState::value_style(&v), ratatui::style::Style::new());
+        assert_eq!(field_value_style(&v), ratatui::style::Style::new());
     }
 }
