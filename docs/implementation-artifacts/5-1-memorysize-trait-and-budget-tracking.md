@@ -1,6 +1,6 @@
 # Story 5.1: MemorySize Trait & Budget Tracking
 
-Status: review
+Status: done
 
 ## Story
 
@@ -123,7 +123,7 @@ indexing time
         `PreciseIndex.memory_size()` + thread_cache size
   - [x] Expose `fn memory_used(&self) -> usize` on
         `NavigationEngine` trait
-  - [x] Wire into existing expand/collapse paths (prep for 5.3)
+  - [ ] Wire into existing expand/collapse paths (deferred to 5.3 — requires LRU cache before counter wiring is meaningful)
   - [x] Write integration test: create Engine from test fixture,
         verify `memory_used() > 0`
 
@@ -270,6 +270,7 @@ None — clean implementation, no debug issues.
 - `crates/hprof-parser/src/types.rs` (modified)
 - `crates/hprof-parser/src/strings.rs` (modified)
 - `crates/hprof-parser/src/indexer/precise.rs` (modified)
+- `crates/hprof-engine/Cargo.toml` (modified — rustc-hash dependency)
 - `crates/hprof-engine/src/cache/mod.rs` (new)
 - `crates/hprof-engine/src/cache/budget.rs` (new)
 - `crates/hprof-engine/src/engine.rs` (modified)
@@ -282,3 +283,8 @@ None — clean implementation, no debug issues.
 ### Change Log
 
 - 2026-03-10: Story 5.1 implemented — MemorySize trait, impls for all domain types, MemoryCounter, Engine integration
+- 2026-03-10: Code review fixes (Amelia CR) — DRY fix for FieldInfo/VariableInfo memory_size (M1);
+  thread_cache changed to FxHashMap + rustc-hash dep added (M2);
+  EntryInfo heap-path tests added (M3); integration test upper bounds added (H1);
+  exact-value counter test added (H2); Task 6 expand-path subtask un-checked as
+  deferred to 5.3 (C1)

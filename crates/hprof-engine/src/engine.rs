@@ -201,12 +201,8 @@ impl MemorySize for VariableValue {
 impl MemorySize for VariableInfo {
     fn memory_size(&self) -> usize {
         std::mem::size_of::<Self>()
-            + match &self.value {
-                VariableValue::Null => 0,
-                VariableValue::ObjectRef { class_name, .. } => {
-                    class_name.capacity()
-                }
-            }
+            + self.value.memory_size()
+            - std::mem::size_of::<VariableValue>()
     }
 }
 
@@ -233,19 +229,8 @@ impl MemorySize for FieldInfo {
     fn memory_size(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.name.capacity()
-            + match &self.value {
-                FieldValue::ObjectRef {
-                    class_name,
-                    inline_value,
-                    ..
-                } => {
-                    class_name.capacity()
-                        + inline_value
-                            .as_ref()
-                            .map_or(0, |s| s.capacity())
-                }
-                _ => 0,
-            }
+            + self.value.memory_size()
+            - std::mem::size_of::<FieldValue>()
     }
 }
 
@@ -619,6 +604,49 @@ mod tests {
             e.memory_size(),
             std::mem::size_of::<EntryInfo>()
         );
+    }
+
+    #[test]
+    fn entry_info_memory_size_object_ref_value_includes_heap() {
+        let class_name = "java.lang.String".to_string();
+        let e = EntryInfo {
+            index: 0,
+            key: None,
+            value: FieldValue::ObjectRef {
+                id: 1,
+                class_name: class_name.clone(),
+                entry_count: None,
+                inline_value: None,
+            },
+        };
+        let expected = std::mem::size_of::<EntryInfo>()
+            + class_name.capacity();
+        assert_eq!(e.memory_size(), expected);
+    }
+
+    #[test]
+    fn entry_info_memory_size_key_and_value_object_refs() {
+        let key_name = "key_class".to_string();
+        let val_name = "val_class".to_string();
+        let e = EntryInfo {
+            index: 0,
+            key: Some(FieldValue::ObjectRef {
+                id: 1,
+                class_name: key_name.clone(),
+                entry_count: None,
+                inline_value: None,
+            }),
+            value: FieldValue::ObjectRef {
+                id: 2,
+                class_name: val_name.clone(),
+                entry_count: None,
+                inline_value: None,
+            },
+        };
+        let expected = std::mem::size_of::<EntryInfo>()
+            + key_name.capacity()
+            + val_name.capacity();
+        assert_eq!(e.memory_size(), expected);
     }
 
     #[test]

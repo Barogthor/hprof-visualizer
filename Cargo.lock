@@ -663,6 +663,7 @@ dependencies = [
  "hprof-api",
  "hprof-parser",
  "rayon",
+ "rustc-hash",
  "tempfile",
  "tracing",
 ]

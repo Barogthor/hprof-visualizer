@@ -4,7 +4,7 @@
 //! navigation API. Parser internals are fully encapsulated — callers only
 //! depend on `hprof-engine`.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -268,7 +268,7 @@ pub struct Engine {
     hfile: Arc<HprofFile>,
     /// Pre-resolved thread metadata (serial → name + state).
     /// Built once at construction to avoid repeated heap scans.
-    thread_cache: HashMap<u32, ThreadMetadata>,
+    thread_cache: FxHashMap<u32, ThreadMetadata>,
     /// Tracks total heap memory consumed by parsed/cached data.
     memory_counter: Arc<crate::cache::MemoryCounter>,
 }
@@ -329,14 +329,15 @@ impl Engine {
     fn build_thread_cache(
         hfile: &HprofFile,
         notifier: &mut ProgressNotifier,
-    ) -> HashMap<u32, ThreadMetadata> {
+    ) -> FxHashMap<u32, ThreadMetadata> {
         let total = hfile.index.threads.len();
         if total == 0 {
-            return HashMap::new();
+            return FxHashMap::default();
         }
         let thread_list: Vec<_> = hfile.index.threads.iter().collect();
         let chunk_size = (total / 10).clamp(1, 50);
-        let mut cache = HashMap::with_capacity(total);
+        let mut cache =
+            FxHashMap::with_capacity_and_hasher(total, Default::default());
         for chunk in thread_list.chunks(chunk_size) {
             let results: Vec<(u32, ThreadMetadata)> = chunk
                 .par_iter()
@@ -371,7 +372,7 @@ impl Engine {
     /// thread_cache at construction time.
     fn initial_memory(
         hfile: &HprofFile,
-        thread_cache: &HashMap<u32, ThreadMetadata>,
+        thread_cache: &FxHashMap<u32, ThreadMetadata>,
     ) -> usize {
         use hprof_api::MemorySize;
         let index_size = hfile.index.memory_size();
@@ -818,15 +819,37 @@ mod tests {
 
     #[test]
     fn memory_used_positive_after_from_file() {
+        let bytes = minimal_hprof_bytes();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig;
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        let used = engine.memory_used();
+        assert!(used > 0, "memory_used must be > 0 after construction");
+        assert!(
+            used < bytes.len() * 1000,
+            "memory_used ({used}) must be < file_size * 1000 ({})",
+            bytes.len() * 1000
+        );
+    }
+
+    #[test]
+    fn memory_used_equals_precise_index_static_size_for_empty_file() {
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
         let config = EngineConfig;
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
-        assert!(
-            engine.memory_used() > 0,
-            "memory_used must be > 0 after construction"
+        // Empty index: all maps have 0 capacity → memory_size() = size_of::<PreciseIndex>()
+        // Empty thread_cache: cache_size=0, cache_overhead=0
+        let expected = std::mem::size_of::<hprof_parser::PreciseIndex>();
+        assert_eq!(
+            engine.memory_used(),
+            expected,
+            "empty file: memory_used must equal PreciseIndex static size"
         );
     }
 
@@ -1002,9 +1025,11 @@ mod tests {
             .build();
             let engine = engine_from_bytes(&bytes);
             let used = engine.memory_used();
+            assert!(used > 0, "memory_used ({used}) must be positive");
             assert!(
-                used > 0,
-                "memory_used ({used}) must be positive"
+                used < bytes.len() * 1000,
+                "memory_used ({used}) must be < file_size * 1000 ({})",
+                bytes.len() * 1000
             );
         }
 

@@ -726,6 +726,11 @@ As a user,
 I want the system to automatically evict the least recently used expanded subtrees when memory usage approaches the budget,
 So that memory stays within bounds during extended exploration sessions.
 
+**Carryover from Story 5.1 (Task 6):** Wire `Engine::memory_counter` into
+`expand_object()` (add) and the eviction path (subtract) so that AC2/AC3 of
+Story 5.1 are fully exercised at runtime. The `MemoryCounter` field and
+`memory_used()` trait method already exist — only the call sites are missing.
+
 **NFRs verified:** NFR5 (memory within budget)
 
 **Acceptance Criteria:**
