@@ -1,6 +1,6 @@
 # Story 5.4: Transparent Re-Parse & Multi-Cycle Stability
 
-Status: review
+Status: done
 
 ## Story
 
@@ -54,8 +54,16 @@ the `MemoryCounter` does not underflow to `usize::MAX`, and no panic occurs
             let engine = engine_two_objects(1);
             let fields_first =
                 engine.expand_object(0xAAA).unwrap();
+            assert!(
+                engine.object_cache.is_empty(),
+                "A must be evicted immediately with budget=1"
+            );
             // Expand B to confirm eviction and internal state remain sane
             engine.expand_object(0xBBB).unwrap();
+            assert!(
+                engine.object_cache.is_empty(),
+                "B must also be evicted immediately with budget=1"
+            );
             // Re-expand A: must be a cache miss → re-parse from mmap
             let fields_second =
                 engine.expand_object(0xAAA).unwrap();
@@ -160,7 +168,7 @@ Reuse `engine_two_objects(budget)` already defined in `mod lru_eviction_tests`
   `decode_object_fields` → insert → run eviction loop
 - `Engine::memory_used()` / `Engine::memory_budget()` — public trait methods
 - `EngineConfig { budget_bytes: Some(n) }` — use for deterministic budgets in tests
-- 161 tests pass after Story 5.3 code review; 0 clippy warnings
+- 161 tests pass after Story 5.3 code review
 - Commit style: `feat: Story N.M — short description` (no co-author lines)
 
 ### Project Structure Notes
@@ -201,14 +209,26 @@ claude-sonnet-4-6
   in `engine.rs:141`. No other production code changes needed — `expand_object` already
   transparently re-parses on cache miss (structural guarantee from Story 5.3).
 - Task 2: `re_parse_after_eviction_produces_identical_fields` — budget=1 forces full eviction
-  after every insert; assert_eq!(fields_first, fields_second) confirms byte-accurate re-parse.
+  after every insert; explicit `object_cache.is_empty()` checks prove eviction happened before
+  re-expansion, and `assert_eq!(fields_first, fields_second)` confirms byte-accurate re-parse.
 - Task 3: `multi_cycle_no_panic_no_counter_overflow` — 50 A/B alternating cycles confirm
   no panic and `memory_used() < usize::MAX / 2` guards against `AtomicUsize` underflow.
-- 163 tests pass (161 pre-existing + 2 new); 0 clippy warnings.
+- Validation rerun: `cargo test -p hprof-engine` => 163 passed, 0 failed, 1 ignored.
+- Clippy validation: `cargo clippy -p hprof-engine --all-targets -- -D warnings` => pass.
+- Follow-up quality cleanup completed after review: removed pre-existing clippy issues in
+  `pagination.rs` and replaced approximate float constants in tests.
+
+### Senior Developer Review (AI)
+
+- 2026-03-10 (Codex): Strengthened AC2 verification by asserting immediate eviction (`object_cache.is_empty()`)
+  before re-expansion to guarantee cache-miss/re-parse path coverage.
+- Review report: `docs/code-review/codex-story-5.4-2026-03-10.md`.
 
 ### File List
 
 - `crates/hprof-engine/src/engine.rs`
 - `crates/hprof-engine/src/engine_impl.rs`
+- `crates/hprof-engine/src/pagination.rs`
 - `docs/implementation-artifacts/5-4-transparent-re-parse-and-multi-cycle-stability.md`
+- `docs/code-review/codex-story-5.4-2026-03-10.md`
 - `docs/implementation-artifacts/sprint-status.yaml`

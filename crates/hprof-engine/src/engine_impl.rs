@@ -1914,7 +1914,11 @@ mod tests {
 
         #[test]
         fn float_field_shows_inline_value() {
-            let v = expand_boxed_child("java.lang.Float", 6, 3.14f32.to_be_bytes().to_vec());
+            let v = expand_boxed_child(
+                "java.lang.Float",
+                6,
+                std::f32::consts::PI.to_be_bytes().to_vec(),
+            );
             if let FieldValue::ObjectRef { inline_value, .. } = v {
                 assert!(inline_value.is_some(), "expected Some for Float");
                 let s = inline_value.unwrap();
@@ -1926,8 +1930,11 @@ mod tests {
 
         #[test]
         fn double_field_shows_inline_value() {
-            let v =
-                expand_boxed_child("java.lang.Double", 7, 2.718281828f64.to_be_bytes().to_vec());
+            let v = expand_boxed_child(
+                "java.lang.Double",
+                7,
+                std::f64::consts::E.to_be_bytes().to_vec(),
+            );
             if let FieldValue::ObjectRef { inline_value, .. } = v {
                 assert!(inline_value.is_some(), "expected Some for Double");
                 let s = inline_value.unwrap();
@@ -2465,8 +2472,16 @@ mod tests {
             let engine = engine_two_objects(1);
             let fields_first =
                 engine.expand_object(0xAAA).unwrap();
+            assert!(
+                engine.object_cache.is_empty(),
+                "A must be evicted immediately with budget=1"
+            );
             // Expand B to confirm eviction and internal state remain sane
             engine.expand_object(0xBBB).unwrap();
+            assert!(
+                engine.object_cache.is_empty(),
+                "B must also be evicted immediately with budget=1"
+            );
             // Re-expand A: must be a cache miss → re-parse from mmap
             let fields_second =
                 engine.expand_object(0xAAA).unwrap();

@@ -62,23 +62,7 @@ pub(crate) fn get_page(
     };
     let short = class_name.rsplit('.').next().unwrap_or(class_name.as_str());
 
-    let result = match_extractor(short, hfile, &raw, offset, limit);
-    match &result {
-        Some(page) => dbg_log!(
-            "get_page(0x{:X}): {} ({}) → {} entries",
-            collection_id,
-            class_name,
-            short,
-            page.entries.len()
-        ),
-        None => dbg_log!(
-            "get_page(0x{:X}): {} ({}) → extractor None",
-            collection_id,
-            class_name,
-            short
-        ),
-    }
-    result
+    match_extractor(short, hfile, &raw, offset, limit)
 }
 
 fn match_extractor(
@@ -703,7 +687,7 @@ mod tests {
             .add_class_dump(
                 1000,
                 0,
-                (4 + id_size) as u32,
+                4 + id_size,
                 &[(str_size, 10), (str_table, 2)],
             )
             // Node class dump: key(Obj=2),
@@ -711,7 +695,7 @@ mod tests {
             .add_class_dump(
                 2000,
                 0,
-                (id_size * 3) as u32,
+                id_size * 3,
                 &[(str_key, 2), (str_value, 2), (str_next, 2)],
             )
             // HashMap instance
@@ -755,7 +739,7 @@ mod tests {
             .add_class_dump(
                 1000,
                 0,
-                (4 + id_size) as u32,
+                4 + id_size,
                 &[(str_size, 10), (str_ed, 2)],
             )
             .add_instance(0x100, 0, 1000, &data)
@@ -931,13 +915,13 @@ mod tests {
             .add_class_dump(
                 1000,
                 0,
-                (4 + id_size * 2) as u32,
+                4 + id_size * 2,
                 &[(str_size, 10), (str_first, 2), (str_last, 2)],
             )
             .add_class_dump(
                 2000,
                 0,
-                (id_size * 3) as u32,
+                id_size * 3,
                 &[(str_item, 2), (str_next, 2), (str_prev, 2)],
             )
             .add_instance(0x100, 0, 1000, &ll_data)
@@ -1003,13 +987,13 @@ mod tests {
             .add_class_dump(
                 1000,
                 0,
-                (4 + id_size) as u32,
+                4 + id_size,
                 &[(str_size, 10), (str_table, 2)],
             )
             .add_class_dump(
                 2000,
                 0,
-                (id_size * 3) as u32,
+                id_size * 3,
                 &[(str_key, 2), (str_val, 2), (str_next, 2)],
             )
             .add_instance(0x100, 0, 1000, &chm_data)
@@ -1079,13 +1063,13 @@ mod tests {
             .add_class_dump(
                 2000,
                 0,
-                (4 + id_size) as u32,
+                4 + id_size,
                 &[(str_size, 10), (str_table, 2)],
             )
             .add_class_dump(
                 3000,
                 0,
-                (id_size * 3) as u32,
+                id_size * 3,
                 &[(str_key, 2), (str_value, 2), (str_next, 2)],
             )
             .add_instance(0x100, 0, 1000, &hs_data)
@@ -1141,13 +1125,13 @@ mod tests {
             .add_class_dump(
                 1000,
                 0,
-                (4 + id_size) as u32,
+                4 + id_size,
                 &[(str_size, 10), (str_table, 2)],
             )
             .add_class_dump(
                 2000,
                 0,
-                (id_size * 3) as u32,
+                id_size * 3,
                 &[(str_key, 2), (str_value, 2), (str_next, 2)],
             )
             .add_instance(0x100, 0, 1000, &lhm_data)
@@ -1184,7 +1168,7 @@ mod tests {
             .add_class_dump(
                 1000,
                 0,
-                (4 + id_size) as u32,
+                4 + id_size,
                 &[(str_count, 10), (str_ed, 2)],
             )
             .add_instance(0x100, 0, 1000, &data)
