@@ -53,16 +53,16 @@ impl CollectionChunks {
     /// Finds the [`EntryInfo`] with the given `index` across all loaded
     /// pages (eager page and all loaded chunk pages).
     pub(crate) fn find_entry(&self, index: usize) -> Option<&hprof_engine::EntryInfo> {
-        if let Some(page) = &self.eager_page {
-            if let Some(e) = page.entries.iter().find(|e| e.index == index) {
-                return Some(e);
-            }
+        if let Some(page) = &self.eager_page
+            && let Some(e) = page.entries.iter().find(|e| e.index == index)
+        {
+            return Some(e);
         }
         for state in self.chunk_pages.values() {
-            if let ChunkState::Loaded(page) = state {
-                if let Some(e) = page.entries.iter().find(|e| e.index == index) {
-                    return Some(e);
-                }
+            if let ChunkState::Loaded(page) = state
+                && let Some(e) = page.entries.iter().find(|e| e.index == index)
+            {
+                return Some(e);
             }
         }
         None
@@ -918,6 +918,7 @@ impl StackState {
     /// the fields of an object expanded from a collection entry value.
     ///
     /// Guards against runaway recursion: stops at depth 16.
+    #[allow(clippy::too_many_arguments)]
     fn emit_collection_entry_obj_children(
         &self,
         fi: usize,
@@ -1204,9 +1205,9 @@ impl StackState {
     #[allow(clippy::too_many_arguments)]
     fn build_collection_entry_obj_items(
         &self,
-        fi: usize,
-        vi: usize,
-        field_path: &[usize],
+        _fi: usize,
+        _vi: usize,
+        _field_path: &[usize],
         collection_id: u64,
         entry_index: usize,
         obj_id: u64,
@@ -1320,21 +1321,21 @@ impl StackState {
                         let val = Self::format_field_value(&field.value, child_phase.as_ref());
                         let text = format!("{indent}{toggle}{}: {}", field.name, val);
                         items.push(ListItem::new(Line::from(Span::styled(text, s))));
-                        if !cycle {
-                            if let FieldValue::ObjectRef { id, .. } = field.value {
-                                self.build_collection_entry_obj_items(
-                                    fi,
-                                    vi,
-                                    field_path,
-                                    collection_id,
-                                    entry_index,
-                                    id,
-                                    &child_path,
-                                    &indent,
-                                    visited,
-                                    items,
-                                );
-                            }
+                        if !cycle
+                            && let FieldValue::ObjectRef { id, .. } = field.value
+                        {
+                            self.build_collection_entry_obj_items(
+                                _fi,
+                                _vi,
+                                _field_path,
+                                collection_id,
+                                entry_index,
+                                id,
+                                &child_path,
+                                &indent,
+                                visited,
+                                items,
+                            );
                         }
                     }
                 }

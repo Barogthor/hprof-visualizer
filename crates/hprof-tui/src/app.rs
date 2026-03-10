@@ -1457,7 +1457,7 @@ mod tests {
         app.handle_input(InputEvent::Escape);
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            ss.collection_chunks.get(&888).is_none(),
+            !ss.collection_chunks.contains_key(&888),
             "collection should be removed"
         );
         // Cursor returns to the collection field.
@@ -1486,7 +1486,7 @@ mod tests {
         app.handle_input(InputEvent::Escape);
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            ss.collection_chunks.get(&888).is_none(),
+            !ss.collection_chunks.contains_key(&888),
             "collection should be removed after escape from chunk section"
         );
         assert!(matches!(ss.cursor(), StackCursor::OnObjectField { .. }));
@@ -1532,7 +1532,7 @@ mod tests {
         }
         let ss = app.stack_state.as_ref().unwrap();
         // Collection chunks should be gone.
-        assert!(ss.collection_chunks.get(&777).is_none());
+        assert!(!ss.collection_chunks.contains_key(&777));
         // Should have fallen back to expand_object →
         // expansion state should be Expanded.
         assert_eq!(ss.expansion_state(777), ExpansionPhase::Expanded);
@@ -1721,7 +1721,7 @@ mod tests {
         // This is a general tree scroll test, not
         // collection-specific.
         use crate::views::stack_view::StackState;
-        let frames: Vec<_> = (1..=30).map(|i| make_frame(i)).collect();
+        let frames: Vec<_> = (1..=30).map(make_frame).collect();
         let mut state = StackState::new(frames);
         state.set_visible_height(10);
         // Move to frame 5.
