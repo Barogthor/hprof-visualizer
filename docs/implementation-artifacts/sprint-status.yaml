@@ -108,8 +108,8 @@ development_status:
   epic-6-retrospective: done
 
   # Epic 7: TUI UX & Interaction Design
-  epic-7: backlog
+  epic-7: in-progress
   7-1-favorites-panel: backlog
-  7-2-theme-system: backlog
+  7-2-theme-system: ready-for-dev
   7-3-keyboard-navigation-map: backlog
   epic-7-retrospective: optional
