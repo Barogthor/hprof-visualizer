@@ -481,9 +481,8 @@ impl<E: NavigationEngine> App<E> {
                                 s.expansion_state(oid)
                             );
                             match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed | ExpansionPhase::Failed => {
-                                    Cmd::StartObj(oid)
-                                }
+                                ExpansionPhase::Collapsed => Cmd::StartObj(oid),
+                                ExpansionPhase::Failed => return None,
                                 ExpansionPhase::Expanded => Cmd::CollapseObj(oid),
                                 ExpansionPhase::Loading => {
                                     return None;
@@ -507,9 +506,8 @@ impl<E: NavigationEngine> App<E> {
                                 s.expansion_state(nested_id)
                             );
                             match s.expansion_state(nested_id) {
-                                ExpansionPhase::Collapsed | ExpansionPhase::Failed => {
-                                    Cmd::StartNestedObj(nested_id)
-                                }
+                                ExpansionPhase::Collapsed => Cmd::StartNestedObj(nested_id),
+                                ExpansionPhase::Failed => return None,
                                 ExpansionPhase::Expanded => Cmd::CollapseNestedObj(nested_id),
                                 ExpansionPhase::Loading => {
                                     return None;
@@ -531,9 +529,8 @@ impl<E: NavigationEngine> App<E> {
                         StackCursor::OnCollectionEntry { .. } => {
                             let oid = s.selected_collection_entry_ref_id()?;
                             match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed | ExpansionPhase::Failed => {
-                                    Cmd::StartEntryObj(oid)
-                                }
+                                ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
+                                ExpansionPhase::Failed => return None,
                                 ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
                                 ExpansionPhase::Loading => return None,
                             }
@@ -541,9 +538,8 @@ impl<E: NavigationEngine> App<E> {
                         StackCursor::OnCollectionEntryObjField { .. } => {
                             let oid = s.selected_collection_entry_obj_field_ref_id()?;
                             match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed | ExpansionPhase::Failed => {
-                                    Cmd::StartEntryObj(oid)
-                                }
+                                ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
+                                ExpansionPhase::Failed => return None,
                                 ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
                                 ExpansionPhase::Loading => return None,
                             }

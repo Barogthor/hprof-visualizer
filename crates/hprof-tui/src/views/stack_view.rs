@@ -18,6 +18,9 @@ use ratatui::{
 
 use crate::theme::THEME;
 
+/// Separator used in Failed node labels: `"! ClassName — error message"`.
+pub(crate) const FAILED_LABEL_SEP: &str = " — ";
+
 /// Phase of an object expansion driven by `App`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpansionPhase {
@@ -976,11 +979,7 @@ impl StackState {
                 visited.remove(&object_id);
             }
             ExpansionPhase::Failed => {
-                out.push(StackCursor::OnObjectLoadingNode {
-                    frame_idx: fi,
-                    var_idx: vi,
-                    field_path: parent_path,
-                });
+                // Error state is styled on the parent node — no child row emitted here.
             }
         }
     }
@@ -1147,7 +1146,8 @@ impl StackState {
     ) -> String {
         let toggle = match value_phase {
             Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
-            Some(ExpansionPhase::Collapsed) | Some(ExpansionPhase::Failed) => "+ ",
+            Some(ExpansionPhase::Failed) => "! ",
+            Some(ExpansionPhase::Collapsed) => "+ ",
             None => "  ",
         };
         let val = format_entry_value_text(&entry.value);
@@ -1188,6 +1188,7 @@ impl StackState {
                     &self.object_fields,
                     &self.collection_chunks,
                     &self.object_phases,
+                    &self.object_errors,
                 );
                 items.extend(tree_items);
             }
@@ -1792,23 +1793,23 @@ mod tests {
     }
 
     #[test]
-    fn build_items_failed_expansion_shows_error_message_with_correct_indent() {
+    fn build_items_failed_expansion_shows_error_inline_on_var_row() {
         let frames = vec![make_frame(10)];
         let mut state = StackState::new(frames);
         let vars = vec![make_var_object_ref(0, 99)];
         state.toggle_expand(10, vars);
-        state.set_expansion_failed(99, "Failed to resolve object".to_string());
+        state.set_expansion_failed(99, "object not found".to_string());
         let items = state.build_items();
-        // items[0]=frame, [1]=var, [2]=error node at depth 1 (4 spaces)
-        assert_eq!(items.len(), 3);
-        let text = item_text(items[2].clone());
+        // items[0]=frame, [1]=var with inline error — no orphan child row (AC4)
+        assert_eq!(items.len(), 2, "expect no child row for Failed — got {}", items.len());
+        let text = item_text(items[1].clone());
         assert!(
-            text.starts_with("    "),
-            "error node must have 4-space indent, got: {text:?}"
+            text.contains("! "),
+            "var row must contain '! ' prefix, got: {text:?}"
         );
         assert!(
-            text.contains("! Failed to resolve object"),
-            "error node must contain error message, got: {text:?}"
+            text.contains("object not found"),
+            "var row must contain the stored error message, got: {text:?}"
         );
     }
 
@@ -2475,5 +2476,215 @@ mod tests {
             inline_value: None,
         };
         assert_eq!(field_value_style(&v), ratatui::style::Style::new());
+    }
+
+    // --- Story 9.1: Failed-state tests (AC1–AC5) ---
+
+    fn rendered_fg_at(item: ListItem<'static>, col: u16) -> ratatui::style::Color {
+        use ratatui::{buffer::Buffer, layout::Rect, style::Color, widgets::Widget};
+        let area = Rect::new(0, 0, 120, 1);
+        let mut buf = Buffer::empty(area);
+        Widget::render(List::new(vec![item]), area, &mut buf);
+        buf.cell((col, 0)).map(|c| c.fg).unwrap_or(Color::Reset)
+    }
+
+    /// AC1 / AC3: Enter on Failed var is a no-op — cursor stays on OnVar, no child cursor.
+    #[test]
+    fn enter_on_failed_var_is_noop() {
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 42)];
+        state.toggle_expand(10, vars);
+        state.set_expansion_failed(42, "object absent".to_string());
+        assert_eq!(state.expansion_state(42), ExpansionPhase::Failed);
+        let flat = state.flat_items();
+        // Cursor can land on the Failed var (AC3).
+        assert!(
+            flat.contains(&StackCursor::OnVar {
+                frame_idx: 0,
+                var_idx: 0
+            }),
+            "Failed var must stay in flat_items: {flat:?}"
+        );
+        // No child cursor emitted for the Failed object (AC4).
+        assert!(
+            !flat.iter().any(|c| matches!(c, StackCursor::OnObjectLoadingNode { .. })),
+            "no loading node must appear for a Failed object"
+        );
+    }
+
+    /// AC1 / AC3: Enter on Failed collection entry is a no-op.
+    ///
+    /// Sets up: var → Expanded object → field (collection) → entry (ObjectRef Failed).
+    #[test]
+    fn enter_on_failed_collection_entry_is_noop() {
+        use hprof_engine::{CollectionPage, EntryInfo, FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        // Var → obj 99 (Expanded, has a collection field id=200)
+        let vars = vec![make_var_object_ref(0, 99)];
+        state.toggle_expand(10, vars);
+        state.set_expansion_done(
+            99,
+            vec![FieldInfo {
+                name: "items".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 200,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(1),
+                    inline_value: None,
+                },
+            }],
+        );
+        // Expand collection 200 with one entry whose value ObjectRef id=300 is Failed.
+        let entry_obj_id = 300u64;
+        let eager_page = CollectionPage {
+            entries: vec![EntryInfo {
+                index: 0,
+                key: None,
+                value: FieldValue::ObjectRef {
+                    id: entry_obj_id,
+                    class_name: "String".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            }],
+            total_count: 1,
+            offset: 0,
+            has_more: false,
+        };
+        state.collection_chunks.insert(
+            200,
+            CollectionChunks {
+                total_count: 1,
+                eager_page: Some(eager_page),
+                chunk_pages: std::collections::HashMap::new(),
+            },
+        );
+        state.set_expansion_failed(entry_obj_id, "not found".to_string());
+        // expansion_state must stay Failed.
+        assert_eq!(state.expansion_state(entry_obj_id), ExpansionPhase::Failed);
+        let flat = state.flat_items();
+        // OnCollectionEntry cursor must be present (AC3).
+        assert!(
+            flat.iter().any(|c| matches!(
+                c,
+                StackCursor::OnCollectionEntry { entry_index: 0, .. }
+            )),
+            "collection entry must remain in flat_items: {flat:?}"
+        );
+    }
+
+    /// AC2 / AC4 / AC5: Failed var label uses stored error, no extra child row.
+    #[test]
+    fn failed_var_label_uses_stored_error_message() {
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 99)];
+        state.toggle_expand(10, vars);
+        state.set_expansion_failed(99, "boom".to_string());
+        let items = state.build_items();
+        // items[0] = frame, items[1] = var — no orphan child row (AC4).
+        assert_eq!(
+            items.len(),
+            state.flat_items().len(),
+            "build_items().len() must equal flat_items().len() (AC5)"
+        );
+        let text = item_text(items[1].clone());
+        assert!(text.contains("! "), "var must show '! ' prefix, got: {text:?}");
+        assert!(
+            text.contains("boom"),
+            "var must contain stored error, got: {text:?}"
+        );
+    }
+
+    /// AC2: Failed var row uses THEME.error_indicator (Red fg).
+    #[test]
+    fn failed_var_style_is_error_indicator() {
+        use ratatui::style::Color;
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 99)];
+        state.toggle_expand(10, vars);
+        state.set_expansion_failed(99, "err".to_string());
+        let items = state.build_items();
+        // items[1] is the var row.
+        // Layout: 2-space indent + 2-char toggle "! " + value text starting at col 4.
+        let fg = rendered_fg_at(items[1].clone(), 4);
+        assert_eq!(fg, Color::Red, "Failed var value must have Red fg");
+    }
+
+    /// AC5: flat_items().len() == build_items().len() across multiple configurations.
+    #[test]
+    fn flat_items_build_items_equal_length_invariant() {
+        use hprof_engine::{FieldInfo, FieldValue};
+
+        // (b) one frame collapsed
+        {
+            let state = StackState::new(vec![make_frame(1)]);
+            assert_eq!(
+                state.flat_items().len(),
+                state.build_items().len(),
+                "(b) collapsed"
+            );
+        }
+        // (c) one frame expanded, var Failed
+        {
+            let frames = vec![make_frame(10)];
+            let mut state = StackState::new(frames);
+            let vars = vec![make_var_object_ref(0, 99)];
+            state.toggle_expand(10, vars);
+            state.set_expansion_failed(99, "err".to_string());
+            assert_eq!(
+                state.flat_items().len(),
+                state.build_items().len(),
+                "(c) var Failed"
+            );
+        }
+        // (d) one frame expanded, var Expanded with fields
+        {
+            let frames = vec![make_frame(10)];
+            let mut state = StackState::new(frames);
+            let vars = vec![make_var_object_ref(0, 99)];
+            state.toggle_expand(10, vars);
+            state.set_expansion_done(
+                99,
+                vec![FieldInfo {
+                    name: "x".to_string(),
+                    value: FieldValue::Int(1),
+                }],
+            );
+            assert_eq!(
+                state.flat_items().len(),
+                state.build_items().len(),
+                "(d) expanded with fields"
+            );
+        }
+        // (f) two frames — one collapsed, one expanded with a Failed nested field
+        {
+            let frames = vec![make_frame(10), make_frame(20)];
+            let mut state = StackState::new(frames);
+            let vars = vec![make_var_object_ref(0, 100)];
+            state.toggle_expand(10, vars);
+            let nested_id = 200u64;
+            state.set_expansion_done(
+                100,
+                vec![FieldInfo {
+                    name: "child".to_string(),
+                    value: FieldValue::ObjectRef {
+                        id: nested_id,
+                        class_name: "Foo".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+            );
+            state.set_expansion_failed(nested_id, "missing".to_string());
+            assert_eq!(
+                state.flat_items().len(),
+                state.build_items().len(),
+                "(f) nested Failed field"
+            );
+        }
     }
 }

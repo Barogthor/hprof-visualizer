@@ -16,8 +16,8 @@ use ratatui::{
 use crate::theme::THEME;
 
 use super::stack_view::{
-    ChunkState, CollectionChunks, ExpansionPhase, StackState, compute_chunk_ranges,
-    field_value_style, format_field_value_display,
+    ChunkState, CollectionChunks, ExpansionPhase, FAILED_LABEL_SEP, StackState,
+    compute_chunk_ranges, field_value_style, format_field_value_display,
 };
 
 /// Root of a variable tree to render.
@@ -42,6 +42,7 @@ pub(crate) fn render_variable_tree(
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
+    object_errors: &HashMap<u64, String>,
 ) -> Vec<ListItem<'static>> {
     let mut items = Vec::new();
     match root {
@@ -59,6 +60,7 @@ pub(crate) fn render_variable_tree(
                         object_fields,
                         collection_chunks,
                         object_phases,
+                        object_errors,
                         &mut items,
                     );
                 }
@@ -73,6 +75,7 @@ pub(crate) fn render_variable_tree(
                 object_fields,
                 collection_chunks,
                 object_phases,
+                object_errors,
                 &mut visited,
                 &mut items,
             );
@@ -94,6 +97,7 @@ fn append_var(
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
+    object_errors: &HashMap<u64, String>,
     items: &mut Vec<ListItem<'static>>,
 ) {
     let phase = if let VariableValue::ObjectRef { id, .. } = var.value {
@@ -102,13 +106,21 @@ fn append_var(
         ExpansionPhase::Collapsed
     };
 
-    let (toggle, val_str): (&str, String) = match (&var.value, &phase) {
-        (VariableValue::Null, _) => ("  ", "null".to_string()),
+    let (toggle, val_str, val_style): (&str, String, Style) = match (&var.value, &phase) {
+        (VariableValue::Null, _) => ("  ", "null".to_string(), Style::new()),
+        (VariableValue::ObjectRef { id, class_name, .. }, ExpansionPhase::Failed) => {
+            let err = object_errors
+                .get(id)
+                .map(|s| s.as_str())
+                .unwrap_or("Failed to resolve object");
+            let label = format!("local variable: {class_name}{FAILED_LABEL_SEP}{err}");
+            ("! ", label, THEME.error_indicator)
+        }
         (VariableValue::ObjectRef { class_name, .. }, ExpansionPhase::Collapsed) => {
-            ("+ ", format!("local variable: {class_name}"))
+            ("+ ", format!("local variable: {class_name}"), Style::new())
         }
         (VariableValue::ObjectRef { class_name, .. }, _) => {
-            ("- ", format!("local variable: {class_name}"))
+            ("- ", format!("local variable: {class_name}"), Style::new())
         }
     };
 
@@ -121,7 +133,7 @@ fn append_var(
     items.push(ListItem::new(Line::from(vec![
         Span::raw(indent.to_string()),
         Span::styled(toggle.to_string(), toggle_style),
-        Span::styled(format!("[{}] {val_str}", var.index), Style::new()),
+        Span::styled(format!("[{}] {val_str}", var.index), val_style),
     ])));
 
     if let VariableValue::ObjectRef { id, .. } = var.value {
@@ -133,6 +145,7 @@ fn append_var(
             object_fields,
             collection_chunks,
             object_phases,
+            object_errors,
             &mut visited,
             items,
         );
@@ -150,6 +163,7 @@ fn append_object_children(
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
+    object_errors: &HashMap<u64, String>,
     visited: &mut HashSet<u64>,
     items: &mut Vec<ListItem<'static>>,
 ) {
@@ -207,10 +221,28 @@ fn append_object_children(
                     } else {
                         field_value_style(&field.value)
                     };
-                    let val = format_field_value_display(&field.value, child_phase.as_ref());
+                    let val = if let (
+                        FieldValue::ObjectRef { id, class_name, .. },
+                        Some(ExpansionPhase::Failed),
+                    ) = (&field.value, &child_phase)
+                    {
+                        let err = object_errors
+                            .get(id)
+                            .map(|s| s.as_str())
+                            .unwrap_or("Failed to resolve object");
+                        let short = if class_name.is_empty() {
+                            "Object"
+                        } else {
+                            class_name.rsplit('.').next().unwrap_or(class_name)
+                        };
+                        format!("{short}{FAILED_LABEL_SEP}{err}")
+                    } else {
+                        format_field_value_display(&field.value, child_phase.as_ref())
+                    };
                     let toggle = match &child_phase {
                         Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
-                        Some(ExpansionPhase::Collapsed) | Some(ExpansionPhase::Failed) => "+ ",
+                        Some(ExpansionPhase::Failed) => "! ",
+                        Some(ExpansionPhase::Collapsed) => "+ ",
                         None => "  ",
                     };
                     let toggle_style = if toggle.trim().is_empty() {
@@ -237,6 +269,7 @@ fn append_object_children(
                             object_fields,
                             collection_chunks,
                             object_phases,
+                            object_errors,
                             items,
                         );
                         continue;
@@ -249,6 +282,7 @@ fn append_object_children(
                             object_fields,
                             collection_chunks,
                             object_phases,
+                            object_errors,
                             visited,
                             items,
                         );
@@ -258,21 +292,20 @@ fn append_object_children(
             visited.remove(&object_id);
         }
         ExpansionPhase::Failed => {
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("{indent}! Failed to resolve object"),
-                THEME.error_indicator,
-            ))));
+            // Error state is styled on the parent node — no child row emitted here.
         }
     }
 }
 
 /// Appends items for collection entries and chunk section placeholders.
+#[allow(clippy::too_many_arguments)]
 fn append_collection_items(
     cc: &CollectionChunks,
     indent: &str,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
+    object_errors: &HashMap<u64, String>,
     items: &mut Vec<ListItem<'static>>,
 ) {
     let entry_items = |entry: &EntryInfo, items: &mut Vec<ListItem<'static>>| {
@@ -293,6 +326,7 @@ fn append_collection_items(
                 object_fields,
                 collection_chunks,
                 object_phases,
+                object_errors,
                 &mut visited,
                 items,
             );
@@ -339,6 +373,7 @@ fn append_collection_entry_obj(
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
     _collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
+    object_errors: &HashMap<u64, String>,
     visited: &mut HashSet<u64>,
     items: &mut Vec<ListItem<'static>>,
 ) {
@@ -381,10 +416,28 @@ fn append_collection_entry_obj(
                     } else {
                         field_value_style(&field.value)
                     };
-                    let val = format_field_value_display(&field.value, child_phase.as_ref());
+                    let val = if let (
+                        FieldValue::ObjectRef { id, class_name, .. },
+                        Some(ExpansionPhase::Failed),
+                    ) = (&field.value, &child_phase)
+                    {
+                        let err = object_errors
+                            .get(id)
+                            .map(|s| s.as_str())
+                            .unwrap_or("Failed to resolve object");
+                        let short = if class_name.is_empty() {
+                            "Object"
+                        } else {
+                            class_name.rsplit('.').next().unwrap_or(class_name)
+                        };
+                        format!("{short}{FAILED_LABEL_SEP}{err}")
+                    } else {
+                        format_field_value_display(&field.value, child_phase.as_ref())
+                    };
                     let toggle = match &child_phase {
                         Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
-                        Some(ExpansionPhase::Collapsed) | Some(ExpansionPhase::Failed) => "+ ",
+                        Some(ExpansionPhase::Failed) => "! ",
+                        Some(ExpansionPhase::Collapsed) => "+ ",
                         None => "  ",
                     };
                     let toggle_style = if toggle.trim().is_empty() {
@@ -406,6 +459,7 @@ fn append_collection_entry_obj(
                             object_fields,
                             _collection_chunks,
                             object_phases,
+                            object_errors,
                             visited,
                             items,
                         );
@@ -415,10 +469,7 @@ fn append_collection_entry_obj(
             }
         }
         ExpansionPhase::Failed => {
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("{indent}! Failed to resolve object"),
-                THEME.error_indicator,
-            ))));
+            // Error state is styled on the parent node — no child row emitted here.
         }
     }
 }
@@ -474,6 +525,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
         );
         let text = render_items(items);
         assert!(text.contains("(no locals)"), "got: {text:?}");
@@ -487,6 +539,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
         );
         let text = render_items(items);
         assert!(text.contains("[0] null"), "got: {text:?}");
@@ -497,6 +550,7 @@ mod tests {
         let vars = vec![make_var(0, 42)];
         let items = render_variable_tree(
             TreeRoot::Frame { vars: &vars },
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -525,6 +579,7 @@ mod tests {
             &object_fields,
             &HashMap::new(),
             &object_phases,
+            &HashMap::new(),
         );
         let text = render_items(items);
         assert!(text.contains("-"), "expected - toggle, got: {text:?}");
@@ -557,6 +612,7 @@ mod tests {
             &object_fields,
             &HashMap::new(),
             &object_phases,
+            &HashMap::new(),
         );
         let text = render_items(items);
         // Should render without panicking and show the cyclic marker
@@ -584,6 +640,7 @@ mod tests {
             &object_fields,
             &HashMap::new(),
             &object_phases,
+            &HashMap::new(),
         );
         let text = render_items(items);
         assert!(text.contains("x"), "expected field name, got: {text:?}");

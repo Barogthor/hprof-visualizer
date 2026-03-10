@@ -98,6 +98,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         object_fields,
                         collection_chunks,
                         &object_phases,
+                        &HashMap::new(),
                     );
                     items.extend(tree);
                 }
@@ -122,6 +123,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         object_fields,
                         collection_chunks,
                         &object_phases,
+                        &HashMap::new(),
                     );
                     items.extend(tree);
                 }
