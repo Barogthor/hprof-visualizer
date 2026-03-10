@@ -1,6 +1,6 @@
 # Story 9.1: Fix Expand State Bugs & Failed-to-Resolve Inline Error Style
 
-Status: review
+Status: done
 
 > **File slug note:** the filename keeps the original slug (`non-navigable`) for sprint-status
 > compatibility. The title reflects the final approach (inline error style).
@@ -214,6 +214,12 @@ claude-sonnet-4-6
   `failed_var_label_uses_stored_error_message`, `failed_var_style_is_error_indicator`,
   `flat_items_build_items_equal_length_invariant`
 - All 185 hprof-tui tests pass; clippy clean
+- Review fix: Failed var inline label now uses short class + stored error message without
+  `local variable:` prefix (`"! Class — error"`)
+- Review fix: Failed collection entries now render inline stored error message and use
+  `THEME.error_indicator` style
+- Validation rerun: `cargo test -p hprof-tui` (187 passed),
+  `cargo clippy -p hprof-tui --all-targets -- -D warnings` (clean)
 
 ### File List
 
@@ -221,3 +227,18 @@ claude-sonnet-4-6
 - crates/hprof-tui/src/views/stack_view.rs
 - crates/hprof-tui/src/views/tree_render.rs
 - crates/hprof-tui/src/views/favorites_panel.rs
+- docs/code-review/codex-story-9.1-code-review.md
+
+## Senior Developer Review (AI)
+
+- Review report: `docs/code-review/codex-story-9.1-code-review.md`
+- Outcome: Changes Requested -> Fixed
+- Fixed items:
+  - HIGH: Failed local-variable label format now matches story intent (`! Class — error`)
+  - MEDIUM: Failed collection entry row now includes stored error message and red error style
+  - MEDIUM: Git/story traceability mismatch remains contextual (no active diff in this session)
+
+## Change Log
+
+- 2026-03-10 — AI review follow-up: fixed failed-label formatting and failed collection entry
+  error styling/message propagation; reran hprof-tui tests and clippy.

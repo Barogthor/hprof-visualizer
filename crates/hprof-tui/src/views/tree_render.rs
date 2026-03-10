@@ -109,11 +109,16 @@ fn append_var(
     let (toggle, val_str, val_style): (&str, String, Style) = match (&var.value, &phase) {
         (VariableValue::Null, _) => ("  ", "null".to_string(), Style::new()),
         (VariableValue::ObjectRef { id, class_name, .. }, ExpansionPhase::Failed) => {
+            let short = if class_name.is_empty() {
+                "Object"
+            } else {
+                class_name.rsplit('.').next().unwrap_or(class_name)
+            };
             let err = object_errors
                 .get(id)
                 .map(|s| s.as_str())
                 .unwrap_or("Failed to resolve object");
-            let label = format!("local variable: {class_name}{FAILED_LABEL_SEP}{err}");
+            let label = format!("{short}{FAILED_LABEL_SEP}{err}");
             ("! ", label, THEME.error_indicator)
         }
         (VariableValue::ObjectRef { class_name, .. }, ExpansionPhase::Collapsed) => {
@@ -314,8 +319,37 @@ fn append_collection_items(
         } else {
             None
         };
-        let text = StackState::format_entry_line(entry, indent, value_phase.as_ref());
-        let row_style = field_value_style(&entry.value);
+        let text = if let (
+            FieldValue::ObjectRef { id, class_name, .. },
+            Some(ExpansionPhase::Failed),
+        ) = (&entry.value, &value_phase)
+        {
+            let err = object_errors
+                .get(id)
+                .map(|s| s.as_str())
+                .unwrap_or("Failed to resolve object");
+            let short = if class_name.is_empty() {
+                "Object"
+            } else {
+                class_name.rsplit('.').next().unwrap_or(class_name)
+            };
+            if let Some(key) = &entry.key {
+                let k = super::stack_view::format_entry_value_text(key);
+                format!(
+                    "{indent}! [{}] {} => {}{FAILED_LABEL_SEP}{err}",
+                    entry.index, k, short
+                )
+            } else {
+                format!("{indent}! [{}] {}{FAILED_LABEL_SEP}{err}", entry.index, short)
+            }
+        } else {
+            StackState::format_entry_line(entry, indent, value_phase.as_ref())
+        };
+        let row_style = if matches!(value_phase, Some(ExpansionPhase::Failed)) {
+            THEME.error_indicator
+        } else {
+            field_value_style(&entry.value)
+        };
         items.push(ListItem::new(Line::from(Span::styled(text, row_style))));
         if let FieldValue::ObjectRef { id, .. } = &entry.value {
             let mut visited = HashSet::new();
@@ -561,6 +595,29 @@ mod tests {
     }
 
     #[test]
+    fn failed_var_label_uses_short_class_without_local_variable_prefix() {
+        let vars = vec![make_var(0, 42)];
+        let mut object_phases = HashMap::new();
+        object_phases.insert(42u64, ExpansionPhase::Failed);
+        let mut object_errors = HashMap::new();
+        object_errors.insert(42u64, "boom".to_string());
+
+        let items = render_variable_tree(
+            TreeRoot::Frame { vars: &vars },
+            &HashMap::new(),
+            &HashMap::new(),
+            &object_phases,
+            &object_errors,
+        );
+        let text = render_items(items);
+        assert!(text.contains("Object — boom"), "got: {text:?}");
+        assert!(
+            !text.contains("local variable:"),
+            "failed label must not include local variable prefix: {text:?}"
+        );
+    }
+
+    #[test]
     fn frame_with_expanded_object_ref_shows_minus_and_fields() {
         let vars = vec![make_var(0, 42)];
         let mut object_fields = HashMap::new();
@@ -645,5 +702,69 @@ mod tests {
         let text = render_items(items);
         assert!(text.contains("x"), "expected field name, got: {text:?}");
         assert!(text.contains("42"), "expected field value, got: {text:?}");
+    }
+
+    #[test]
+    fn failed_collection_entry_shows_error_message_inline() {
+        use crate::views::stack_view::{ChunkState, CollectionChunks};
+
+        let vars = vec![make_var(0, 1)];
+        let mut object_fields = HashMap::new();
+        object_fields.insert(
+            1u64,
+            vec![FieldInfo {
+                name: "items".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 200,
+                    class_name: "java.util.ArrayList".to_string(),
+                    entry_count: Some(1),
+                    inline_value: None,
+                },
+            }],
+        );
+
+        let mut collection_chunks = HashMap::new();
+        collection_chunks.insert(
+            200u64,
+            CollectionChunks {
+                total_count: 1,
+                eager_page: Some(hprof_engine::CollectionPage {
+                    entries: vec![EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::ObjectRef {
+                            id: 300,
+                            class_name: "java.lang.String".to_string(),
+                            entry_count: None,
+                            inline_value: None,
+                        },
+                    }],
+                    total_count: 1,
+                    offset: 0,
+                    has_more: false,
+                }),
+                chunk_pages: HashMap::from([(100usize, ChunkState::Collapsed)]),
+            },
+        );
+
+        let mut object_phases = HashMap::new();
+        object_phases.insert(1u64, ExpansionPhase::Expanded);
+        object_phases.insert(300u64, ExpansionPhase::Failed);
+
+        let mut object_errors = HashMap::new();
+        object_errors.insert(300u64, "entry missing".to_string());
+
+        let items = render_variable_tree(
+            TreeRoot::Frame { vars: &vars },
+            &object_fields,
+            &collection_chunks,
+            &object_phases,
+            &object_errors,
+        );
+        let text = render_items(items);
+        assert!(
+            text.contains("! [0] String — entry missing"),
+            "failed collection entry must include inline error message, got: {text:?}"
+        );
     }
 }
