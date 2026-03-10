@@ -555,6 +555,7 @@ impl<E: NavigationEngine> App<E> {
                     {
                         if offset == 0 {
                             cc.eager_page = Some(page);
+                            s.collapse_object(cid);
                         } else {
                             cc.chunk_pages.insert(offset, ChunkState::Loaded(page));
                         }
@@ -565,16 +566,20 @@ impl<E: NavigationEngine> App<E> {
                     dbg_log!("poll_pages: 0x{:X}+{} → None (fallback)", cid, offset);
                     if let Some(s) = &mut self.stack_state {
                         s.collection_chunks.remove(&cid);
+                        if offset == 0 {
+                            s.collapse_object(cid);
+                        }
                     }
                     fallback.push(cid);
                     done.push((cid, offset));
                 }
                 Err(mpsc::TryRecvError::Empty) => {
-                    if !pp.loading_shown
-                        && pp.started.elapsed() >= EXPANSION_LOADING_THRESHOLD
-                        && offset > 0
-                    {
-                        if let Some(s) = &mut self.stack_state
+                    if !pp.loading_shown && pp.started.elapsed() >= EXPANSION_LOADING_THRESHOLD {
+                        if offset == 0 {
+                            if let Some(s) = &mut self.stack_state {
+                                s.set_expansion_loading(cid);
+                            }
+                        } else if let Some(s) = &mut self.stack_state
                             && let Some(cc) = s.collection_chunks.get_mut(&cid)
                         {
                             cc.chunk_pages.insert(offset, ChunkState::Loading);
@@ -585,6 +590,9 @@ impl<E: NavigationEngine> App<E> {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
                         s.collection_chunks.remove(&cid);
+                        if offset == 0 {
+                            s.collapse_object(cid);
+                        }
                     }
                     done.push((cid, offset));
                 }
@@ -660,14 +668,19 @@ impl<E: NavigationEngine> App<E> {
             self.start_object_expansion(cid);
         }
         if self.last_memory_log.elapsed() >= Duration::from_secs(20) {
-            mem_log!(
-                "{}",
-                format_memory_log(
-                    self.engine.memory_used(),
-                    self.engine.memory_budget(),
-                    self.engine.skeleton_bytes(),
-                )
-            );
+            #[cfg(feature = "dev-profiling")]
+            {
+                let skeleton_bytes = self.engine.skeleton_bytes();
+                let cache_bytes = self.engine.memory_used().saturating_sub(skeleton_bytes);
+                mem_log!(
+                    "{}",
+                    format_memory_log(
+                        cache_bytes,
+                        self.engine.memory_budget(),
+                        skeleton_bytes,
+                    )
+                );
+            }
             self.last_memory_log = Instant::now();
         }
 
@@ -733,7 +746,11 @@ impl<E: NavigationEngine> App<E> {
         // Status bar — resolve selected thread once, use StatusBar widget.
         let selected_serial = self.thread_list.selected_serial();
         let selected_thread = selected_serial.and_then(|s| self.engine.select_thread(s));
-        let last_warning: Option<String> = self.warnings.last().map(str::to_string);
+        let last_warning: Option<String> = self
+            .warnings
+            .last()
+            .map(str::to_string)
+            .or_else(|| self.engine.warnings().last().cloned());
         // Use is_fully_indexed() (integer comparison) rather than
         // indexing_ratio() == 100.0 to avoid floating-point imprecision.
         let file_indexed_pct = if self.engine.is_fully_indexed() {
@@ -759,6 +776,7 @@ impl<E: NavigationEngine> App<E> {
 ///
 /// Returns a string of the form:
 /// `[memory] cache N MB / M MB budget | skeleton K MB (non-evictable)`
+#[cfg(any(test, feature = "dev-profiling"))]
 pub(crate) fn format_memory_log(
     cache_bytes: usize,
     budget_bytes: u64,
@@ -1584,6 +1602,32 @@ mod tests {
         assert!(
             matches!(cc.chunk_pages.get(&100), Some(ChunkState::Loading)),
             "chunk must be Loading after threshold"
+        );
+    }
+
+    #[test]
+    fn first_collection_page_shows_loading_indicator_after_threshold() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter); // start eager page load (offset=0)
+        {
+            let ss = app.stack_state.as_ref().unwrap();
+            assert_eq!(
+                ss.expansion_state(888),
+                ExpansionPhase::Collapsed,
+                "before threshold, collection must not show loading"
+            );
+        }
+        if let Some(pp) = app.pending_pages.get_mut(&(888, 0)) {
+            pp.started =
+                Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
+        }
+        app.poll_pages();
+        let ss = app.stack_state.as_ref().unwrap();
+        assert_eq!(
+            ss.expansion_state(888),
+            ExpansionPhase::Loading,
+            "after threshold, eager page load must show loading"
         );
     }
 

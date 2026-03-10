@@ -24,6 +24,7 @@ macro_rules! mem_log {
 }
 
 #[cfg(not(feature = "dev-profiling"))]
+#[allow(unused_macros)]
 macro_rules! mem_log {
     ($($arg:tt)*) => {};
 }

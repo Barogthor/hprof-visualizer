@@ -160,7 +160,7 @@ object reference)
     `last_warning_truncated_at_40_chars`
 
 - [x] Task 4: 1-second loading indicator delay (AC: 1, 2)
-  - [ ] In `crates/hprof-tui/src/app.rs`, define the threshold constant and
+  - [x] In `crates/hprof-tui/src/app.rs`, define the threshold constant and
     private structs near the top of the file:
     ```rust
     /// Delay before showing the loading spinner for expansions/page loads.
@@ -327,6 +327,14 @@ object reference)
     `format_memory_log_produces_correct_output`,
     `format_memory_log_rounds_down_to_mb`
 
+### Review Follow-ups (AI)
+
+- [x] [AI-Review][High] AC1 gap: first collection page load (`offset == 0`) never transitions to a loading state after 1s, so slow initial page loads have no visible indicator (`crates/hprof-tui/src/app.rs:575`)
+- [x] [AI-Review][High] AC6 data correctness gap: memory log reports `cache` using `memory_used()`, which already includes skeleton bytes, then reports skeleton again separately (double-counting non-evictable bytes) (`crates/hprof-engine/src/engine.rs:291`, `crates/hprof-engine/src/engine_impl.rs:817`, `crates/hprof-tui/src/app.rs:666`)
+- [ ] [AI-Review][High] Story/Git mismatch: story File List claims source and doc updates, but current git workspace has no corresponding staged/unstaged changes, so implementation evidence is not auditable from working tree (`docs/implementation-artifacts/6-2-loading-indicators-and-status-bar-warnings.md:463`)
+- [x] [AI-Review][Medium] AC5 partial: status bar warning count includes indexing warnings, but `last_warning` text only comes from session `WarningLog`; when only indexing warnings exist, count is shown without most-recent text (`crates/hprof-tui/src/app.rs:749`, `crates/hprof-tui/src/app.rs:736`)
+- [x] [AI-Review][Low] Task tracking inconsistency: Task 4 first subtask remains unchecked even though constant/structs are present in code, reducing story traceability (`docs/implementation-artifacts/6-2-loading-indicators-and-status-bar-warnings.md:163`, `crates/hprof-tui/src/app.rs:37`)
+
 ## Dev Notes
 
 ### What already exists (do not re-implement)
@@ -459,6 +467,7 @@ claude-sonnet-4-6
 - Task 5: Replaced `app_warnings: Vec<String>` with `warnings: WarningLog`. Wired `warnings.add(...)` in `poll_expansions` for `None` and `Disconnected` cases. Updated `StatusBar` construction in `render`. 2 new tests.
 - Task 6: Added `mem_log!` macro (dev-profiling gated) to `lib.rs`. Added `last_memory_log: Instant` field and `format_memory_log` pure function. Periodic emission in `render` every 20s. 2 tests.
 - All 560 tests pass, 0 regressions, 0 clippy errors.
+- 2026-03-10 follow-up fixes: eager collection page (`offset=0`) now shows delayed loading indicator after 1s; memory log now reports cache bytes excluding skeleton baseline; status bar falls back to latest engine warning text when session warning log is empty; added regression test `first_collection_page_shows_loading_indicator_after_threshold`.
 
 ### File List
 
@@ -470,3 +479,35 @@ claude-sonnet-4-6
 - crates/hprof-tui/src/app.rs
 - docs/implementation-artifacts/sprint-status.yaml
 - docs/implementation-artifacts/6-2-loading-indicators-and-status-bar-warnings.md
+
+## Senior Developer Review (AI)
+
+Date: 2026-03-10
+Reviewer: Codex (Dev Code Review workflow)
+Outcome: Changes Requested
+
+### Findings
+
+1. **High** — Initial collection page load lacks delayed loading indicator (AC1)
+   - Evidence: loading marker is only set when `offset > 0` in page polling.
+   - Reference: `crates/hprof-tui/src/app.rs:575`
+
+2. **High** — Memory log double-counts skeleton in cache number (AC6)
+   - Evidence: `memory_used()` includes `PreciseIndex`/skeleton by contract, while `skeleton_bytes()` is also logged separately.
+   - References: `crates/hprof-engine/src/engine.rs:291`, `crates/hprof-engine/src/engine_impl.rs:817`, `crates/hprof-tui/src/app.rs:666`
+
+3. **High** — Story File List cannot be validated against git working tree
+   - Evidence: listed changed files exist in story, but git shows no current staged/unstaged file evidence for this review context.
+   - Reference: `docs/implementation-artifacts/6-2-loading-indicators-and-status-bar-warnings.md:463`
+
+4. **Medium** — Warning count and last-warning text can diverge (AC5 partial)
+   - Evidence: status bar count = `engine warnings + session warnings`, but displayed last warning only uses session log.
+   - References: `crates/hprof-tui/src/app.rs:749`, `crates/hprof-tui/src/app.rs:736`
+
+5. **Low** — Story task checkbox inconsistency
+   - Evidence: Task 4 first subtask unchecked while symbols are implemented.
+   - References: `docs/implementation-artifacts/6-2-loading-indicators-and-status-bar-warnings.md:163`, `crates/hprof-tui/src/app.rs:37`
+
+## Change Log
+
+- 2026-03-10: Code review completed by Codex. Story moved to `in-progress`; review follow-ups added.
