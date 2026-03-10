@@ -830,8 +830,12 @@ impl NavigationEngine for Engine {
     }
 
     fn is_fully_indexed(&self) -> bool {
-        self.hfile.records_attempted == 0
-            || self.hfile.records_indexed >= self.hfile.records_attempted
+        // A file truncated mid-record breaks out of the scan loop before
+        // incrementing records_attempted, so the ratio stays 100%.
+        // index_warnings catches that case (payload-exceeds-file warnings).
+        self.hfile.index_warnings.is_empty()
+            && (self.hfile.records_attempted == 0
+                || self.hfile.records_indexed >= self.hfile.records_attempted)
     }
 
     fn skeleton_bytes(&self) -> usize {
@@ -943,6 +947,36 @@ mod tests {
         let indexed: u64 = 8;
         let fully = attempted == 0 || indexed >= attempted;
         assert!(!fully);
+    }
+
+    #[test]
+    fn is_fully_indexed_false_when_file_truncated_mid_record() {
+        // A file truncated mid-record breaks the scan loop before
+        // incrementing records_attempted, so the ratio stays 100/100.
+        // is_fully_indexed() must detect this via index_warnings.
+        use std::io::Write as IoWrite;
+        let mut bytes = minimal_hprof_bytes();
+        // Append a STRING record header claiming 9999 bytes of payload,
+        // but provide only 2 bytes — payload end exceeds file size.
+        bytes.push(0x01); // tag STRING_IN_UTF8
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // time_offset
+        bytes.extend_from_slice(&9999u32.to_be_bytes()); // length (lies)
+        bytes.extend_from_slice(&[0xAA, 0xBB]); // only 2 bytes of payload
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig::default();
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        assert!(
+            !engine.is_fully_indexed(),
+            "truncated file must not be reported as fully indexed"
+        );
+        assert!(
+            !engine.warnings().is_empty(),
+            "truncated file must produce at least one indexing warning"
+        );
     }
 
     #[test]
