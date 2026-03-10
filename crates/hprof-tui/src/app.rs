@@ -810,6 +810,9 @@ impl<E: NavigationEngine> App<E> {
 
         // Determine if the favorites panel should be shown.
         let show_favorites = !self.pinned.is_empty() && area.width >= MIN_WIDTH_FAVORITES_PANEL;
+        if self.focus == Focus::Favorites && !show_favorites {
+            self.focus = self.prev_focus;
+        }
 
         // Split main area: 30% thread list | rest for stack (+ optional fav).
         let [list_area, right_area] =
@@ -2205,6 +2208,42 @@ mod tests {
         assert!(
             pe.loading_shown,
             "loading_shown must be set after threshold"
+        );
+    }
+
+    #[test]
+    fn hidden_favorites_panel_forces_focus_back_to_previous_panel() {
+        use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.pinned.push(PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Thread.run()".to_string(),
+            item_label: "var[0]".to_string(),
+            snapshot: PinnedSnapshot::Primitive {
+                value_label: "42".to_string(),
+            },
+            key: PinKey::Var {
+                frame_id: 1,
+                thread_name: "main".to_string(),
+                var_idx: 0,
+            },
+        });
+        app.sync_favorites_list_state();
+        app.prev_focus = Focus::StackFrames;
+        app.focus = Focus::Favorites;
+
+        let backend = TestBackend::new(100, 20); // < MIN_WIDTH_FAVORITES_PANEL
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+
+        assert_eq!(app.last_area_width, 100);
+        assert_eq!(
+            app.focus,
+            Focus::StackFrames,
+            "focus must return to previous panel when favorites is hidden"
         );
     }
 }

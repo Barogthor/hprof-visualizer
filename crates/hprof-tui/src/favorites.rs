@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use hprof_engine::{FieldInfo, FieldValue, VariableInfo, VariableValue};
 
 use crate::views::stack_view::{
-    CollectionChunks, StackCursor, StackState, collect_descendants, format_frame_label,
+    ChunkState, CollectionChunks, StackCursor, StackState, format_frame_label,
 };
 
 /// Maximum number of object IDs captured in a single snapshot (across all
@@ -90,9 +90,13 @@ pub(crate) fn subtree_snapshot(
     bool,
 ) {
     let mut desc_order: Vec<u64> = Vec::new();
-    collect_descendants(root_id, state.object_fields(), reachable, &mut desc_order);
-
-    let truncated = reachable.len() >= SNAPSHOT_OBJECT_LIMIT;
+    let truncated = collect_descendants_limited(
+        root_id,
+        state.object_fields(),
+        reachable,
+        &mut desc_order,
+        SNAPSHOT_OBJECT_LIMIT,
+    ) || reachable.len() >= SNAPSHOT_OBJECT_LIMIT;
 
     let mut snap_fields: HashMap<u64, Vec<FieldInfo>> = HashMap::new();
     let mut snap_chunks: HashMap<u64, CollectionChunks> = HashMap::new();
@@ -102,10 +106,62 @@ pub(crate) fn subtree_snapshot(
             snap_fields.insert(id, fields.clone());
         }
         if let Some(cc) = state.collection_chunks_map().get(&id) {
-            snap_chunks.insert(id, cc.clone());
+            snap_chunks.insert(id, freeze_collection_chunks(cc));
         }
     }
     (snap_fields, snap_chunks, truncated)
+}
+
+fn collect_descendants_limited(
+    root_id: u64,
+    fields: &HashMap<u64, Vec<FieldInfo>>,
+    visited: &mut HashSet<u64>,
+    out: &mut Vec<u64>,
+    limit: usize,
+) -> bool {
+    if visited.len() >= limit {
+        return true;
+    }
+    if !visited.insert(root_id) {
+        return false;
+    }
+
+    let mut truncated = false;
+    if let Some(field_list) = fields.get(&root_id) {
+        for f in field_list {
+            if let FieldValue::ObjectRef { id, .. } = f.value {
+                if collect_descendants_limited(id, fields, visited, out, limit) {
+                    truncated = true;
+                    break;
+                }
+                if visited.len() >= limit {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    out.push(root_id);
+    truncated
+}
+
+fn freeze_collection_chunks(chunks: &CollectionChunks) -> CollectionChunks {
+    let mut chunk_pages = HashMap::with_capacity(chunks.chunk_pages.len());
+    for (offset, state) in &chunks.chunk_pages {
+        let frozen = match state {
+            ChunkState::Collapsed => ChunkState::Collapsed,
+            ChunkState::Loading => ChunkState::Collapsed,
+            ChunkState::Loaded(page) => ChunkState::Loaded(page.clone()),
+        };
+        chunk_pages.insert(*offset, frozen);
+    }
+
+    CollectionChunks {
+        total_count: chunks.total_count,
+        eager_page: chunks.eager_page.clone(),
+        chunk_pages,
+    }
 }
 
 /// Builds a [`PinnedItem`] from the current cursor position, or `None` if the
@@ -578,15 +634,82 @@ mod tests {
         }
         let cursor = StackCursor::OnFrame(0);
         let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
-        assert!(
-            matches!(
-                &item.snapshot,
-                PinnedSnapshot::Frame {
-                    truncated: true,
-                    ..
-                }
-            ),
-            "expected truncated snapshot"
+        match &item.snapshot {
+            PinnedSnapshot::Frame {
+                object_fields,
+                truncated,
+                ..
+            } => {
+                assert!(*truncated, "expected truncated snapshot");
+                assert!(
+                    object_fields.len() <= SNAPSHOT_OBJECT_LIMIT,
+                    "snapshot must cap object_fields at {}, got {}",
+                    SNAPSHOT_OBJECT_LIMIT,
+                    object_fields.len()
+                );
+            }
+            _ => panic!("expected frame snapshot"),
+        }
+    }
+
+    #[test]
+    fn snapshot_freezes_loading_chunks_to_collapsed() {
+        use crate::views::stack_view::{ChunkState, CollectionChunks};
+
+        let mut state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::ObjectRef {
+                    id: 10,
+                    class_name: "Root".to_string(),
+                },
+            }],
         );
+        state.set_expansion_done(
+            10,
+            vec![FieldInfo {
+                name: "items".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 20,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(200),
+                    inline_value: None,
+                },
+            }],
+        );
+        state.collection_chunks.insert(
+            20,
+            CollectionChunks {
+                total_count: 200,
+                eager_page: None,
+                chunk_pages: {
+                    let mut m = HashMap::new();
+                    m.insert(100usize, ChunkState::Loading);
+                    m
+                },
+            },
+        );
+
+        let cursor = StackCursor::OnVar {
+            frame_idx: 0,
+            var_idx: 0,
+        };
+        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+
+        match item.snapshot {
+            PinnedSnapshot::Subtree {
+                collection_chunks, ..
+            } => {
+                let state = collection_chunks
+                    .get(&20)
+                    .and_then(|cc| cc.chunk_pages.get(&100));
+                assert!(
+                    matches!(state, Some(ChunkState::Collapsed)),
+                    "loading chunk must be frozen to collapsed"
+                );
+            }
+            _ => panic!("expected subtree snapshot"),
+        }
     }
 }

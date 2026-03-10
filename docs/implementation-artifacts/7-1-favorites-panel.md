@@ -1,6 +1,6 @@
 # Story 7.1: Favorites Panel
 
-Status: done
+Status: in-progress
 
 ## Story
 
@@ -547,6 +547,12 @@ None — all implementation verified by `cargo test --all-targets`, `cargo clipp
   shown once then cleared via `Option::take()`.
 - Search-mode `ToggleFavorite`/`FocusFavorites` in thread list treated as `SearchChar('f'/'F')`,
   matching the existing `SearchChar` pattern exactly (no new method added).
+- Post-review fix: snapshot traversal now enforces `SNAPSHOT_OBJECT_LIMIT` as a hard cap
+  during descendant walk (not only a post-hoc `truncated` flag).
+- Post-review fix: pinned collection snapshots now freeze `ChunkState::Loading` to
+  `ChunkState::Collapsed` at capture time to preserve static snapshot semantics.
+- Post-review fix: when terminal width drops below favorites visibility threshold,
+  focus auto-restores from `Focus::Favorites` to `prev_focus`.
 
 ### File List
 
@@ -560,3 +566,6 @@ None — all implementation verified by `cargo test --all-targets`, `cargo clipp
 - `crates/hprof-tui/src/lib.rs` — modified (mod favorites)
 - `crates/hprof-tui/src/input.rs` — modified (ToggleFavorite, FocusFavorites)
 - `crates/hprof-tui/src/app.rs` — modified (Focus, App struct, input routing, conditional layout)
+- `docs/code-review/codex-story-7.1-code-review.md` — new (post-review report)
+- `docs/implementation-artifacts/7-1-favorites-panel.md` — modified (post-review status and Dev Agent Record updates)
+- `docs/implementation-artifacts/sprint-status.yaml` — modified (story status sync)

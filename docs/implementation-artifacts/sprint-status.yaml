@@ -109,7 +109,7 @@ development_status:
 
   # Epic 7: TUI UX & Interaction Design
   epic-7: in-progress
-  7-1-favorites-panel: done
+  7-1-favorites-panel: in-progress
   7-2-theme-system: done
   7-3-keyboard-navigation-map: ready-for-dev
   epic-7-retrospective: optional
