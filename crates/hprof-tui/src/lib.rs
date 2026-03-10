@@ -17,10 +17,12 @@ macro_rules! dbg_log {
     };
 }
 
-/// Memory log macro: emits to stderr when `dev-profiling` is active.
+/// Memory log macro: routes to `tracing::info!` when `dev-profiling`
+/// is active (written to `logs/hprof-debug.log`), otherwise no-op.
+/// Never writes to stderr — the TUI owns the terminal during rendering.
 #[cfg(feature = "dev-profiling")]
 macro_rules! mem_log {
-    ($($arg:tt)*) => { eprintln!($($arg)*) };
+    ($($arg:tt)*) => { tracing::info!($($arg)*) };
 }
 
 #[cfg(not(feature = "dev-profiling"))]
