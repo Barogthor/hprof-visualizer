@@ -94,7 +94,7 @@ development_status:
   epic-4-retrospective: done
 
   # Epic 5: Memory Management & LRU Eviction
-  epic-5: in-progress
+  epic-5: done
   5-1-memorysize-trait-and-budget-tracking: done
   5-2-memory-budget-auto-calculation-and-override: done
   5-3-lru-eviction-core: done
@@ -102,8 +102,8 @@ development_status:
   epic-5-retrospective: optional
 
   # Epic 6: Configuration & Error Resilience
-  epic-6: backlog
-  6-1-toml-configuration-and-cli-precedence: backlog
+  epic-6: in-progress
+  6-1-toml-configuration-and-cli-precedence: ready-for-dev
   6-2-loading-indicators-and-status-bar-warnings: backlog
   epic-6-retrospective: optional
 
