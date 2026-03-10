@@ -1,6 +1,6 @@
 # Story 6.1: TOML Configuration & CLI Precedence
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -49,16 +49,16 @@ so that I can customize the tool's behavior without repeating CLI flags every ti
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Add `serde` and `toml` dependencies (AC: 1–6)
-  - [ ] In `crates/hprof-cli/Cargo.toml`, add under `[dependencies]`:
+- [x] Task 1: Add `serde` and `toml` dependencies (AC: 1–6)
+  - [x] In `crates/hprof-cli/Cargo.toml`, add under `[dependencies]`:
         ```toml
         serde = { version = "1", features = ["derive"] }
         toml  = "0.8"
         ```
 
-- [ ] Task 2: Create `crates/hprof-cli/src/config.rs` (AC: 1–6)
-  - [ ] Add module-level docstring `//!`
-  - [ ] Define `AppConfig` struct:
+- [x] Task 2: Create `crates/hprof-cli/src/config.rs` (AC: 1–6)
+  - [x] Add module-level docstring `//!`
+  - [x] Define `AppConfig` struct:
         ```rust
         // unknown fields are silently ignored (serde default — satisfies AC6)
         #[derive(Debug, Default, serde::Deserialize)]
@@ -67,96 +67,21 @@ so that I can customize the tool's behavior without repeating CLI flags every ti
         }
         ```
         `Default` gives silent zero-value fallback (AC3).
-  - [ ] Implement two functions:
-        ```rust
-        /// Public entry point — uses real CWD.
-        pub fn load(binary_path: &Path) -> AppConfig {
-            // unwrap_or_default() yields PathBuf::new() on failure.
-            // PathBuf::new().join("config.toml") = "config.toml" (relative),
-            // which fs::read_to_string resolves against the process CWD —
-            // same effective path as current_dir(). Intentionally acceptable.
-            let cwd = std::env::current_dir().unwrap_or_default();
-            load_from(&cwd, binary_path)
-        }
+  - [x] Implement two functions:
+        `load(binary_path)` (public) + `load_from(cwd, binary_path)` (pub(crate))
+        with CWD-first, binary-dir-fallback, early-return, malformed TOML warning.
+  - [x] Unit tests inside `#[cfg(test)] mod tests` at bottom of `config.rs`:
+        `no_file_returns_defaults`, `config_loaded_from_cwd`,
+        `config_loaded_from_binary_dir`, `cwd_takes_priority_over_binary_dir`,
+        `malformed_toml_returns_defaults`, `unknown_key_ignored`
 
-        /// Testable core — CWD injected explicitly.
-        /// `pub(crate)` so tests in this module can call it directly
-        /// without exposing it as part of the crate's public API.
-        pub(crate) fn load_from(cwd: &Path, binary_path: &Path) -> AppConfig
-        ```
-        `load_from` logic (sequential, early-return on first success):
-        1. Try `cwd / "config.toml"` (AC1)
-        2. Try `binary_path.canonicalize().unwrap_or_else(|_| binary_path.to_path_buf()).parent()
-           .map(|p| p.join("config.toml"))` (AC2) — canonicalize resolves symlinks,
-           falls back to raw path if it fails
-        3. For each candidate path: if file does not exist → skip silently
-        4. If file exists but is malformed TOML → `eprintln!("[warn] config: {}: {}", path.display(), err)`
-           + return `AppConfig::default()` (AC4)
-        5. If file parses successfully → return immediately, do not check remaining paths (AC3 early-return)
-        6. If no candidate yielded a file → return `AppConfig::default()` silently (AC3)
-  - [ ] Unit tests inside `#[cfg(test)] mod tests` at bottom of `config.rs`
-        (all tests call `load_from` with explicit CWD to avoid ambient `config.toml`):
-        - `no_file_returns_defaults` — `load_from(&nonexistent_dir, &nonexistent_bin)`
-          → `AppConfig { memory_limit: None }`
-        - `config_loaded_from_cwd` — create `tempdir/config.toml` with
-          `memory_limit = "4G"`, call `load_from(&tempdir, &nonexistent_bin)`
-          → `memory_limit == Some("4G")` (tests AC1)
-        - `config_loaded_from_binary_dir` — create `tempdir/config.toml`,
-          call `load_from(&nonexistent_cwd, &tempdir.join("bin"))` (binary inside tempdir)
-          → `memory_limit == Some("4G")` (tests AC2)
-          Note: `tempdir.join("bin")` does not need to exist on disk.
-          `canonicalize()` will fail on it → fallback to raw path →
-          `.parent()` resolves to `tempdir` → finds `config.toml`. This is
-          the intended behaviour, do NOT create the `bin` file.
-        - `cwd_takes_priority_over_binary_dir` — create `cwd_dir/config.toml`
-          with `memory_limit = "2G"` and `bin_dir/config.toml` with `memory_limit = "8G"`,
-          call `load_from(&cwd_dir, &bin_dir.join("bin"))` → `memory_limit == Some("2G")`
-        - `malformed_toml_returns_defaults` — write `not valid toml !!!` to
-          `tempdir/config.toml`, call `load_from(&tempdir, &nonexistent_bin)`
-          → `memory_limit == None` (no panic)
-        - `unknown_key_ignored` — write `unknown_key = 42\nmemory_limit = "2G"`,
-          → `memory_limit == Some("2G")` (no crash)
-
-- [ ] Task 3: Wire `config.rs` into `main.rs` (AC: 1, 5)
-  - [ ] Add `mod config;` alongside the existing `mod progress;` (~line 17 of `main.rs`)
-  - [ ] In `fn run()`, before `Cli::parse()`:
-        - Resolve binary path: `std::env::current_exe().unwrap_or_default()`
-        - Note: if `current_exe()` fails, `unwrap_or_default()` yields `PathBuf::new()`
-          (empty path). `load()` will then skip the AC2 lookup silently — this is
-          intentional and acceptable.
-  - [ ] After `Cli::parse()`, call `let app_config = config::load(&binary_path);`
-  - [ ] Merge precedence — CLI wins:
-        ```rust
-        let effective_memory_limit: Option<&str> = cli
-            .memory_limit
-            .as_deref()
-            .or(app_config.memory_limit.as_deref());
-        ```
-  - [ ] Replace direct `cli.memory_limit.as_deref()` usage in `parse_memory_size` call
-        with `effective_memory_limit`
-  - [ ] Source-aware error message: wrap `parse_memory_size` call to distinguish
-        origin in the error:
-        ```rust
-        let budget_bytes = match effective_memory_limit {
-            None => None,
-            Some(val) => {
-                let source = if cli.memory_limit.is_some() { "--memory-limit" }
-                             else { "config file memory_limit" };
-                Some(parse_memory_size(val)
-                    .map_err(|e| CliError::InvalidMemoryLimit(
-                        format!("{source}: {e}")
-                    ))?)
-            }
-        };
-        ```
-  - [ ] Add integration tests in `main.rs`:
-        - `cli_overrides_config_memory_limit` — cli=Some("8G"), config=Some("4G")
-          → effective = "8G"
-        - `config_used_when_cli_absent` — cli=None, config=Some("4G") →
-          effective = "4G"
-        - `both_absent_is_none` — cli=None, config=None → effective = None
-        - `config_bad_value_error_message_names_source` — cli=None,
-          config=Some("not-a-size") → error message contains "config file"
+- [x] Task 3: Wire `config.rs` into `main.rs` (AC: 1, 5)
+  - [x] Add `mod config;` alongside the existing `mod progress;`
+  - [x] In `fn run()`, before `Cli::parse()`: resolve binary path, load app_config
+  - [x] After `Cli::parse()`: merge CLI + config with CLI precedence via `.or()`
+  - [x] Source-aware error message distinguishes `--memory-limit` vs `config file memory_limit`
+  - [x] Integration tests: `cli_overrides_config_memory_limit`, `config_used_when_cli_absent`,
+        `both_absent_is_none`, `config_bad_value_error_message_names_source`
 
 ## Dev Notes
 
@@ -277,4 +202,18 @@ claude-sonnet-4-6
 
 ### Completion Notes List
 
+- All 3 tasks implemented and tested. 27 tests pass (6 new in config.rs, 4 new in
+  main.rs, 17 pre-existing).
+- `AppConfig` uses serde Default — unknown keys silently ignored (AC6).
+- `load_from` uses an early-return loop over candidates so a malformed CWD config
+  does not fall through to the binary-dir config — warning is emitted and defaults
+  returned immediately (AC4).
+- Precedence merge in `run()` via `.or()` — CLI always wins (AC5).
+- Source-aware error message distinguishes `--memory-limit` from
+  `config file memory_limit` for better UX.
+
 ### File List
+
+- crates/hprof-cli/Cargo.toml
+- crates/hprof-cli/src/config.rs
+- crates/hprof-cli/src/main.rs
