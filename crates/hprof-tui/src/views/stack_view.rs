@@ -1113,8 +1113,8 @@ impl StackState {
             | FieldValue::Int(_)
             | FieldValue::Long(_)
             | FieldValue::Float(_)
-            | FieldValue::Double(_)
-            | FieldValue::Char(_) => THEME.primitive_value,
+            | FieldValue::Double(_) => THEME.primitive_value,
+            FieldValue::Char(_) => THEME.string_value,
             FieldValue::ObjectRef {
                 inline_value: Some(_),
                 ..
@@ -1355,8 +1355,21 @@ impl StackState {
                                 }
                             };
                         let val = Self::format_field_value(&field.value, child_phase.as_ref());
-                        let text = format!("{indent}{toggle}{}: {}", field.name, val);
-                        items.push(ListItem::new(Line::from(Span::styled(text, s))));
+                        let toggle_style = if toggle.trim().is_empty() {
+                            s
+                        } else {
+                            let base = THEME.expand_indicator;
+                            if sel {
+                                base.patch(THEME.selection_bg)
+                            } else {
+                                base
+                            }
+                        };
+                        items.push(ListItem::new(Line::from(vec![
+                            Span::raw(indent.clone()),
+                            Span::styled(toggle, toggle_style),
+                            Span::styled(format!("{}: {}", field.name, val), s),
+                        ])));
                         if !cycle && let FieldValue::ObjectRef { id, .. } = field.value {
                             self.build_collection_entry_obj_items(
                                 _fi,
@@ -1493,16 +1506,29 @@ impl StackState {
                                 ("- ", format!("local variable: {}", class_name))
                             }
                         };
-                        let var_text = format!("  {toggle}[{}] {val_str}", var.index,);
                         let var_selected = matches!(&self.cursor,
                             StackCursor::OnVar { frame_idx: ffi, var_idx: vvi }
                             if *ffi == fi && *vvi == vi);
-                        let var_style = if var_selected {
-                            THEME.selection_bg
+                        let var_row_style = if var_selected {
+                            Style::new().patch(THEME.selection_bg)
                         } else {
                             Style::new()
                         };
-                        items.push(ListItem::new(Line::from(Span::styled(var_text, var_style))));
+                        let toggle_style = if toggle.trim().is_empty() {
+                            var_row_style
+                        } else {
+                            let base = THEME.expand_indicator;
+                            if var_selected {
+                                base.patch(THEME.selection_bg)
+                            } else {
+                                base
+                            }
+                        };
+                        items.push(ListItem::new(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(toggle, toggle_style),
+                            Span::styled(format!("[{}] {val_str}", var.index), var_row_style),
+                        ])));
 
                         if let VariableValue::ObjectRef { id: object_id, .. } = var.value {
                             let mut visited = HashSet::new();
@@ -1648,8 +1674,21 @@ impl StackState {
                             Some(ExpansionPhase::Collapsed) | Some(ExpansionPhase::Failed) => "+ ",
                             None => "  ",
                         };
-                        let text = format!("{indent}{toggle}{}: {}", field.name, val,);
-                        items.push(ListItem::new(Line::from(Span::styled(text, s))));
+                        let toggle_style = if toggle.trim().is_empty() {
+                            s
+                        } else {
+                            let base = THEME.expand_indicator;
+                            if selected {
+                                base.patch(THEME.selection_bg)
+                            } else {
+                                base
+                            }
+                        };
+                        items.push(ListItem::new(Line::from(vec![
+                            Span::raw(indent.clone()),
+                            Span::styled(toggle, toggle_style),
+                            Span::styled(format!("{}: {}", field.name, val), s),
+                        ])));
 
                         // Collection rendering.
                         if let FieldValue::ObjectRef {
@@ -2944,6 +2983,14 @@ mod tests {
         assert_eq!(
             StackState::value_style(&FieldValue::Bool(true)),
             THEME.primitive_value
+        );
+    }
+
+    #[test]
+    fn value_style_char_returns_string_value() {
+        assert_eq!(
+            StackState::value_style(&FieldValue::Char('x')),
+            THEME.string_value
         );
     }
 

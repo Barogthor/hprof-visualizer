@@ -1,6 +1,6 @@
 # Story 7.2: Theme System
 
-Status: review
+Status: done
 
 ## Story
 
@@ -331,8 +331,14 @@ claude-sonnet-4-6
   patch for selection and `THEME.error_indicator` override for `ExpansionPhase::Failed`.
 - Loading rows use `THEME.loading_indicator` (Cyan); chunk section headers use
   `THEME.expand_indicator` (DarkGray) or `loading_indicator` when loading.
-- Zero `Color::*` literals remain in any view file. Clippy clean, all 568 tests pass.
-- AC5 (manual visual validation) deferred to reviewer — requires terminal with real hprof file.
+- Zero `Color::*` literals remain in any view file.
+- `cargo test` and `cargo clippy --all-targets -- -D warnings` pass after review fixes.
+- Review fixes applied:
+  - `FieldValue::Char(_)` now maps to `THEME.string_value` in `value_style()`.
+  - Stack tree toggle prefixes (`+`/`-`) now render with `THEME.expand_indicator`
+    (while preserving selection highlighting).
+- AC5 manual visual validation confirmed in terminal (`cargo run -- assets/heapdump-visualvm.hprof`):
+  variable rows observed with expected yellow/green/white/null-gray differentiation.
 
 ### File List
 
@@ -342,3 +348,12 @@ claude-sonnet-4-6
 - `crates/hprof-tui/src/views/status_bar.rs`
 - `docs/implementation-artifacts/7-2-theme-system.md`
 - `docs/implementation-artifacts/sprint-status.yaml`
+- `docs/code-review/codex-story-7.2-theme-system-review.md`
+
+### Senior Developer Review (AI)
+
+- 2026-03-10 (Codex): Changes requested.
+- Fixed from review:
+  - AC3 alignment for `char` value style (`string_value`).
+  - Stack/object toggle character styling now uses `THEME.expand_indicator`.
+- AC5 manual validation confirmed by user after fixes; story can be considered complete.
