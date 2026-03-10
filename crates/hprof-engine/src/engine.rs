@@ -298,6 +298,20 @@ pub trait NavigationEngine {
     /// Auto-calculated (50% of RAM) or explicitly set via
     /// `--memory-limit` / config.
     fn memory_budget(&self) -> u64;
+
+    /// Returns the percentage of attempted records successfully indexed
+    /// (100.0 when the file is complete, < 100.0 for truncated/corrupt files).
+    fn indexing_ratio(&self) -> f64;
+
+    /// Returns `true` when every attempted record was successfully indexed.
+    ///
+    /// Uses integer comparison to avoid floating-point imprecision.
+    /// Prefer this over `indexing_ratio() == 100.0`.
+    fn is_fully_indexed(&self) -> bool;
+
+    /// Returns the byte size of the non-evictable skeleton — the
+    /// `PreciseIndex` held permanently in `HprofFile`.
+    fn skeleton_bytes(&self) -> usize;
 }
 
 #[cfg(test)]
@@ -352,6 +366,15 @@ mod tests {
         fn memory_budget(&self) -> u64 {
             u64::MAX
         }
+        fn indexing_ratio(&self) -> f64 {
+            100.0
+        }
+        fn is_fully_indexed(&self) -> bool {
+            true
+        }
+        fn skeleton_bytes(&self) -> usize {
+            0
+        }
     }
 
     #[test]
@@ -394,6 +417,21 @@ mod tests {
         assert_eq!(engine.get_local_variables(0).len(), 1);
         assert!(engine.expand_object(0).unwrap().is_empty());
         assert!(engine.get_page(0, 0, 10).is_none());
+    }
+
+    #[test]
+    fn indexing_ratio_100_for_complete_file() {
+        assert_eq!(DummyEngine.indexing_ratio(), 100.0);
+    }
+
+    #[test]
+    fn is_fully_indexed_true_for_complete_file() {
+        assert!(DummyEngine.is_fully_indexed());
+    }
+
+    #[test]
+    fn skeleton_bytes_zero_for_dummy() {
+        assert_eq!(DummyEngine.skeleton_bytes(), 0);
     }
 
     #[test]

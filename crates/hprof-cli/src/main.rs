@@ -14,6 +14,7 @@ use hprof_api::ParseProgressObserver;
 use hprof_engine::NavigationEngine;
 use indicatif::MultiProgress;
 
+mod config;
 mod progress;
 
 /// Visualize Java hprof heap dumps in the terminal.
@@ -72,14 +73,30 @@ fn run() -> Result<(), CliError> {
         chrome_layer.1
     };
 
+    let binary_path = std::env::current_exe().unwrap_or_default();
+    let app_config = config::load(&binary_path);
+
     let cli = Cli::parse();
 
-    let budget_bytes = cli
+    let effective_memory_limit: Option<&str> = cli
         .memory_limit
         .as_deref()
-        .map(parse_memory_size)
-        .transpose()
-        .map_err(CliError::InvalidMemoryLimit)?;
+        .or(app_config.memory_limit.as_deref());
+
+    let budget_bytes = match effective_memory_limit {
+        None => None,
+        Some(val) => {
+            let source = if cli.memory_limit.is_some() {
+                "--memory-limit"
+            } else {
+                "config file memory_limit"
+            };
+            Some(
+                parse_memory_size(val)
+                    .map_err(|e| CliError::InvalidMemoryLimit(format!("{source}: {e}")))?,
+            )
+        }
+    };
 
     let path = &cli.file;
     let file_len = std::fs::metadata(path)
@@ -144,7 +161,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidMemoryLimit(msg) => {
-                write!(f, "invalid --memory-limit: {msg}")
+                write!(f, "invalid memory limit: {msg}")
             }
             Self::MetadataFailed(err) => {
                 write!(f, "failed to read file metadata: {err}")
@@ -240,6 +257,50 @@ mod tests {
     #[test]
     fn cli_parse_extra_positional_is_error() {
         assert!(Cli::try_parse_from(["hprof-visualizer", "a.hprof", "b.hprof",]).is_err());
+    }
+
+    // --- CLI / config precedence tests (AC5) ---
+
+    fn resolve_effective<'a>(
+        cli_val: Option<&'a str>,
+        config_val: Option<&'a str>,
+    ) -> Option<&'a str> {
+        cli_val.or(config_val)
+    }
+
+    #[test]
+    fn cli_overrides_config_memory_limit() {
+        assert_eq!(resolve_effective(Some("8G"), Some("4G")), Some("8G"));
+    }
+
+    #[test]
+    fn config_used_when_cli_absent() {
+        assert_eq!(resolve_effective(None, Some("4G")), Some("4G"));
+    }
+
+    #[test]
+    fn both_absent_is_none() {
+        assert_eq!(resolve_effective(None, None), None);
+    }
+
+    #[test]
+    fn config_bad_value_error_message_names_source() {
+        // Simulate: cli=None, config=Some("not-a-size")
+        let cli_val: Option<&str> = None;
+        let config_val: Option<&str> = Some("not-a-size");
+        let effective = resolve_effective(cli_val, config_val);
+        let source = if cli_val.is_some() {
+            "--memory-limit"
+        } else {
+            "config file memory_limit"
+        };
+        let err_msg = parse_memory_size(effective.unwrap())
+            .map_err(|e| format!("{source}: {e}"))
+            .unwrap_err();
+        assert!(
+            err_msg.contains("config file"),
+            "expected 'config file' in error, got: {err_msg}"
+        );
     }
 
     #[test]

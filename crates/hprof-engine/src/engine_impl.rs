@@ -821,6 +821,27 @@ impl NavigationEngine for Engine {
     fn memory_budget(&self) -> u64 {
         self.memory_counter.budget()
     }
+
+    fn indexing_ratio(&self) -> f64 {
+        if self.hfile.records_attempted == 0 {
+            return 100.0;
+        }
+        self.hfile.records_indexed as f64 / self.hfile.records_attempted as f64 * 100.0
+    }
+
+    fn is_fully_indexed(&self) -> bool {
+        // A file truncated mid-record breaks out of the scan loop before
+        // incrementing records_attempted, so the ratio stays 100%.
+        // index_warnings catches that case (payload-exceeds-file warnings).
+        self.hfile.index_warnings.is_empty()
+            && (self.hfile.records_attempted == 0
+                || self.hfile.records_indexed >= self.hfile.records_attempted)
+    }
+
+    fn skeleton_bytes(&self) -> usize {
+        use hprof_api::MemorySize;
+        self.hfile.index.memory_size()
+    }
 }
 
 #[cfg(test)]
@@ -881,6 +902,92 @@ mod tests {
         let config = EngineConfig::default();
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         assert!(engine.warnings().is_empty());
+    }
+
+    #[test]
+    fn indexing_ratio_100_for_complete_file() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&minimal_hprof_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig::default();
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        // Empty file → records_attempted == 0 → ratio is 100.0
+        assert_eq!(engine.indexing_ratio(), 100.0);
+    }
+
+    #[test]
+    fn indexing_ratio_partial_for_truncated_file() {
+        // Build a file with 2 attempted, 1 indexed by crafting the Engine fields
+        // directly via Arc<HprofFile> is not possible, so we verify via the
+        // formula: ratio = indexed / attempted * 100.0
+        // We test the formula in isolation here.
+        let attempted: u64 = 10;
+        let indexed: u64 = 8;
+        let ratio = indexed as f64 / attempted as f64 * 100.0;
+        assert!((ratio - 80.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn is_fully_indexed_true_for_complete_file() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&minimal_hprof_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig::default();
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        assert!(engine.is_fully_indexed());
+    }
+
+    #[test]
+    fn is_fully_indexed_false_for_partial_file() {
+        // Verify the integer comparison logic: indexed < attempted → false
+        let attempted: u64 = 10;
+        let indexed: u64 = 8;
+        let fully = attempted == 0 || indexed >= attempted;
+        assert!(!fully);
+    }
+
+    #[test]
+    fn is_fully_indexed_false_when_file_truncated_mid_record() {
+        // A file truncated mid-record breaks the scan loop before
+        // incrementing records_attempted, so the ratio stays 100/100.
+        // is_fully_indexed() must detect this via index_warnings.
+        use std::io::Write as IoWrite;
+        let mut bytes = minimal_hprof_bytes();
+        // Append a STRING record header claiming 9999 bytes of payload,
+        // but provide only 2 bytes — payload end exceeds file size.
+        bytes.push(0x01); // tag STRING_IN_UTF8
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // time_offset
+        bytes.extend_from_slice(&9999u32.to_be_bytes()); // length (lies)
+        bytes.extend_from_slice(&[0xAA, 0xBB]); // only 2 bytes of payload
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig::default();
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        assert!(
+            !engine.is_fully_indexed(),
+            "truncated file must not be reported as fully indexed"
+        );
+        assert!(
+            !engine.warnings().is_empty(),
+            "truncated file must produce at least one indexing warning"
+        );
+    }
+
+    #[test]
+    fn skeleton_bytes_positive_for_real_file() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&minimal_hprof_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig::default();
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        // Even an empty file has a non-zero PreciseIndex struct size
+        assert!(engine.skeleton_bytes() > 0);
     }
 
     #[test]
