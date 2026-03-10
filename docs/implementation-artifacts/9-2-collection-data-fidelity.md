@@ -1,6 +1,6 @@
 # Story 9.2: Collection Data Fidelity (ArrayList, Object[])
 
-Status: review
+Status: done
 
 ## Story
 
@@ -521,7 +521,7 @@ Then zero failures — no regressions
   These two tests pin that `paginate_id_slice` entries for nested arrays carry `entry_count`,
   enabling `StartCollection` dispatch in `OnCollectionEntry`.
 
-- [ ] Add test in `pagination.rs` test module verifying that `get_page` works when called
+- [x] Add test in `pagination.rs` test module verifying that `get_page` works when called
   with an **ArrayList instance ID directly** (not the backing array ID):
   ```rust
   // Critical path: OnVar dispatches StartCollection(list_id, ec) where list_id is the
@@ -726,3 +726,33 @@ crates/hprof-tui/src/views/stack_view.rs
 crates/hprof-tui/src/views/tree_render.rs
 docs/implementation-artifacts/9-2-collection-data-fidelity.md
 docs/implementation-artifacts/sprint-status.yaml
+
+## Senior Developer Review (AI)
+
+### Reviewer
+
+Codex (2026-03-10)
+
+### Findings Summary
+
+- Initial review flagged documentation-traceability gaps (task checkbox mismatch, missing review notes).
+- Code implementation and tests for AC1-AC7 are present and passing.
+- Story/file-list traceability validated against commit `67ebd20`.
+
+### Actions Applied
+
+- Marked the remaining pagination test subtask complete (test exists in
+  `crates/hprof-engine/src/pagination.rs`).
+- Added this `Senior Developer Review (AI)` section.
+- Added `Change Log` entry below and set story status to `done`.
+
+### Verification
+
+- `cargo test --all`: pass
+- `cargo clippy --all-targets -- -D warnings`: pass
+
+## Change Log
+
+- 2026-03-10 (Codex): Applied code-review follow-up updates to story metadata:
+  status -> done, completed remaining test checklist item, added senior review
+  section, and synced sprint status.
