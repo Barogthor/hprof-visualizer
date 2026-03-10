@@ -673,9 +673,28 @@ impl StackState {
     }
 
     /// Marks an object expansion as failed with an error message.
+    ///
+    /// If the cursor was on the `OnObjectLoadingNode` for this object (the
+    /// loading spinner), it is recovered to the parent node so navigation
+    /// is not stuck after the failure.
     pub fn set_expansion_failed(&mut self, object_id: u64, error: String) {
         self.object_errors.insert(object_id, error);
         self.object_phases.insert(object_id, ExpansionPhase::Failed);
+        if self.flat_index().is_none()
+            && let StackCursor::OnObjectLoadingNode { frame_idx, var_idx, ref field_path } =
+                self.cursor.clone()
+        {
+            self.cursor = if field_path.is_empty() {
+                StackCursor::OnVar { frame_idx, var_idx }
+            } else {
+                StackCursor::OnObjectField {
+                    frame_idx,
+                    var_idx,
+                    field_path: field_path.clone(),
+                }
+            };
+        }
+        self.sync_list_state();
     }
 
     /// Cancels a loading expansion — reverts to `Collapsed`.
@@ -1421,6 +1440,76 @@ mod tests {
         let mut state = StackState::new(vec![make_frame(1)]);
         state.set_expansion_failed(42, "err".to_string());
         assert_eq!(state.expansion_state(42), ExpansionPhase::Failed);
+    }
+
+    #[test]
+    fn set_expansion_failed_recovers_cursor_from_loading_node_top_level() {
+        // Cursor was on OnObjectLoadingNode (var-level loading spinner)
+        // when failure arrives — cursor must snap back to OnVar so
+        // navigation is not stuck.
+        let frames = vec![make_frame(10), make_frame(20)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 99)];
+        state.toggle_expand(10, vars);
+        state.set_expansion_loading(99);
+        // Simulate user pressing Down onto the loading spinner row.
+        state.move_down(); // OnFrame(0) → OnVar{0,0}
+        state.move_down(); // OnVar{0,0} → OnObjectLoadingNode{0,0,[]}
+        assert!(
+            matches!(state.cursor, StackCursor::OnObjectLoadingNode { .. }),
+            "precondition: cursor is on loading node"
+        );
+        state.set_expansion_failed(99, "err".to_string());
+        // Cursor must be recovered to OnVar, not orphaned.
+        assert_eq!(
+            state.cursor,
+            StackCursor::OnVar { frame_idx: 0, var_idx: 0 },
+            "cursor must snap to parent OnVar after failure"
+        );
+        // Navigation must resume: Down from OnVar{0,0} must reach OnFrame(1).
+        state.move_down();
+        assert_eq!(state.cursor, StackCursor::OnFrame(1));
+    }
+
+    #[test]
+    fn set_expansion_failed_recovers_cursor_from_loading_node_nested_field() {
+        // Same as above but for a nested field object (field_path non-empty).
+        use hprof_engine::{FieldInfo, FieldValue};
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 100)];
+        state.toggle_expand(10, vars);
+        let fields = vec![FieldInfo {
+            name: "child".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 200,
+                class_name: "Child".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }];
+        state.set_expansion_done(100, fields);
+        // Expand the nested field object.
+        state.set_expansion_loading(200);
+        // Navigate: Frame → Var → ObjectField{[0]} → OnObjectLoadingNode{[0]}
+        state.move_down(); // → OnVar{0,0}
+        state.move_down(); // → OnObjectField{0,0,[0]}
+        state.move_down(); // → OnObjectLoadingNode{0,0,[0]}
+        assert!(
+            matches!(state.cursor, StackCursor::OnObjectLoadingNode { .. }),
+            "precondition: cursor is on nested loading node"
+        );
+        state.set_expansion_failed(200, "boom".to_string());
+        // Cursor must recover to the parent OnObjectField.
+        assert_eq!(
+            state.cursor,
+            StackCursor::OnObjectField {
+                frame_idx: 0,
+                var_idx: 0,
+                field_path: vec![0],
+            },
+            "cursor must snap to parent OnObjectField after nested failure"
+        );
     }
 
     #[test]
