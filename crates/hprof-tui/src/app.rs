@@ -1598,18 +1598,27 @@ mod tests {
     fn first_collection_page_shows_loading_indicator_after_threshold() {
         let mut app = make_collection_app(250);
         nav_to_collection_field(&mut app);
-        app.handle_input(InputEvent::Enter); // start eager page load (offset=0)
+        // Manually inject a PendingPage with an unsent channel so try_recv()
+        // returns Empty (no real thread spawned that would return immediately).
+        let (_tx, rx) = mpsc::channel::<Option<CollectionPage>>();
+        app.pending_pages.insert(
+            (888, 0),
+            PendingPage {
+                rx,
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: false,
+            },
+        );
+        // Before polling: expansion_state must not be Loading yet.
         {
             let ss = app.stack_state.as_ref().unwrap();
             assert_eq!(
                 ss.expansion_state(888),
                 ExpansionPhase::Collapsed,
-                "before threshold, collection must not show loading"
+                "before poll, collection must not show loading"
             );
         }
-        if let Some(pp) = app.pending_pages.get_mut(&(888, 0)) {
-            pp.started = Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
-        }
+        // One poll — threshold exceeded → set_expansion_loading(888).
         app.poll_pages();
         let ss = app.stack_state.as_ref().unwrap();
         assert_eq!(
