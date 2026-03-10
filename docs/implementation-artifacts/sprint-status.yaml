@@ -97,7 +97,7 @@ development_status:
   epic-5: in-progress
   5-1-memorysize-trait-and-budget-tracking: done
   5-2-memory-budget-auto-calculation-and-override: done
-  5-3-lru-eviction-core: backlog
+  5-3-lru-eviction-core: review
   5-4-transparent-re-parse-and-multi-cycle-stability: backlog
   epic-5-retrospective: optional
 
