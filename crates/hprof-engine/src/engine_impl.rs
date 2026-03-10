@@ -596,13 +596,8 @@ impl Engine {
     ///
     /// This is the full decode + enrichment pass extracted
     /// from the previous `expand_object` body.
-    fn decode_object_fields(
-        &self,
-        object_id: u64,
-    ) -> Option<Vec<FieldInfo>> {
-        let raw = Self::read_instance(
-            &self.hfile, object_id,
-        )?;
+    fn decode_object_fields(&self, object_id: u64) -> Option<Vec<FieldInfo>> {
+        let raw = Self::read_instance(&self.hfile, object_id)?;
         let mut fields = crate::resolver::decode_fields(
             &raw,
             &self.hfile.index,
@@ -618,21 +613,15 @@ impl Engine {
             } = &mut field.value
             {
                 let child_id = *id;
-                if let Some(child_raw) =
-                    Self::read_instance(&self.hfile, child_id)
-                {
+                if let Some(child_raw) = Self::read_instance(&self.hfile, child_id) {
                     let name = self
                         .hfile
                         .index
                         .class_names_by_id
                         .get(&child_raw.class_object_id)
                         .cloned()
-                        .unwrap_or_else(|| {
-                            "Object".to_string()
-                        });
-                    *inline_value = resolve_inline_value(
-                        &name, &self.hfile, child_id,
-                    );
+                        .unwrap_or_else(|| "Object".to_string());
+                    *inline_value = resolve_inline_value(&name, &self.hfile, child_id);
                     *entry_count = collection_entry_count(
                         &child_raw,
                         &self.hfile.index,
@@ -640,26 +629,18 @@ impl Engine {
                         self.hfile.records_bytes(),
                     );
                     *class_name = name;
-                } else if let Some((_class_id, elems)) =
-                    self.hfile.find_object_array(child_id)
-                {
+                } else if let Some((_class_id, elems)) = self.hfile.find_object_array(child_id) {
                     *class_name = "Object[]".to_string();
-                    *entry_count =
-                        Some(elems.len() as u64);
-                } else if let Some((elem_type, bytes)) =
-                    self.hfile.find_prim_array(child_id)
-                {
-                    let type_name =
-                        prim_array_type_name(elem_type);
-                    let elem_size =
-                        field_byte_size(elem_type, 0);
+                    *entry_count = Some(elems.len() as u64);
+                } else if let Some((elem_type, bytes)) = self.hfile.find_prim_array(child_id) {
+                    let type_name = prim_array_type_name(elem_type);
+                    let elem_size = field_byte_size(elem_type, 0);
                     let count = if elem_size > 0 {
                         bytes.len() / elem_size
                     } else {
                         0
                     };
-                    *class_name =
-                        format!("{type_name}[]");
+                    *class_name = format!("{type_name}[]");
                     *entry_count = Some(count as u64);
                 } else {
                     *class_name = "Object".to_string();
@@ -784,38 +765,22 @@ impl NavigationEngine for Engine {
         }
     }
 
-    fn expand_object(
-        &self,
-        object_id: u64,
-    ) -> Option<Vec<FieldInfo>> {
+    fn expand_object(&self, object_id: u64) -> Option<Vec<FieldInfo>> {
         // Cache hit: return clone, entry promoted to MRU
-        if let Some(fields) =
-            self.object_cache.get(object_id)
-        {
+        if let Some(fields) = self.object_cache.get(object_id) {
             return Some(fields);
         }
         // Cache miss: decode from mmap
-        let fields =
-            self.decode_object_fields(object_id)?;
+        let fields = self.decode_object_fields(object_id)?;
         // Insert into cache, track memory
-        let mem = self
-            .object_cache
-            .insert(object_id, fields.clone());
+        let mem = self.object_cache.insert(object_id, fields.clone());
         self.memory_counter.add(mem);
         // Evict LRU entries: trigger at 80%, target 60%
-        while self.memory_counter.usage_ratio()
-            >= EVICTION_TRIGGER
-        {
-            if let Some(freed) =
-                self.object_cache.evict_lru()
-            {
-                let current =
-                    self.memory_counter.current();
-                self.memory_counter
-                    .subtract(freed.min(current));
-                if self.memory_counter.usage_ratio()
-                    < EVICTION_TARGET
-                {
+        while self.memory_counter.usage_ratio() >= EVICTION_TRIGGER {
+            if let Some(freed) = self.object_cache.evict_lru() {
+                let current = self.memory_counter.current();
+                self.memory_counter.subtract(freed.min(current));
+                if self.memory_counter.usage_ratio() < EVICTION_TARGET {
                     break;
                 }
             } else {
@@ -2223,113 +2188,53 @@ mod tests {
 
         /// Builds an engine with two distinct expandable
         /// objects (0xAAA, 0xBBB) and the given budget.
-        fn engine_two_objects(
-            budget: u64,
-        ) -> Engine {
-            let bytes =
-                HprofTestBuilder::new(
-                    "JAVA PROFILE 1.0.2",
-                    8,
-                )
+        fn engine_two_objects(budget: u64) -> Engine {
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
                 .add_string(1, "x")
                 .add_string(2, "y")
-                .add_class_dump(
-                    100, 0, 4,
-                    &[(1, 10u8)],
-                )
-                .add_class_dump(
-                    200, 0, 4,
-                    &[(2, 10u8)],
-                )
-                .add_instance(
-                    0xAAA, 0, 100,
-                    &7i32.to_be_bytes(),
-                )
-                .add_instance(
-                    0xBBB, 0, 200,
-                    &8i32.to_be_bytes(),
-                )
+                .add_class_dump(100, 0, 4, &[(1, 10u8)])
+                .add_class_dump(200, 0, 4, &[(2, 10u8)])
+                .add_instance(0xAAA, 0, 100, &7i32.to_be_bytes())
+                .add_instance(0xBBB, 0, 200, &8i32.to_be_bytes())
                 .build();
-            let mut tmp =
-                tempfile::NamedTempFile::new().unwrap();
+            let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
             let config = EngineConfig {
                 budget_bytes: Some(budget),
             };
-            Engine::from_file(
-                tmp.path(), &config,
-            )
-            .unwrap()
+            Engine::from_file(tmp.path(), &config).unwrap()
         }
 
         /// Builds an engine with four expandable objects.
-        fn engine_four_objects(
-            budget: u64,
-        ) -> Engine {
-            let bytes =
-                HprofTestBuilder::new(
-                    "JAVA PROFILE 1.0.2",
-                    8,
-                )
+        fn engine_four_objects(budget: u64) -> Engine {
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
                 .add_string(1, "a")
                 .add_string(2, "b")
                 .add_string(3, "c")
                 .add_string(4, "d")
-                .add_class_dump(
-                    100, 0, 4,
-                    &[(1, 10u8)],
-                )
-                .add_class_dump(
-                    200, 0, 4,
-                    &[(2, 10u8)],
-                )
-                .add_class_dump(
-                    300, 0, 4,
-                    &[(3, 10u8)],
-                )
-                .add_class_dump(
-                    400, 0, 4,
-                    &[(4, 10u8)],
-                )
-                .add_instance(
-                    0xAAA, 0, 100,
-                    &1i32.to_be_bytes(),
-                )
-                .add_instance(
-                    0xBBB, 0, 200,
-                    &2i32.to_be_bytes(),
-                )
-                .add_instance(
-                    0xCCC, 0, 300,
-                    &3i32.to_be_bytes(),
-                )
-                .add_instance(
-                    0xDDD, 0, 400,
-                    &4i32.to_be_bytes(),
-                )
+                .add_class_dump(100, 0, 4, &[(1, 10u8)])
+                .add_class_dump(200, 0, 4, &[(2, 10u8)])
+                .add_class_dump(300, 0, 4, &[(3, 10u8)])
+                .add_class_dump(400, 0, 4, &[(4, 10u8)])
+                .add_instance(0xAAA, 0, 100, &1i32.to_be_bytes())
+                .add_instance(0xBBB, 0, 200, &2i32.to_be_bytes())
+                .add_instance(0xCCC, 0, 300, &3i32.to_be_bytes())
+                .add_instance(0xDDD, 0, 400, &4i32.to_be_bytes())
                 .build();
-            let mut tmp =
-                tempfile::NamedTempFile::new().unwrap();
+            let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
             let config = EngineConfig {
                 budget_bytes: Some(budget),
             };
-            Engine::from_file(
-                tmp.path(), &config,
-            )
-            .unwrap()
+            Engine::from_file(tmp.path(), &config).unwrap()
         }
 
         #[test]
-        fn expand_object_cached_does_not_double_count_memory()
-        {
-            let engine =
-                engine_two_objects(10_000_000);
-            engine
-                .expand_object(0xAAA)
-                .expect("first expand");
+        fn expand_object_cached_does_not_double_count_memory() {
+            let engine = engine_two_objects(10_000_000);
+            engine.expand_object(0xAAA).expect("first expand");
             let mem_after_first = engine.memory_used();
             engine
                 .expand_object(0xAAA)
@@ -2342,19 +2247,11 @@ mod tests {
         }
 
         #[test]
-        fn expand_object_with_tiny_budget_triggers_eviction()
-        {
+        fn expand_object_with_tiny_budget_triggers_eviction() {
             let engine = engine_two_objects(1);
-            engine
-                .expand_object(0xAAA)
-                .expect("expand A");
-            engine
-                .expand_object(0xBBB)
-                .expect("expand B");
-            assert!(
-                engine.memory_used() > 0,
-                "something must be tracked"
-            );
+            engine.expand_object(0xAAA).expect("expand A");
+            engine.expand_object(0xBBB).expect("expand B");
+            assert!(engine.memory_used() > 0, "something must be tracked");
             // Cache may be empty (eviction drained it)
             // or have 1 entry (last insert survived).
             // Either way, the loop terminated without
@@ -2365,8 +2262,7 @@ mod tests {
         fn expand_object_lru_order_respected() {
             // Large budget: no automatic eviction —
             // we control eviction manually via cache API.
-            let engine =
-                engine_four_objects(10_000_000);
+            let engine = engine_four_objects(10_000_000);
 
             // Insert A, B, C (insertion order = LRU order)
             // After inserts: LRU → A < B < C ← MRU
@@ -2386,20 +2282,12 @@ mod tests {
             );
 
             // Manually evict LRU — must be B
-            let b_evicted =
-                engine.object_cache.evict_lru();
-            assert!(
-                b_evicted.is_some(),
-                "first evict must return B's size"
-            );
+            let b_evicted = engine.object_cache.evict_lru();
+            assert!(b_evicted.is_some(), "first evict must return B's size");
 
             // Manually evict LRU — must be C
-            let c_evicted =
-                engine.object_cache.evict_lru();
-            assert!(
-                c_evicted.is_some(),
-                "second evict must return C's size"
-            );
+            let c_evicted = engine.object_cache.evict_lru();
+            assert!(c_evicted.is_some(), "second evict must return C's size");
 
             // A (MRU) is the sole survivor
             assert_eq!(
@@ -2431,18 +2319,15 @@ mod tests {
         }
 
         #[test]
-        fn expand_object_ac4_usage_below_target_after_eviction()
-        {
+        fn expand_object_ac4_usage_below_target_after_eviction() {
             // Budget = 1 byte: baseline already exceeds
             // budget. After expand, either usage < 60%
             // or cache is empty (FM-2 behavior).
             let engine = engine_two_objects(1);
             engine.expand_object(0xAAA).unwrap();
             engine.expand_object(0xBBB).unwrap();
-            let ratio = engine.memory_used() as f64
-                / engine.memory_budget() as f64;
-            let cache_empty =
-                engine.object_cache.is_empty();
+            let ratio = engine.memory_used() as f64 / engine.memory_budget() as f64;
+            let cache_empty = engine.object_cache.is_empty();
             assert!(
                 ratio < 0.60 || cache_empty,
                 "AC4: usage {ratio:.2} must be < 0.60 \
@@ -2451,17 +2336,13 @@ mod tests {
         }
 
         #[test]
-        fn eviction_loop_terminates_when_cache_empty()
-        {
+        fn eviction_loop_terminates_when_cache_empty() {
             // Budget so small baseline alone exceeds
             // EVICTION_TARGET. expand_object must still
             // return Some and not hang.
             let engine = engine_two_objects(1);
             let result = engine.expand_object(0xAAA);
-            assert!(
-                result.is_some(),
-                "must return fields even with tiny budget"
-            );
+            assert!(result.is_some(), "must return fields even with tiny budget");
         }
 
         #[test]
@@ -2470,8 +2351,7 @@ mod tests {
             // A is evicted as soon as it is inserted (it becomes the sole
             // LRU entry and the eviction loop drains the cache).
             let engine = engine_two_objects(1);
-            let fields_first =
-                engine.expand_object(0xAAA).unwrap();
+            let fields_first = engine.expand_object(0xAAA).unwrap();
             assert!(
                 engine.object_cache.is_empty(),
                 "A must be evicted immediately with budget=1"
@@ -2483,8 +2363,7 @@ mod tests {
                 "B must also be evicted immediately with budget=1"
             );
             // Re-expand A: must be a cache miss → re-parse from mmap
-            let fields_second =
-                engine.expand_object(0xAAA).unwrap();
+            let fields_second = engine.expand_object(0xAAA).unwrap();
             assert_eq!(
                 fields_first, fields_second,
                 "re-parse must produce byte-identical fields (AC2 / NFR8)"
@@ -2499,15 +2378,9 @@ mod tests {
             let engine = engine_two_objects(1);
             for _ in 0..50 {
                 let r_a = engine.expand_object(0xAAA);
-                assert!(
-                    r_a.is_some(),
-                    "A must always return Some across all cycles"
-                );
+                assert!(r_a.is_some(), "A must always return Some across all cycles");
                 let r_b = engine.expand_object(0xBBB);
-                assert!(
-                    r_b.is_some(),
-                    "B must always return Some across all cycles"
-                );
+                assert!(r_b.is_some(), "B must always return Some across all cycles");
             }
             // usize::MAX / 2 is a conservative sentinel: real usage is
             // at most a few KB; any value above this indicates underflow.

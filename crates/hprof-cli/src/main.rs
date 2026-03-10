@@ -245,9 +245,8 @@ mod tests {
     #[test]
     fn cli_memory_limit_wires_to_engine_config_budget() {
         // AC2: --memory-limit 8G → EngineConfig budget = 8 GiB
-        let cli =
-            Cli::try_parse_from(["hprof-visualizer", "--memory-limit", "8G", "heap.hprof"])
-                .unwrap();
+        let cli = Cli::try_parse_from(["hprof-visualizer", "--memory-limit", "8G", "heap.hprof"])
+            .unwrap();
         let budget_bytes = cli
             .memory_limit
             .as_deref()

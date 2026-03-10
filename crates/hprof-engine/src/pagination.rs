@@ -684,12 +684,7 @@ mod tests {
             .add_class(2, 2000, 0, str_nodename)
             // HashMap class dump: size(Int=10),
             // table(Obj=2)
-            .add_class_dump(
-                1000,
-                0,
-                4 + id_size,
-                &[(str_size, 10), (str_table, 2)],
-            )
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_table, 2)])
             // Node class dump: key(Obj=2),
             // value(Obj=2), next(Obj=2)
             .add_class_dump(
@@ -736,12 +731,7 @@ mod tests {
             .add_string(str_ed, "elementData")
             .add_string(str_cn, "java/util/ArrayList")
             .add_class(1, 1000, 0, str_cn)
-            .add_class_dump(
-                1000,
-                0,
-                4 + id_size,
-                &[(str_size, 10), (str_ed, 2)],
-            )
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_ed, 2)])
             .add_instance(0x100, 0, 1000, &data)
             // elementData: 4 slots but only 2 used
             .add_object_array(0x500, 0, 100, &[0x10, 0x20, 0, 0])
@@ -984,12 +974,7 @@ mod tests {
             .add_string(str_node_cn, "java/util/concurrent/ConcurrentHashMap$Node")
             .add_class(1, 1000, 0, str_cn)
             .add_class(2, 2000, 0, str_node_cn)
-            .add_class_dump(
-                1000,
-                0,
-                4 + id_size,
-                &[(str_size, 10), (str_table, 2)],
-            )
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_table, 2)])
             .add_class_dump(
                 2000,
                 0,
@@ -1060,12 +1045,7 @@ mod tests {
             .add_class(2, 2000, 0, str_map_cn)
             .add_class(3, 3000, 0, str_node_cn)
             .add_class_dump(1000, 0, id_size, &[(str_map, 2)])
-            .add_class_dump(
-                2000,
-                0,
-                4 + id_size,
-                &[(str_size, 10), (str_table, 2)],
-            )
+            .add_class_dump(2000, 0, 4 + id_size, &[(str_size, 10), (str_table, 2)])
             .add_class_dump(
                 3000,
                 0,
@@ -1122,12 +1102,7 @@ mod tests {
             .add_string(str_node_cn, "java/util/LinkedHashMap$Entry")
             .add_class(1, 1000, 0, str_cn)
             .add_class(2, 2000, 0, str_node_cn)
-            .add_class_dump(
-                1000,
-                0,
-                4 + id_size,
-                &[(str_size, 10), (str_table, 2)],
-            )
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_table, 2)])
             .add_class_dump(
                 2000,
                 0,
@@ -1165,12 +1140,7 @@ mod tests {
             .add_string(str_ed, "elementData")
             .add_string(str_cn, "java/util/Vector")
             .add_class(1, 1000, 0, str_cn)
-            .add_class_dump(
-                1000,
-                0,
-                4 + id_size,
-                &[(str_count, 10), (str_ed, 2)],
-            )
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_count, 10), (str_ed, 2)])
             .add_instance(0x100, 0, 1000, &data)
             .add_object_array(0x500, 0, 100, &[0x10, 0x20, 0, 0])
             .build();

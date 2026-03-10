@@ -835,6 +835,13 @@ So that I always know what the tool is doing and whether the data I'm viewing mi
 **When** the user looks at the status bar
 **Then** the most recent warning is visible, with an indication of total warning count
 
+**Given** the engine is running with an active memory budget
+**When** 15–30 seconds have elapsed since the last memory log
+**Then** an INFO-level log line is emitted to stderr showing: current cache usage,
+total budget, and the non-evictable skeleton baseline (object index + class metadata
+held permanently in `HprofFile`), e.g.:
+`[memory] cache 42 MB / 512 MB budget | skeleton 38 MB (non-evictable)`
+
 ## Epic 7: TUI UX & Interaction Design
 
 The TUI has a consistent color theme (16 ANSI colors), a complete keyboard navigation map, and a

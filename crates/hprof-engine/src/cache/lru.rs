@@ -20,9 +20,7 @@ pub(crate) const EVICTION_TARGET: f64 = 0.60;
 /// Each entry stores `(Vec<FieldInfo>, precomputed_memory_size)`.
 /// `get()` promotes the entry to MRU. `evict_lru()` pops the
 /// least recently used entry and returns its precomputed size.
-pub struct ObjectCache(
-    Mutex<LruCache<u64, (Vec<FieldInfo>, usize)>>,
-);
+pub struct ObjectCache(Mutex<LruCache<u64, (Vec<FieldInfo>, usize)>>);
 
 impl Default for ObjectCache {
     fn default() -> Self {
@@ -55,11 +53,7 @@ impl ObjectCache {
     /// Panics in debug builds if `id` is already cached.
     /// The caller must check for a cache hit before inserting
     /// to keep `MemoryCounter` consistent.
-    pub fn insert(
-        &self,
-        id: u64,
-        fields: Vec<FieldInfo>,
-    ) -> usize {
+    pub fn insert(&self, id: u64, fields: Vec<FieldInfo>) -> usize {
         let mem = compute_fields_size(&fields);
         let old = self.0.lock().unwrap().put(id, (fields, mem));
         debug_assert!(
@@ -73,11 +67,7 @@ impl ObjectCache {
     /// Evicts the least recently used entry, returning
     /// its precomputed size in bytes, or `None` if empty.
     pub fn evict_lru(&self) -> Option<usize> {
-        self.0
-            .lock()
-            .unwrap()
-            .pop_lru()
-            .map(|(_, (_, size))| size)
+        self.0.lock().unwrap().pop_lru().map(|(_, (_, size))| size)
     }
 
     /// Returns `true` if the cache contains no entries.
@@ -96,11 +86,7 @@ impl ObjectCache {
 /// Counts `len` slots (not `capacity`) — intentional
 /// approximation consistent with `CollectionPage::memory_size`.
 fn compute_fields_size(fields: &[FieldInfo]) -> usize {
-    std::mem::size_of::<Vec<FieldInfo>>()
-        + fields
-            .iter()
-            .map(|f| f.memory_size())
-            .sum::<usize>()
+    std::mem::size_of::<Vec<FieldInfo>>() + fields.iter().map(|f| f.memory_size()).sum::<usize>()
 }
 
 #[cfg(test)]
@@ -157,10 +143,7 @@ mod tests {
     #[test]
     fn insert_returns_nonzero_size_for_nonempty_fields() {
         let cache = ObjectCache::new();
-        let size = cache.insert(
-            1,
-            vec![make_field("big_field_name")],
-        );
+        let size = cache.insert(1, vec![make_field("big_field_name")]);
         assert!(size > 0);
     }
 
