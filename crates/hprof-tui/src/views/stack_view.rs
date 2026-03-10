@@ -52,10 +52,7 @@ pub struct CollectionChunks {
 impl CollectionChunks {
     /// Finds the [`EntryInfo`] with the given `index` across all loaded
     /// pages (eager page and all loaded chunk pages).
-    pub(crate) fn find_entry(
-        &self,
-        index: usize,
-    ) -> Option<&hprof_engine::EntryInfo> {
+    pub(crate) fn find_entry(&self, index: usize) -> Option<&hprof_engine::EntryInfo> {
         if let Some(page) = &self.eager_page {
             if let Some(e) = page.entries.iter().find(|e| e.index == index) {
                 return Some(e);
@@ -445,12 +442,9 @@ impl StackState {
         None
     }
 
-
     /// Resolves the field under the cursor when on
     /// `OnCollectionEntryObjField`.
-    fn collection_entry_obj_cursor_field(
-        &self,
-    ) -> Option<&FieldInfo> {
+    fn collection_entry_obj_cursor_field(&self) -> Option<&FieldInfo> {
         if let StackCursor::OnCollectionEntryObjField {
             collection_id,
             entry_index,
@@ -459,21 +453,16 @@ impl StackState {
         } = &self.cursor
         {
             let obj_root = {
-                let cc =
-                    self.collection_chunks.get(collection_id)?;
+                let cc = self.collection_chunks.get(collection_id)?;
                 let entry = cc.find_entry(*entry_index)?;
-                if let FieldValue::ObjectRef { id, .. } =
-                    &entry.value
-                {
+                if let FieldValue::ObjectRef { id, .. } = &entry.value {
                     *id
                 } else {
                     return None;
                 }
             };
-            let parent_path = &obj_field_path
-                [..obj_field_path.len().saturating_sub(1)];
-            let parent_id =
-                self.resolve_object_at_path(obj_root, parent_path);
+            let parent_path = &obj_field_path[..obj_field_path.len().saturating_sub(1)];
+            let parent_id = self.resolve_object_at_path(obj_root, parent_path);
             let field_idx = *obj_field_path.last()?;
             let fields = self.object_fields.get(&parent_id)?;
             return fields.get(field_idx);
@@ -561,7 +550,6 @@ impl StackState {
         self.object_errors.remove(&object_id);
     }
 
-
     /// Collapses an expanded object.
     pub fn collapse_object(&mut self, object_id: u64) {
         self.object_phases.remove(&object_id);
@@ -578,12 +566,7 @@ impl StackState {
     pub fn collapse_object_recursive(&mut self, object_id: u64) {
         let mut to_remove: Vec<u64> = Vec::new();
         let mut visited: HashSet<u64> = HashSet::new();
-        collect_descendants(
-            object_id,
-            &self.object_fields,
-            &mut visited,
-            &mut to_remove,
-        );
+        collect_descendants(object_id, &self.object_fields, &mut visited, &mut to_remove);
         for id in to_remove {
             self.collapse_object(id);
         }
@@ -644,7 +627,6 @@ impl StackState {
         }
         self.sync_list_state();
     }
-
 
     /// Loads vars for `frame_id` into internal cache and toggles expand/collapse.
     ///
@@ -882,8 +864,7 @@ impl StackState {
         cc: &CollectionChunks,
         out: &mut Vec<StackCursor>,
     ) {
-        let emit_entry = |entry: &hprof_engine::EntryInfo,
-                          out: &mut Vec<StackCursor>| {
+        let emit_entry = |entry: &hprof_engine::EntryInfo, out: &mut Vec<StackCursor>| {
             out.push(StackCursor::OnCollectionEntry {
                 frame_idx: fi,
                 var_idx: vi,
@@ -1037,10 +1018,7 @@ impl StackState {
     }
 
     /// Formats a [`FieldValue`] for display in field rows.
-    fn format_field_value(
-        v: &FieldValue,
-        phase: Option<&ExpansionPhase>,
-    ) -> String {
+    fn format_field_value(v: &FieldValue, phase: Option<&ExpansionPhase>) -> String {
         match v {
             FieldValue::Null => "null".to_string(),
             FieldValue::ObjectRef {
@@ -1050,10 +1028,8 @@ impl StackState {
                 ..
             } => {
                 let base = match phase {
-                    Some(ExpansionPhase::Expanded)
-                    | Some(ExpansionPhase::Loading) => {
-                        let display_name = if class_name.is_empty()
-                        {
+                    Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => {
+                        let display_name = if class_name.is_empty() {
                             "Object"
                         } else {
                             class_name
@@ -1064,10 +1040,7 @@ impl StackState {
                             .unwrap_or(display_name)
                             .to_string()
                     }
-                    _ => Self::format_object_ref_collapsed(
-                        class_name,
-                        *entry_count,
-                    ),
+                    _ => Self::format_object_ref_collapsed(class_name, *entry_count),
                 };
                 match inline_value {
                     Some(v) => format!("{base} = {v}"),
@@ -1103,10 +1076,7 @@ impl StackState {
                 } else {
                     class_name
                 };
-                let short = display_name
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(display_name);
+                let short = display_name.rsplit('.').next().unwrap_or(display_name);
                 let base = match entry_count {
                     Some(n) => format!("{short} ({n} entries)"),
                     None => short.to_string(),
@@ -1140,38 +1110,37 @@ impl StackState {
         items: &mut Vec<ListItem<'static>>,
     ) {
         let indent = format!("{parent_indent}  ");
-        let render_entry = |entry: &hprof_engine::EntryInfo,
-                            items: &mut Vec<ListItem<'static>>,
-                            sel: bool| {
-            let value_phase = if let FieldValue::ObjectRef { id, .. } = &entry.value {
-                Some(self.expansion_state(*id))
-            } else {
-                None
+        let render_entry =
+            |entry: &hprof_engine::EntryInfo, items: &mut Vec<ListItem<'static>>, sel: bool| {
+                let value_phase = if let FieldValue::ObjectRef { id, .. } = &entry.value {
+                    Some(self.expansion_state(*id))
+                } else {
+                    None
+                };
+                let text = Self::format_entry_line(entry, &indent, value_phase.as_ref());
+                let s = if sel {
+                    theme::SELECTED
+                } else {
+                    ratatui::style::Style::default()
+                };
+                items.push(ListItem::new(Line::from(Span::styled(text, s))));
+                // Render expanded entry ObjectRef children.
+                if let FieldValue::ObjectRef { id, .. } = &entry.value {
+                    let mut visited = HashSet::new();
+                    self.build_collection_entry_obj_items(
+                        fi,
+                        vi,
+                        field_path,
+                        collection_id,
+                        entry.index,
+                        *id,
+                        &[],
+                        &indent,
+                        &mut visited,
+                        items,
+                    );
+                }
             };
-            let text = Self::format_entry_line(entry, &indent, value_phase.as_ref());
-            let s = if sel {
-                theme::SELECTED
-            } else {
-                ratatui::style::Style::default()
-            };
-            items.push(ListItem::new(Line::from(Span::styled(text, s))));
-            // Render expanded entry ObjectRef children.
-            if let FieldValue::ObjectRef { id, .. } = &entry.value {
-                let mut visited = HashSet::new();
-                self.build_collection_entry_obj_items(
-                    fi,
-                    vi,
-                    field_path,
-                    collection_id,
-                    entry.index,
-                    *id,
-                    &[],
-                    &indent,
-                    &mut visited,
-                    items,
-                );
-            }
-        };
         // Eager page entries.
         if let Some(page) = &cc.eager_page {
             for entry in &page.entries {
@@ -1207,7 +1176,11 @@ impl StackState {
                 }
                 if *cid == collection_id && *co == *offset
             );
-            let s = if sel { theme::SELECTED } else { theme::SEARCH_HINT };
+            let s = if sel {
+                theme::SELECTED
+            } else {
+                theme::SEARCH_HINT
+            };
             items.push(ListItem::new(Line::from(Span::styled(text, s))));
             // Loaded chunk entries.
             if let Some(ChunkState::Loaded(page)) = chunk_state {
@@ -1260,7 +1233,11 @@ impl StackState {
                         && *ei == entry_index
                         && *obj_field_path == obj_path
                 );
-                let s = if sel { theme::SELECTED } else { theme::SEARCH_HINT };
+                let s = if sel {
+                    theme::SELECTED
+                } else {
+                    theme::SEARCH_HINT
+                };
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!("{indent}~ Loading..."),
                     s,
@@ -1286,7 +1263,11 @@ impl StackState {
                             && *ei == entry_index
                             && *obj_field_path == obj_path
                     );
-                    let s = if sel { theme::SELECTED } else { theme::SEARCH_HINT };
+                    let s = if sel {
+                        theme::SELECTED
+                    } else {
+                        theme::SEARCH_HINT
+                    };
                     items.push(ListItem::new(Line::from(Span::styled(
                         format!("{indent}(no fields)"),
                         s,
@@ -1324,21 +1305,19 @@ impl StackState {
                         } else {
                             ratatui::style::Style::default()
                         };
-                        let toggle = if cycle {
-                            "  "
-                        } else {
-                            match &child_phase {
-                                Some(ExpansionPhase::Expanded)
-                                | Some(ExpansionPhase::Loading) => "- ",
-                                Some(ExpansionPhase::Collapsed)
-                                | Some(ExpansionPhase::Failed) => "+ ",
-                                None => "  ",
-                            }
-                        };
-                        let val = Self::format_field_value(
-                            &field.value,
-                            child_phase.as_ref(),
-                        );
+                        let toggle =
+                            if cycle {
+                                "  "
+                            } else {
+                                match &child_phase {
+                                    Some(ExpansionPhase::Expanded)
+                                    | Some(ExpansionPhase::Loading) => "- ",
+                                    Some(ExpansionPhase::Collapsed)
+                                    | Some(ExpansionPhase::Failed) => "+ ",
+                                    None => "  ",
+                                }
+                            };
+                        let val = Self::format_field_value(&field.value, child_phase.as_ref());
                         let text = format!("{indent}{toggle}{}: {}", field.name, val);
                         items.push(ListItem::new(Line::from(Span::styled(text, s))));
                         if !cycle {
@@ -1378,7 +1357,11 @@ impl StackState {
                         && *ei == entry_index
                         && *obj_field_path == obj_path
                 );
-                let s = if sel { theme::SELECTED } else { theme::SEARCH_HINT };
+                let s = if sel {
+                    theme::SELECTED
+                } else {
+                    theme::SEARCH_HINT
+                };
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!("{indent}! {err}"),
                     s,
@@ -1398,24 +1381,16 @@ impl StackState {
         value_phase: Option<&ExpansionPhase>,
     ) -> String {
         let toggle = match value_phase {
-            Some(ExpansionPhase::Expanded)
-            | Some(ExpansionPhase::Loading) => "- ",
-            Some(ExpansionPhase::Collapsed)
-            | Some(ExpansionPhase::Failed) => "+ ",
+            Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
+            Some(ExpansionPhase::Collapsed) | Some(ExpansionPhase::Failed) => "+ ",
             None => "  ",
         };
         let val = Self::format_entry_value(&entry.value);
         if let Some(key) = &entry.key {
             let k = Self::format_entry_value(key);
-            format!(
-                "{indent}{toggle}[{}] {} => {}",
-                entry.index, k, val
-            )
+            format!("{indent}{toggle}[{}] {} => {}", entry.index, k, val)
         } else {
-            format!(
-                "{indent}{toggle}[{}] {}",
-                entry.index, val
-            )
+            format!("{indent}{toggle}[{}] {}", entry.index, val)
         }
     }
 
@@ -1627,10 +1602,7 @@ impl StackState {
                         } else {
                             ratatui::style::Style::default()
                         };
-                        let val = Self::format_field_value(
-                            &field.value,
-                            child_phase.as_ref(),
-                        );
+                        let val = Self::format_field_value(&field.value, child_phase.as_ref());
                         let toggle = match &child_phase {
                             Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
                             Some(ExpansionPhase::Collapsed) | Some(ExpansionPhase::Failed) => "+ ",

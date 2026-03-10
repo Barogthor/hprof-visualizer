@@ -191,17 +191,14 @@ impl MemorySize for VariableValue {
         std::mem::size_of::<Self>()
             + match self {
                 VariableValue::Null => 0,
-                VariableValue::ObjectRef { class_name, .. } => {
-                    class_name.capacity()
-                }
+                VariableValue::ObjectRef { class_name, .. } => class_name.capacity(),
             }
     }
 }
 
 impl MemorySize for VariableInfo {
     fn memory_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.value.memory_size()
+        std::mem::size_of::<Self>() + self.value.memory_size()
             - std::mem::size_of::<VariableValue>()
     }
 }
@@ -214,12 +211,7 @@ impl MemorySize for FieldValue {
                     class_name,
                     inline_value,
                     ..
-                } => {
-                    class_name.capacity()
-                        + inline_value
-                            .as_ref()
-                            .map_or(0, |s| s.capacity())
-                }
+                } => class_name.capacity() + inline_value.as_ref().map_or(0, |s| s.capacity()),
                 _ => 0,
             }
     }
@@ -227,9 +219,7 @@ impl MemorySize for FieldValue {
 
 impl MemorySize for FieldInfo {
     fn memory_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.name.capacity()
-            + self.value.memory_size()
+        std::mem::size_of::<Self>() + self.name.capacity() + self.value.memory_size()
             - std::mem::size_of::<FieldValue>()
     }
 }
@@ -237,9 +227,10 @@ impl MemorySize for FieldInfo {
 impl MemorySize for EntryInfo {
     fn memory_size(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.key.as_ref().map_or(0, |k| {
-                k.memory_size() - std::mem::size_of::<FieldValue>()
-            })
+            + self
+                .key
+                .as_ref()
+                .map_or(0, |k| k.memory_size() - std::mem::size_of::<FieldValue>())
             + self.value.memory_size()
             - std::mem::size_of::<FieldValue>()
     }
@@ -248,12 +239,12 @@ impl MemorySize for EntryInfo {
 impl MemorySize for CollectionPage {
     fn memory_size(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.entries.capacity()
-                * std::mem::size_of::<EntryInfo>()
-            + self.entries.iter().map(|e| {
-                e.memory_size()
-                    - std::mem::size_of::<EntryInfo>()
-            }).sum::<usize>()
+            + self.entries.capacity() * std::mem::size_of::<EntryInfo>()
+            + self
+                .entries
+                .iter()
+                .map(|e| e.memory_size() - std::mem::size_of::<EntryInfo>())
+                .sum::<usize>()
     }
 }
 
@@ -301,6 +292,12 @@ pub trait NavigationEngine {
     /// budget counter (PreciseIndex + thread cache + any
     /// expanded objects/pages).
     fn memory_used(&self) -> usize;
+
+    /// Returns the memory budget in bytes.
+    ///
+    /// Auto-calculated (50% of RAM) or explicitly set via
+    /// `--memory-limit` / config.
+    fn memory_budget(&self) -> u64;
 }
 
 #[cfg(test)]
@@ -351,6 +348,9 @@ mod tests {
         }
         fn memory_used(&self) -> usize {
             0
+        }
+        fn memory_budget(&self) -> u64 {
+            u64::MAX
         }
     }
 
@@ -505,8 +505,7 @@ mod tests {
             name: String::from("main-thread"),
             state: ThreadState::Runnable,
         };
-        let expected = std::mem::size_of::<ThreadInfo>()
-            + info.name.capacity();
+        let expected = std::mem::size_of::<ThreadInfo>() + info.name.capacity();
         assert_eq!(info.memory_size(), expected);
     }
 
@@ -530,10 +529,7 @@ mod tests {
     #[test]
     fn field_value_null_returns_static_size() {
         let v = FieldValue::Null;
-        assert_eq!(
-            v.memory_size(),
-            std::mem::size_of::<FieldValue>()
-        );
+        assert_eq!(v.memory_size(), std::mem::size_of::<FieldValue>());
     }
 
     #[test]
@@ -544,9 +540,7 @@ mod tests {
             entry_count: None,
             inline_value: Some("hello".to_string()),
         };
-        let expected = std::mem::size_of::<FieldValue>()
-            + "java.lang.String".len()
-            + "hello".len();
+        let expected = std::mem::size_of::<FieldValue>() + "java.lang.String".len() + "hello".len();
         assert!(v.memory_size() >= expected);
     }
 
@@ -556,18 +550,14 @@ mod tests {
             name: "count".to_string(),
             value: FieldValue::Int(42),
         };
-        let expected = std::mem::size_of::<FieldInfo>()
-            + f.name.capacity();
+        let expected = std::mem::size_of::<FieldInfo>() + f.name.capacity();
         assert_eq!(f.memory_size(), expected);
     }
 
     #[test]
     fn variable_value_null_returns_static_size() {
         let v = VariableValue::Null;
-        assert_eq!(
-            v.memory_size(),
-            std::mem::size_of::<VariableValue>()
-        );
+        assert_eq!(v.memory_size(), std::mem::size_of::<VariableValue>());
     }
 
     #[test]
@@ -576,8 +566,7 @@ mod tests {
             id: 1,
             class_name: "Object".to_string(),
         };
-        let expected = std::mem::size_of::<VariableValue>()
-            + "Object".len();
+        let expected = std::mem::size_of::<VariableValue>() + "Object".len();
         assert!(v.memory_size() >= expected);
     }
 
@@ -587,10 +576,7 @@ mod tests {
             index: 0,
             value: VariableValue::Null,
         };
-        assert_eq!(
-            v.memory_size(),
-            std::mem::size_of::<VariableInfo>()
-        );
+        assert_eq!(v.memory_size(), std::mem::size_of::<VariableInfo>());
     }
 
     #[test]
@@ -600,10 +586,7 @@ mod tests {
             key: None,
             value: FieldValue::Int(1),
         };
-        assert_eq!(
-            e.memory_size(),
-            std::mem::size_of::<EntryInfo>()
-        );
+        assert_eq!(e.memory_size(), std::mem::size_of::<EntryInfo>());
     }
 
     #[test]
@@ -619,8 +602,7 @@ mod tests {
                 inline_value: None,
             },
         };
-        let expected = std::mem::size_of::<EntryInfo>()
-            + class_name.capacity();
+        let expected = std::mem::size_of::<EntryInfo>() + class_name.capacity();
         assert_eq!(e.memory_size(), expected);
     }
 
@@ -643,29 +625,22 @@ mod tests {
                 inline_value: None,
             },
         };
-        let expected = std::mem::size_of::<EntryInfo>()
-            + key_name.capacity()
-            + val_name.capacity();
+        let expected = std::mem::size_of::<EntryInfo>() + key_name.capacity() + val_name.capacity();
         assert_eq!(e.memory_size(), expected);
     }
 
     #[test]
     fn collection_page_memory_size_includes_entries() {
         let page = CollectionPage {
-            entries: vec![
-                EntryInfo {
-                    index: 0,
-                    key: None,
-                    value: FieldValue::Int(1),
-                },
-            ],
+            entries: vec![EntryInfo {
+                index: 0,
+                key: None,
+                value: FieldValue::Int(1),
+            }],
             total_count: 1,
             offset: 0,
             has_more: false,
         };
-        assert!(
-            page.memory_size()
-                > std::mem::size_of::<CollectionPage>()
-        );
+        assert!(page.memory_size() > std::mem::size_of::<CollectionPage>());
     }
 }

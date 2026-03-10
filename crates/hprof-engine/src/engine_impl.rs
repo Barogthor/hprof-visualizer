@@ -198,8 +198,10 @@ pub(crate) fn resolve_inline_value(
         hfile.header.id_size,
         hfile.records_bytes(),
     );
-    fields.iter().find(|f| f.name == "value").map(|f| {
-        match &f.value {
+    fields
+        .iter()
+        .find(|f| f.name == "value")
+        .map(|f| match &f.value {
             crate::engine::FieldValue::Bool(b) => b.to_string(),
             crate::engine::FieldValue::Char(c) => format!("'{c}'"),
             crate::engine::FieldValue::Byte(n) => n.to_string(),
@@ -209,8 +211,7 @@ pub(crate) fn resolve_inline_value(
             crate::engine::FieldValue::Float(n) => format!("{n}"),
             crate::engine::FieldValue::Double(n) => format!("{n}"),
             _ => "?".to_string(),
-        }
-    })
+        })
 }
 
 /// Truncates a string for inline display (max 80 chars).
@@ -218,11 +219,7 @@ fn truncate_inline(s: String) -> String {
     if s.chars().count() <= 80 {
         s
     } else {
-        let end = s
-            .char_indices()
-            .nth(78)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
+        let end = s.char_indices().nth(78).map(|(i, _)| i).unwrap_or(s.len());
         format!("{}..", &s[..end])
     }
 }
@@ -281,12 +278,13 @@ impl Engine {
     /// - [`HprofError::MmapFailed`] — file not found or OS mapping failed.
     /// - [`HprofError::UnsupportedVersion`] — unrecognised version string.
     /// - [`HprofError::TruncatedRecord`] — file header is truncated.
-    pub fn from_file(path: &Path, _config: &EngineConfig) -> Result<Self, HprofError> {
+    pub fn from_file(path: &Path, config: &EngineConfig) -> Result<Self, HprofError> {
         let mut null_obs = NullProgressObserver;
         let hfile = Arc::new(HprofFile::from_path(path)?);
         let mut notifier = ProgressNotifier::new(&mut null_obs);
         let thread_cache = Self::build_thread_cache(&hfile, &mut notifier);
-        let counter = Arc::new(crate::cache::MemoryCounter::new());
+        let budget = config.effective_budget();
+        let counter = Arc::new(crate::cache::MemoryCounter::new(budget));
         counter.add(Self::initial_memory(&hfile, &thread_cache));
         Ok(Self {
             hfile,
@@ -306,13 +304,14 @@ impl Engine {
     /// See [`Engine::from_file`].
     pub fn from_file_with_progress(
         path: &Path,
-        _config: &EngineConfig,
+        config: &EngineConfig,
         observer: &mut dyn ParseProgressObserver,
     ) -> Result<Self, HprofError> {
         let hfile = Arc::new(HprofFile::from_path_with_progress(path, observer)?);
         let mut notifier = ProgressNotifier::new(observer);
         let thread_cache = Self::build_thread_cache(&hfile, &mut notifier);
-        let counter = Arc::new(crate::cache::MemoryCounter::new());
+        let budget = config.effective_budget();
+        let counter = Arc::new(crate::cache::MemoryCounter::new(budget));
         counter.add(Self::initial_memory(&hfile, &thread_cache));
         Ok(Self {
             hfile,
@@ -336,8 +335,7 @@ impl Engine {
         }
         let thread_list: Vec<_> = hfile.index.threads.iter().collect();
         let chunk_size = (total / 10).clamp(1, 50);
-        let mut cache =
-            FxHashMap::with_capacity_and_hasher(total, Default::default());
+        let mut cache = FxHashMap::with_capacity_and_hasher(total, Default::default());
         for chunk in thread_list.chunks(chunk_size) {
             let results: Vec<(u32, ThreadMetadata)> = chunk
                 .par_iter()
@@ -370,20 +368,12 @@ impl Engine {
 
     /// Computes initial memory usage from PreciseIndex +
     /// thread_cache at construction time.
-    fn initial_memory(
-        hfile: &HprofFile,
-        thread_cache: &FxHashMap<u32, ThreadMetadata>,
-    ) -> usize {
+    fn initial_memory(hfile: &HprofFile, thread_cache: &FxHashMap<u32, ThreadMetadata>) -> usize {
         use hprof_api::MemorySize;
         let index_size = hfile.index.memory_size();
-        let cache_size: usize = thread_cache
-            .values()
-            .map(|tm| tm.memory_size())
-            .sum();
+        let cache_size: usize = thread_cache.values().map(|tm| tm.memory_size()).sum();
         let cache_overhead =
-            hprof_api::fxhashmap_memory_size::<u32, ThreadMetadata>(
-                thread_cache.capacity(),
-            );
+            hprof_api::fxhashmap_memory_size::<u32, ThreadMetadata>(thread_cache.capacity());
         index_size + cache_size + cache_overhead
     }
 
@@ -731,9 +721,7 @@ impl NavigationEngine for Engine {
             } = &mut field.value
             {
                 let child_id = *id;
-                if let Some(child_raw) =
-                    Self::read_instance(&self.hfile, child_id)
-                {
+                if let Some(child_raw) = Self::read_instance(&self.hfile, child_id) {
                     let name = self
                         .hfile
                         .index
@@ -741,8 +729,7 @@ impl NavigationEngine for Engine {
                         .get(&child_raw.class_object_id)
                         .cloned()
                         .unwrap_or_else(|| "Object".to_string());
-                    *inline_value =
-                        resolve_inline_value(&name, &self.hfile, child_id);
+                    *inline_value = resolve_inline_value(&name, &self.hfile, child_id);
                     *entry_count = collection_entry_count(
                         &child_raw,
                         &self.hfile.index,
@@ -750,14 +737,10 @@ impl NavigationEngine for Engine {
                         self.hfile.records_bytes(),
                     );
                     *class_name = name;
-                } else if let Some((_class_id, elems)) =
-                    self.hfile.find_object_array(child_id)
-                {
+                } else if let Some((_class_id, elems)) = self.hfile.find_object_array(child_id) {
                     *class_name = "Object[]".to_string();
                     *entry_count = Some(elems.len() as u64);
-                } else if let Some((elem_type, bytes)) =
-                    self.hfile.find_prim_array(child_id)
-                {
+                } else if let Some((elem_type, bytes)) = self.hfile.find_prim_array(child_id) {
                     let type_name = prim_array_type_name(elem_type);
                     let elem_size = field_byte_size(elem_type, 0);
                     let count = if elem_size > 0 {
@@ -802,6 +785,10 @@ impl NavigationEngine for Engine {
     fn memory_used(&self) -> usize {
         self.memory_counter.current()
     }
+
+    fn memory_budget(&self) -> u64 {
+        self.memory_counter.budget()
+    }
 }
 
 #[cfg(test)]
@@ -824,7 +811,7 @@ mod tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         let used = engine.memory_used();
         assert!(used > 0, "memory_used must be > 0 after construction");
@@ -841,7 +828,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         // Empty index: all maps have 0 capacity → memory_size() = size_of::<PreciseIndex>()
         // Empty thread_cache: cache_size=0, cache_overhead=0
@@ -859,7 +846,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         assert!(engine.warnings().is_empty());
     }
@@ -890,7 +877,7 @@ mod tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let mut obs = CountingObserver { call_count: 0 };
         let result = Engine::from_file_with_progress(tmp.path(), &config, &mut obs);
         assert!(result.is_ok());
@@ -925,7 +912,7 @@ mod tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let mut obs = CapturingObserver::default();
         let result = Engine::from_file_with_progress(tmp.path(), &config, &mut obs);
 
@@ -954,7 +941,7 @@ mod tests {
         let missing = tmp.path().to_path_buf();
         drop(tmp);
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let result = Engine::from_file(&missing, &config);
         assert!(matches!(result, Err(HprofError::MmapFailed(_))));
     }
@@ -965,7 +952,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let result = Engine::from_file(tmp.path(), &config);
         assert!(result.is_ok());
     }
@@ -976,7 +963,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         assert!(engine.list_threads().is_empty());
     }
@@ -987,7 +974,7 @@ mod tests {
         tmp.write_all(&minimal_hprof_bytes()).unwrap();
         tmp.flush().unwrap();
 
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let engine = Engine::from_file(tmp.path(), &config).unwrap();
         assert!(engine.select_thread(999).is_none());
     }
@@ -1004,25 +991,22 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             Engine::from_file(tmp.path(), &config).unwrap()
         }
 
         #[test]
         fn memory_used_with_populated_fixture() {
-            let bytes = HprofTestBuilder::new(
-                "JAVA PROFILE 1.0.2",
-                8,
-            )
-            .add_string(1, "run")
-            .add_string(2, "()")
-            .add_string(3, "Thread.java")
-            .add_string(4, "java/lang/Thread")
-            .add_class(1, 100, 0, 4)
-            .add_stack_frame(10, 1, 2, 3, 1, 42)
-            .add_stack_trace(1, 1, &[10])
-            .add_thread(1, 200, 1, 1, 0, 0)
-            .build();
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "run")
+                .add_string(2, "()")
+                .add_string(3, "Thread.java")
+                .add_string(4, "java/lang/Thread")
+                .add_class(1, 100, 0, 4)
+                .add_stack_frame(10, 1, 2, 3, 1, 42)
+                .add_stack_trace(1, 1, &[10])
+                .add_thread(1, 200, 1, 1, 0, 0)
+                .build();
             let engine = engine_from_bytes(&bytes);
             let used = engine.memory_used();
             assert!(used > 0, "memory_used ({used}) must be positive");
@@ -1359,7 +1343,7 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             Engine::from_file(tmp.path(), &config).unwrap()
         }
 
@@ -1555,7 +1539,7 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             Engine::from_file(tmp.path(), &config).unwrap()
         }
 
@@ -1764,7 +1748,7 @@ mod tests {
             let mut tmp = tempfile::NamedTempFile::new().unwrap();
             tmp.write_all(bytes).unwrap();
             tmp.flush().unwrap();
-            Engine::from_file(tmp.path(), &EngineConfig).unwrap()
+            Engine::from_file(tmp.path(), &EngineConfig::default()).unwrap()
         }
 
         /// Builds a parent object with one ObjectRef field pointing to a
@@ -1784,12 +1768,7 @@ mod tests {
                 .add_string(3, "value")
                 .add_class(1, 200, 0, 2)
                 .add_class_dump(100, 0, 8, &[(1, 2u8)])
-                .add_class_dump(
-                    200,
-                    0,
-                    value_bytes_len as u32,
-                    &[(3, value_type_byte)],
-                )
+                .add_class_dump(200, 0, value_bytes_len as u32, &[(3, value_type_byte)])
                 .add_instance(0xAAAA, 0, 100, &field_data)
                 .add_instance(child_id, 0, 200, &value_bytes)
                 .build();
@@ -1830,8 +1809,11 @@ mod tests {
 
         #[test]
         fn character_field_shows_inline_value() {
-            let v =
-                expand_boxed_child("java.lang.Character", 5, (b'A' as u16).to_be_bytes().to_vec());
+            let v = expand_boxed_child(
+                "java.lang.Character",
+                5,
+                (b'A' as u16).to_be_bytes().to_vec(),
+            );
             if let FieldValue::ObjectRef { inline_value, .. } = v {
                 assert_eq!(inline_value.as_deref(), Some("'A'"));
             } else {
@@ -1855,8 +1837,7 @@ mod tests {
 
         #[test]
         fn unknown_class_returns_no_inline_value() {
-            let v =
-                expand_boxed_child("com.example.Foo", 10, 1i32.to_be_bytes().to_vec());
+            let v = expand_boxed_child("com.example.Foo", 10, 1i32.to_be_bytes().to_vec());
             if let FieldValue::ObjectRef { inline_value, .. } = v {
                 assert_eq!(inline_value, None);
             } else {
@@ -1866,21 +1847,11 @@ mod tests {
 
         #[test]
         fn float_field_shows_inline_value() {
-            let v = expand_boxed_child(
-                "java.lang.Float",
-                6,
-                3.14f32.to_be_bytes().to_vec(),
-            );
+            let v = expand_boxed_child("java.lang.Float", 6, 3.14f32.to_be_bytes().to_vec());
             if let FieldValue::ObjectRef { inline_value, .. } = v {
-                assert!(
-                    inline_value.is_some(),
-                    "expected Some for Float"
-                );
+                assert!(inline_value.is_some(), "expected Some for Float");
                 let s = inline_value.unwrap();
-                assert!(
-                    s.starts_with("3.14"),
-                    "expected float repr, got {s}"
-                );
+                assert!(s.starts_with("3.14"), "expected float repr, got {s}");
             } else {
                 panic!("expected ObjectRef");
             }
@@ -1888,21 +1859,12 @@ mod tests {
 
         #[test]
         fn double_field_shows_inline_value() {
-            let v = expand_boxed_child(
-                "java.lang.Double",
-                7,
-                2.718281828f64.to_be_bytes().to_vec(),
-            );
+            let v =
+                expand_boxed_child("java.lang.Double", 7, 2.718281828f64.to_be_bytes().to_vec());
             if let FieldValue::ObjectRef { inline_value, .. } = v {
-                assert!(
-                    inline_value.is_some(),
-                    "expected Some for Double"
-                );
+                assert!(inline_value.is_some(), "expected Some for Double");
                 let s = inline_value.unwrap();
-                assert!(
-                    s.starts_with("2.718"),
-                    "expected double repr, got {s}"
-                );
+                assert!(s.starts_with("2.718"), "expected double repr, got {s}");
             } else {
                 panic!("expected ObjectRef");
             }
@@ -1910,11 +1872,7 @@ mod tests {
 
         #[test]
         fn byte_field_shows_inline_value() {
-            let v = expand_boxed_child(
-                "java.lang.Byte",
-                8,
-                vec![127u8],
-            );
+            let v = expand_boxed_child("java.lang.Byte", 8, vec![127u8]);
             if let FieldValue::ObjectRef { inline_value, .. } = v {
                 assert_eq!(inline_value.as_deref(), Some("127"));
             } else {
@@ -1924,16 +1882,9 @@ mod tests {
 
         #[test]
         fn short_field_shows_inline_value() {
-            let v = expand_boxed_child(
-                "java.lang.Short",
-                9,
-                (-1234i16).to_be_bytes().to_vec(),
-            );
+            let v = expand_boxed_child("java.lang.Short", 9, (-1234i16).to_be_bytes().to_vec());
             if let FieldValue::ObjectRef { inline_value, .. } = v {
-                assert_eq!(
-                    inline_value.as_deref(),
-                    Some("-1234")
-                );
+                assert_eq!(inline_value.as_deref(), Some("-1234"));
             } else {
                 panic!("expected ObjectRef");
             }
@@ -1944,33 +1895,20 @@ mod tests {
             // Integer class but no "value" field — only "dummy"
             let child_id: u64 = 0xBBBB;
             let field_data = child_id.to_be_bytes().to_vec();
-            let bytes =
-                HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
-                    .add_string(1, "field")
-                    .add_string(2, "java/lang/Integer")
-                    .add_string(3, "dummy")
-                    .add_class(1, 200, 0, 2)
-                    .add_class_dump(100, 0, 8, &[(1, 2u8)])
-                    .add_class_dump(200, 0, 4, &[(3, 10u8)])
-                    .add_instance(0xAAAA, 0, 100, &field_data)
-                    .add_instance(
-                        child_id,
-                        0,
-                        200,
-                        &99i32.to_be_bytes(),
-                    )
-                    .build();
+            let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+                .add_string(1, "field")
+                .add_string(2, "java/lang/Integer")
+                .add_string(3, "dummy")
+                .add_class(1, 200, 0, 2)
+                .add_class_dump(100, 0, 8, &[(1, 2u8)])
+                .add_class_dump(200, 0, 4, &[(3, 10u8)])
+                .add_instance(0xAAAA, 0, 100, &field_data)
+                .add_instance(child_id, 0, 200, &99i32.to_be_bytes())
+                .build();
             let engine = engine_from_bytes(&bytes);
-            let fields =
-                engine.expand_object(0xAAAA).unwrap();
-            if let FieldValue::ObjectRef {
-                inline_value, ..
-            } = &fields[0].value
-            {
-                assert_eq!(
-                    *inline_value, None,
-                    "no 'value' field means no inline"
-                );
+            let fields = engine.expand_object(0xAAAA).unwrap();
+            if let FieldValue::ObjectRef { inline_value, .. } = &fields[0].value {
+                assert_eq!(*inline_value, None, "no 'value' field means no inline");
             } else {
                 panic!("expected ObjectRef");
             }
@@ -1997,7 +1935,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -2022,7 +1960,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -2047,7 +1985,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -2068,7 +2006,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
             let threads = engine.list_threads();
 
@@ -2088,7 +2026,7 @@ mod tests {
             tmp.write_all(&bytes).unwrap();
             tmp.flush().unwrap();
 
-            let config = EngineConfig;
+            let config = EngineConfig::default();
             let engine = Engine::from_file(tmp.path(), &config).unwrap();
 
             let found = engine.select_thread(1);
@@ -2162,7 +2100,7 @@ mod tests {
             eprintln!("skip: dump not found");
             return;
         }
-        let config = EngineConfig;
+        let config = EngineConfig::default();
         let engine = Engine::from_file(path, &config).unwrap();
         let threads = engine.list_threads();
         for t in &threads {
@@ -2176,5 +2114,29 @@ mod tests {
             has_non_unknown,
             "expected at least one non-Unknown thread state"
         );
+    }
+
+    #[test]
+    fn memory_budget_default_uses_auto_calc() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&minimal_hprof_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig::default();
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        assert!(engine.memory_budget() > 0, "auto-calc budget must be > 0");
+    }
+
+    #[test]
+    fn memory_budget_explicit_override() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&minimal_hprof_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let config = EngineConfig {
+            budget_bytes: Some(1_000_000),
+        };
+        let engine = Engine::from_file(tmp.path(), &config).unwrap();
+        assert_eq!(engine.memory_budget(), 1_000_000);
     }
 }

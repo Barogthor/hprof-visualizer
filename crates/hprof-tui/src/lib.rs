@@ -12,7 +12,9 @@ macro_rules! dbg_log {
 
 #[cfg(not(feature = "dev-profiling"))]
 macro_rules! dbg_log {
-    ($($arg:tt)*) => {()};
+    ($($arg:tt)*) => {
+        ()
+    };
 }
 
 pub mod app;

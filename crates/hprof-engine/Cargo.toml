@@ -8,6 +8,7 @@ byteorder = "1"
 rayon = { workspace = true }
 rustc-hash = { workspace = true }
 tracing = { version = "0.1", optional = true }
+sysinfo = { version = "0.34", default-features = false, features = ["system"] }
 hprof-api = { path = "../hprof-api" }
 hprof-parser = { path = "../hprof-parser" }
 

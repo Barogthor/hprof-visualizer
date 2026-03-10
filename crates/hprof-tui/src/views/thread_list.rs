@@ -371,24 +371,21 @@ mod tests {
 
     #[test]
     fn page_down_jumps_by_n_items() {
-        let mut state =
-            ThreadListState::new(make_threads(&["t1", "t2", "t3", "t4", "t5", "t6"]));
+        let mut state = ThreadListState::new(make_threads(&["t1", "t2", "t3", "t4", "t5", "t6"]));
         state.page_down(3);
         assert_eq!(state.selected_serial(), Some(4));
     }
 
     #[test]
     fn page_down_clamps_at_last_item() {
-        let mut state =
-            ThreadListState::new(make_threads(&["t1", "t2", "t3"]));
+        let mut state = ThreadListState::new(make_threads(&["t1", "t2", "t3"]));
         state.page_down(10);
         assert_eq!(state.selected_serial(), Some(3));
     }
 
     #[test]
     fn page_up_jumps_by_n_items() {
-        let mut state =
-            ThreadListState::new(make_threads(&["t1", "t2", "t3", "t4", "t5", "t6"]));
+        let mut state = ThreadListState::new(make_threads(&["t1", "t2", "t3", "t4", "t5", "t6"]));
         state.move_end();
         state.page_up(3);
         assert_eq!(state.selected_serial(), Some(3));
@@ -396,8 +393,7 @@ mod tests {
 
     #[test]
     fn page_up_clamps_at_first_item() {
-        let mut state =
-            ThreadListState::new(make_threads(&["t1", "t2", "t3"]));
+        let mut state = ThreadListState::new(make_threads(&["t1", "t2", "t3"]));
         state.move_end();
         state.page_up(10);
         assert_eq!(state.selected_serial(), Some(1));

@@ -22,14 +22,20 @@ pub(crate) fn get_page(
     if let Some(page) = try_object_array(hfile, collection_id, offset, limit) {
         dbg_log!(
             "get_page(0x{:X}, {}, {}): Object[] → {} entries",
-            collection_id, offset, limit, page.entries.len()
+            collection_id,
+            offset,
+            limit,
+            page.entries.len()
         );
         return Some(page);
     }
     if let Some(page) = try_prim_array(hfile, collection_id, offset, limit) {
         dbg_log!(
             "get_page(0x{:X}, {}, {}): prim[] → {} entries",
-            collection_id, offset, limit, page.entries.len()
+            collection_id,
+            offset,
+            limit,
+            page.entries.len()
         );
         return Some(page);
     }
@@ -38,43 +44,38 @@ pub(crate) fn get_page(
     let raw = match Engine::read_instance_public(hfile, collection_id) {
         Some(r) => r,
         None => {
-            dbg_log!(
-                "get_page(0x{:X}): instance not found",
-                collection_id
-            );
+            dbg_log!("get_page(0x{:X}): instance not found", collection_id);
             return None;
         }
     };
-    let class_name = match hfile
-        .index
-        .class_names_by_id
-        .get(&raw.class_object_id)
-    {
+    let class_name = match hfile.index.class_names_by_id.get(&raw.class_object_id) {
         Some(cn) => cn,
         None => {
             dbg_log!(
                 "get_page(0x{:X}): class_name missing \
                  for class_obj=0x{:X}",
-                collection_id, raw.class_object_id
+                collection_id,
+                raw.class_object_id
             );
             return None;
         }
     };
-    let short = class_name
-        .rsplit('.')
-        .next()
-        .unwrap_or(class_name.as_str());
+    let short = class_name.rsplit('.').next().unwrap_or(class_name.as_str());
 
-    let result =
-        match_extractor(short, hfile, &raw, offset, limit);
+    let result = match_extractor(short, hfile, &raw, offset, limit);
     match &result {
         Some(page) => dbg_log!(
             "get_page(0x{:X}): {} ({}) → {} entries",
-            collection_id, class_name, short, page.entries.len()
+            collection_id,
+            class_name,
+            short,
+            page.entries.len()
         ),
         None => dbg_log!(
             "get_page(0x{:X}): {} ({}) → extractor None",
-            collection_id, class_name, short
+            collection_id,
+            class_name,
+            short
         ),
     }
     result
@@ -500,24 +501,16 @@ fn id_to_field_value(id: u64, hfile: &HprofFile) -> FieldValue {
     if id == 0 {
         return FieldValue::Null;
     }
-    let class_name = Engine::read_instance_public(hfile, id)
-        .and_then(|raw| {
-            hfile
-                .index
-                .class_names_by_id
-                .get(&raw.class_object_id)
-                .cloned()
-        });
-    dbg_log!(
-        "id_to_field_value(0x{:X}): class={:?}",
-        id, class_name
-    );
-    let class_name = class_name
-        .unwrap_or_else(|| "Object".to_string());
-    let inline_value =
-        crate::engine_impl::resolve_inline_value(
-            &class_name, hfile, id,
-        );
+    let class_name = Engine::read_instance_public(hfile, id).and_then(|raw| {
+        hfile
+            .index
+            .class_names_by_id
+            .get(&raw.class_object_id)
+            .cloned()
+    });
+    dbg_log!("id_to_field_value(0x{:X}): class={:?}", id, class_name);
+    let class_name = class_name.unwrap_or_else(|| "Object".to_string());
+    let inline_value = crate::engine_impl::resolve_inline_value(&class_name, hfile, id);
     FieldValue::ObjectRef {
         id,
         class_name,

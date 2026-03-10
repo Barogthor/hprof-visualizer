@@ -27,7 +27,9 @@ macro_rules! dbg_log {
 
 #[cfg(not(feature = "dev-profiling"))]
 macro_rules! dbg_log {
-    ($($arg:tt)*) => {()};
+    ($($arg:tt)*) => {
+        ()
+    };
 }
 
 pub mod cache;
@@ -44,10 +46,29 @@ pub use engine_impl::Engine;
 
 /// Configuration for the navigation engine.
 ///
-/// Currently a placeholder; Story 6.1 will populate this from TOML config
-/// and CLI overrides. Implements `Default` for zero-config construction.
+/// `budget_bytes`:
+/// - `None` → auto-calculate at engine construction
+///   (50% of total RAM via `sysinfo`)
+/// - `Some(n)` → explicit override in bytes
+///
+/// Story 6.1 will add TOML config file support.
 #[derive(Debug, Default)]
-pub struct EngineConfig;
+pub struct EngineConfig {
+    /// Memory budget override in bytes.
+    /// `None` means auto-calculate from system RAM.
+    pub budget_bytes: Option<u64>,
+}
+
+impl EngineConfig {
+    /// Resolves the effective memory budget.
+    ///
+    /// Returns `budget_bytes` if set, otherwise
+    /// auto-calculates from system RAM (50% of total).
+    pub fn effective_budget(&self) -> u64 {
+        self.budget_bytes
+            .unwrap_or_else(cache::system_memory::auto_budget)
+    }
+}
 
 /// Summary of a completed first-pass indexing run.
 ///
@@ -256,5 +277,26 @@ mod tests {
             "no segment events expected for a \
              heap-dump-free file"
         );
+    }
+
+    #[test]
+    fn engine_config_default_has_no_budget_override() {
+        let cfg = EngineConfig::default();
+        assert!(cfg.budget_bytes.is_none());
+    }
+
+    #[test]
+    fn engine_config_effective_budget_auto_calculates() {
+        let cfg = EngineConfig::default();
+        let budget = cfg.effective_budget();
+        assert!(budget > 0);
+    }
+
+    #[test]
+    fn engine_config_effective_budget_uses_override() {
+        let cfg = EngineConfig {
+            budget_bytes: Some(1_000_000),
+        };
+        assert_eq!(cfg.effective_budget(), 1_000_000);
     }
 }

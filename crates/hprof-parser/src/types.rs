@@ -127,9 +127,7 @@ impl MemorySize for StackFrame {
 
 impl MemorySize for StackTrace {
     fn memory_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.frame_ids.capacity()
-                * std::mem::size_of::<u64>()
+        std::mem::size_of::<Self>() + self.frame_ids.capacity() * std::mem::size_of::<u64>()
     }
 }
 
@@ -142,15 +140,13 @@ impl MemorySize for FieldDef {
 impl MemorySize for ClassDumpInfo {
     fn memory_size(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.instance_fields.capacity()
-                * std::mem::size_of::<FieldDef>()
+            + self.instance_fields.capacity() * std::mem::size_of::<FieldDef>()
     }
 }
 
 impl MemorySize for RawInstance {
     fn memory_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.data.capacity()
+        std::mem::size_of::<Self>() + self.data.capacity()
     }
 }
 
@@ -342,8 +338,7 @@ mod memory_size_tests {
             thread_serial: 1,
             frame_ids,
         };
-        let expected = size_of::<StackTrace>()
-            + 10 * size_of::<u64>();
+        let expected = size_of::<StackTrace>() + 10 * size_of::<u64>();
         assert_eq!(st.memory_size(), expected);
     }
 
@@ -369,8 +364,7 @@ mod memory_size_tests {
             instance_size: 16,
             instance_fields: fields,
         };
-        let expected = size_of::<ClassDumpInfo>()
-            + 5 * size_of::<FieldDef>();
+        let expected = size_of::<ClassDumpInfo>() + 5 * size_of::<FieldDef>();
         assert_eq!(c.memory_size(), expected);
     }
 

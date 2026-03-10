@@ -108,10 +108,7 @@ mod tests {
             offset: 100,
             len: 5,
         };
-        assert_eq!(
-            s.memory_size(),
-            std::mem::size_of::<HprofStringRef>()
-        );
+        assert_eq!(s.memory_size(), std::mem::size_of::<HprofStringRef>());
     }
 
     #[test]

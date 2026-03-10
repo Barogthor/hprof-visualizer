@@ -59,19 +59,13 @@ mod tests {
     fn fxhashmap_helper_includes_control_bytes() {
         let cap = 16;
         let expected = cap * (size_of::<u32>() + size_of::<u64>() + 8);
-        assert_eq!(
-            fxhashmap_memory_size::<u32, u64>(cap),
-            expected
-        );
+        assert_eq!(fxhashmap_memory_size::<u32, u64>(cap), expected);
     }
 
     #[test]
     fn fxhashmap_helper_u64_u64_calculation() {
         let cap = 100;
         // 8 + 8 + 8 = 24 bytes per slot
-        assert_eq!(
-            fxhashmap_memory_size::<u64, u64>(cap),
-            100 * 24
-        );
+        assert_eq!(fxhashmap_memory_size::<u64, u64>(cap), 100 * 24);
     }
 }
