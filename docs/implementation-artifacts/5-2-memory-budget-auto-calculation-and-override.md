@@ -1,6 +1,6 @@
 # Story 5.2: Memory Budget Auto-Calculation & Override
 
-Status: review
+Status: done
 
 ## Story
 
@@ -304,6 +304,7 @@ No debug issues encountered.
 ### Change Log
 
 - 2026-03-10: Story 5.2 implementation complete — system memory detection, EngineConfig budget field, MemoryCounter budget wiring, clap CLI with --memory-limit, integration tests. Config file support deferred to 6.1.
+- 2026-03-10: Code review fixes — removed fragile detect_total_memory test (covered by auto_budget tests), guarded usage_ratio() against NaN when budget=0, added AC2 CLI→EngineConfig integration test, completed File List with 8 cargo-fmt-only files.
 
 ### File List
 
@@ -317,7 +318,15 @@ Modified files:
 - crates/hprof-engine/src/lib.rs
 - crates/hprof-engine/src/engine.rs
 - crates/hprof-engine/src/engine_impl.rs
+- crates/hprof-engine/src/pagination.rs (cargo fmt only)
 - crates/hprof-cli/Cargo.toml
 - crates/hprof-cli/src/main.rs
 - crates/hprof-tui/src/app.rs
+- crates/hprof-tui/src/lib.rs (cargo fmt only)
+- crates/hprof-tui/src/views/stack_view.rs (cargo fmt only)
+- crates/hprof-tui/src/views/thread_list.rs (cargo fmt only)
+- crates/hprof-api/src/memory_size.rs (cargo fmt only)
+- crates/hprof-parser/src/indexer/precise.rs (cargo fmt only)
+- crates/hprof-parser/src/strings.rs (cargo fmt only)
+- crates/hprof-parser/src/types.rs (cargo fmt only)
 - docs/implementation-artifacts/sprint-status.yaml

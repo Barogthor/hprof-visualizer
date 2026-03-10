@@ -34,12 +34,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detect_total_memory_returns_positive() {
-        let total = detect_total_memory();
-        assert!(total > 0, "total_memory() should be > 0 on dev machines");
-    }
-
-    #[test]
     fn auto_budget_returns_half_of_total() {
         let budget = auto_budget();
         let total = detect_total_memory();

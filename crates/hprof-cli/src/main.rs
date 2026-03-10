@@ -241,4 +241,20 @@ mod tests {
     fn cli_parse_extra_positional_is_error() {
         assert!(Cli::try_parse_from(["hprof-visualizer", "a.hprof", "b.hprof",]).is_err());
     }
+
+    #[test]
+    fn cli_memory_limit_wires_to_engine_config_budget() {
+        // AC2: --memory-limit 8G → EngineConfig budget = 8 GiB
+        let cli =
+            Cli::try_parse_from(["hprof-visualizer", "--memory-limit", "8G", "heap.hprof"])
+                .unwrap();
+        let budget_bytes = cli
+            .memory_limit
+            .as_deref()
+            .map(parse_memory_size)
+            .transpose()
+            .unwrap();
+        let config = hprof_engine::EngineConfig { budget_bytes };
+        assert_eq!(config.effective_budget(), 8 * 1024 * 1024 * 1024);
+    }
 }

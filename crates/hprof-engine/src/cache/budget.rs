@@ -37,7 +37,13 @@ impl MemoryCounter {
     ///
     /// Casts both `current()` (`usize`) and `budget`
     /// (`u64`) to `f64` explicitly.
+    ///
+    /// Returns `0.0` if budget is 0 (avoids NaN/division
+    /// by zero). May exceed `1.0` when usage > budget.
     pub fn usage_ratio(&self) -> f64 {
+        if self.budget == 0 {
+            return 0.0;
+        }
         self.current() as f64 / self.budget as f64
     }
 
@@ -168,5 +174,12 @@ mod tests {
         c.add(1_000_000);
         let ratio = c.usage_ratio();
         assert!((ratio - 1.0).abs() < 1e-9, "expected 1.0, got {ratio}");
+    }
+
+    #[test]
+    fn usage_ratio_zero_budget_returns_zero_not_nan() {
+        let c = MemoryCounter::new(0);
+        c.add(100);
+        assert_eq!(c.usage_ratio(), 0.0);
     }
 }
