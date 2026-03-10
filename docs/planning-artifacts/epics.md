@@ -2,8 +2,8 @@
 stepsCompleted: ['step-01-validate-prerequisites', 'step-02-design-epics', 'step-03-create-stories', 'step-04-final-validation']
 status: 'complete'
 completedAt: '2026-03-06'
-revisedAt: '2026-03-08'
-revisionNotes: 'Added Epic 8: First Pass Performance Optimization (stories 8.0-8.3) — FxHashMap, lazy strings, parallel heap parsing. Informed by Algorithm Olympics, Performance Profiler Panel, Pre-mortem Analysis, and Red Team vs Blue Team elicitation sessions. Validated step-04.'
+revisedAt: '2026-03-10'
+revisionNotes: 'Added Epic 9: Navigation & Data Fidelity (stories 9.1-9.7) — bug fixes, collection correctness, keyboard navigation, camera scroll, variable display, search/favorites UX, footer polish. Sourced from real user testing session 2026-03-10.'
 inputDocuments:
   - 'docs/planning-artifacts/prd.md'
   - 'docs/planning-artifacts/architecture.md'
@@ -56,6 +56,27 @@ This document provides the complete epic and story breakdown for hprof-visualize
 - FR33: System can apply precedence rules: CLI flags override config file, config file overrides built-in defaults
 - FR34: System can operate with missing config file using built-in defaults silently
 - FR35: System can warn and fall back to defaults when config file is malformed
+- FR36: System corrects inconsistent expand state when object resolution fails (node unexpandable after failed resolve)
+- FR37: A "failed to resolve" node is not selectable or navigable — it is rendered as a non-interactive label
+- FR38: System supports full Object[] resolution (PRIM_ARRAY_DUMP and OBJ_ARRAY_DUMP)
+- FR39: System correctly displays all elements of Java collections (ArrayList, LinkedList, etc.) by resolving the backing array field (e.g., `elementData`)
+- FR40: User can expand a node by pressing ArrowRight when the node is collapsed
+- FR41: User can unexpand a node by pressing ArrowLeft when the node is expanded
+- FR42: Pressing ArrowLeft on a node with no expanded children navigates to the parent node
+- FR43: User can scroll the camera vertically (shift the visible window) without moving the selection cursor
+- FR44: System displays the real local variable name from debug info (e.g., `myList`) instead of a generic label
+- FR45: System displays static fields of a class instance alongside instance fields
+- FR46: After submitting a search, the user can select a thread without first cancelling the search
+- FR47: User can navigate from a pinned item directly to the real object in the stack frame view (shortcut)
+- FR48: User can unpin an item from the favorites panel without returning to the stack frame view
+- FR49: The object ID toggle (currently for cyclic detection) is available on all object nodes
+- FR50: The keyboard help footer can be hidden by the user and shows only context-relevant shortcuts
+- FR51: User can navigate between pinned items in the favorites panel without hitting a dead end
+- FR52: User can navigate in depth within a pinned item (expand nested fields in the pinned snapshot)
+- FR53: A pinned array node is expandable and its elements are displayed in the favorites panel
+- FR54: User can hide individual values from a pinned snapshot directly from the favorites panel
+- FR55: User can re-show hidden values in a pinned snapshot via a toggle
+- FR56: User can reset all hidden values in a pinned snapshot to restore the initial snapshot state
 
 ### NonFunctional Requirements
 
@@ -181,6 +202,11 @@ favorites/pin panel that appears conditionally when pins exist to support value 
 ### Epic 8: First Pass Performance Optimization
 The system loads and indexes heap dumps significantly faster through optimized data structures, lazy string loading, and parallel heap segment parsing — reducing RustRover dump load time from ~30s to 10-15s.
 **NFRs improved:** NFR1 (indexing performance beyond original target)
+
+### Epic 9: Navigation & Data Fidelity
+Fixes critical bugs discovered during real user testing, corrects collection data extraction (ArrayList cardinality, Object[] support), adds keyboard shortcuts for expand/unexpand/parent navigation and camera scroll, improves stack frame variable display (real names + static variables), and polishes search/favorites UX and the keyboard help footer.
+**FRs added:** FR36–FR50
+**Source:** User testing session 2026-03-10
 
 ## Epic 1: Open and Validate Heap Files
 
@@ -1083,3 +1109,285 @@ So that multi-core machines index heap dumps proportionally faster.
 - Segment filter coherence: collect IDs per 64 MiB segment boundary, build BinaryFuse8 after merge
 - Minimum threshold: 32 MB total heap size to activate parallelism
 - Sub-divide segments > 16 MB at sub-record boundaries for better work-stealing
+
+## Epic 9: Navigation & Data Fidelity
+
+Fixes critical bugs discovered during real user testing, corrects collection data extraction,
+adds keyboard shortcuts for expand/unexpand/parent navigation and camera scroll, improves stack
+frame variable display, and polishes search/favorites UX and the keyboard help footer.
+
+### Story 9.1: Fix Expand State Bugs & Failed-to-Resolve Non-Navigable
+
+As a user,
+I want nodes that fail to resolve to be non-interactive, and expand state to remain consistent
+after a resolution failure,
+So that navigation never gets stuck in a broken state.
+
+**FRs covered:** FR36, FR37
+
+**Priority:** P0 (blocking)
+
+**Acceptance Criteria:**
+
+**Given** a node that was expanded but whose object resolution returned an error
+**When** the user attempts to unexpand that node with ArrowLeft or the existing unexpand key
+**Then** the node collapses cleanly regardless of whether resolution succeeded
+
+**Given** a "failed to resolve" placeholder in the tree
+**When** it is rendered
+**Then** it is displayed as a non-interactive label (no highlight, not selectable, cursor skips over it)
+
+**Given** the cursor is above or below a "failed to resolve" node
+**When** the user presses ArrowDown or ArrowUp
+**Then** the cursor skips the non-navigable node and lands on the next selectable item
+
+### Story 9.2: Collection Data Fidelity (ArrayList, Object[])
+
+As a user,
+I want ArrayList and other Java collections to display their actual element count and all
+elements (matching VisualVM output),
+So that I can trust the data shown in the tool.
+
+**FRs covered:** FR38, FR39
+
+**Priority:** P0 (data correctness)
+
+**Acceptance Criteria:**
+
+**Given** a `java.util.ArrayList` with N elements
+**When** the user expands it
+**Then** the tool displays N elements (matching VisualVM) by resolving the `elementData` backing
+array field rather than showing raw instance fields
+
+**Given** a `java.util.LinkedList`, `java.util.ArrayDeque`, or similar collection
+**When** expanded
+**Then** the tool resolves the backing structure using known field names (`first`/`last` node chain,
+`elements`, etc.) to display all contained objects
+
+**Given** an `Object[]` array dump (OBJ_ARRAY_DUMP sub-record)
+**When** the user expands the array node
+**Then** all array elements are resolved and displayed, with the same pagination rules as other
+collections (batches of 1000)
+
+**Given** a `PRIM_ARRAY_DUMP` (primitive array)
+**When** expanded
+**Then** all primitive elements are displayed inline without requiring object resolution
+
+### Story 9.3: ArrowRight/Left Expand, Unexpand & Parent Navigation
+
+As a user,
+I want ArrowRight to expand a collapsed node and ArrowLeft to unexpand an expanded node or
+navigate to the parent when nothing is expanded,
+So that I can navigate the object tree with standard tree-control keyboard conventions.
+
+**FRs covered:** FR40, FR41, FR42
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+
+**Given** the cursor is on a collapsed, expandable node
+**When** the user presses ArrowRight
+**Then** the node expands (equivalent to pressing Enter on an expandable node)
+
+**Given** the cursor is on an expanded node
+**When** the user presses ArrowLeft
+**Then** the node collapses (unexpands)
+
+**Given** the cursor is on a node that has no expanded children (leaf or already collapsed)
+**When** the user presses ArrowLeft
+**Then** the cursor moves to the logical parent node in the tree
+
+**Given** the cursor is on a top-level node (no parent)
+**When** the user presses ArrowLeft
+**Then** the action is a no-op (no crash, no cursor movement)
+
+**Given** the help panel is visible
+**When** it is rendered
+**Then** ArrowRight (Expand) and ArrowLeft (Unexpand / Go to parent) are listed in the keymap
+
+### Story 9.4: Camera Scroll (Vertical View Shift)
+
+As a user,
+I want to shift the visible window up or down without moving my selection cursor,
+So that I can see context around the current node without losing my position.
+
+**FRs covered:** FR43
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+
+**Given** the stack frame view has more nodes than fit on screen
+**When** the user presses Ctrl+Up or Ctrl+Down
+**Then** the visible window scrolls one line in the given direction without moving the selection cursor
+
+**Given** the camera is scrolled such that the selected node would go off screen
+**When** this occurs
+**Then** the camera snaps back to keep the selected node visible (cursor always on screen)
+
+**Given** the camera scroll position
+**When** the selected node is already visible
+**Then** Ctrl+Up / Ctrl+Down shift the window, giving context rows above and below the selection
+
+**Given** the help panel
+**When** rendered
+**Then** Ctrl+Up / Ctrl+Down are listed as "Scroll view up / down"
+
+### Story 9.5: Stack Frame Variable Names & Static Fields
+
+As a user,
+I want to see the real local variable name (e.g., `myList`) from debug info instead of a generic
+`local variable: <Class>` label, and to see static fields alongside instance fields,
+So that stack frames are as informative as in VisualVM.
+
+**FRs covered:** FR44, FR45
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+
+**Given** a stack frame with local variables that have debug name information in the hprof
+**When** the stack frame is displayed
+**Then** each local variable shows its real name (e.g., `myList: ArrayList`) not a generic label
+
+**Given** a stack frame where debug name information is absent for a variable
+**When** displayed
+**Then** a fallback label is shown (e.g., `<unnamed>: ArrayList`) — no crash, no silent omission
+
+**Given** a class instance is expanded
+**When** its fields are rendered
+**Then** static fields are displayed in a clearly labeled section (e.g., `[static]`) below or
+above instance fields
+
+**Given** a class with no static fields
+**When** expanded
+**Then** the static section is omitted (no empty section header)
+
+### Story 9.6: Search & Favorites UX Polish
+
+As a user,
+I want to select a thread after searching without being forced to cancel the search first, to
+navigate from a pinned item directly to its object, to unpin from the favorites panel directly,
+and to toggle object ID display on any object,
+So that the search, favorites, and inspection workflows are friction-free.
+
+**FRs covered:** FR46, FR47, FR48, FR49
+
+**Priority:** P1–P2
+
+**Acceptance Criteria:**
+
+**Given** the user has typed a search query and the filtered thread list is shown
+**When** the user presses Enter or ArrowDown/Up to select a thread
+**Then** the thread is focused and the stack frame view opens — the search bar remains visible but
+focus moves to the thread; a second Esc clears the search
+
+**Given** the user is in the favorites panel and has a pinned item selected
+**When** the user presses a defined shortcut (e.g., `g`)
+**Then** the tool navigates to that object's location in the stack frame view, highlighting it
+
+**Given** the user is in the favorites panel and has a pinned item selected
+**When** the user presses `f` (the pin/unpin key)
+**Then** the item is unpinned and removed from the favorites panel — no navigation to the stack frame
+required
+
+**Given** any expanded object node in the stack frame view
+**When** the user presses the object ID toggle key
+**Then** the object ID is shown/hidden inline — not limited to cyclic-detection nodes
+
+### Story 9.7: Help Footer Context & Visibility
+
+As a user,
+I want the keyboard help footer to show only contextually relevant shortcuts and to be hideable
+once I know the keymap,
+So that the footer does not clutter the interface for experienced users.
+
+**FRs covered:** FR50
+
+**Priority:** P2
+
+**Acceptance Criteria:**
+
+**Given** the user presses `?` to toggle the help panel
+**When** the panel is open and the user presses `?` again
+**Then** the panel closes (existing behavior preserved)
+
+**Given** the help panel is open
+**When** rendered
+**Then** shortcuts that are not applicable in the current panel focus are visually dimmed or
+omitted (e.g., `f` pin is dimmed when focus is on thread list where no frames exist)
+
+**Given** ArrowRight/Left (Story 9.3) and Ctrl+Up/Down (Story 9.4) are implemented
+**When** the help panel is rendered
+**Then** they appear in the keymap table
+
+**Given** all existing tests
+**When** `cargo test` is run
+**Then** zero failures — no regressions from help panel changes
+
+### Story 9.8: Pinned Item Navigation & Array Expansion
+
+As a user,
+I want to navigate between pinned items without hitting a dead end, navigate in depth within a
+pinned item, and expand pinned arrays to see their content,
+So that the favorites panel is a fully usable inspection surface.
+
+**FRs covered:** FR51, FR52, FR53
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+
+**Given** the favorites panel has multiple pinned items
+**When** the user navigates between them (ArrowUp/Down)
+**Then** the cursor moves freely between all pinned items with no blocking state
+
+**Given** a pinned item that contains expandable fields (object, collection, array)
+**When** the user presses ArrowRight or Enter on a field
+**Then** the nested content is expanded inline within the pinned snapshot
+
+**Given** a pinned item with expanded nested content
+**When** the user presses ArrowLeft or the unexpand key
+**Then** the nested content collapses back — expansion state is local to the pinned snapshot
+
+**Given** a pinned item is an array node (`Object[]` or primitive array)
+**When** the user expands it in the favorites panel
+**Then** its elements are displayed with the same pagination rules as in the main stack view
+(batches of 1000, ArrowDown/Up to scroll)
+
+**Given** a pinned array that exceeds 1000 elements
+**When** the user scrolls to the bottom of the visible page
+**Then** the next batch is loaded automatically (consistent with Epic 4 pagination behavior)
+
+### Story 9.9: Value Hiding & Reset in Pinned Snapshots
+
+As a user,
+I want to hide individual values from a pinned snapshot and reset all hidden values at once,
+So that I can reduce noise in the favorites panel and focus on the fields that matter.
+
+**FRs covered:** FR54, FR55, FR56
+
+**Priority:** P2 (nice-to-have)
+
+**Acceptance Criteria:**
+
+**Given** the cursor is on a field within a pinned snapshot in the favorites panel
+**When** the user presses a defined shortcut (e.g., `h`)
+**Then** that field is hidden from the snapshot display (not removed from the pin — only hidden)
+
+**Given** a field is hidden in a pinned snapshot
+**When** the user presses the same shortcut (`h`) on the hidden field's placeholder
+**Then** the field is re-shown (toggle behavior)
+
+**Given** a pinned snapshot has one or more hidden fields
+**When** the user presses a defined shortcut (e.g., `H` or `Ctrl+R`)
+**Then** all hidden fields in that snapshot are restored to visible — reset to initial snapshot state
+
+**Given** a pinned snapshot with no hidden fields
+**When** the reset action is triggered
+**Then** the action is a no-op (no crash, no visual change)
+
+**Given** the help panel
+**When** rendered with focus on the favorites panel
+**Then** `h` (Hide value), and the reset shortcut are listed

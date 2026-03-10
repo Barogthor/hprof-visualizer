@@ -1,6 +1,6 @@
 # Story 7.1: Favorites Panel
 
-Status: in-progress
+Status: done
 
 ## Story
 
