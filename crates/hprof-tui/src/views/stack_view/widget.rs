@@ -35,6 +35,6 @@ impl StatefulWidget for StackView {
 
         let items = state.build_items();
         let list = List::new(items).highlight_style(THEME.selection_bg);
-        StatefulWidget::render(list, inner, buf, &mut state.list_state);
+        StatefulWidget::render(list, inner, buf, state.list_state_mut());
     }
 }

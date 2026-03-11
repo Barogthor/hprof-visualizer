@@ -16,8 +16,9 @@ use crate::{
     favorites::{PinnedItem, PinnedSnapshot},
     theme::THEME,
     views::{
+        cursor::CursorState,
         stack_view::ExpansionPhase,
-        tree_render::{TreeRoot, render_variable_tree},
+        tree_render::{render_variable_tree, TreeRoot},
     },
 };
 
@@ -27,21 +28,56 @@ pub struct FavoritesPanel<'a> {
     pub focused: bool,
     /// Pinned items to display (borrowed from `App`).
     pub pinned: &'a [PinnedItem],
-    /// Index of the selected item in `pinned`.
-    pub pinned_cursor: usize,
 }
 
 /// Mutable scroll state for the favorites panel.
-#[derive(Default)]
 pub struct FavoritesPanelState {
-    /// ratatui list state (manages visual scroll offset).
-    pub list_state: ListState,
+    nav: CursorState<usize>,
+    items_len: usize,
+}
+
+impl Default for FavoritesPanelState {
+    fn default() -> Self {
+        Self {
+            nav: CursorState::new(0),
+            items_len: 0,
+        }
+    }
+}
+
+impl FavoritesPanelState {
+    /// Returns selected item index in `pinned`.
+    pub fn selected_index(&self) -> usize {
+        *self.nav.cursor()
+    }
+
+    /// Updates known item count for selection sync.
+    pub fn set_items_len(&mut self, len: usize) {
+        self.items_len = len;
+        let items: Vec<usize> = (0..len).collect();
+        self.nav.sync(&items);
+    }
+
+    /// Sets selected item index, or fully deselects when `None`.
+    pub fn set_selected_index(&mut self, idx: Option<usize>) {
+        if let Some(i) = idx {
+            let items: Vec<usize> = (0..self.items_len).collect();
+            self.nav.set_cursor_and_sync(i, &items);
+        } else {
+            self.nav.list_state_mut().select(None);
+        }
+    }
+
+    pub fn list_state_mut(&mut self) -> &mut ListState {
+        self.nav.list_state_mut()
+    }
 }
 
 impl StatefulWidget for FavoritesPanel<'_> {
     type State = FavoritesPanelState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        state.set_items_len(self.pinned.len());
         let border_style = if self.focused {
             THEME.border_focused
         } else {
@@ -155,14 +191,14 @@ impl StatefulWidget for FavoritesPanel<'_> {
         }
 
         let list = List::new(items).highlight_style(THEME.selection_bg);
-        StatefulWidget::render(list, inner, buf, &mut state.list_state);
+        StatefulWidget::render(list, inner, buf, state.list_state_mut());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use hprof_engine::{FieldInfo, FieldValue, VariableInfo, VariableValue};
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{backend::TestBackend, Terminal};
     use std::collections::HashMap;
 
     use super::*;
@@ -230,7 +266,6 @@ mod tests {
             FavoritesPanel {
                 focused: false,
                 pinned: &items,
-                pinned_cursor: 0,
             },
             80,
             10,
@@ -250,7 +285,6 @@ mod tests {
             FavoritesPanel {
                 focused: false,
                 pinned: &items,
-                pinned_cursor: 0,
             },
             80,
             10,
@@ -265,7 +299,6 @@ mod tests {
             FavoritesPanel {
                 focused: false,
                 pinned: &items,
-                pinned_cursor: 0,
             },
             80,
             10,
@@ -280,7 +313,6 @@ mod tests {
             FavoritesPanel {
                 focused: false,
                 pinned: &items,
-                pinned_cursor: 0,
             },
             80,
             10,
@@ -339,7 +371,6 @@ mod tests {
             FavoritesPanel {
                 focused: false,
                 pinned: &items,
-                pinned_cursor: 0,
             },
             80,
             15,
@@ -348,5 +379,13 @@ mod tests {
             text.contains("+"),
             "expected + placeholder for collapsed chunk, got: {text:?}"
         );
+    }
+
+    #[test]
+    fn favorites_state_cursor_moves_down() {
+        let mut state = FavoritesPanelState::default();
+        state.set_items_len(3);
+        state.nav.move_down(&[0usize, 1, 2]);
+        assert_eq!(state.selected_index(), 1);
     }
 }

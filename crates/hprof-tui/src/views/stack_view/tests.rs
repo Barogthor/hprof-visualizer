@@ -1,4 +1,6 @@
-use hprof_engine::{CollectionPage, FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue};
+use hprof_engine::{
+    CollectionPage, FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue,
+};
 use ratatui::widgets::{List, ListItem};
 
 use super::*;
@@ -34,7 +36,7 @@ fn make_var(index: usize, object_id: u64) -> VariableInfo {
 fn new_with_three_frames_selects_frame_0() {
     let frames = vec![make_frame(1), make_frame(2), make_frame(3)];
     let state = StackState::new(frames);
-    assert_eq!(state.cursor, StackCursor::OnFrame(0));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
 }
 
 #[test]
@@ -42,7 +44,7 @@ fn move_down_on_three_frames_with_no_expanded_moves_to_frame_1() {
     let frames = vec![make_frame(1), make_frame(2), make_frame(3)];
     let mut state = StackState::new(frames);
     state.move_down();
-    assert_eq!(state.cursor, StackCursor::OnFrame(1));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
 }
 
 #[test]
@@ -50,7 +52,7 @@ fn move_up_at_frame_0_does_nothing() {
     let frames = vec![make_frame(1), make_frame(2), make_frame(3)];
     let mut state = StackState::new(frames);
     state.move_up();
-    assert_eq!(state.cursor, StackCursor::OnFrame(0));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
 }
 
 #[test]
@@ -62,8 +64,8 @@ fn toggle_expand_with_vars_then_move_down_moves_to_var_0() {
     // cursor is still OnFrame(0), move_down should go to OnVar{frame_idx:0, var_idx:0}
     state.move_down();
     assert_eq!(
-        state.cursor,
-        StackCursor::OnVar {
+        state.cursor(),
+        &StackCursor::OnVar {
             frame_idx: 0,
             var_idx: 0
         }
@@ -79,7 +81,7 @@ fn move_down_past_last_var_of_expanded_frame_moves_to_next_frame() {
     // flat: [Frame(0), Var{0,0}, Frame(1)]
     state.move_down(); // → Var{0,0}
     state.move_down(); // → Frame(1)
-    assert_eq!(state.cursor, StackCursor::OnFrame(1));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
 }
 
 #[test]
@@ -99,8 +101,8 @@ fn toggle_expand_collapse_from_var_cursor_resets_to_frame_and_navigation_works()
     state.toggle_expand(10, vec![make_var(0, 1)]);
     state.move_down(); // → OnVar{frame_idx:0, var_idx:0}
     assert_eq!(
-        state.cursor,
-        StackCursor::OnVar {
+        state.cursor(),
+        &StackCursor::OnVar {
             frame_idx: 0,
             var_idx: 0
         }
@@ -108,13 +110,13 @@ fn toggle_expand_collapse_from_var_cursor_resets_to_frame_and_navigation_works()
     // Collapse while cursor is on a var
     state.toggle_expand(10, vec![]);
     // Cursor must reset to the frame row
-    assert_eq!(state.cursor, StackCursor::OnFrame(0));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
     // Navigation must work: can move to the next frame
     state.move_down();
-    assert_eq!(state.cursor, StackCursor::OnFrame(1));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
     // And back
     state.move_up();
-    assert_eq!(state.cursor, StackCursor::OnFrame(0));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
 }
 
 #[test]
@@ -204,14 +206,14 @@ fn set_expansion_failed_recovers_cursor_from_loading_node_top_level() {
     state.move_down(); // OnFrame(0) → OnVar{0,0}
     state.move_down(); // OnVar{0,0} → OnObjectLoadingNode{0,0,[]}
     assert!(
-        matches!(state.cursor, StackCursor::OnObjectLoadingNode { .. }),
+        matches!(state.cursor(), StackCursor::OnObjectLoadingNode { .. }),
         "precondition: cursor is on loading node"
     );
     state.set_expansion_failed(99, "err".to_string());
     // Cursor must be recovered to OnVar, not orphaned.
     assert_eq!(
-        state.cursor,
-        StackCursor::OnVar {
+        state.cursor(),
+        &StackCursor::OnVar {
             frame_idx: 0,
             var_idx: 0
         },
@@ -219,7 +221,7 @@ fn set_expansion_failed_recovers_cursor_from_loading_node_top_level() {
     );
     // Navigation must resume: Down from OnVar{0,0} must reach OnFrame(1).
     state.move_down();
-    assert_eq!(state.cursor, StackCursor::OnFrame(1));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
 }
 
 #[test]
@@ -247,14 +249,14 @@ fn set_expansion_failed_recovers_cursor_from_loading_node_nested_field() {
     state.move_down(); // → OnObjectField{0,0,[0]}
     state.move_down(); // → OnObjectLoadingNode{0,0,[0]}
     assert!(
-        matches!(state.cursor, StackCursor::OnObjectLoadingNode { .. }),
+        matches!(state.cursor(), StackCursor::OnObjectLoadingNode { .. }),
         "precondition: cursor is on nested loading node"
     );
     state.set_expansion_failed(200, "boom".to_string());
     // Cursor must recover to the parent OnObjectField.
     assert_eq!(
-        state.cursor,
-        StackCursor::OnObjectField {
+        state.cursor(),
+        &StackCursor::OnObjectField {
             frame_idx: 0,
             var_idx: 0,
             field_path: vec![0],
@@ -332,16 +334,16 @@ fn move_down_from_on_var_expanded_moves_to_first_object_field() {
     // cursor is OnFrame(0), move down → OnVar{0,0}, move down → OnObjectField{0,0,[0]}
     state.move_down();
     assert_eq!(
-        state.cursor,
-        StackCursor::OnVar {
+        state.cursor(),
+        &StackCursor::OnVar {
             frame_idx: 0,
             var_idx: 0
         }
     );
     state.move_down();
     assert_eq!(
-        state.cursor,
-        StackCursor::OnObjectField {
+        state.cursor(),
+        &StackCursor::OnObjectField {
             frame_idx: 0,
             var_idx: 0,
             field_path: vec![0],
@@ -365,7 +367,7 @@ fn move_down_past_last_object_field_moves_to_next_frame() {
     state.move_down(); // Frame → Var
     state.move_down(); // Var → Field
     state.move_down(); // Field → Frame(1)
-    assert_eq!(state.cursor, StackCursor::OnFrame(1));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
 }
 
 #[test]
@@ -440,11 +442,11 @@ fn selected_field_ref_id_returns_object_ref_id_for_nested_field() {
     }];
     state.set_expansion_done(100, fields);
     // Navigate to the field at path [0]
-    state.cursor = StackCursor::OnObjectField {
+    state.set_cursor(StackCursor::OnObjectField {
         frame_idx: 0,
         var_idx: 0,
         field_path: vec![0],
-    };
+    });
     assert_eq!(state.selected_field_ref_id(), Some(200));
 }
 
@@ -460,11 +462,11 @@ fn selected_field_ref_id_returns_none_for_non_object_ref_field() {
         value: FieldValue::Int(42),
     }];
     state.set_expansion_done(100, fields);
-    state.cursor = StackCursor::OnObjectField {
+    state.set_cursor(StackCursor::OnObjectField {
         frame_idx: 0,
         var_idx: 0,
         field_path: vec![0],
-    };
+    });
     assert_eq!(state.selected_field_ref_id(), None);
 }
 
@@ -889,32 +891,32 @@ fn move_down_up_across_cyclic_node() {
     state.move_down(); // Frame → Var
     state.move_down(); // Var → Field[0]
     assert!(matches!(
-        &state.cursor,
+        state.cursor(),
         StackCursor::OnObjectField { field_path, .. }
         if *field_path == vec![0]
     ));
     state.move_down(); // Field[0] → CyclicNode[1]
     assert!(matches!(
-        &state.cursor,
+        state.cursor(),
         StackCursor::OnCyclicNode { field_path, .. }
         if *field_path == vec![1]
     ));
     state.move_down(); // CyclicNode[1] → Field[2]
     assert!(matches!(
-        &state.cursor,
+        state.cursor(),
         StackCursor::OnObjectField { field_path, .. }
         if *field_path == vec![2]
     ));
     // Now go back up
     state.move_up(); // Field[2] → CyclicNode[1]
     assert!(matches!(
-        &state.cursor,
+        state.cursor(),
         StackCursor::OnCyclicNode { field_path, .. }
         if *field_path == vec![1]
     ));
     state.move_up(); // CyclicNode[1] → Field[0]
     assert!(matches!(
-        &state.cursor,
+        state.cursor(),
         StackCursor::OnObjectField { field_path, .. }
         if *field_path == vec![0]
     ));
@@ -1065,11 +1067,11 @@ fn collapse_cyclic_child_resyncs_cursor_to_var() {
     state.set_expansion_done(2000, coroutine_fields);
 
     // Navigate to parkBlocker field (path [0])
-    state.cursor = StackCursor::OnObjectField {
+    state.set_cursor(StackCursor::OnObjectField {
         frame_idx: 0,
         var_idx: 0,
         field_path: vec![0],
-    };
+    });
 
     // Collapse the nested Coroutine object.
     // collect_descendants(2000) follows back-ref to 1000,
@@ -1079,28 +1081,28 @@ fn collapse_cyclic_child_resyncs_cursor_to_var() {
     // Cursor must have been resynced — not stuck
     let flat = state.flat_items();
     assert!(
-        flat.contains(&state.cursor),
+        flat.contains(state.cursor()),
         "cursor must be in flat_items after collapse, got: {:?}",
-        state.cursor,
+        state.cursor(),
     );
     // Should have fallen back to OnVar
     assert!(
         matches!(
-            &state.cursor,
+            state.cursor(),
             StackCursor::OnVar {
                 frame_idx: 0,
                 var_idx: 0,
             }
         ),
         "cursor should fall back to OnVar, got: {:?}",
-        state.cursor,
+        state.cursor(),
     );
 
     // Navigation must work again
     state.move_down();
     assert_ne!(
-        state.cursor,
-        StackCursor::OnVar {
+        state.cursor(),
+        &StackCursor::OnVar {
             frame_idx: 0,
             var_idx: 0,
         },
@@ -1139,11 +1141,11 @@ fn collapse_nested_non_recursive_preserves_parent() {
     state.set_expansion_done(2000, coroutine_fields);
 
     // Cursor on parkBlocker field
-    state.cursor = StackCursor::OnObjectField {
+    state.set_cursor(StackCursor::OnObjectField {
         frame_idx: 0,
         var_idx: 0,
         field_path: vec![0],
-    };
+    });
 
     // Non-recursive collapse (CollapseNestedObj path):
     // only collapses 2000, NOT 1000.
@@ -1159,9 +1161,9 @@ fn collapse_nested_non_recursive_preserves_parent() {
     assert_eq!(state.expansion_state(2000), ExpansionPhase::Collapsed,);
     // Cursor stays on the parkBlocker field
     let flat = state.flat_items();
-    assert!(flat.contains(&state.cursor), "cursor must still be valid");
+    assert!(flat.contains(state.cursor()), "cursor must still be valid");
     assert!(matches!(
-        &state.cursor,
+        state.cursor(),
         StackCursor::OnObjectField {
             field_path, ..
         } if *field_path == vec![0]
@@ -1232,9 +1234,9 @@ fn page_down_jumps_by_visible_height() {
     for _ in 0..5 {
         state.move_down();
     }
-    assert_eq!(state.cursor, StackCursor::OnFrame(5));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(5));
     state.move_page_down();
-    assert_eq!(state.cursor, StackCursor::OnFrame(25));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(25));
 }
 
 #[test]
@@ -1246,9 +1248,9 @@ fn page_up_jumps_by_visible_height() {
     for _ in 0..25 {
         state.move_down();
     }
-    assert_eq!(state.cursor, StackCursor::OnFrame(25));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(25));
     state.move_page_up();
-    assert_eq!(state.cursor, StackCursor::OnFrame(5));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(5));
 }
 
 #[test]
@@ -1257,7 +1259,7 @@ fn page_down_clamps_to_last_item() {
     let mut state = StackState::new(frames);
     state.set_visible_height(20);
     state.move_page_down();
-    assert_eq!(state.cursor, StackCursor::OnFrame(9));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(9));
 }
 
 #[test]
@@ -1269,7 +1271,7 @@ fn page_up_clamps_to_first_item() {
         state.move_down();
     }
     state.move_page_up();
-    assert_eq!(state.cursor, StackCursor::OnFrame(0));
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
 }
 
 #[test]
@@ -1481,16 +1483,16 @@ fn failed_collection_entry_obj_no_phantom_cursor() {
     state.move_down(); // → CollEntry{entry_index=0}
     assert!(
         matches!(
-            state.cursor,
+            state.cursor(),
             StackCursor::OnCollectionEntry { entry_index: 0, .. }
         ),
         "expected OnCollectionEntry, got {:?}",
-        state.cursor
+        state.cursor()
     );
     state.move_down(); // must skip phantom and reach Frame(1)
     assert_eq!(
-        state.cursor,
-        StackCursor::OnFrame(1),
+        state.cursor(),
+        &StackCursor::OnFrame(1),
         "move_down from Failed collection entry must reach next frame"
     );
 }

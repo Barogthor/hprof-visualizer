@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::theme::THEME;
+use crate::views::cursor::CursorState;
 
 use super::expansion::ExpansionRegistry;
 use super::format::{collect_descendants, compute_chunk_ranges, format_frame_label};
@@ -22,10 +23,7 @@ pub struct StackState {
     pub(super) vars: HashMap<u64, Vec<VariableInfo>>,
     pub(super) expanded: HashSet<u64>,
     // === Cursor & Navigation ===
-    pub(super) cursor: StackCursor,
-    pub(super) list_state: ListState,
-    /// Visible height of the stack panel (set during render).
-    pub(super) visible_height: u16,
+    pub(super) nav: CursorState<StackCursor>,
     // === Expansion (delegated) ===
     pub(crate) expansion: ExpansionRegistry,
 }
@@ -38,24 +36,21 @@ impl StackState {
         } else {
             StackCursor::OnFrame(0)
         };
-        let mut list_state = ListState::default();
-        if !frames.is_empty() {
-            list_state.select(Some(0));
-        }
-        Self {
+        let mut out = Self {
             frames,
             vars: HashMap::new(),
             expanded: HashSet::new(),
-            cursor,
-            list_state,
-            visible_height: 0,
+            nav: CursorState::new(cursor),
             expansion: ExpansionRegistry::new(),
-        }
+        };
+        let flat = out.flat_items();
+        out.nav.sync(&flat);
+        out
     }
 
     /// Returns the frame_id currently selected, if any.
     pub fn selected_frame_id(&self) -> Option<u64> {
-        match &self.cursor {
+        match self.nav.cursor() {
             StackCursor::NoFrames => None,
             StackCursor::OnFrame(fi) => self.frames.get(*fi).map(|f| f.frame_id),
             StackCursor::OnVar { frame_idx, .. }
@@ -72,7 +67,12 @@ impl StackState {
 
     /// Returns the current cursor.
     pub fn cursor(&self) -> &StackCursor {
-        &self.cursor
+        self.nav.cursor()
+    }
+
+    /// Returns mutable access to ratatui list state for rendering.
+    pub fn list_state_mut(&mut self) -> &mut ListState {
+        self.nav.list_state_mut()
     }
 
     /// Returns the stack frames slice.
@@ -98,16 +98,15 @@ impl StackState {
     /// Sets the cursor to `new_cursor` and syncs the
     /// ratatui list state.
     pub fn set_cursor(&mut self, new_cursor: StackCursor) {
-        self.cursor = new_cursor;
-        self.sync_list_state();
+        self.nav.set_cursor_and_sync(new_cursor, &self.flat_items());
     }
 
     /// Returns the object_id if the cursor is on an `ObjectRef` var.
     pub fn selected_object_id(&self) -> Option<u64> {
-        if let StackCursor::OnVar { frame_idx, var_idx } = self.cursor {
-            let frame = self.frames.get(frame_idx)?;
+        if let StackCursor::OnVar { frame_idx, var_idx } = self.nav.cursor() {
+            let frame = self.frames.get(*frame_idx)?;
             let vars = self.vars.get(&frame.frame_id)?;
-            let var = vars.get(var_idx)?;
+            let var = vars.get(*var_idx)?;
             if let VariableValue::ObjectRef { id, .. } = var.value {
                 return Some(id);
             }
@@ -124,7 +123,7 @@ impl StackState {
             frame_idx,
             var_idx,
             field_path,
-        } = &self.cursor
+        } = self.nav.cursor()
         {
             let frame = self.frames.get(*frame_idx)?;
             let vars = self.vars.get(&frame.frame_id)?;
@@ -162,7 +161,7 @@ impl StackState {
             frame_idx,
             var_idx,
             field_path,
-        } = &self.cursor
+        } = self.nav.cursor()
         {
             let frame = self.frames.get(*frame_idx)?;
             let vars = self.vars.get(&frame.frame_id)?;
@@ -189,12 +188,12 @@ impl StackState {
         if let StackCursor::OnObjectField {
             frame_idx,
             var_idx,
-            ref field_path,
-        } = self.cursor
+            field_path,
+        } = self.nav.cursor()
         {
-            let frame = self.frames.get(frame_idx)?;
+            let frame = self.frames.get(*frame_idx)?;
             let vars = self.vars.get(&frame.frame_id)?;
-            let var = vars.get(var_idx)?;
+            let var = vars.get(*var_idx)?;
             if let VariableValue::ObjectRef { id: root_id, .. } = var.value {
                 let parent_path = &field_path[..field_path.len().saturating_sub(1)];
                 let parent_id = self.resolve_object_at_path(root_id, parent_path);
@@ -218,12 +217,12 @@ impl StackState {
     /// Returns `Some(entry_count)` if the currently selected variable is a collection
     /// or array, `None` otherwise.
     pub fn selected_var_entry_count(&self) -> Option<u64> {
-        let StackCursor::OnVar { frame_idx, var_idx } = self.cursor else {
+        let StackCursor::OnVar { frame_idx, var_idx } = self.nav.cursor() else {
             return None;
         };
-        let frame = self.frames.get(frame_idx)?;
+        let frame = self.frames.get(*frame_idx)?;
         let vars = self.vars.get(&frame.frame_id)?;
-        let var = vars.get(var_idx)?;
+        let var = vars.get(*var_idx)?;
         if let VariableValue::ObjectRef { entry_count, .. } = &var.value {
             *entry_count
         } else {
@@ -238,12 +237,12 @@ impl StackState {
             collection_id,
             entry_index,
             ..
-        } = self.cursor
+        } = self.nav.cursor()
         else {
             return None;
         };
-        let cc = self.expansion.collection_chunks.get(&collection_id)?;
-        let entry = cc.find_entry(entry_index)?;
+        let cc = self.expansion.collection_chunks.get(collection_id)?;
+        let entry = cc.find_entry(*entry_index)?;
         if let FieldValue::ObjectRef { entry_count, .. } = &entry.value {
             *entry_count
         } else {
@@ -258,7 +257,7 @@ impl StackState {
             collection_id,
             chunk_offset,
             ..
-        } = &self.cursor
+        } = self.nav.cursor()
         {
             let cc = self.expansion.collection_chunks.get(collection_id)?;
             let ranges = compute_chunk_ranges(cc.total_count);
@@ -278,7 +277,7 @@ impl StackState {
             collection_id,
             entry_index,
             ..
-        } = &self.cursor
+        } = self.nav.cursor()
         {
             let cc = self.expansion.collection_chunks.get(collection_id)?;
             let entry = cc.find_entry(*entry_index)?;
@@ -307,7 +306,7 @@ impl StackState {
             entry_index,
             obj_field_path,
             ..
-        } = &self.cursor
+        } = self.nav.cursor()
         {
             let obj_root = {
                 let cc = self.expansion.collection_chunks.get(collection_id)?;
@@ -337,7 +336,7 @@ impl StackState {
     /// `field_path` of the parent ObjectRef field so the
     /// cursor can be restored there.
     pub fn cursor_collection_id(&self) -> Option<(u64, StackCursor)> {
-        match &self.cursor {
+        match self.nav.cursor() {
             StackCursor::OnCollectionEntry {
                 frame_idx,
                 var_idx,
@@ -397,9 +396,9 @@ impl StackState {
                 frame_idx,
                 var_idx,
                 ref field_path,
-            } = self.cursor.clone()
+            } = self.nav.cursor().clone()
         {
-            self.cursor = if field_path.is_empty() {
+            let fallback = if field_path.is_empty() {
                 StackCursor::OnVar { frame_idx, var_idx }
             } else {
                 StackCursor::OnObjectField {
@@ -408,8 +407,10 @@ impl StackState {
                     field_path: field_path.clone(),
                 }
             };
+            self.nav.set_cursor_and_sync(fallback, &self.flat_items());
+        } else {
+            self.nav.sync(&self.flat_items());
         }
-        self.sync_list_state();
     }
 
     /// Cancels a loading expansion — reverts to `Collapsed`.
@@ -448,11 +449,12 @@ impl StackState {
     /// fall back to the parent `OnVar` or `OnFrame`.
     fn resync_cursor_after_collapse(&mut self) {
         let flat = self.flat_items();
-        if flat.contains(&self.cursor) {
+        if flat.contains(self.nav.cursor()) {
             return;
         }
+        let mut fallback: Option<StackCursor> = None;
         // Try falling back to OnVar or OnCollectionEntry
-        match &self.cursor {
+        match self.nav.cursor() {
             StackCursor::OnObjectField {
                 frame_idx, var_idx, ..
             }
@@ -462,14 +464,14 @@ impl StackState {
             | StackCursor::OnObjectLoadingNode {
                 frame_idx, var_idx, ..
             } => {
-                let fallback = StackCursor::OnVar {
+                let candidate = StackCursor::OnVar {
                     frame_idx: *frame_idx,
                     var_idx: *var_idx,
                 };
-                if flat.contains(&fallback) {
-                    self.cursor = fallback;
+                if flat.contains(&candidate) {
+                    fallback = Some(candidate);
                 } else {
-                    self.cursor = StackCursor::OnFrame(*frame_idx);
+                    fallback = Some(StackCursor::OnFrame(*frame_idx));
                 }
             }
             StackCursor::OnCollectionEntryObjField {
@@ -480,22 +482,26 @@ impl StackState {
                 entry_index,
                 ..
             } => {
-                let fallback = StackCursor::OnCollectionEntry {
+                let candidate = StackCursor::OnCollectionEntry {
                     frame_idx: *frame_idx,
                     var_idx: *var_idx,
                     field_path: field_path.clone(),
                     collection_id: *collection_id,
                     entry_index: *entry_index,
                 };
-                if flat.contains(&fallback) {
-                    self.cursor = fallback;
+                if flat.contains(&candidate) {
+                    fallback = Some(candidate);
                 } else {
-                    self.cursor = StackCursor::OnFrame(*frame_idx);
+                    fallback = Some(StackCursor::OnFrame(*frame_idx));
                 }
             }
             _ => {}
         }
-        self.sync_list_state();
+        if let Some(cursor) = fallback {
+            self.nav.set_cursor_and_sync(cursor, &self.flat_items());
+        } else {
+            self.nav.sync(&self.flat_items());
+        }
     }
 
     /// Loads vars for `frame_id` into internal cache and toggles expand/collapse.
@@ -529,15 +535,18 @@ impl StackState {
             | StackCursor::OnCyclicNode { frame_idx, .. }
             | StackCursor::OnChunkSection { frame_idx, .. }
             | StackCursor::OnCollectionEntry { frame_idx, .. }
-            | StackCursor::OnCollectionEntryObjField { frame_idx, .. } = self.cursor
+            | StackCursor::OnCollectionEntryObjField { frame_idx, .. } = self.nav.cursor()
             {
-                self.cursor = StackCursor::OnFrame(frame_idx);
+                self.nav
+                    .set_cursor_and_sync(StackCursor::OnFrame(*frame_idx), &self.flat_items());
+            } else {
+                self.nav.sync(&self.flat_items());
             }
         } else {
             self.vars.insert(frame_id, vars);
             self.expanded.insert(frame_id);
+            self.nav.sync(&self.flat_items());
         }
-        self.sync_list_state();
     }
 
     /// Returns whether `frame_id` is currently expanded.
@@ -548,59 +557,48 @@ impl StackState {
     /// Moves the cursor one step down.
     pub fn move_down(&mut self) {
         let flat = self.flat_items();
-        if let Some(current) = flat.iter().position(|c| c == &self.cursor)
-            && current + 1 < flat.len()
-        {
-            let next = current + 1;
-            self.cursor = flat[next].clone();
-            self.list_state.select(Some(next));
-        }
+        self.nav.move_down(&flat);
     }
 
     /// Moves the cursor one step up.
     pub fn move_up(&mut self) {
         let flat = self.flat_items();
-        if let Some(current) = flat.iter().position(|c| c == &self.cursor)
-            && let Some(prev) = current.checked_sub(1)
-        {
-            self.cursor = flat[prev].clone();
-            self.list_state.select(Some(prev));
-        }
+        self.nav.move_up(&flat);
+    }
+
+    /// Moves the cursor to the first item.
+    pub fn move_home(&mut self) {
+        let flat = self.flat_items();
+        self.nav.move_home(&flat);
+    }
+
+    /// Moves the cursor to the last item.
+    pub fn move_end(&mut self) {
+        let flat = self.flat_items();
+        self.nav.move_end(&flat);
     }
 
     /// Sets the visible height (called during render).
-    pub fn set_visible_height(&mut self, h: u16) {
-        self.visible_height = h;
+    pub fn set_visible_height(&mut self, h: usize) {
+        self.nav.set_visible_height(h);
     }
 
     /// Moves the cursor forward by `visible_height` items.
     pub fn move_page_down(&mut self) {
         let flat = self.flat_items();
-        if flat.is_empty() {
-            return;
-        }
-        let current = flat.iter().position(|c| c == &self.cursor).unwrap_or(0);
-        let target = (current + self.visible_height as usize).min(flat.len() - 1);
-        self.cursor = flat[target].clone();
-        self.list_state.select(Some(target));
+        self.nav.move_page_down(&flat);
     }
 
     /// Moves the cursor backward by `visible_height` items.
     pub fn move_page_up(&mut self) {
         let flat = self.flat_items();
-        if flat.is_empty() {
-            return;
-        }
-        let current = flat.iter().position(|c| c == &self.cursor).unwrap_or(0);
-        let target = current.saturating_sub(self.visible_height as usize);
-        self.cursor = flat[target].clone();
-        self.list_state.select(Some(target));
+        self.nav.move_page_up(&flat);
     }
 
     /// Returns the flattened cursor index (position in the rendered list).
     fn flat_index(&self) -> Option<usize> {
         let flat = self.flat_items();
-        flat.iter().position(|c| c == &self.cursor)
+        flat.iter().position(|c| c == self.nav.cursor())
     }
 
     /// Flattened ordered list of cursors matching the rendered list items.
@@ -867,17 +865,12 @@ impl StackState {
         }
     }
 
-    fn sync_list_state(&mut self) {
-        let idx = self.flat_index();
-        self.list_state.select(idx);
-    }
-
     // === Rendering ===
     /// Builds the list items for rendering.
     ///
     /// Frame headers are plain items; variable-tree rows are produced by
     /// [`render_variable_tree`] (no per-item cursor styling — selection is
-    /// applied by ratatui's `List` via [`Self::list_state`]).
+    /// applied by ratatui's `List` via [`Self::list_state_mut`]).
     pub fn build_items(&self) -> Vec<ListItem<'static>> {
         use super::super::tree_render::{TreeRoot, render_variable_tree};
         let mut items = Vec::new();

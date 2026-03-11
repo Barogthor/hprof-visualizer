@@ -92,14 +92,10 @@ pub struct App<E: NavigationEngine> {
     pending_pages: HashMap<(u64, usize), PendingPage>,
     /// Warnings accumulated during the session (e.g. unresolved string backing arrays).
     warnings: WarningLog,
-    /// Visible height of the thread list panel (set during render).
-    thread_list_height: u16,
     /// Timestamp of the last periodic memory log emission.
     last_memory_log: Instant,
     /// Pinned items in the favorites panel.
     pinned: Vec<PinnedItem>,
-    /// Index of the selected item in `pinned` (0-based, not a list row index).
-    pinned_cursor: usize,
     /// ratatui list state for the favorites panel scroll position.
     favorites_list_state: FavoritesPanelState,
     /// Focus before entering `Focus::Favorites`, restored on `Esc` / `F`.
@@ -136,10 +132,8 @@ impl<E: NavigationEngine> App<E> {
             pending_expansions: HashMap::new(),
             pending_pages: HashMap::new(),
             warnings: WarningLog::default(),
-            thread_list_height: 0,
             last_memory_log: Instant::now(),
             pinned: Vec::new(),
-            pinned_cursor: 0,
             favorites_list_state: FavoritesPanelState::default(),
             prev_focus: Focus::ThreadList,
             ui_status: None,
@@ -207,41 +201,50 @@ impl<E: NavigationEngine> App<E> {
     fn toggle_pin(&mut self, item: PinnedItem) {
         if let Some(pos) = self.pinned.iter().position(|p| p.key == item.key) {
             self.pinned.remove(pos);
-            self.pinned_cursor = self.pinned_cursor.min(self.pinned.len().saturating_sub(1));
         } else {
             self.pinned.push(item);
         }
-        self.sync_favorites_list_state();
+        self.sync_favorites_selection();
     }
 
-    fn sync_favorites_list_state(&mut self) {
+    fn sync_favorites_selection(&mut self) {
+        self.favorites_list_state.set_items_len(self.pinned.len());
         let sel = if self.pinned.is_empty() {
             None
         } else {
-            Some(self.pinned_cursor)
+            Some(
+                self.favorites_list_state
+                    .selected_index()
+                    .min(self.pinned.len().saturating_sub(1)),
+            )
         };
-        self.favorites_list_state.list_state.select(sel);
+        self.favorites_list_state.set_selected_index(sel);
     }
 
     fn handle_favorites_input(&mut self, event: InputEvent) -> AppAction {
         match event {
             InputEvent::Up => {
-                self.pinned_cursor = self.pinned_cursor.saturating_sub(1);
-                self.sync_favorites_list_state();
+                if !self.pinned.is_empty() {
+                    let next = self.favorites_list_state.selected_index().saturating_sub(1);
+                    self.favorites_list_state.set_selected_index(Some(next));
+                }
             }
             InputEvent::Down => {
                 if !self.pinned.is_empty() {
-                    self.pinned_cursor = (self.pinned_cursor + 1).min(self.pinned.len() - 1);
-                    self.sync_favorites_list_state();
+                    let next = (self.favorites_list_state.selected_index() + 1)
+                        .min(self.pinned.len().saturating_sub(1));
+                    self.favorites_list_state.set_selected_index(Some(next));
                 }
             }
             InputEvent::ToggleFavorite => {
                 if !self.pinned.is_empty() {
-                    let key = self.pinned[self.pinned_cursor].key.clone();
+                    let idx = self
+                        .favorites_list_state
+                        .selected_index()
+                        .min(self.pinned.len().saturating_sub(1));
+                    let key = self.pinned[idx].key.clone();
                     self.pinned.retain(|i| i.key != key);
-                    self.pinned_cursor =
-                        self.pinned_cursor.min(self.pinned.len().saturating_sub(1));
-                    self.sync_favorites_list_state();
+                    self.sync_favorites_selection();
                     if self.pinned.is_empty() {
                         self.focus = self.prev_focus;
                     }
@@ -302,13 +305,11 @@ impl<E: NavigationEngine> App<E> {
                     refresh_preview = true;
                 }
                 InputEvent::PageDown => {
-                    let h = self.thread_list_height as usize;
-                    self.thread_list.page_down(h);
+                    self.thread_list.page_down();
                     refresh_preview = true;
                 }
                 InputEvent::PageUp => {
-                    let h = self.thread_list_height as usize;
-                    self.thread_list.page_up(h);
+                    self.thread_list.page_up();
                     refresh_preview = true;
                 }
                 InputEvent::ToggleFavorite => {
@@ -348,13 +349,11 @@ impl<E: NavigationEngine> App<E> {
                     refresh_preview = true;
                 }
                 InputEvent::PageDown => {
-                    let h = self.thread_list_height as usize;
-                    self.thread_list.page_down(h);
+                    self.thread_list.page_down();
                     refresh_preview = true;
                 }
                 InputEvent::PageUp => {
-                    let h = self.thread_list_height as usize;
-                    self.thread_list.page_up(h);
+                    self.thread_list.page_up();
                     refresh_preview = true;
                 }
                 InputEvent::SearchActivate => {
@@ -892,12 +891,13 @@ impl<E: NavigationEngine> App<E> {
         };
 
         // Store visible heights for PageUp/PageDown.
-        self.thread_list_height = list_area.height.saturating_sub(2);
+        self.thread_list
+            .set_visible_height(list_area.height.saturating_sub(2) as usize);
         if let Some(ref mut ss) = self.stack_state {
-            ss.set_visible_height(stack_area.height.saturating_sub(2));
+            ss.set_visible_height(stack_area.height.saturating_sub(2) as usize);
         }
         self.preview_stack_state
-            .set_visible_height(stack_area.height.saturating_sub(2));
+            .set_visible_height(stack_area.height.saturating_sub(2) as usize);
 
         // Thread list
         let list_focused = self.focus == Focus::ThreadList;
@@ -946,7 +946,6 @@ impl<E: NavigationEngine> App<E> {
                 FavoritesPanel {
                     focused: fav_focused,
                     pinned: &self.pinned,
-                    pinned_cursor: self.pinned_cursor,
                 },
                 fav_area,
                 &mut self.favorites_list_state,

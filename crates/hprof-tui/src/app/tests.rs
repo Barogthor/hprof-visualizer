@@ -283,7 +283,7 @@ fn handle_input_enter_in_stack_frames_expands_then_collapses() {
     let engine = StubEngine::with_threads_and_frames(&["main"], frames);
     let mut app = App::new(engine, "test.hprof".to_string());
     app.handle_input(InputEvent::Enter); // → StackFrames
-    // Enter on collapsed frame → expands
+                                         // Enter on collapsed frame → expands
     app.handle_input(InputEvent::Enter);
     assert!(app.stack_state.as_ref().unwrap().is_expanded(10));
     // Enter on expanded frame → collapses
@@ -377,7 +377,7 @@ fn start_object_expansion_registers_pending_but_no_loading_before_threshold() {
     app.handle_input(InputEvent::Enter); // expand frame 10
     app.handle_input(InputEvent::Down); // → OnVar{0,0} (ObjectRef 42)
     app.handle_input(InputEvent::Enter); // start_object_expansion(42)
-    // Expansion is pending but loading indicator is NOT shown yet.
+                                         // Expansion is pending but loading indicator is NOT shown yet.
     assert!(
         app.pending_expansions.contains_key(&42),
         "pending expansion must be registered"
@@ -399,7 +399,7 @@ fn poll_expansions_completes_and_moves_to_expanded() {
     app.handle_input(InputEvent::Enter); // expand frame 10
     app.handle_input(InputEvent::Down); // → OnVar{0,0}
     app.handle_input(InputEvent::Enter); // start expansion
-    // Poll until the worker thread finishes (StubEngine is synchronous so it's fast).
+                                         // Poll until the worker thread finishes (StubEngine is synchronous so it's fast).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
         app.poll_expansions();
@@ -424,7 +424,7 @@ fn enter_on_nested_object_field_starts_expansion() {
     app.handle_input(InputEvent::Enter); // expand frame 10
     app.handle_input(InputEvent::Down); // → OnVar{0,0}
     app.handle_input(InputEvent::Enter); // start expansion of object 42
-    // Poll until complete
+                                         // Poll until complete
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
         app.poll_expansions();
@@ -439,7 +439,7 @@ fn enter_on_nested_object_field_starts_expansion() {
     app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[0]} (field "x")
     app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[1]} (field "child" = ObjectRef 999)
     app.handle_input(InputEvent::Enter); // start nested expansion of 999
-    // Expansion registered but loading indicator not shown before threshold.
+                                         // Expansion registered but loading indicator not shown before threshold.
     assert!(
         app.pending_expansions.contains_key(&999),
         "pending expansion for 999 must be registered"
@@ -521,7 +521,7 @@ fn escape_on_loading_node_cancels_expansion_without_leaving_stack_frames() {
     app.handle_input(InputEvent::Enter); // expand frame 10
     app.handle_input(InputEvent::Down); // → OnVar{0,0}
     app.handle_input(InputEvent::Enter); // start expansion (pending, no Loading yet)
-    // Simulate threshold elapsed: back-date the started time.
+                                         // Simulate threshold elapsed: back-date the started time.
     if let Some(pe) = app.pending_expansions.get_mut(&42) {
         pe.started = Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
     }
@@ -882,7 +882,8 @@ fn re_enter_on_loaded_chunk_toggles_collapse() {
     // Chunk is now Loaded.
     let ss = app.stack_state.as_ref().unwrap();
     assert!(matches!(
-        ss.expansion.collection_chunks
+        ss.expansion
+            .collection_chunks
             .get(&888)
             .unwrap()
             .chunk_pages
@@ -893,7 +894,8 @@ fn re_enter_on_loaded_chunk_toggles_collapse() {
     app.handle_input(InputEvent::Enter);
     let ss = app.stack_state.as_ref().unwrap();
     assert!(matches!(
-        ss.expansion.collection_chunks
+        ss.expansion
+            .collection_chunks
             .get(&888)
             .unwrap()
             .chunk_pages
@@ -1025,7 +1027,7 @@ fn collection_entry_objectref_expanded_fields_appear_in_tree() {
     // Navigate to entry 0 and expand it.
     app.handle_input(InputEvent::Down);
     app.handle_input(InputEvent::Enter); // start expand of id=700
-    // Poll until expansion done.
+                                         // Poll until expansion done.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
         app.poll_expansions();
@@ -1076,7 +1078,7 @@ fn loading_indicator_not_shown_before_1_second() {
     app.handle_input(InputEvent::Enter);
     app.handle_input(InputEvent::Down);
     app.handle_input(InputEvent::Enter); // start_object_expansion(42) — completes fast
-    // Poll once without sleeping — StubEngine responds immediately.
+                                         // Poll once without sleeping — StubEngine responds immediately.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
         app.poll_expansions();
@@ -1104,7 +1106,7 @@ fn failed_expansion_adds_warning_to_log() {
     app.handle_input(InputEvent::Enter);
     app.handle_input(InputEvent::Down);
     app.handle_input(InputEvent::Enter); // start expansion of 55
-    // Poll until result arrives.
+                                         // Poll until result arrives.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
         app.poll_expansions();
@@ -1196,7 +1198,7 @@ fn loading_indicator_shown_if_not_yet_complete_after_1_second() {
 #[test]
 fn hidden_favorites_panel_forces_focus_back_to_previous_panel() {
     use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{backend::TestBackend, Terminal};
 
     let engine = StubEngine::with_threads(&["main"]);
     let mut app = App::new(engine, "test.hprof".to_string());
@@ -1213,7 +1215,7 @@ fn hidden_favorites_panel_forces_focus_back_to_previous_panel() {
             var_idx: 0,
         },
     });
-    app.sync_favorites_list_state();
+    app.sync_favorites_selection();
     app.prev_focus = Focus::StackFrames;
     app.focus = Focus::Favorites;
 
