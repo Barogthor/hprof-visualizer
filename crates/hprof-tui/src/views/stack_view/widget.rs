@@ -1,0 +1,40 @@
+//! [`StackView`] — stateful ratatui widget for the stack frame panel.
+
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    widgets::{Block, BorderType, Borders, List, StatefulWidget, Widget},
+};
+
+use crate::theme::THEME;
+
+use super::state::StackState;
+
+/// Stateful widget for the stack frame panel.
+pub struct StackView {
+    /// Whether this panel has keyboard focus.
+    pub focused: bool,
+}
+
+impl StatefulWidget for StackView {
+    type State = StackState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let border_style = if self.focused {
+            THEME.border_focused
+        } else {
+            THEME.border_unfocused
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .border_style(border_style)
+            .title("Stack Frames  [Enter] expand  [Esc] back");
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let items = state.build_items();
+        let list = List::new(items).highlight_style(THEME.selection_bg);
+        StatefulWidget::render(list, inner, buf, &mut state.list_state);
+    }
+}

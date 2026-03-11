@@ -1,4 +1,5 @@
-use hprof_engine::{FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue};
+use hprof_engine::{CollectionPage, FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue};
+use ratatui::widgets::{List, ListItem};
 
 use super::*;
 use crate::theme::THEME;
