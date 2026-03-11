@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use hprof_engine::FieldInfo;
 
-use super::types::{ChunkState, CollectionChunks, ExpansionPhase};
+use super::types::{ChunkState, CollectionChunks, ExpansionPhase, StackCursor};
 
 /// Holds expansion state for all objects in the stack view.
 pub struct ExpansionRegistry {
@@ -15,6 +15,7 @@ pub struct ExpansionRegistry {
     pub(crate) object_fields: HashMap<u64, Vec<FieldInfo>>,
     pub(crate) object_errors: HashMap<u64, String>,
     pub(crate) collection_chunks: HashMap<u64, CollectionChunks>,
+    pub(crate) collection_restore_cursors: HashMap<u64, StackCursor>,
 }
 
 impl ExpansionRegistry {
@@ -25,6 +26,7 @@ impl ExpansionRegistry {
             object_fields: HashMap::new(),
             object_errors: HashMap::new(),
             collection_chunks: HashMap::new(),
+            collection_restore_cursors: HashMap::new(),
         }
     }
 
@@ -55,8 +57,7 @@ impl ExpansionRegistry {
     /// `StackState::set_expansion_failed`.
     pub fn set_expansion_failed(&mut self, object_id: u64, error: String) {
         self.object_errors.insert(object_id, error);
-        self.object_phases
-            .insert(object_id, ExpansionPhase::Failed);
+        self.object_phases.insert(object_id, ExpansionPhase::Failed);
     }
 
     /// Cancels a loading expansion — reverts to `Collapsed`.

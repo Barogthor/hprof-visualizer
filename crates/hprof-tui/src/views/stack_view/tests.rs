@@ -1,5 +1,5 @@
 use hprof_engine::{
-    CollectionPage, FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue,
+    CollectionPage, FieldInfo, FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue,
 };
 use ratatui::widgets::{List, ListItem};
 
@@ -1767,4 +1767,210 @@ fn selected_collection_entry_count_returns_none_when_cursor_not_on_entry() {
     let frames = vec![make_frame(10)];
     let state = StackState::new(frames);
     assert_eq!(state.selected_collection_entry_count(), None);
+}
+
+#[test]
+fn selected_collection_entry_obj_field_collection_info_returns_some_for_array_field() {
+    let coll_id = 0xC100u64;
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.expansion.collection_chunks.insert(
+        coll_id,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: 0x700,
+                        class_name: "Node".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+    state.set_expansion_done(
+        0x700,
+        vec![FieldInfo {
+            name: "arr".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 0x888,
+                class_name: "Object[]".to_string(),
+                entry_count: Some(3),
+                inline_value: None,
+            },
+        }],
+    );
+    state.set_cursor(StackCursor::OnCollectionEntryObjField {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![],
+        collection_id: coll_id,
+        entry_index: 0,
+        obj_field_path: vec![0],
+    });
+
+    assert_eq!(
+        state.selected_collection_entry_obj_field_collection_info(),
+        Some((0x888, 3))
+    );
+}
+
+#[test]
+fn selected_collection_entry_obj_field_collection_info_returns_none_without_entry_count() {
+    let coll_id = 0xC101u64;
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.expansion.collection_chunks.insert(
+        coll_id,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: 0x701,
+                        class_name: "Node".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+    state.set_expansion_done(
+        0x701,
+        vec![FieldInfo {
+            name: "child".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 0x889,
+                class_name: "Foo".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }],
+    );
+    state.set_cursor(StackCursor::OnCollectionEntryObjField {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![],
+        collection_id: coll_id,
+        entry_index: 0,
+        obj_field_path: vec![0],
+    });
+
+    assert_eq!(
+        state.selected_collection_entry_obj_field_collection_info(),
+        None
+    );
+}
+
+#[test]
+fn flat_items_include_nested_collection_entries_for_multidimensional_arrays() {
+    let outer_id = 0xD100u64;
+    let inner_id = 0xD101u64;
+
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(
+        10,
+        vec![VariableInfo {
+            index: 0,
+            value: VariableValue::ObjectRef {
+                id: outer_id,
+                class_name: "Object[]".to_string(),
+                entry_count: Some(1),
+            },
+        }],
+    );
+
+    state.expansion.collection_chunks.insert(
+        outer_id,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: inner_id,
+                        class_name: "Object[]".to_string(),
+                        entry_count: Some(2),
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+
+    state.expansion.collection_chunks.insert(
+        inner_id,
+        CollectionChunks {
+            total_count: 2,
+            eager_page: Some(CollectionPage {
+                entries: vec![
+                    hprof_engine::EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::Int(1),
+                    },
+                    hprof_engine::EntryInfo {
+                        index: 1,
+                        key: None,
+                        value: FieldValue::Int(2),
+                    },
+                ],
+                total_count: 2,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+
+    let flat = state.flat_items();
+    assert!(
+        flat.iter().any(|c| {
+            matches!(
+                c,
+                StackCursor::OnCollectionEntry {
+                    collection_id,
+                    entry_index: 0,
+                    ..
+                } if *collection_id == outer_id
+            )
+        }),
+        "outer collection entry must be emitted"
+    );
+    assert!(
+        flat.iter().any(|c| {
+            matches!(
+                c,
+                StackCursor::OnCollectionEntry {
+                    collection_id,
+                    entry_index: 0,
+                    ..
+                } if *collection_id == inner_id
+            )
+        }),
+        "nested collection entry must be emitted"
+    );
 }

@@ -148,6 +148,30 @@ impl NavigationEngine for StubEngine {
                     has_more: end < total as usize,
                 })
             }
+            890 => {
+                // One nested collection entry: value ObjectRef(id=888)
+                // with entry_count set so Enter dispatches StartCollection.
+                let total: u64 = 1;
+                let end = (offset + limit).min(total as usize);
+                let entries = (offset..end)
+                    .map(|i| EntryInfo {
+                        index: i,
+                        key: None,
+                        value: FieldValue::ObjectRef {
+                            id: 888,
+                            class_name: "Object[]".to_string(),
+                            entry_count: Some(250),
+                            inline_value: None,
+                        },
+                    })
+                    .collect();
+                Some(CollectionPage {
+                    entries,
+                    total_count: total,
+                    offset,
+                    has_more: end < total as usize,
+                })
+            }
             _ => None,
         }
     }
@@ -547,6 +571,28 @@ fn escape_on_loading_node_cancels_expansion_without_leaving_stack_frames() {
 /// (object 42) whose expand returns a field "items"
 /// = ObjectRef(888, ArrayList, entry_count=ec).
 /// StubEngine.get_page(888, ..) returns test entries.
+fn make_var_collection_app(ec: u64) -> App<StubEngine> {
+    let frames = vec![{
+        let mut f = make_frame(10);
+        f.has_variables = true;
+        f
+    }];
+    let vars = vec![VariableInfo {
+        index: 0,
+        value: VariableValue::ObjectRef {
+            id: 888,
+            class_name: "Object[]".to_string(),
+            entry_count: Some(ec),
+        },
+    }];
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+    App::new(engine, "test.hprof".to_string())
+}
+
+/// Builds an App with a frame that has one var
+/// (object 42) whose expand returns a field "items"
+/// = ObjectRef(888, ArrayList, entry_count=ec).
+/// StubEngine.get_page(888, ..) returns test entries.
 fn make_collection_app(ec: u64) -> App<StubEngine> {
     let frames = vec![{
         let mut f = make_frame(10);
@@ -577,11 +623,7 @@ fn nav_to_collection_field(app: &mut App<StubEngine>) {
     app.handle_input(InputEvent::Enter); // expand frame
     app.handle_input(InputEvent::Down); // → OnVar
     app.handle_input(InputEvent::Enter); // expand obj 42
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
-        app.poll_expansions();
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    poll_all_expansions(app);
     app.handle_input(InputEvent::Down); // → items field
 }
 
@@ -589,6 +631,14 @@ fn poll_all_pages(app: &mut App<StubEngine>) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while !app.pending_pages.is_empty() && std::time::Instant::now() < deadline {
         let _fallbacks = app.poll_pages();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+fn poll_all_expansions(app: &mut App<StubEngine>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+        app.poll_expansions();
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
@@ -796,6 +846,87 @@ fn escape_collapses_collection() {
 }
 
 #[test]
+fn escape_from_collection_opened_on_var_restores_on_var_cursor() {
+    let mut app = make_var_collection_app(250);
+    app.handle_input(InputEvent::Enter); // StackFrames
+    app.handle_input(InputEvent::Enter); // expand frame
+    app.handle_input(InputEvent::Down); // -> OnVar{0,0}
+    app.handle_input(InputEvent::Enter); // open collection 888 from var
+    poll_all_pages(&mut app);
+    assert!(
+        app.stack_state
+            .as_ref()
+            .unwrap()
+            .expansion
+            .collection_chunks
+            .contains_key(&888),
+        "collection 888 should be loaded before testing escape"
+    );
+
+    app.handle_input(InputEvent::Down); // -> first collection entry
+    let ss = app.stack_state.as_ref().unwrap();
+    assert!(
+        matches!(ss.cursor(), StackCursor::OnCollectionEntry { .. }),
+        "expected collection entry cursor before escape, got {:?}",
+        ss.cursor()
+    );
+
+    app.handle_input(InputEvent::Escape);
+    let ss = app.stack_state.as_ref().unwrap();
+    assert!(
+        !ss.expansion.collection_chunks.contains_key(&888),
+        "collection should be removed"
+    );
+    assert_eq!(
+        ss.cursor(),
+        &StackCursor::OnVar {
+            frame_idx: 0,
+            var_idx: 0
+        },
+        "escape from var-opened collection must restore OnVar"
+    );
+}
+
+#[test]
+fn var_prim_array_triggers_collection_paging_not_expand() {
+    // Regression: var with entry_count=Some(5) and class_name="int[]"
+    // must dispatch StartCollection (pending_pages), not expand_object.
+    let frames = vec![{
+        let mut f = make_frame(10);
+        f.has_variables = true;
+        f
+    }];
+    let vars = vec![VariableInfo {
+        index: 0,
+        value: VariableValue::ObjectRef {
+            id: 888,
+            class_name: "int[]".to_string(),
+            entry_count: Some(5),
+        },
+    }];
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.handle_input(InputEvent::Enter); // → StackFrames
+    app.handle_input(InputEvent::Enter); // expand frame
+    app.handle_input(InputEvent::Down); // → OnVar{0,0}
+    app.handle_input(InputEvent::Enter); // must start collection paging, not expand_object
+    assert!(
+        app.pending_pages.contains_key(&(888, 0)),
+        "prim array var with entry_count must trigger collection paging"
+    );
+    assert!(
+        !app.pending_expansions.contains_key(&888),
+        "prim array var must not call expand_object"
+    );
+    poll_all_pages(&mut app);
+    let ss = app.stack_state.as_ref().unwrap();
+    assert!(
+        ss.expansion.collection_chunks.contains_key(&888),
+        "collection chunks must be present after polling"
+    );
+}
+
+#[test]
 fn escape_from_chunk_section_collapses_collection() {
     let mut app = make_collection_app(250);
     nav_to_collection_field(&mut app);
@@ -984,6 +1115,64 @@ fn make_obj_entry_collection_app() -> App<StubEngine> {
     App::new(engine, "test.hprof".to_string())
 }
 
+/// Builds an App where a collection entry object (id=700) contains an
+/// `ObjectRef` field that is itself a collection (id=888).
+fn make_obj_entry_array_field_collection_app() -> App<StubEngine> {
+    let frames = vec![{
+        let mut f = make_frame(10);
+        f.has_variables = true;
+        f
+    }];
+    let vars = vec![make_obj_var(0, 42)];
+    let expand_fields = Some(vec![FieldInfo {
+        name: "items".to_string(),
+        value: FieldValue::ObjectRef {
+            id: 889,
+            class_name: "java.util.ArrayList".to_string(),
+            entry_count: Some(3),
+            inline_value: None,
+        },
+    }]);
+    let entry_obj_fields = Some(vec![FieldInfo {
+        name: "arr".to_string(),
+        value: FieldValue::ObjectRef {
+            id: 888,
+            class_name: "Object[]".to_string(),
+            entry_count: Some(250),
+            inline_value: None,
+        },
+    }]);
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+        .with_vars(10, vars)
+        .with_expand(42, expand_fields)
+        .with_expand(700, entry_obj_fields);
+    App::new(engine, "test.hprof".to_string())
+}
+
+/// Builds an App where the top-level collection contains an entry that is
+/// itself a collection (`Object[]`) and must open via `StartCollection`.
+fn make_collection_with_nested_collection_entries_app() -> App<StubEngine> {
+    let frames = vec![{
+        let mut f = make_frame(10);
+        f.has_variables = true;
+        f
+    }];
+    let vars = vec![make_obj_var(0, 42)];
+    let expand_fields = Some(vec![FieldInfo {
+        name: "items".to_string(),
+        value: FieldValue::ObjectRef {
+            id: 890,
+            class_name: "java.util.ArrayList".to_string(),
+            entry_count: Some(1),
+            inline_value: None,
+        },
+    }]);
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+        .with_vars(10, vars)
+        .with_expand(42, expand_fields);
+    App::new(engine, "test.hprof".to_string())
+}
+
 #[test]
 fn collection_entry_objectref_shows_plus_prefix() {
     let mut app = make_obj_entry_collection_app();
@@ -1044,6 +1233,144 @@ fn collection_entry_objectref_expanded_fields_appear_in_tree() {
              got {:?}",
         ss.cursor()
     );
+}
+
+#[test]
+fn collection_entry_object_field_collection_opens_without_failed_resolve() {
+    let mut app = make_obj_entry_array_field_collection_app();
+    nav_to_collection_field(&mut app);
+    app.handle_input(InputEvent::Enter); // open collection 889
+    poll_all_pages(&mut app);
+
+    app.handle_input(InputEvent::Down); // -> OnCollectionEntry{collection_id:889, entry_index:0}
+    app.handle_input(InputEvent::Enter); // expand entry object id=700
+    poll_all_expansions(&mut app);
+
+    app.handle_input(InputEvent::Down); // -> OnCollectionEntryObjField (arr)
+    {
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            matches!(ss.cursor(), StackCursor::OnCollectionEntryObjField { .. }),
+            "expected OnCollectionEntryObjField before opening nested collection, got {:?}",
+            ss.cursor()
+        );
+    }
+
+    app.handle_input(InputEvent::Enter); // must StartCollection(888), not StartEntryObj(888)
+    assert!(
+        app.pending_pages.contains_key(&(888, 0)),
+        "nested collection field must trigger collection paging"
+    );
+    assert!(
+        !app.pending_expansions.contains_key(&888),
+        "nested collection field must not call expand_object on collection id"
+    );
+
+    poll_all_pages(&mut app);
+    app.handle_input(InputEvent::Down); // -> first nested collection entry
+    {
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            matches!(
+                ss.cursor(),
+                StackCursor::OnCollectionEntry {
+                    collection_id: 888,
+                    entry_index: 0,
+                    ..
+                }
+            ),
+            "expected first nested collection entry, got {:?}",
+            ss.cursor()
+        );
+    }
+
+    app.handle_input(InputEvent::Escape);
+    {
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            !ss.expansion.collection_chunks.contains_key(&888),
+            "nested collection should be collapsed on escape"
+        );
+        assert!(
+            matches!(ss.cursor(), StackCursor::OnCollectionEntryObjField { .. }),
+            "escape from nested collection should restore OnCollectionEntryObjField, got {:?}",
+            ss.cursor()
+        );
+    }
+}
+
+#[test]
+fn nested_collection_entry_object_array_opens_and_renders_children() {
+    let mut app = make_collection_with_nested_collection_entries_app();
+    nav_to_collection_field(&mut app);
+    app.handle_input(InputEvent::Enter); // open collection 890
+    poll_all_pages(&mut app);
+
+    app.handle_input(InputEvent::Down); // -> entry 0 of collection 890 (value is Object[] id=888)
+    {
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            matches!(
+                ss.cursor(),
+                StackCursor::OnCollectionEntry {
+                    collection_id: 890,
+                    entry_index: 0,
+                    ..
+                }
+            ),
+            "expected entry 0 on outer collection, got {:?}",
+            ss.cursor()
+        );
+    }
+
+    app.handle_input(InputEvent::Enter); // must StartCollection(888), not StartEntryObj(888)
+    assert!(
+        app.pending_pages.contains_key(&(888, 0)),
+        "nested collection entry must trigger collection paging"
+    );
+    assert!(
+        !app.pending_expansions.contains_key(&888),
+        "nested collection entry must not call expand_object on collection id"
+    );
+
+    poll_all_pages(&mut app);
+    app.handle_input(InputEvent::Down); // -> first entry of nested collection 888
+    {
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            matches!(
+                ss.cursor(),
+                StackCursor::OnCollectionEntry {
+                    collection_id: 888,
+                    entry_index: 0,
+                    ..
+                }
+            ),
+            "expected first nested collection entry, got {:?}",
+            ss.cursor()
+        );
+    }
+
+    app.handle_input(InputEvent::Escape);
+    {
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            !ss.expansion.collection_chunks.contains_key(&888),
+            "nested collection should be collapsed on escape"
+        );
+        assert!(
+            matches!(
+                ss.cursor(),
+                StackCursor::OnCollectionEntry {
+                    collection_id: 890,
+                    entry_index: 0,
+                    ..
+                }
+            ),
+            "escape from nested collection should restore outer collection entry, got {:?}",
+            ss.cursor()
+        );
+    }
 }
 
 #[test]

@@ -298,6 +298,24 @@ impl StackState {
         None
     }
 
+    /// Returns `(collection_id, entry_count)` when the cursor is
+    /// `OnCollectionEntryObjField` pointing to a collection/array field.
+    pub fn selected_collection_entry_obj_field_collection_info(&self) -> Option<(u64, u64)> {
+        let field = self.collection_entry_obj_cursor_field()?;
+        if let FieldValue::ObjectRef {
+            id,
+            entry_count: Some(ec),
+            ..
+        } = field.value
+        {
+            if id == 0 {
+                return None;
+            }
+            return Some((id, ec));
+        }
+        None
+    }
+
     /// Resolves the field under the cursor when on
     /// `OnCollectionEntryObjField`.
     fn collection_entry_obj_cursor_field(&self) -> Option<&FieldInfo> {
@@ -357,14 +375,28 @@ impl StackState {
                 field_path,
                 collection_id,
                 ..
-            } => Some((
-                *collection_id,
-                StackCursor::OnObjectField {
-                    frame_idx: *frame_idx,
-                    var_idx: *var_idx,
-                    field_path: field_path.clone(),
-                },
-            )),
+            } => {
+                if let Some(restore_cursor) = self
+                    .expansion
+                    .collection_restore_cursors
+                    .get(collection_id)
+                {
+                    return Some((*collection_id, restore_cursor.clone()));
+                }
+                let restore_cursor = if field_path.is_empty() {
+                    StackCursor::OnVar {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                    }
+                } else {
+                    StackCursor::OnObjectField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                    }
+                };
+                Some((*collection_id, restore_cursor))
+            }
             _ => None,
         }
     }
@@ -620,12 +652,23 @@ impl StackState {
                             frame_idx: fi,
                             var_idx: vi,
                         });
-                        if let VariableValue::ObjectRef { id: object_id, .. } = var.value {
+                        if let VariableValue::ObjectRef {
+                            id: object_id,
+                            entry_count,
+                            ..
+                        } = &var.value
+                        {
+                            if entry_count.is_some()
+                                && let Some(cc) = self.expansion.collection_chunks.get(object_id)
+                            {
+                                self.emit_collection_children(fi, vi, &[], *object_id, cc, &mut out);
+                                continue;
+                            }
                             let mut visited = HashSet::new();
                             self.emit_object_children(
                                 fi,
                                 vi,
-                                object_id,
+                                *object_id,
                                 vec![],
                                 &mut visited,
                                 &mut out,
@@ -728,38 +771,47 @@ impl StackState {
         cc: &CollectionChunks,
         out: &mut Vec<StackCursor>,
     ) {
-        let emit_entry = |entry: &hprof_engine::EntryInfo, out: &mut Vec<StackCursor>| {
-            out.push(StackCursor::OnCollectionEntry {
-                frame_idx: fi,
-                var_idx: vi,
-                field_path: field_path.to_vec(),
-                collection_id,
-                entry_index: entry.index,
-            });
-            // If this entry's value is an expanded ObjectRef, emit its
-            // fields as OnCollectionEntryObjField cursors.
-            if let FieldValue::ObjectRef { id, .. } = &entry.value {
-                let mut visited = HashSet::new();
-                self.emit_collection_entry_obj_children(
+        let mut visited_collections = HashSet::new();
+        self.emit_collection_children_inner(
+            fi,
+            vi,
+            field_path,
+            collection_id,
+            cc,
+            out,
+            &mut visited_collections,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_collection_children_inner(
+        &self,
+        fi: usize,
+        vi: usize,
+        field_path: &[usize],
+        collection_id: u64,
+        cc: &CollectionChunks,
+        out: &mut Vec<StackCursor>,
+        visited_collections: &mut HashSet<u64>,
+    ) {
+        if !visited_collections.insert(collection_id) {
+            return;
+        }
+
+        if let Some(page) = &cc.eager_page {
+            for entry in &page.entries {
+                self.emit_collection_entry_cursor(
                     fi,
                     vi,
                     field_path,
                     collection_id,
-                    entry.index,
-                    *id,
-                    &[],
-                    &mut visited,
+                    entry,
                     out,
+                    visited_collections,
                 );
             }
-        };
-        // Eager page entries.
-        if let Some(page) = &cc.eager_page {
-            for entry in &page.entries {
-                emit_entry(entry, out);
-            }
         }
-        // Chunk sections in offset order.
+
         let ranges = compute_chunk_ranges(cc.total_count);
         for (offset, _) in &ranges {
             out.push(StackCursor::OnChunkSection {
@@ -769,12 +821,76 @@ impl StackState {
                 collection_id,
                 chunk_offset: *offset,
             });
-            // If loaded, emit entries.
             if let Some(ChunkState::Loaded(page)) = cc.chunk_pages.get(offset) {
                 for entry in &page.entries {
-                    emit_entry(entry, out);
+                    self.emit_collection_entry_cursor(
+                        fi,
+                        vi,
+                        field_path,
+                        collection_id,
+                        entry,
+                        out,
+                        visited_collections,
+                    );
                 }
             }
+        }
+
+        visited_collections.remove(&collection_id);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_collection_entry_cursor(
+        &self,
+        fi: usize,
+        vi: usize,
+        field_path: &[usize],
+        collection_id: u64,
+        entry: &hprof_engine::EntryInfo,
+        out: &mut Vec<StackCursor>,
+        visited_collections: &mut HashSet<u64>,
+    ) {
+        out.push(StackCursor::OnCollectionEntry {
+            frame_idx: fi,
+            var_idx: vi,
+            field_path: field_path.to_vec(),
+            collection_id,
+            entry_index: entry.index,
+        });
+
+        if let FieldValue::ObjectRef {
+            id,
+            entry_count: Some(_),
+            ..
+        } = &entry.value
+            && *id != collection_id
+            && let Some(nested) = self.expansion.collection_chunks.get(id)
+        {
+            self.emit_collection_children_inner(
+                fi,
+                vi,
+                field_path,
+                *id,
+                nested,
+                out,
+                visited_collections,
+            );
+            return;
+        }
+
+        if let FieldValue::ObjectRef { id, .. } = &entry.value {
+            let mut visited = HashSet::new();
+            self.emit_collection_entry_obj_children(
+                fi,
+                vi,
+                field_path,
+                collection_id,
+                entry.index,
+                *id,
+                &[],
+                &mut visited,
+                out,
+            );
         }
     }
 
@@ -845,6 +961,17 @@ impl StackState {
                             entry_index,
                             obj_field_path: path.clone(),
                         });
+                        if let FieldValue::ObjectRef {
+                            id,
+                            entry_count: Some(_),
+                            ..
+                        } = field.value
+                            && id != collection_id
+                            && let Some(cc) = self.expansion.collection_chunks.get(&id)
+                        {
+                            self.emit_collection_children(fi, vi, field_path, id, cc, out);
+                            continue;
+                        }
                         if let FieldValue::ObjectRef { id, .. } = field.value {
                             self.emit_collection_entry_obj_children(
                                 fi,

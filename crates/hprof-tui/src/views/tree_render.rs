@@ -101,10 +101,19 @@ fn append_var(
     object_errors: &HashMap<u64, String>,
     items: &mut Vec<ListItem<'static>>,
 ) {
-    let phase = if let VariableValue::ObjectRef { id, .. } = var.value {
-        get_phase(id, object_phases)
-    } else {
-        ExpansionPhase::Collapsed
+    let phase = match &var.value {
+        VariableValue::ObjectRef {
+            id,
+            entry_count,
+            ..
+        } => {
+            if entry_count.is_some() && collection_chunks.contains_key(id) {
+                ExpansionPhase::Expanded
+            } else {
+                get_phase(*id, object_phases)
+            }
+        }
+        VariableValue::Null => ExpansionPhase::Collapsed,
     };
 
     let (toggle, val_str, val_style): (&str, String, Style) = match (&var.value, &phase) {
@@ -147,10 +156,28 @@ fn append_var(
         Span::styled(format!("[{}] {val_str}", var.index), val_style),
     ])));
 
-    if let VariableValue::ObjectRef { id, .. } = var.value {
+    if let VariableValue::ObjectRef {
+        id,
+        entry_count,
+        ..
+    } = &var.value
+    {
+        if entry_count.is_some() && let Some(cc) = collection_chunks.get(id) {
+            append_collection_items(
+                *id,
+                cc,
+                &format!("{indent}  "),
+                object_fields,
+                collection_chunks,
+                object_phases,
+                object_errors,
+                items,
+            );
+            return;
+        }
         let mut visited = HashSet::new();
         append_object_children(
-            id,
+            *id,
             &format!("{indent}  "),
             0,
             object_fields,
@@ -275,6 +302,7 @@ fn append_object_children(
                         && let Some(cc) = collection_chunks.get(&id)
                     {
                         append_collection_items(
+                            id,
                             cc,
                             &format!("{indent}  "),
                             object_fields,
@@ -311,6 +339,7 @@ fn append_object_children(
 /// Appends items for collection entries and chunk section placeholders.
 #[allow(clippy::too_many_arguments)]
 fn append_collection_items(
+    collection_id: u64,
     cc: &CollectionChunks,
     indent: &str,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
@@ -319,65 +348,52 @@ fn append_collection_items(
     object_errors: &HashMap<u64, String>,
     items: &mut Vec<ListItem<'static>>,
 ) {
-    let entry_items = |entry: &EntryInfo, items: &mut Vec<ListItem<'static>>| {
-        let value_phase = if let FieldValue::ObjectRef { id, .. } = &entry.value {
-            Some(get_phase(*id, object_phases))
-        } else {
-            None
-        };
-        let text = if let (
-            FieldValue::ObjectRef { id, class_name, .. },
-            Some(ExpansionPhase::Failed),
-        ) = (&entry.value, &value_phase)
-        {
-            let err = object_errors
-                .get(id)
-                .map(|s| s.as_str())
-                .unwrap_or("Failed to resolve object");
-            let short = if class_name.is_empty() {
-                "Object"
-            } else {
-                class_name.rsplit('.').next().unwrap_or(class_name)
-            };
-            if let Some(key) = &entry.key {
-                let k = super::stack_view::format_entry_value_text(key);
-                format!(
-                    "{indent}! [{}] {} => {}{FAILED_LABEL_SEP}{err}",
-                    entry.index, k, short
-                )
-            } else {
-                format!("{indent}! [{}] {}{FAILED_LABEL_SEP}{err}", entry.index, short)
-            }
-        } else {
-            StackState::format_entry_line(entry, indent, value_phase.as_ref())
-        };
-        let row_style = if matches!(value_phase, Some(ExpansionPhase::Failed)) {
-            THEME.error_indicator
-        } else {
-            field_value_style(&entry.value)
-        };
-        items.push(ListItem::new(Line::from(Span::styled(text, row_style))));
-        if let FieldValue::ObjectRef { id, .. } = &entry.value {
-            let mut visited = HashSet::new();
-            append_collection_entry_obj(
-                *id,
-                &format!("{indent}  "),
-                0,
+    let mut visited_collections = HashSet::new();
+    append_collection_items_inner(
+        collection_id,
+        cc,
+        indent,
+        object_fields,
+        collection_chunks,
+        object_phases,
+        object_errors,
+        items,
+        &mut visited_collections,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_collection_items_inner(
+    collection_id: u64,
+    cc: &CollectionChunks,
+    indent: &str,
+    object_fields: &HashMap<u64, Vec<FieldInfo>>,
+    collection_chunks: &HashMap<u64, CollectionChunks>,
+    object_phases: &HashMap<u64, ExpansionPhase>,
+    object_errors: &HashMap<u64, String>,
+    items: &mut Vec<ListItem<'static>>,
+    visited_collections: &mut HashSet<u64>,
+) {
+    if !visited_collections.insert(collection_id) {
+        return;
+    }
+
+    if let Some(page) = &cc.eager_page {
+        for entry in &page.entries {
+            append_collection_entry_item(
+                collection_id,
+                entry,
+                indent,
                 object_fields,
                 collection_chunks,
                 object_phases,
                 object_errors,
-                &mut visited,
                 items,
+                visited_collections,
             );
         }
-    };
-
-    if let Some(page) = &cc.eager_page {
-        for entry in &page.entries {
-            entry_items(entry, items);
-        }
     }
+
     let ranges = compute_chunk_ranges(cc.total_count);
     for (offset, limit) in &ranges {
         let end = offset + limit - 1;
@@ -396,9 +412,109 @@ fn append_collection_items(
         items.push(ListItem::new(Line::from(Span::styled(text, row_style))));
         if let Some(ChunkState::Loaded(page)) = chunk_state {
             for entry in &page.entries {
-                entry_items(entry, items);
+                append_collection_entry_item(
+                    collection_id,
+                    entry,
+                    indent,
+                    object_fields,
+                    collection_chunks,
+                    object_phases,
+                    object_errors,
+                    items,
+                    visited_collections,
+                );
             }
         }
+    }
+
+    visited_collections.remove(&collection_id);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_collection_entry_item(
+    collection_id: u64,
+    entry: &EntryInfo,
+    indent: &str,
+    object_fields: &HashMap<u64, Vec<FieldInfo>>,
+    collection_chunks: &HashMap<u64, CollectionChunks>,
+    object_phases: &HashMap<u64, ExpansionPhase>,
+    object_errors: &HashMap<u64, String>,
+    items: &mut Vec<ListItem<'static>>,
+    visited_collections: &mut HashSet<u64>,
+) {
+    let value_phase = if let FieldValue::ObjectRef { id, .. } = &entry.value {
+        Some(get_phase(*id, object_phases))
+    } else {
+        None
+    };
+    let text = if let (
+        FieldValue::ObjectRef { id, class_name, .. },
+        Some(ExpansionPhase::Failed),
+    ) = (&entry.value, &value_phase)
+    {
+        let err = object_errors
+            .get(id)
+            .map(|s| s.as_str())
+            .unwrap_or("Failed to resolve object");
+        let short = if class_name.is_empty() {
+            "Object"
+        } else {
+            class_name.rsplit('.').next().unwrap_or(class_name)
+        };
+        if let Some(key) = &entry.key {
+            let k = super::stack_view::format_entry_value_text(key);
+            format!(
+                "{indent}! [{}] {} => {}{FAILED_LABEL_SEP}{err}",
+                entry.index, k, short
+            )
+        } else {
+            format!("{indent}! [{}] {}{FAILED_LABEL_SEP}{err}", entry.index, short)
+        }
+    } else {
+        StackState::format_entry_line(entry, indent, value_phase.as_ref())
+    };
+    let row_style = if matches!(value_phase, Some(ExpansionPhase::Failed)) {
+        THEME.error_indicator
+    } else {
+        field_value_style(&entry.value)
+    };
+    items.push(ListItem::new(Line::from(Span::styled(text, row_style))));
+
+    if let FieldValue::ObjectRef {
+        id,
+        entry_count: Some(_),
+        ..
+    } = &entry.value
+        && *id != collection_id
+        && let Some(nested) = collection_chunks.get(id)
+    {
+        append_collection_items_inner(
+            *id,
+            nested,
+            &format!("{indent}  "),
+            object_fields,
+            collection_chunks,
+            object_phases,
+            object_errors,
+            items,
+            visited_collections,
+        );
+        return;
+    }
+
+    if let FieldValue::ObjectRef { id, .. } = &entry.value {
+        let mut visited = HashSet::new();
+        append_collection_entry_obj(
+            *id,
+            &format!("{indent}  "),
+            0,
+            object_fields,
+            collection_chunks,
+            object_phases,
+            object_errors,
+            &mut visited,
+            items,
+        );
     }
 }
 
@@ -411,7 +527,7 @@ fn append_collection_entry_obj(
     indent: &str,
     depth: usize,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
-    _collection_chunks: &HashMap<u64, CollectionChunks>,
+    collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
     visited: &mut HashSet<u64>,
@@ -440,7 +556,7 @@ fn append_collection_entry_obj(
                 ))));
             } else {
                 visited.insert(obj_id);
-                for (fidx, field) in field_list.iter().enumerate() {
+                for field in field_list {
                     if let FieldValue::ObjectRef { id, .. } = &field.value
                         && visited.contains(id)
                     {
@@ -490,14 +606,34 @@ fn append_collection_entry_obj(
                         Span::styled(toggle.to_string(), toggle_style),
                         Span::styled(format!("{}: {val}", field.name), row_style),
                     ])));
+                    if let FieldValue::ObjectRef {
+                        id,
+                        entry_count: Some(_),
+                        ..
+                    } = field.value
+                        && let Some(cc) = collection_chunks.get(&id)
+                    {
+                        if depth + 1 < 16 {
+                            append_collection_items(
+                                id,
+                                cc,
+                                &format!("{indent}  "),
+                                object_fields,
+                                collection_chunks,
+                                object_phases,
+                                object_errors,
+                                items,
+                            );
+                        }
+                        continue;
+                    }
                     if let FieldValue::ObjectRef { id, .. } = field.value {
-                        let _ = fidx; // suppress unused warning
                         append_collection_entry_obj(
                             id,
                             &format!("{indent}  "),
                             depth + 1,
                             object_fields,
-                            _collection_chunks,
+                            collection_chunks,
                             object_phases,
                             object_errors,
                             visited,

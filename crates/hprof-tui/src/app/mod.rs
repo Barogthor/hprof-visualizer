@@ -410,6 +410,7 @@ impl<E: NavigationEngine> App<E> {
                     self.pending_pages.retain(|&(id, _), _| id != cid);
                     if let Some(s) = &mut self.stack_state {
                         s.expansion.collection_chunks.remove(&cid);
+                        s.expansion.collection_restore_cursors.remove(&cid);
                         s.set_cursor(restore_cursor);
                     }
                     return AppAction::Continue;
@@ -459,7 +460,7 @@ impl<E: NavigationEngine> App<E> {
                     CollapseObj(u64),
                     StartNestedObj(u64),
                     CollapseNestedObj(u64),
-                    StartCollection(u64, u64),
+                    StartCollection(u64, u64, StackCursor),
                     CollapseCollection(u64),
                     LoadChunk(u64, usize, usize),
                     ToggleChunk(u64, usize),
@@ -487,7 +488,7 @@ impl<E: NavigationEngine> App<E> {
                                 if s.expansion.collection_chunks.contains_key(&oid) {
                                     return Some(Cmd::CollapseCollection(oid));
                                 }
-                                return Some(Cmd::StartCollection(oid, ec));
+                                return Some(Cmd::StartCollection(oid, ec, s.cursor().clone()));
                             }
                             match s.expansion_state(oid) {
                                 ExpansionPhase::Collapsed => Cmd::StartObj(oid),
@@ -506,7 +507,7 @@ impl<E: NavigationEngine> App<E> {
                                 if s.expansion.collection_chunks.contains_key(&cid) {
                                     return Some(Cmd::CollapseCollection(cid));
                                 }
-                                return Some(Cmd::StartCollection(cid, ec));
+                                return Some(Cmd::StartCollection(cid, ec, s.cursor().clone()));
                             }
                             let nested_id = s.selected_field_ref_id()?;
                             dbg_log!(
@@ -541,7 +542,7 @@ impl<E: NavigationEngine> App<E> {
                                 if s.expansion.collection_chunks.contains_key(&oid) {
                                     return Some(Cmd::CollapseCollection(oid));
                                 }
-                                return Some(Cmd::StartCollection(oid, ec));
+                                return Some(Cmd::StartCollection(oid, ec, s.cursor().clone()));
                             }
                             match s.expansion_state(oid) {
                                 ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
@@ -551,6 +552,14 @@ impl<E: NavigationEngine> App<E> {
                             }
                         }
                         StackCursor::OnCollectionEntryObjField { .. } => {
+                            if let Some((oid, ec)) =
+                                s.selected_collection_entry_obj_field_collection_info()
+                            {
+                                if s.expansion.collection_chunks.contains_key(&oid) {
+                                    return Some(Cmd::CollapseCollection(oid));
+                                }
+                                return Some(Cmd::StartCollection(oid, ec, s.cursor().clone()));
+                            }
                             let oid = s.selected_collection_entry_obj_field_ref_id()?;
                             match s.expansion_state(oid) {
                                 ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
@@ -590,7 +599,7 @@ impl<E: NavigationEngine> App<E> {
                             s.collapse_object(oid);
                         }
                     }
-                    Some(Cmd::StartCollection(cid, ec)) => {
+                    Some(Cmd::StartCollection(cid, ec, restore_cursor)) => {
                         dbg_log!("StartCollection cid=0x{:X} ec={}", cid, ec);
                         let limit = (ec as usize).min(100);
                         let chunks = CollectionChunks {
@@ -603,6 +612,9 @@ impl<E: NavigationEngine> App<E> {
                         };
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.insert(cid, chunks);
+                            s.expansion
+                                .collection_restore_cursors
+                                .insert(cid, restore_cursor);
                         }
                         self.start_collection_page_load(cid, 0, limit);
                     }
@@ -626,6 +638,7 @@ impl<E: NavigationEngine> App<E> {
                     Some(Cmd::CollapseCollection(cid)) => {
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.remove(&cid);
+                            s.expansion.collection_restore_cursors.remove(&cid);
                         }
                         // Remove pending page loads for
                         // this collection.
@@ -749,6 +762,7 @@ impl<E: NavigationEngine> App<E> {
                     dbg_log!("poll_pages: 0x{:X}+{} → None (fallback)", cid, offset);
                     if let Some(s) = &mut self.stack_state {
                         s.expansion.collection_chunks.remove(&cid);
+                        s.expansion.collection_restore_cursors.remove(&cid);
                         if offset == 0 {
                             s.collapse_object(cid);
                         }
@@ -773,6 +787,7 @@ impl<E: NavigationEngine> App<E> {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
                         s.expansion.collection_chunks.remove(&cid);
+                        s.expansion.collection_restore_cursors.remove(&cid);
                         if offset == 0 {
                             s.collapse_object(cid);
                         }
