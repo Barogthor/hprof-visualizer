@@ -857,6 +857,19 @@ mod collection_tests {
 
     use super::collection_entry_count;
 
+    fn push_string(index: &mut PreciseIndex, buf: &mut Vec<u8>, id: u64, value: &str) {
+        let offset = buf.len() as u64;
+        buf.extend_from_slice(value.as_bytes());
+        index.strings.insert(
+            id,
+            HprofStringRef {
+                id,
+                offset,
+                len: value.len() as u32,
+            },
+        );
+    }
+
     fn make_int_index(
         class_id: u64,
         super_id: u64,
@@ -961,6 +974,195 @@ mod collection_tests {
             data: (-1i32).to_be_bytes().to_vec(),
         };
         assert_eq!(collection_entry_count(&raw, &index, 8, &buf), None);
+    }
+
+    #[test]
+    fn hashmap_size_is_not_shifted_by_super_fields() {
+        let mut index = PreciseIndex::new();
+        let mut buf = Vec::new();
+
+        let sid_table = 1;
+        let sid_entry_set = 2;
+        let sid_size = 3;
+        let sid_mod_count = 4;
+        let sid_threshold = 5;
+        let sid_load_factor = 6;
+        let sid_key_set = 7;
+        let sid_values = 8;
+
+        push_string(&mut index, &mut buf, sid_table, "table");
+        push_string(&mut index, &mut buf, sid_entry_set, "entrySet");
+        push_string(&mut index, &mut buf, sid_size, "size");
+        push_string(&mut index, &mut buf, sid_mod_count, "modCount");
+        push_string(&mut index, &mut buf, sid_threshold, "threshold");
+        push_string(&mut index, &mut buf, sid_load_factor, "loadFactor");
+        push_string(&mut index, &mut buf, sid_key_set, "keySet");
+        push_string(&mut index, &mut buf, sid_values, "values");
+
+        let abstract_map_id = 50u64;
+        let hashmap_id = 100u64;
+
+        index.class_dumps.insert(
+            abstract_map_id,
+            ClassDumpInfo {
+                class_object_id: abstract_map_id,
+                super_class_id: 0,
+                instance_size: 16,
+                instance_fields: vec![
+                    FieldDef {
+                        name_string_id: sid_key_set,
+                        field_type: 2,
+                    },
+                    FieldDef {
+                        name_string_id: sid_values,
+                        field_type: 2,
+                    },
+                ],
+            },
+        );
+        index.class_dumps.insert(
+            hashmap_id,
+            ClassDumpInfo {
+                class_object_id: hashmap_id,
+                super_class_id: abstract_map_id,
+                instance_size: 36,
+                instance_fields: vec![
+                    FieldDef {
+                        name_string_id: sid_table,
+                        field_type: 2,
+                    },
+                    FieldDef {
+                        name_string_id: sid_entry_set,
+                        field_type: 2,
+                    },
+                    FieldDef {
+                        name_string_id: sid_size,
+                        field_type: 10,
+                    },
+                    FieldDef {
+                        name_string_id: sid_mod_count,
+                        field_type: 10,
+                    },
+                    FieldDef {
+                        name_string_id: sid_threshold,
+                        field_type: 10,
+                    },
+                    FieldDef {
+                        name_string_id: sid_load_factor,
+                        field_type: 6,
+                    },
+                ],
+            },
+        );
+        index
+            .class_names_by_id
+            .insert(hashmap_id, "java.util.HashMap".to_string());
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x10u64.to_be_bytes()); // table
+        data.extend_from_slice(&0x11u64.to_be_bytes()); // entrySet
+        data.extend_from_slice(&14_000i32.to_be_bytes()); // size
+        data.extend_from_slice(&1i32.to_be_bytes()); // modCount
+        data.extend_from_slice(&16_384i32.to_be_bytes()); // threshold
+        data.extend_from_slice(&0.75f32.to_be_bytes()); // loadFactor
+                                                        // Super fields (AbstractMap)
+        data.extend_from_slice(&0x0852_B150_1234_5678u64.to_be_bytes()); // keySet
+        data.extend_from_slice(&0x0852_B151_1234_5678u64.to_be_bytes()); // values
+
+        let raw = RawInstance {
+            class_object_id: hashmap_id,
+            data,
+        };
+
+        assert_eq!(collection_entry_count(&raw, &index, 8, &buf), Some(14_000));
+    }
+
+    #[test]
+    fn linked_hashmap_reads_size_from_super_hashmap() {
+        let mut index = PreciseIndex::new();
+        let mut buf = Vec::new();
+
+        let sid_table = 1;
+        let sid_entry_set = 2;
+        let sid_size = 3;
+        let sid_head = 4;
+        let sid_tail = 5;
+        let sid_access_order = 6;
+
+        push_string(&mut index, &mut buf, sid_table, "table");
+        push_string(&mut index, &mut buf, sid_entry_set, "entrySet");
+        push_string(&mut index, &mut buf, sid_size, "size");
+        push_string(&mut index, &mut buf, sid_head, "head");
+        push_string(&mut index, &mut buf, sid_tail, "tail");
+        push_string(&mut index, &mut buf, sid_access_order, "accessOrder");
+
+        let hashmap_id = 200u64;
+        let linked_hashmap_id = 201u64;
+
+        index.class_dumps.insert(
+            hashmap_id,
+            ClassDumpInfo {
+                class_object_id: hashmap_id,
+                super_class_id: 0,
+                instance_size: 20,
+                instance_fields: vec![
+                    FieldDef {
+                        name_string_id: sid_table,
+                        field_type: 2,
+                    },
+                    FieldDef {
+                        name_string_id: sid_entry_set,
+                        field_type: 2,
+                    },
+                    FieldDef {
+                        name_string_id: sid_size,
+                        field_type: 10,
+                    },
+                ],
+            },
+        );
+        index.class_dumps.insert(
+            linked_hashmap_id,
+            ClassDumpInfo {
+                class_object_id: linked_hashmap_id,
+                super_class_id: hashmap_id,
+                instance_size: 17,
+                instance_fields: vec![
+                    FieldDef {
+                        name_string_id: sid_head,
+                        field_type: 2,
+                    },
+                    FieldDef {
+                        name_string_id: sid_tail,
+                        field_type: 2,
+                    },
+                    FieldDef {
+                        name_string_id: sid_access_order,
+                        field_type: 4,
+                    },
+                ],
+            },
+        );
+        index
+            .class_names_by_id
+            .insert(linked_hashmap_id, "java.util.LinkedHashMap".to_string());
+
+        let mut data = Vec::new();
+        // Leaf class first (LinkedHashMap)
+        data.extend_from_slice(&0x21u64.to_be_bytes()); // head
+        data.extend_from_slice(&0x22u64.to_be_bytes()); // tail
+        data.push(1u8); // accessOrder
+                        // Super class fields (HashMap)
+        data.extend_from_slice(&0x30u64.to_be_bytes()); // table
+        data.extend_from_slice(&0x31u64.to_be_bytes()); // entrySet
+        data.extend_from_slice(&14_000i32.to_be_bytes()); // size
+
+        let raw = RawInstance {
+            class_object_id: linked_hashmap_id,
+            data,
+        };
+
+        assert_eq!(collection_entry_count(&raw, &index, 8, &buf), Some(14_000));
     }
 }
 

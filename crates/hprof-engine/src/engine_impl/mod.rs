@@ -19,8 +19,8 @@ use crate::{
     EngineConfig, HprofError,
     cache::lru::{EVICTION_TARGET, EVICTION_TRIGGER},
     engine::{
-        CollectionPage, FieldInfo, FrameInfo, LineNumber, NavigationEngine, ThreadInfo,
-        ThreadState, VariableInfo, VariableValue,
+        CollectionPage, FieldInfo, FieldValue, FrameInfo, LineNumber, NavigationEngine,
+        ThreadInfo, ThreadState, VariableInfo, VariableValue,
     },
 };
 
@@ -46,7 +46,7 @@ const COLLECTION_CLASS_SUFFIXES: &[&str] = &[
 ///
 /// Detects collection type by matching the short class name (after last `.`)
 /// against [`COLLECTION_CLASS_SUFFIXES`]. Then searches the immediate class
-/// fields for an `Int` or `Long` field named `size`, `elementCount`, or
+/// hierarchy for an `Int` or `Long` field named `size`, `elementCount`, or
 /// `count`.
 pub(crate) fn collection_entry_count(
     raw: &RawInstance,
@@ -62,74 +62,19 @@ pub(crate) fn collection_entry_count(
     {
         return None;
     }
-    // Decode only the immediate class fields (not super) to find size/elementCount/count.
-    let class_info = index.class_dumps.get(&raw.class_object_id)?;
-    let mut cursor = std::io::Cursor::new(raw.data.as_slice());
-    // Skip super-class fields first (we need to advance the cursor past them).
-    // Walk super chain to compute prefix byte count.
-    let mut super_ids: Vec<u64> = Vec::new();
-    let mut cur_id = class_info.super_class_id;
-    let mut visited = std::collections::HashSet::new();
-    while cur_id != 0 {
-        if !visited.insert(cur_id) {
-            break;
+
+    let fields = crate::resolver::decode_fields(raw, index, id_size, records_bytes);
+    for field in fields {
+        if !matches!(field.name.as_str(), "size" | "elementCount" | "count") {
+            continue;
         }
-        if let Some(info) = index.class_dumps.get(&cur_id) {
-            super_ids.push(cur_id);
-            cur_id = info.super_class_id;
-        } else {
-            break;
+        match field.value {
+            FieldValue::Int(v) if v >= 0 => return Some(v as u64),
+            FieldValue::Long(v) if v >= 0 => return Some(v as u64),
+            _ => {}
         }
     }
-    // Skip bytes for all super class fields (super-first order in the data).
-    for &sid in super_ids.iter().rev() {
-        if let Some(info) = index.class_dumps.get(&sid) {
-            for field in &info.instance_fields {
-                let bytes = field_byte_size(field.field_type, id_size);
-                let pos = cursor.position() as usize + bytes;
-                cursor.set_position(pos as u64);
-            }
-        }
-    }
-    // Now parse immediate class fields looking for size/elementCount/count.
-    for field in &class_info.instance_fields {
-        let resolved_name;
-        let name = match index.strings.get(&field.name_string_id) {
-            Some(sref) => {
-                resolved_name = sref.resolve(records_bytes);
-                resolved_name.as_str()
-            }
-            None => "",
-        };
-        let is_candidate = matches!(name, "size" | "elementCount" | "count");
-        match field.field_type {
-            10 => {
-                use byteorder::{BigEndian, ReadBytesExt};
-                if let Ok(v) = cursor.read_i32::<BigEndian>() {
-                    if is_candidate && v >= 0 {
-                        return Some(v as u64);
-                    }
-                } else {
-                    break;
-                }
-            }
-            11 => {
-                use byteorder::{BigEndian, ReadBytesExt};
-                if let Ok(v) = cursor.read_i64::<BigEndian>() {
-                    if is_candidate && v >= 0 {
-                        return Some(v as u64);
-                    }
-                } else {
-                    break;
-                }
-            }
-            _ => {
-                let bytes = field_byte_size(field.field_type, id_size);
-                let pos = cursor.position() as usize + bytes;
-                cursor.set_position(pos as u64);
-            }
-        }
-    }
+
     None
 }
 
