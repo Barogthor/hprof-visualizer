@@ -922,6 +922,133 @@ fn move_down_up_across_cyclic_node() {
     ));
 }
 
+fn setup_collection_entry_self_ref_state() -> StackState {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 99)]);
+    state.set_expansion_done(
+        99,
+        vec![FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 200,
+                class_name: "java.util.ArrayList".to_string(),
+                entry_count: Some(1),
+                inline_value: None,
+            },
+        }],
+    );
+    state.expansion.collection_chunks.insert(
+        200,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: 700,
+                        class_name: "Node".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+    state.set_expansion_done(
+        700,
+        vec![FieldInfo {
+            name: "self".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 700,
+                class_name: "Node".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }],
+    );
+    state
+}
+
+#[test]
+fn flat_items_collection_entry_self_ref_emits_terminal_obj_field_row() {
+    let state = setup_collection_entry_self_ref_state();
+    let flat = state.flat_items();
+    let marker_rows = flat
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                StackCursor::OnCollectionEntryObjField {
+                    collection_id,
+                    entry_index,
+                    obj_field_path,
+                    ..
+                } if *collection_id == 200 && *entry_index == 0 && *obj_field_path == vec![0]
+            )
+        })
+        .count();
+    assert_eq!(marker_rows, 1, "cyclic entry field must emit one row");
+
+    let max_depth = flat
+        .iter()
+        .filter_map(|c| match c {
+            StackCursor::OnCollectionEntryObjField {
+                collection_id,
+                entry_index,
+                obj_field_path,
+                ..
+            } if *collection_id == 200 && *entry_index == 0 => Some(obj_field_path.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    assert_eq!(max_depth, 1, "cyclic entry field must not recurse");
+    assert_eq!(state.flat_items().len(), state.build_items().len());
+}
+
+#[test]
+fn build_items_collection_entry_self_ref_renders_marker() {
+    let state = setup_collection_entry_self_ref_state();
+    let all_text: Vec<String> = state.build_items().into_iter().map(item_text).collect();
+    let marker = all_text
+        .iter()
+        .find(|t| t.contains("self: ") && t.contains("[self-ref]"));
+    assert!(
+        marker.is_some(),
+        "must render cyclic marker row for collection entry object: {all_text:?}"
+    );
+    let line = marker.unwrap();
+    assert!(line.contains("\u{21BB}"), "must contain ↻, got: {line:?}");
+    assert!(
+        line.contains("@ 0x2BC"),
+        "must include object id, got: {line:?}"
+    );
+}
+
+#[test]
+fn selected_collection_entry_obj_field_ref_id_is_none_for_cyclic_row() {
+    let mut state = setup_collection_entry_self_ref_state();
+    state.set_cursor(StackCursor::OnCollectionEntryObjField {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![0],
+        collection_id: 200,
+        entry_index: 0,
+        obj_field_path: vec![0],
+    });
+    assert_eq!(state.selected_collection_entry_obj_field_ref_id(), None);
+    assert_eq!(
+        state.selected_collection_entry_obj_field_collection_info(),
+        None
+    );
+}
+
 #[test]
 fn flat_items_acyclic_tree_no_cyclic_nodes() {
     use hprof_engine::{FieldInfo, FieldValue};

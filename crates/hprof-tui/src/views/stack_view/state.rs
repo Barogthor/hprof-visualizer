@@ -318,6 +318,8 @@ impl StackState {
 
     /// Resolves the field under the cursor when on
     /// `OnCollectionEntryObjField`.
+    ///
+    /// Returns `None` for cyclic terminal rows so Enter is a no-op.
     fn collection_entry_obj_cursor_field(&self) -> Option<&FieldInfo> {
         if let StackCursor::OnCollectionEntryObjField {
             collection_id,
@@ -326,7 +328,7 @@ impl StackState {
             ..
         } = self.nav.cursor()
         {
-            let obj_root = {
+            let root_id = {
                 let cc = self.expansion.collection_chunks.get(collection_id)?;
                 let entry = cc.find_entry(*entry_index)?;
                 if let FieldValue::ObjectRef { id, .. } = &entry.value {
@@ -335,11 +337,32 @@ impl StackState {
                     return None;
                 }
             };
+
+            let mut ancestor_ids = HashSet::new();
+            ancestor_ids.insert(root_id);
+
             let parent_path = &obj_field_path[..obj_field_path.len().saturating_sub(1)];
-            let parent_id = self.resolve_object_at_path(obj_root, parent_path);
+            let mut parent_id = root_id;
+            for &step in parent_path {
+                let parent_fields = self.expansion.object_fields.get(&parent_id)?;
+                let parent_field = parent_fields.get(step)?;
+                if let FieldValue::ObjectRef { id, .. } = parent_field.value {
+                    parent_id = id;
+                    ancestor_ids.insert(parent_id);
+                } else {
+                    return None;
+                }
+            }
+
             let field_idx = *obj_field_path.last()?;
             let fields = self.expansion.object_fields.get(&parent_id)?;
-            return fields.get(field_idx);
+            let field = fields.get(field_idx)?;
+            if let FieldValue::ObjectRef { id, .. } = field.value
+                && ancestor_ids.contains(&id)
+            {
+                return None;
+            }
+            return Some(field);
         }
         None
     }
@@ -950,7 +973,15 @@ impl StackState {
                         if let FieldValue::ObjectRef { id, .. } = field.value
                             && visited.contains(&id)
                         {
-                            // Cyclic — emit as non-navigable leaf (no cursor)
+                            // Cyclic — emit terminal leaf row.
+                            out.push(StackCursor::OnCollectionEntryObjField {
+                                frame_idx: fi,
+                                var_idx: vi,
+                                field_path: field_path.to_vec(),
+                                collection_id,
+                                entry_index,
+                                obj_field_path: path,
+                            });
                             continue;
                         }
                         out.push(StackCursor::OnCollectionEntryObjField {

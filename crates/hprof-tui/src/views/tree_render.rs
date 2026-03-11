@@ -557,10 +557,20 @@ fn append_collection_entry_obj(
             } else {
                 visited.insert(obj_id);
                 for field in field_list {
-                    if let FieldValue::ObjectRef { id, .. } = &field.value
+                    if let FieldValue::ObjectRef { id, class_name, .. } = &field.value
                         && visited.contains(id)
                     {
-                        continue; // cyclic — skip (non-navigable leaf)
+                        let label = if *id == obj_id { "self-ref" } else { "cyclic" };
+                        let short = class_name.rsplit('.').next().unwrap_or(class_name);
+                        let text = format!(
+                            "{indent}  {}: \u{21BB} {} @ 0x{:X} [{label}]",
+                            field.name, short, id
+                        );
+                        items.push(ListItem::new(Line::from(Span::styled(
+                            text,
+                            THEME.null_value,
+                        ))));
+                        continue;
                     }
                     let child_phase = if let FieldValue::ObjectRef { id, .. } = field.value {
                         Some(get_phase(id, object_phases))
