@@ -761,3 +761,18 @@ Codex (2026-03-11)
 - 2026-03-11 (Codex): Applied adversarial review fixes for Right/Left parity and
   parent navigation fallback, added app-level regression tests, set story status
   to `done`, and synced sprint status.
+- 2026-03-12 (claude-sonnet-4-6): Post-release bug fixes from user testing with
+  deeply nested collections (array inside custom type inside outer list):
+  - `tree_render.rs`: collection/array fields in expanded objects showed wrong
+    `+`/`-` indicator — fixed by checking `collection_chunks` in
+    `append_object_children` and `append_collection_entry_obj`
+  - `state.rs`: `parent_cursor()` for `OnCollectionEntry`/`OnChunkSection` now
+    consults `collection_restore_cursors[collection_id]` first, so Left from an
+    inner collection entry correctly lands on `OnCollectionEntryObjField` instead
+    of `OnObjectField`
+  - `app/mod.rs`: Left handler for `OnCollectionEntryObjField` now checks
+    `collection_chunks` before object phases, so a second Left from the array
+    field row collapses the inner collection instead of navigating to its parent
+  - Added 2 regression tests:
+    `parent_cursor_on_collection_entry_uses_restore_cursor_for_nested_collection`,
+    `left_on_collection_entry_obj_field_with_open_collection_detects_collapse`
