@@ -1,6 +1,6 @@
 # Story 9.3: ArrowRight/Left Expand, Unexpand & Parent Navigation
 
-Status: review
+Status: done
 
 ## Story
 
@@ -709,6 +709,10 @@ claude-sonnet-4-6
 - Updated `help_bar.rs`: ENTRY_COUNT 11→13, added → Expand / ← Unexpand entries
 - Added 13 unit tests for `parent_cursor()` and Left/Right edge cases
 - `VariableValue::Null` used as non-ObjectRef stand-in for primitive local test
+- Code-review follow-up: Right now mirrors Enter for collection-entry collection paths,
+  and Left now navigates to parent for non-ObjectRef collection-entry leaves
+- Added 4 app-level regression tests for Right/Left collection-entry parity and
+  parent navigation fallback behavior
 
 ### File List
 
@@ -716,5 +720,44 @@ claude-sonnet-4-6
 - `crates/hprof-tui/src/views/stack_view/state.rs`
 - `crates/hprof-tui/src/views/stack_view/tests.rs`
 - `crates/hprof-tui/src/app/mod.rs`
+- `crates/hprof-tui/src/app/tests.rs`
 - `crates/hprof-tui/src/views/help_bar.rs`
+- `docs/code-review/codex-story-9-3-adversarial-review.md`
+- `docs/implementation-artifacts/9-3-arrow-expand-unexpand-parent-navigation.md`
 - `docs/implementation-artifacts/sprint-status.yaml`
+
+## Senior Developer Review (AI)
+
+### Reviewer
+
+Codex (2026-03-11)
+
+### Findings Summary
+
+- Initial adversarial review found 4 high-severity behavior gaps around
+  Right/Left handling for collection-entry nodes.
+- Follow-up implementation now aligns Right behavior with Enter for collection
+  entry collection branches and restores Left parent navigation on non-expandable
+  leaves.
+- All Story 9.3 ACs verified as implemented with passing tests.
+
+### Actions Applied
+
+- Fixed `InputEvent::Right` in `handle_stack_frames_input()` for:
+  - `StackCursor::OnCollectionEntry` collection dispatch parity
+  - `StackCursor::OnCollectionEntryObjField` collection dispatch parity
+- Fixed `InputEvent::Left` in `handle_stack_frames_input()` for:
+  - non-`ObjectRef` `OnCollectionEntry` parent navigation fallback
+  - non-`ObjectRef` `OnCollectionEntryObjField` parent navigation fallback
+- Added 4 regression tests in `crates/hprof-tui/src/app/tests.rs` to lock behavior.
+
+### Verification
+
+- `cargo test --all`: pass
+- `cargo clippy --all-targets -- -D warnings`: pass
+
+## Change Log
+
+- 2026-03-11 (Codex): Applied adversarial review fixes for Right/Left parity and
+  parent navigation fallback, added app-level regression tests, set story status
+  to `done`, and synced sprint status.

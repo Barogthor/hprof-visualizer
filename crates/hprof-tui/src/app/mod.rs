@@ -514,12 +514,34 @@ impl<E: NavigationEngine> App<E> {
                         }
                         StackCursor::OnCollectionEntry { .. } => {
                             let oid = s.selected_collection_entry_ref_id()?;
+                            if let Some(ec) = s.selected_collection_entry_count() {
+                                if s.expansion.collection_chunks.contains_key(&oid) {
+                                    return None;
+                                }
+                                return Some(RightCmd::StartCollection(
+                                    oid,
+                                    ec,
+                                    s.cursor().clone(),
+                                ));
+                            }
                             match s.expansion_state(oid) {
                                 ExpansionPhase::Collapsed => RightCmd::StartEntryObj(oid),
                                 _ => return None,
                             }
                         }
                         StackCursor::OnCollectionEntryObjField { .. } => {
+                            if let Some((oid, ec)) =
+                                s.selected_collection_entry_obj_field_collection_info()
+                            {
+                                if s.expansion.collection_chunks.contains_key(&oid) {
+                                    return None;
+                                }
+                                return Some(RightCmd::StartCollection(
+                                    oid,
+                                    ec,
+                                    s.cursor().clone(),
+                                ));
+                            }
                             let oid = s.selected_collection_entry_obj_field_ref_id()?;
                             match s.expansion_state(oid) {
                                 ExpansionPhase::Collapsed => RightCmd::StartEntryObj(oid),
@@ -611,17 +633,23 @@ impl<E: NavigationEngine> App<E> {
                             LeftCmd::NavigateToParent(s.parent_cursor()?)
                         }
                         StackCursor::OnCollectionEntry { .. } => {
-                            let oid = s.selected_collection_entry_ref_id()?;
-                            if s.expansion_state(oid) == ExpansionPhase::Expanded {
-                                LeftCmd::CollapseEntryObj(oid)
+                            if let Some(oid) = s.selected_collection_entry_ref_id() {
+                                if s.expansion_state(oid) == ExpansionPhase::Expanded {
+                                    LeftCmd::CollapseEntryObj(oid)
+                                } else {
+                                    LeftCmd::NavigateToParent(s.parent_cursor()?)
+                                }
                             } else {
                                 LeftCmd::NavigateToParent(s.parent_cursor()?)
                             }
                         }
                         StackCursor::OnCollectionEntryObjField { .. } => {
-                            let oid = s.selected_collection_entry_obj_field_ref_id()?;
-                            if s.expansion_state(oid) == ExpansionPhase::Expanded {
-                                LeftCmd::CollapseEntryObj(oid)
+                            if let Some(oid) = s.selected_collection_entry_obj_field_ref_id() {
+                                if s.expansion_state(oid) == ExpansionPhase::Expanded {
+                                    LeftCmd::CollapseEntryObj(oid)
+                                } else {
+                                    LeftCmd::NavigateToParent(s.parent_cursor()?)
+                                }
                             } else {
                                 LeftCmd::NavigateToParent(s.parent_cursor()?)
                             }

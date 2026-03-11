@@ -1374,6 +1374,118 @@ fn nested_collection_entry_object_array_opens_and_renders_children() {
 }
 
 #[test]
+fn right_on_nested_collection_entry_starts_collection_paging() {
+    let mut app = make_collection_with_nested_collection_entries_app();
+    nav_to_collection_field(&mut app);
+    app.handle_input(InputEvent::Enter); // open collection 890
+    poll_all_pages(&mut app);
+
+    app.handle_input(InputEvent::Down); // -> entry 0 of collection 890 (value Object[] id=888)
+    app.handle_input(InputEvent::Right); // must mirror Enter and StartCollection(888)
+
+    assert!(
+        app.pending_pages.contains_key(&(888, 0)),
+        "Right on nested collection entry must trigger collection paging"
+    );
+    assert!(
+        !app.pending_expansions.contains_key(&888),
+        "Right on nested collection entry must not call expand_object on collection id"
+    );
+}
+
+#[test]
+fn right_on_collection_entry_object_field_collection_starts_collection_paging() {
+    let mut app = make_obj_entry_array_field_collection_app();
+    nav_to_collection_field(&mut app);
+    app.handle_input(InputEvent::Enter); // open collection 889
+    poll_all_pages(&mut app);
+
+    app.handle_input(InputEvent::Down); // -> OnCollectionEntry{collection_id:889, entry_index:0}
+    app.handle_input(InputEvent::Enter); // expand entry object id=700
+    poll_all_expansions(&mut app);
+
+    app.handle_input(InputEvent::Down); // -> OnCollectionEntryObjField (arr)
+    app.handle_input(InputEvent::Right); // must mirror Enter and StartCollection(888)
+
+    assert!(
+        app.pending_pages.contains_key(&(888, 0)),
+        "Right on collection-entry object field must trigger collection paging"
+    );
+    assert!(
+        !app.pending_expansions.contains_key(&888),
+        "Right on collection-entry object field must not call expand_object on collection id"
+    );
+}
+
+#[test]
+fn left_on_primitive_collection_entry_navigates_to_parent_var() {
+    let mut app = make_var_collection_app(250);
+    app.handle_input(InputEvent::Enter); // StackFrames
+    app.handle_input(InputEvent::Enter); // expand frame
+    app.handle_input(InputEvent::Down); // -> OnVar{0,0}
+    app.handle_input(InputEvent::Enter); // open collection 888 from var
+    poll_all_pages(&mut app);
+
+    app.handle_input(InputEvent::Down); // -> first collection entry (primitive Int)
+    {
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            matches!(ss.cursor(), StackCursor::OnCollectionEntry { .. }),
+            "expected collection entry before Left, got {:?}",
+            ss.cursor()
+        );
+    }
+
+    app.handle_input(InputEvent::Left);
+    let ss = app.stack_state.as_ref().unwrap();
+    assert_eq!(
+        ss.cursor(),
+        &StackCursor::OnVar {
+            frame_idx: 0,
+            var_idx: 0
+        },
+        "Left on primitive collection entry must navigate to parent var"
+    );
+}
+
+#[test]
+fn left_on_primitive_collection_entry_object_field_navigates_to_parent_entry() {
+    let mut app = make_obj_entry_collection_app();
+    nav_to_collection_field(&mut app);
+    app.handle_input(InputEvent::Enter); // open collection 889
+    poll_all_pages(&mut app);
+
+    app.handle_input(InputEvent::Down); // -> entry 0 (ObjectRef id=700)
+    app.handle_input(InputEvent::Enter); // expand 700
+    poll_all_expansions(&mut app);
+
+    app.handle_input(InputEvent::Down); // -> first entry object field (x:Int)
+    {
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            matches!(ss.cursor(), StackCursor::OnCollectionEntryObjField { .. }),
+            "expected entry object field before Left, got {:?}",
+            ss.cursor()
+        );
+    }
+
+    app.handle_input(InputEvent::Left);
+    let ss = app.stack_state.as_ref().unwrap();
+    assert!(
+        matches!(
+            ss.cursor(),
+            StackCursor::OnCollectionEntry {
+                collection_id: 889,
+                entry_index: 0,
+                ..
+            }
+        ),
+        "Left on primitive entry object field must navigate to parent entry, got {:?}",
+        ss.cursor()
+    );
+}
+
+#[test]
 fn page_up_down_scrolls_tree_by_visible_height() {
     // This is a general tree scroll test, not
     // collection-specific.
