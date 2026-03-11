@@ -60,13 +60,10 @@ impl ThreadListState {
             .map(|t| t.thread_serial)
             .collect();
 
-        if self.filtered_serials.contains(self.nav.cursor()) {
-            self.nav.sync(&self.filtered_serials);
-        } else if let Some(first) = self.filtered_serials.first().copied() {
-            self.nav = CursorState::new(first);
+        if self.filtered_serials.is_empty() {
             self.nav.sync(&self.filtered_serials);
         } else {
-            self.nav.sync(&self.filtered_serials);
+            self.nav.sync_or_select_first(&self.filtered_serials);
         }
     }
 

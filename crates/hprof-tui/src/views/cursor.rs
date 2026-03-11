@@ -31,13 +31,30 @@ impl<Id: PartialEq + Clone> CursorState<Id> {
 
     /// Sets the visible list height used by page navigation.
     pub fn set_visible_height(&mut self, h: usize) {
-        self.visible_height = h.max(1);
+        self.visible_height = h;
+    }
+
+    fn cursor_index(&self, items: &[Id]) -> Option<usize> {
+        items.iter().position(|id| id == &self.cursor)
     }
 
     /// Syncs list selection with current cursor if cursor is visible in `items`.
     pub fn sync(&mut self, items: &[Id]) {
-        let selected = items.iter().position(|id| id == &self.cursor);
-        self.list_state.select(selected);
+        self.list_state.select(self.cursor_index(items));
+    }
+
+    /// Syncs selection and re-anchors cursor to first item when orphaned.
+    pub fn sync_or_select_first(&mut self, items: &[Id]) {
+        if items.is_empty() {
+            self.list_state.select(None);
+            return;
+        }
+        if let Some(selected) = self.cursor_index(items) {
+            self.list_state.select(Some(selected));
+        } else {
+            self.cursor = items[0].clone();
+            self.list_state.select(Some(0));
+        }
     }
 
     /// Replaces cursor and immediately syncs list selection against `items`.
@@ -51,7 +68,10 @@ impl<Id: PartialEq + Clone> CursorState<Id> {
         if items.is_empty() {
             return;
         }
-        let current = items.iter().position(|id| id == &self.cursor).unwrap_or(0);
+        let Some(current) = self.cursor_index(items) else {
+            self.move_home(items);
+            return;
+        };
         let target = current.saturating_sub(1);
         self.cursor = items[target].clone();
         self.list_state.select(Some(target));
@@ -62,7 +82,10 @@ impl<Id: PartialEq + Clone> CursorState<Id> {
         if items.is_empty() {
             return;
         }
-        let current = items.iter().position(|id| id == &self.cursor).unwrap_or(0);
+        let Some(current) = self.cursor_index(items) else {
+            self.move_home(items);
+            return;
+        };
         let target = (current + 1).min(items.len().saturating_sub(1));
         self.cursor = items[target].clone();
         self.list_state.select(Some(target));
@@ -92,7 +115,10 @@ impl<Id: PartialEq + Clone> CursorState<Id> {
         if items.is_empty() {
             return;
         }
-        let current = items.iter().position(|id| id == &self.cursor).unwrap_or(0);
+        let Some(current) = self.cursor_index(items) else {
+            self.move_home(items);
+            return;
+        };
         let target = current.saturating_sub(self.visible_height);
         self.cursor = items[target].clone();
         self.list_state.select(Some(target));
@@ -103,7 +129,10 @@ impl<Id: PartialEq + Clone> CursorState<Id> {
         if items.is_empty() {
             return;
         }
-        let current = items.iter().position(|id| id == &self.cursor).unwrap_or(0);
+        let Some(current) = self.cursor_index(items) else {
+            self.move_home(items);
+            return;
+        };
         let target = (current + self.visible_height).min(items.len().saturating_sub(1));
         self.cursor = items[target].clone();
         self.list_state.select(Some(target));
@@ -204,6 +233,34 @@ mod tests {
         let mut state = CursorState::new(0u32);
         let items = [0u32];
         state.set_visible_height(5);
+        state.move_page_down(&items);
+        assert_eq!(state.cursor(), &0);
+        assert_eq!(state.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn sync_or_select_first_reanchors_orphan_cursor() {
+        let mut state = CursorState::new(42u32);
+        let items = [10u32, 20, 30];
+        state.sync_or_select_first(&items);
+        assert_eq!(state.cursor(), &10);
+        assert_eq!(state.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn move_down_on_orphan_cursor_reanchors_first() {
+        let mut state = CursorState::new(99u32);
+        let items = [10u32, 20, 30];
+        state.move_down(&items);
+        assert_eq!(state.cursor(), &10);
+        assert_eq!(state.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn page_down_with_visible_height_zero_is_noop() {
+        let mut state = CursorState::new(0u32);
+        let items = [0u32, 1, 2];
+        state.set_visible_height(0);
         state.move_page_down(&items);
         assert_eq!(state.cursor(), &0);
         assert_eq!(state.list_state.selected(), Some(0));

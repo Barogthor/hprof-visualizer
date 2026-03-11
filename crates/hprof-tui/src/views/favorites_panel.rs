@@ -34,6 +34,7 @@ pub struct FavoritesPanel<'a> {
 pub struct FavoritesPanelState {
     nav: CursorState<usize>,
     items_len: usize,
+    index_items: Vec<usize>,
 }
 
 impl Default for FavoritesPanelState {
@@ -41,6 +42,7 @@ impl Default for FavoritesPanelState {
         Self {
             nav: CursorState::new(0),
             items_len: 0,
+            index_items: Vec::new(),
         }
     }
 }
@@ -53,19 +55,44 @@ impl FavoritesPanelState {
 
     /// Updates known item count for selection sync.
     pub fn set_items_len(&mut self, len: usize) {
-        self.items_len = len;
-        let items: Vec<usize> = (0..len).collect();
-        self.nav.sync(&items);
+        if len != self.items_len {
+            if len > self.index_items.len() {
+                self.index_items.extend(self.index_items.len()..len);
+            } else {
+                self.index_items.truncate(len);
+            }
+            self.items_len = len;
+        }
+        if self.index_items.is_empty() {
+            self.nav.set_cursor_and_sync(0, &self.index_items);
+            self.nav.list_state_mut().select(None);
+        } else {
+            self.nav.sync_or_select_first(&self.index_items);
+        }
     }
 
     /// Sets selected item index, or fully deselects when `None`.
     pub fn set_selected_index(&mut self, idx: Option<usize>) {
         if let Some(i) = idx {
-            let items: Vec<usize> = (0..self.items_len).collect();
-            self.nav.set_cursor_and_sync(i, &items);
+            if self.index_items.is_empty() {
+                self.nav.set_cursor_and_sync(0, &self.index_items);
+                self.nav.list_state_mut().select(None);
+            } else {
+                let clamped = i.min(self.items_len.saturating_sub(1));
+                self.nav.set_cursor_and_sync(clamped, &self.index_items);
+            }
         } else {
+            self.nav.set_cursor_and_sync(0, &self.index_items);
             self.nav.list_state_mut().select(None);
         }
+    }
+
+    pub fn move_up(&mut self) {
+        self.nav.move_up(&self.index_items);
+    }
+
+    pub fn move_down(&mut self) {
+        self.nav.move_down(&self.index_items);
     }
 
     pub fn list_state_mut(&mut self) -> &mut ListState {
@@ -385,7 +412,7 @@ mod tests {
     fn favorites_state_cursor_moves_down() {
         let mut state = FavoritesPanelState::default();
         state.set_items_len(3);
-        state.nav.move_down(&[0usize, 1, 2]);
+        state.move_down();
         assert_eq!(state.selected_index(), 1);
     }
 }

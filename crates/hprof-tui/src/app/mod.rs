@@ -115,11 +115,14 @@ impl<E: NavigationEngine> App<E> {
         let threads = engine.list_threads();
         let thread_count = threads.len();
         let warning_count = engine.warnings().len();
-        let thread_list = ThreadListState::new(threads);
+        let mut thread_list = ThreadListState::new(threads);
+        thread_list.set_visible_height(0);
         let preview_frames = thread_list
             .selected_serial()
             .map(|serial| engine.get_stack_frames(serial))
             .unwrap_or_default();
+        let mut preview_stack_state = StackState::new(preview_frames);
+        preview_stack_state.set_visible_height(0);
         Self {
             engine,
             thread_list,
@@ -127,7 +130,7 @@ impl<E: NavigationEngine> App<E> {
             filename,
             thread_count,
             warning_count,
-            preview_stack_state: StackState::new(preview_frames),
+            preview_stack_state,
             stack_state: None,
             pending_expansions: HashMap::new(),
             pending_pages: HashMap::new(),
@@ -170,7 +173,9 @@ impl<E: NavigationEngine> App<E> {
             .selected_serial()
             .map(|serial| self.engine.get_stack_frames(serial))
             .unwrap_or_default();
-        self.preview_stack_state = StackState::new(frames);
+        let mut preview_stack_state = StackState::new(frames);
+        preview_stack_state.set_visible_height(0);
+        self.preview_stack_state = preview_stack_state;
     }
 
     /// Processes one input event and returns the next `AppAction`.
@@ -225,15 +230,12 @@ impl<E: NavigationEngine> App<E> {
         match event {
             InputEvent::Up => {
                 if !self.pinned.is_empty() {
-                    let next = self.favorites_list_state.selected_index().saturating_sub(1);
-                    self.favorites_list_state.set_selected_index(Some(next));
+                    self.favorites_list_state.move_up();
                 }
             }
             InputEvent::Down => {
                 if !self.pinned.is_empty() {
-                    let next = (self.favorites_list_state.selected_index() + 1)
-                        .min(self.pinned.len().saturating_sub(1));
-                    self.favorites_list_state.set_selected_index(Some(next));
+                    self.favorites_list_state.move_down();
                 }
             }
             InputEvent::ToggleFavorite => {
@@ -362,7 +364,9 @@ impl<E: NavigationEngine> App<E> {
                 InputEvent::Enter => {
                     if let Some(serial) = self.thread_list.selected_serial() {
                         let frames = self.engine.get_stack_frames(serial);
-                        self.stack_state = Some(StackState::new(frames));
+                        let mut stack_state = StackState::new(frames);
+                        stack_state.set_visible_height(0);
+                        self.stack_state = Some(stack_state);
                         self.focus = Focus::StackFrames;
                     }
                 }
