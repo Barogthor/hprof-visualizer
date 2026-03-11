@@ -118,7 +118,14 @@ fn try_prim_array(
     limit: usize,
 ) -> Option<CollectionPage> {
     let (elem_type, bytes) = hfile.find_prim_array(array_id)?;
-    let elem_size = prim_elem_size(elem_type)?;
+    let Some(elem_size) = prim_elem_size(elem_type) else {
+        return Some(CollectionPage {
+            entries: vec![],
+            total_count: 0,
+            offset: 0,
+            has_more: false,
+        });
+    };
     let total = (bytes.len() / elem_size) as u64;
     let clamped_offset = (offset as u64).min(total) as usize;
     let remaining = (total - clamped_offset as u64) as usize;
