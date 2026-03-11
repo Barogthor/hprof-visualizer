@@ -249,8 +249,14 @@ fn append_object_children(
                         continue;
                     }
 
-                    let child_phase = if let FieldValue::ObjectRef { id, .. } = field.value {
-                        Some(get_phase(id, object_phases))
+                    let child_phase = if let FieldValue::ObjectRef { id, entry_count, .. } =
+                        field.value
+                    {
+                        Some(if entry_count.is_some() && collection_chunks.contains_key(&id) {
+                            ExpansionPhase::Expanded
+                        } else {
+                            get_phase(id, object_phases)
+                        })
                     } else {
                         None
                     };
@@ -572,8 +578,14 @@ fn append_collection_entry_obj(
                         ))));
                         continue;
                     }
-                    let child_phase = if let FieldValue::ObjectRef { id, .. } = field.value {
-                        Some(get_phase(id, object_phases))
+                    let child_phase = if let FieldValue::ObjectRef { id, entry_count, .. } =
+                        field.value
+                    {
+                        Some(if entry_count.is_some() && collection_chunks.contains_key(&id) {
+                            ExpansionPhase::Expanded
+                        } else {
+                            get_phase(id, object_phases)
+                        })
                     } else {
                         None
                     };

@@ -416,14 +416,23 @@ impl StackState {
                 frame_idx,
                 var_idx,
                 field_path,
+                collection_id,
                 ..
             }
             | StackCursor::OnCollectionEntry {
                 frame_idx,
                 var_idx,
                 field_path,
+                collection_id,
                 ..
             } => {
+                if let Some(restore) = self
+                    .expansion
+                    .collection_restore_cursors
+                    .get(collection_id)
+                {
+                    return Some(restore.clone());
+                }
                 if field_path.is_empty() {
                     Some(StackCursor::OnVar {
                         frame_idx: *frame_idx,

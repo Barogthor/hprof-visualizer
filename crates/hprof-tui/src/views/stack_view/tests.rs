@@ -2332,3 +2332,256 @@ fn right_on_collection_var_dispatches_start_collection() {
     assert!(!state.expansion.collection_chunks.contains_key(&0xAB));
     // The Right handler will dispatch StartCollection (not StartObj) for this var.
 }
+
+#[test]
+fn cursor_collection_id_on_entry_with_field_path_returns_object_field_restore() {
+    // Verifies that cursor_collection_id() for OnCollectionEntry with a
+    // non-empty field_path correctly computes OnObjectField as restore cursor.
+    // This is used by the Left handler to collapse the collection and
+    // navigate back to the array field row (not its parent).
+    let frames = vec![make_frame(1)];
+    let mut state = StackState::new(frames);
+    state.set_cursor(StackCursor::OnCollectionEntry {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![2],
+        collection_id: 0xA,
+        entry_index: 0,
+    });
+    let (cid, restore) = state.cursor_collection_id().expect("should return Some");
+    assert_eq!(cid, 0xA);
+    assert_eq!(
+        restore,
+        StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![2],
+        }
+    );
+}
+
+#[test]
+fn left_from_collection_entry_inside_object_field_navigates_to_field_row() {
+    // Scenario: object var → expanded → field[2] = array → array expanded → entry[0]
+    // Left from entry[0] should navigate to OnObjectField { field_path: [2] }
+    // (the array field row), NOT to OnVar (the object row).
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+
+    // var 0 = object id 100 (NOT a collection)
+    let obj_var = VariableInfo {
+        index: 0,
+        value: VariableValue::ObjectRef {
+            id: 100,
+            class_name: "MyObject".to_string(),
+            entry_count: None,
+        },
+    };
+    state.toggle_expand(10, vec![obj_var]);
+
+    // Expand object 100 with 3 fields: int, string, array(id=200)
+    state.set_expansion_done(100, vec![
+        FieldInfo {
+            name: "count".to_string(),
+            value: FieldValue::Int(42),
+        },
+        FieldInfo {
+            name: "name".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 300,
+                class_name: "String".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        },
+        FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 200,
+                class_name: "ArrayList".to_string(),
+                entry_count: Some(1),
+                inline_value: None,
+            },
+        },
+    ]);
+
+    // Expand the array collection (id=200)
+    state.expansion.collection_chunks.insert(
+        200,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: 500,
+                        class_name: "Item".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+
+    // Navigate to the collection entry
+    state.set_cursor(StackCursor::OnCollectionEntry {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![2],
+        collection_id: 200,
+        entry_index: 0,
+    });
+
+    // Verify flat_items contains the array field row
+    let flat = state.flat_items();
+    let array_field_cursor = StackCursor::OnObjectField {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![2],
+    };
+    assert!(
+        flat.contains(&array_field_cursor),
+        "flat_items must contain OnObjectField{{fp:[2]}}; got: {flat:?}"
+    );
+
+    // parent_cursor() must return the array field row
+    assert_eq!(
+        state.parent_cursor(),
+        Some(array_field_cursor.clone()),
+        "parent_cursor() from OnCollectionEntry{{fp:[2]}} must be OnObjectField{{fp:[2]}}"
+    );
+
+    // set_cursor to the parent must land on the array field row
+    state.set_cursor(array_field_cursor.clone());
+    assert_eq!(
+        state.cursor(),
+        &array_field_cursor,
+        "cursor must be OnObjectField{{fp:[2]}} after set_cursor"
+    );
+}
+
+#[test]
+fn parent_cursor_on_collection_entry_uses_restore_cursor_for_nested_collection() {
+    // When a collection (inner array) is opened from OnCollectionEntryObjField,
+    // collection_restore_cursors[inner_cid] = OnCollectionEntryObjField.
+    // parent_cursor() must return that restore cursor instead of OnObjectField.
+    let frames = vec![make_frame(1)];
+    let mut state = StackState::new(frames);
+
+    let restore = StackCursor::OnCollectionEntryObjField {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![],
+        collection_id: 0xAA,
+        entry_index: 2,
+        obj_field_path: vec![2],
+    };
+    state.expansion.collection_restore_cursors.insert(0xBB, restore.clone());
+
+    state.set_cursor(StackCursor::OnCollectionEntry {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![],
+        collection_id: 0xBB,
+        entry_index: 0,
+    });
+
+    assert_eq!(
+        state.parent_cursor(),
+        Some(restore),
+        "parent_cursor must return the restore cursor when nested inside a collection entry obj"
+    );
+}
+
+#[test]
+fn left_on_collection_entry_obj_field_with_open_collection_detects_collapse() {
+    // Scenario: outer list (cid=0xAA) expanded, entry 0 = custom type (id=200),
+    // custom type field[2] = inner array (id=300, ec=5) expanded (cid=300 in chunks).
+    // Cursor = OnCollectionEntryObjField { collection_id: 0xAA, entry_index: 0,
+    //   obj_field_path: [2] }
+    // The Left handler checks selected_collection_entry_obj_field_collection_info()
+    // → (300, 5), then collection_chunks.contains_key(&300) → true.
+    // This verifies the dispatch condition for CollapseCollection.
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xAB)]);
+
+    // Outer collection (id=0xAA): entry 0 = custom type (id=200)
+    state.expansion.collection_chunks.insert(
+        0xAA,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: 200,
+                        class_name: "CustomType".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+
+    // Expand custom type (id=200) with field[2] = inner array (id=300, ec=5)
+    state.set_expansion_done(200, vec![
+        FieldInfo { name: "x".to_string(), value: FieldValue::Int(1) },
+        FieldInfo { name: "y".to_string(), value: FieldValue::Int(2) },
+        FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 300,
+                class_name: "int[]".to_string(),
+                entry_count: Some(5),
+                inline_value: None,
+            },
+        },
+    ]);
+
+    // Inner array (id=300) expanded
+    state.expansion.collection_chunks.insert(
+        300,
+        CollectionChunks {
+            total_count: 5,
+            eager_page: None,
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+
+    // Cursor on the inner array field row within the custom type entry
+    state.set_cursor(StackCursor::OnCollectionEntryObjField {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![],
+        collection_id: 0xAA,
+        entry_index: 0,
+        obj_field_path: vec![2],
+    });
+
+    // selected_collection_entry_obj_field_collection_info must detect inner array
+    let coll_info = state.selected_collection_entry_obj_field_collection_info();
+    assert_eq!(
+        coll_info,
+        Some((300, 5)),
+        "must detect inner array collection info"
+    );
+
+    // collection_chunks must contain the inner array → Left dispatches CollapseCollection
+    assert!(
+        state.expansion.collection_chunks.contains_key(&300),
+        "inner array must be in collection_chunks for Left to dispatch CollapseCollection"
+    );
+}

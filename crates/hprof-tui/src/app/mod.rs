@@ -633,26 +633,27 @@ impl<E: NavigationEngine> App<E> {
                             LeftCmd::NavigateToParent(s.parent_cursor()?)
                         }
                         StackCursor::OnCollectionEntry { .. } => {
-                            if let Some(oid) = s.selected_collection_entry_ref_id() {
-                                if s.expansion_state(oid) == ExpansionPhase::Expanded {
-                                    LeftCmd::CollapseEntryObj(oid)
-                                } else {
-                                    LeftCmd::NavigateToParent(s.parent_cursor()?)
-                                }
-                            } else {
-                                LeftCmd::NavigateToParent(s.parent_cursor()?)
+                            if let Some(oid) = s.selected_collection_entry_ref_id()
+                                && s.expansion_state(oid) == ExpansionPhase::Expanded
+                            {
+                                return Some(LeftCmd::CollapseEntryObj(oid));
                             }
+                            let parent = s.parent_cursor()?;
+                            LeftCmd::NavigateToParent(parent)
                         }
                         StackCursor::OnCollectionEntryObjField { .. } => {
-                            if let Some(oid) = s.selected_collection_entry_obj_field_ref_id() {
-                                if s.expansion_state(oid) == ExpansionPhase::Expanded {
-                                    LeftCmd::CollapseEntryObj(oid)
-                                } else {
-                                    LeftCmd::NavigateToParent(s.parent_cursor()?)
-                                }
-                            } else {
-                                LeftCmd::NavigateToParent(s.parent_cursor()?)
+                            if let Some((cid, _)) =
+                                s.selected_collection_entry_obj_field_collection_info()
+                                && s.expansion.collection_chunks.contains_key(&cid)
+                            {
+                                return Some(LeftCmd::CollapseCollection(cid));
                             }
+                            if let Some(oid) = s.selected_collection_entry_obj_field_ref_id()
+                                && s.expansion_state(oid) == ExpansionPhase::Expanded
+                            {
+                                return Some(LeftCmd::CollapseEntryObj(oid));
+                            }
+                            LeftCmd::NavigateToParent(s.parent_cursor()?)
                         }
                         StackCursor::OnChunkSection { .. } => {
                             LeftCmd::NavigateToParent(s.parent_cursor()?)
