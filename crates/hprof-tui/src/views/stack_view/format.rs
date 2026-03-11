@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use hprof_engine::{FieldInfo, FieldValue, FrameInfo, LineNumber};
+use hprof_engine::{EntryInfo, FieldInfo, FieldValue, FrameInfo, LineNumber};
 use ratatui::style::Style;
 
 use crate::theme::THEME;
@@ -174,6 +174,31 @@ pub(crate) fn field_value_style(v: &FieldValue) -> Style {
             ..
         } => THEME.string_value,
         FieldValue::ObjectRef { .. } => Style::new(),
+    }
+}
+
+/// Formats one collection entry as a display line.
+///
+/// `value_phase` controls the expand toggle for `ObjectRef` values:
+/// pass the current [`ExpansionPhase`] of the entry's value object
+/// so that `+` / `-` is rendered correctly.
+pub(super) fn format_entry_line(
+    entry: &EntryInfo,
+    indent: &str,
+    value_phase: Option<&ExpansionPhase>,
+) -> String {
+    let toggle = match value_phase {
+        Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
+        Some(ExpansionPhase::Failed) => "! ",
+        Some(ExpansionPhase::Collapsed) => "+ ",
+        None => "  ",
+    };
+    let val = format_entry_value_text(&entry.value);
+    if let Some(key) = &entry.key {
+        let k = format_entry_value_text(key);
+        format!("{indent}{toggle}[{}] {} => {}", entry.index, k, val)
+    } else {
+        format!("{indent}{toggle}[{}] {}", entry.index, val)
     }
 }
 

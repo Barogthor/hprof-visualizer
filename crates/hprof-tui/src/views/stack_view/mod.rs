@@ -3,6 +3,7 @@
 //! [`StackState`] manages frame selection and expand/collapse of local vars.
 //! [`StackView`] is a [`StatefulWidget`] rendering the current state.
 
+mod expansion;
 mod format;
 mod state;
 mod types;

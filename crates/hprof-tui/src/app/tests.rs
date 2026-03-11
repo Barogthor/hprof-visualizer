@@ -618,7 +618,7 @@ fn collection_small_no_chunk_sections() {
     app.handle_input(InputEvent::Enter);
     poll_all_pages(&mut app);
     let ss = app.stack_state.as_ref().unwrap();
-    let cc = ss.collection_chunks.get(&888).unwrap();
+    let cc = ss.expansion.collection_chunks.get(&888).unwrap();
     assert!(cc.eager_page.is_some());
     assert_eq!(cc.eager_page.as_ref().unwrap().entries.len(), 50);
     assert!(
@@ -634,7 +634,7 @@ fn collection_250_chunk_layout() {
     app.handle_input(InputEvent::Enter);
     poll_all_pages(&mut app);
     let ss = app.stack_state.as_ref().unwrap();
-    let cc = ss.collection_chunks.get(&888).unwrap();
+    let cc = ss.expansion.collection_chunks.get(&888).unwrap();
     // Eager page: 100 entries.
     assert_eq!(cc.eager_page.as_ref().unwrap().entries.len(), 100);
     // Chunk sections: [100..199], [200..249].
@@ -697,7 +697,7 @@ fn chunk_section_enter_loads_correct_range() {
     );
     poll_all_pages(&mut app);
     let ss = app.stack_state.as_ref().unwrap();
-    let cc = ss.collection_chunks.get(&888).unwrap();
+    let cc = ss.expansion.collection_chunks.get(&888).unwrap();
     assert!(matches!(
         cc.chunk_pages.get(&100),
         Some(ChunkState::Loaded(_))
@@ -718,7 +718,7 @@ fn chunk_loading_indicator() {
     // Before threshold, chunk is not in Loading state (still Collapsed or absent).
     {
         let ss = app.stack_state.as_ref().unwrap();
-        let cc = ss.collection_chunks.get(&888).unwrap();
+        let cc = ss.expansion.collection_chunks.get(&888).unwrap();
         assert!(
             !matches!(cc.chunk_pages.get(&100), Some(ChunkState::Loading)),
             "chunk must NOT be Loading before threshold"
@@ -731,7 +731,7 @@ fn chunk_loading_indicator() {
     // Poll once — threshold triggers ChunkState::Loading.
     app.poll_pages();
     let ss = app.stack_state.as_ref().unwrap();
-    let cc = ss.collection_chunks.get(&888).unwrap();
+    let cc = ss.expansion.collection_chunks.get(&888).unwrap();
     assert!(
         matches!(cc.chunk_pages.get(&100), Some(ChunkState::Loading)),
         "chunk must be Loading after threshold"
@@ -786,7 +786,7 @@ fn escape_collapses_collection() {
     app.handle_input(InputEvent::Escape);
     let ss = app.stack_state.as_ref().unwrap();
     assert!(
-        !ss.collection_chunks.contains_key(&888),
+        !ss.expansion.collection_chunks.contains_key(&888),
         "collection should be removed"
     );
     // Cursor returns to the collection field.
@@ -815,7 +815,7 @@ fn escape_from_chunk_section_collapses_collection() {
     app.handle_input(InputEvent::Escape);
     let ss = app.stack_state.as_ref().unwrap();
     assert!(
-        !ss.collection_chunks.contains_key(&888),
+        !ss.expansion.collection_chunks.contains_key(&888),
         "collection should be removed after escape from chunk section"
     );
     assert!(matches!(ss.cursor(), StackCursor::OnObjectField { .. }));
@@ -861,7 +861,7 @@ fn unsupported_type_falls_back_to_expand_object() {
     }
     let ss = app.stack_state.as_ref().unwrap();
     // Collection chunks should be gone.
-    assert!(!ss.collection_chunks.contains_key(&777));
+    assert!(!ss.expansion.collection_chunks.contains_key(&777));
     // Should have fallen back to expand_object →
     // expansion state should be Expanded.
     assert_eq!(ss.expansion_state(777), ExpansionPhase::Expanded);
@@ -882,7 +882,7 @@ fn re_enter_on_loaded_chunk_toggles_collapse() {
     // Chunk is now Loaded.
     let ss = app.stack_state.as_ref().unwrap();
     assert!(matches!(
-        ss.collection_chunks
+        ss.expansion.collection_chunks
             .get(&888)
             .unwrap()
             .chunk_pages
@@ -893,7 +893,7 @@ fn re_enter_on_loaded_chunk_toggles_collapse() {
     app.handle_input(InputEvent::Enter);
     let ss = app.stack_state.as_ref().unwrap();
     assert!(matches!(
-        ss.collection_chunks
+        ss.expansion.collection_chunks
             .get(&888)
             .unwrap()
             .chunk_pages

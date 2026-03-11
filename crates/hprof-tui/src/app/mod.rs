@@ -406,7 +406,7 @@ impl<E: NavigationEngine> App<E> {
                 if let Some((cid, restore_cursor)) = coll_info {
                     self.pending_pages.retain(|&(id, _), _| id != cid);
                     if let Some(s) = &mut self.stack_state {
-                        s.collection_chunks.remove(&cid);
+                        s.expansion.collection_chunks.remove(&cid);
                         s.set_cursor(restore_cursor);
                     }
                     return AppAction::Continue;
@@ -481,7 +481,7 @@ impl<E: NavigationEngine> App<E> {
                                 s.expansion_state(oid)
                             );
                             if let Some(ec) = s.selected_var_entry_count() {
-                                if s.collection_chunks.contains_key(&oid) {
+                                if s.expansion.collection_chunks.contains_key(&oid) {
                                     return Some(Cmd::CollapseCollection(oid));
                                 }
                                 return Some(Cmd::StartCollection(oid, ec));
@@ -500,7 +500,7 @@ impl<E: NavigationEngine> App<E> {
                             let coll_info = s.selected_field_collection_info();
                             dbg_log!("OnObjectField Enter: coll_info={:?}", coll_info);
                             if let Some((cid, ec)) = coll_info {
-                                if s.collection_chunks.contains_key(&cid) {
+                                if s.expansion.collection_chunks.contains_key(&cid) {
                                     return Some(Cmd::CollapseCollection(cid));
                                 }
                                 return Some(Cmd::StartCollection(cid, ec));
@@ -535,7 +535,7 @@ impl<E: NavigationEngine> App<E> {
                         StackCursor::OnCollectionEntry { .. } => {
                             let oid = s.selected_collection_entry_ref_id()?;
                             if let Some(ec) = s.selected_collection_entry_count() {
-                                if s.collection_chunks.contains_key(&oid) {
+                                if s.expansion.collection_chunks.contains_key(&oid) {
                                     return Some(Cmd::CollapseCollection(oid));
                                 }
                                 return Some(Cmd::StartCollection(oid, ec));
@@ -599,7 +599,7 @@ impl<E: NavigationEngine> App<E> {
                                 .collect(),
                         };
                         if let Some(s) = &mut self.stack_state {
-                            s.collection_chunks.insert(cid, chunks);
+                            s.expansion.collection_chunks.insert(cid, chunks);
                         }
                         self.start_collection_page_load(cid, 0, limit);
                     }
@@ -608,7 +608,7 @@ impl<E: NavigationEngine> App<E> {
                     }
                     Some(Cmd::ToggleChunk(cid, offset)) => {
                         if let Some(s) = &mut self.stack_state
-                            && let Some(cc) = s.collection_chunks.get_mut(&cid)
+                            && let Some(cc) = s.expansion.collection_chunks.get_mut(&cid)
                         {
                             cc.chunk_pages.insert(offset, ChunkState::Collapsed);
                         }
@@ -622,7 +622,7 @@ impl<E: NavigationEngine> App<E> {
                     }
                     Some(Cmd::CollapseCollection(cid)) => {
                         if let Some(s) = &mut self.stack_state {
-                            s.collection_chunks.remove(&cid);
+                            s.expansion.collection_chunks.remove(&cid);
                         }
                         // Remove pending page loads for
                         // this collection.
@@ -731,7 +731,7 @@ impl<E: NavigationEngine> App<E> {
                         page.entries.len()
                     );
                     if let Some(s) = &mut self.stack_state
-                        && let Some(cc) = s.collection_chunks.get_mut(&cid)
+                        && let Some(cc) = s.expansion.collection_chunks.get_mut(&cid)
                     {
                         if offset == 0 {
                             cc.eager_page = Some(page);
@@ -745,7 +745,7 @@ impl<E: NavigationEngine> App<E> {
                 Ok(None) => {
                     dbg_log!("poll_pages: 0x{:X}+{} → None (fallback)", cid, offset);
                     if let Some(s) = &mut self.stack_state {
-                        s.collection_chunks.remove(&cid);
+                        s.expansion.collection_chunks.remove(&cid);
                         if offset == 0 {
                             s.collapse_object(cid);
                         }
@@ -760,7 +760,7 @@ impl<E: NavigationEngine> App<E> {
                                 s.set_expansion_loading(cid);
                             }
                         } else if let Some(s) = &mut self.stack_state
-                            && let Some(cc) = s.collection_chunks.get_mut(&cid)
+                            && let Some(cc) = s.expansion.collection_chunks.get_mut(&cid)
                         {
                             cc.chunk_pages.insert(offset, ChunkState::Loading);
                         }
@@ -769,7 +769,7 @@ impl<E: NavigationEngine> App<E> {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
-                        s.collection_chunks.remove(&cid);
+                        s.expansion.collection_chunks.remove(&cid);
                         if offset == 0 {
                             s.collapse_object(cid);
                         }

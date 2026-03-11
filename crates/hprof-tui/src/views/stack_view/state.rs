@@ -10,30 +10,24 @@ use ratatui::{
 
 use crate::theme::THEME;
 
-use super::format::{
-    collect_descendants, compute_chunk_ranges, format_entry_value_text, format_frame_label,
-};
+use super::expansion::ExpansionRegistry;
+use super::format::{collect_descendants, compute_chunk_ranges, format_frame_label};
 use super::types::{ChunkState, CollectionChunks, ExpansionPhase, StackCursor};
 
 /// State for the stack frame panel.
 pub struct StackState {
+    // === Frames & Vars ===
     pub(super) frames: Vec<FrameInfo>,
     /// Vars per frame_id — populated on demand by `App` calling the engine.
     pub(super) vars: HashMap<u64, Vec<VariableInfo>>,
     pub(super) expanded: HashSet<u64>,
+    // === Cursor & Navigation ===
     pub(super) cursor: StackCursor,
     pub(super) list_state: ListState,
-    /// Per-object expansion phases (keyed by object_id).
-    pub(super) object_phases: HashMap<u64, ExpansionPhase>,
-    /// Decoded fields for expanded objects.
-    pub(crate) object_fields: HashMap<u64, Vec<FieldInfo>>,
-    /// Error messages for failed expansions.
-    pub(super) object_errors: HashMap<u64, String>,
     /// Visible height of the stack panel (set during render).
     pub(super) visible_height: u16,
-    /// Per-collection paginated state (keyed by collection
-    /// object ID).
-    pub(crate) collection_chunks: HashMap<u64, CollectionChunks>,
+    // === Expansion (delegated) ===
+    pub(crate) expansion: ExpansionRegistry,
 }
 
 impl StackState {
@@ -54,11 +48,8 @@ impl StackState {
             expanded: HashSet::new(),
             cursor,
             list_state,
-            object_phases: HashMap::new(),
-            object_fields: HashMap::new(),
-            object_errors: HashMap::new(),
             visible_height: 0,
-            collection_chunks: HashMap::new(),
+            expansion: ExpansionRegistry::new(),
         }
     }
 
@@ -96,12 +87,12 @@ impl StackState {
 
     /// Returns the decoded object fields map.
     pub(crate) fn object_fields(&self) -> &HashMap<u64, Vec<FieldInfo>> {
-        &self.object_fields
+        &self.expansion.object_fields
     }
 
     /// Returns the collection chunks map.
     pub(crate) fn collection_chunks_map(&self) -> &HashMap<u64, CollectionChunks> {
-        &self.collection_chunks
+        &self.expansion.collection_chunks
     }
 
     /// Sets the cursor to `new_cursor` and syncs the
@@ -150,7 +141,7 @@ impl StackState {
     fn resolve_object_at_path(&self, root_id: u64, field_path: &[usize]) -> u64 {
         let mut current = root_id;
         for &step in field_path {
-            if let Some(fields) = self.object_fields.get(&current)
+            if let Some(fields) = self.expansion.object_fields.get(&current)
                 && let Some(field) = fields.get(step)
                 && let FieldValue::ObjectRef { id, .. } = field.value
             {
@@ -181,7 +172,7 @@ impl StackState {
                 let parent_path = &field_path[..field_path.len().saturating_sub(1)];
                 let parent_id = self.resolve_object_at_path(root_id, parent_path);
                 let field_idx = *field_path.last()?;
-                let fields = self.object_fields.get(&parent_id)?;
+                let fields = self.expansion.object_fields.get(&parent_id)?;
                 let field = fields.get(field_idx)?;
                 if let FieldValue::ObjectRef { id, .. } = field.value {
                     return Some(id);
@@ -208,7 +199,7 @@ impl StackState {
                 let parent_path = &field_path[..field_path.len().saturating_sub(1)];
                 let parent_id = self.resolve_object_at_path(root_id, parent_path);
                 let field_idx = *field_path.last()?;
-                let fields = self.object_fields.get(&parent_id)?;
+                let fields = self.expansion.object_fields.get(&parent_id)?;
                 let field = fields.get(field_idx)?;
                 if let FieldValue::ObjectRef {
                     id,
@@ -251,7 +242,7 @@ impl StackState {
         else {
             return None;
         };
-        let cc = self.collection_chunks.get(&collection_id)?;
+        let cc = self.expansion.collection_chunks.get(&collection_id)?;
         let entry = cc.find_entry(entry_index)?;
         if let FieldValue::ObjectRef { entry_count, .. } = &entry.value {
             *entry_count
@@ -269,7 +260,7 @@ impl StackState {
             ..
         } = &self.cursor
         {
-            let cc = self.collection_chunks.get(collection_id)?;
+            let cc = self.expansion.collection_chunks.get(collection_id)?;
             let ranges = compute_chunk_ranges(cc.total_count);
             let limit = ranges
                 .iter()
@@ -289,7 +280,7 @@ impl StackState {
             ..
         } = &self.cursor
         {
-            let cc = self.collection_chunks.get(collection_id)?;
+            let cc = self.expansion.collection_chunks.get(collection_id)?;
             let entry = cc.find_entry(*entry_index)?;
             if let FieldValue::ObjectRef { id, .. } = &entry.value {
                 return Some(*id);
@@ -319,7 +310,7 @@ impl StackState {
         } = &self.cursor
         {
             let obj_root = {
-                let cc = self.collection_chunks.get(collection_id)?;
+                let cc = self.expansion.collection_chunks.get(collection_id)?;
                 let entry = cc.find_entry(*entry_index)?;
                 if let FieldValue::ObjectRef { id, .. } = &entry.value {
                     *id
@@ -330,7 +321,7 @@ impl StackState {
             let parent_path = &obj_field_path[..obj_field_path.len().saturating_sub(1)];
             let parent_id = self.resolve_object_at_path(obj_root, parent_path);
             let field_idx = *obj_field_path.last()?;
-            let fields = self.object_fields.get(&parent_id)?;
+            let fields = self.expansion.object_fields.get(&parent_id)?;
             return fields.get(field_idx);
         }
         None
@@ -338,10 +329,7 @@ impl StackState {
 
     /// Returns the `ChunkState` for a specific chunk.
     pub fn chunk_state(&self, collection_id: u64, chunk_offset: usize) -> Option<&ChunkState> {
-        self.collection_chunks
-            .get(&collection_id)?
-            .chunk_pages
-            .get(&chunk_offset)
+        self.expansion.chunk_state(collection_id, chunk_offset)
     }
 
     /// If cursor is inside a collection (entry or chunk
@@ -384,23 +372,17 @@ impl StackState {
 
     /// Returns the expansion phase for `object_id` (defaults to `Collapsed`).
     pub fn expansion_state(&self, object_id: u64) -> ExpansionPhase {
-        self.object_phases
-            .get(&object_id)
-            .cloned()
-            .unwrap_or(ExpansionPhase::Collapsed)
+        self.expansion.expansion_state(object_id)
     }
 
     /// Marks an object as loading (called by App on expansion start).
     pub fn set_expansion_loading(&mut self, object_id: u64) {
-        self.object_phases
-            .insert(object_id, ExpansionPhase::Loading);
+        self.expansion.set_expansion_loading(object_id);
     }
 
     /// Marks an object expansion as complete with decoded fields.
     pub fn set_expansion_done(&mut self, object_id: u64, fields: Vec<FieldInfo>) {
-        self.object_fields.insert(object_id, fields);
-        self.object_phases
-            .insert(object_id, ExpansionPhase::Expanded);
+        self.expansion.set_expansion_done(object_id, fields);
     }
 
     /// Marks an object expansion as failed with an error message.
@@ -409,8 +391,7 @@ impl StackState {
     /// loading spinner), it is recovered to the parent node so navigation
     /// is not stuck after the failure.
     pub fn set_expansion_failed(&mut self, object_id: u64, error: String) {
-        self.object_errors.insert(object_id, error);
-        self.object_phases.insert(object_id, ExpansionPhase::Failed);
+        self.expansion.set_expansion_failed(object_id, error);
         if self.flat_index().is_none()
             && let StackCursor::OnObjectLoadingNode {
                 frame_idx,
@@ -433,16 +414,12 @@ impl StackState {
 
     /// Cancels a loading expansion — reverts to `Collapsed`.
     pub fn cancel_expansion(&mut self, object_id: u64) {
-        self.object_phases.remove(&object_id);
-        self.object_fields.remove(&object_id);
-        self.object_errors.remove(&object_id);
+        self.expansion.cancel_expansion(object_id);
     }
 
     /// Collapses an expanded object.
     pub fn collapse_object(&mut self, object_id: u64) {
-        self.object_phases.remove(&object_id);
-        self.object_fields.remove(&object_id);
-        self.object_errors.remove(&object_id);
+        self.expansion.collapse_object(object_id);
     }
 
     /// Recursively collapses `object_id` and all nested
@@ -454,7 +431,12 @@ impl StackState {
     pub fn collapse_object_recursive(&mut self, object_id: u64) {
         let mut to_remove: Vec<u64> = Vec::new();
         let mut visited: HashSet<u64> = HashSet::new();
-        collect_descendants(object_id, &self.object_fields, &mut visited, &mut to_remove);
+        collect_descendants(
+            object_id,
+            &self.expansion.object_fields,
+            &mut visited,
+            &mut to_remove,
+        );
         for id in to_remove {
             self.collapse_object(id);
         }
@@ -685,7 +667,7 @@ impl StackState {
             }
             ExpansionPhase::Expanded => {
                 visited.insert(object_id);
-                let fields = self.object_fields.get(&object_id);
+                let fields = self.expansion.object_fields.get(&object_id);
                 let field_count = fields.map(|f| f.len()).unwrap_or(0);
                 if field_count == 0 {
                     out.push(StackCursor::OnObjectLoadingNode {
@@ -719,7 +701,7 @@ impl StackState {
                             entry_count: Some(_),
                             ..
                         } = field.value
-                            && let Some(cc) = self.collection_chunks.get(&id)
+                            && let Some(cc) = self.expansion.collection_chunks.get(&id)
                         {
                             self.emit_collection_children(fi, vi, &path, id, cc, out);
                             continue;
@@ -834,7 +816,7 @@ impl StackState {
                 // Error state is styled on the parent entry row — no child cursor emitted here.
             }
             ExpansionPhase::Expanded => {
-                let fields = self.object_fields.get(&obj_id);
+                let fields = self.expansion.object_fields.get(&obj_id);
                 let field_count = fields.map(|f| f.len()).unwrap_or(0);
                 if field_count == 0 {
                     out.push(StackCursor::OnCollectionEntryObjField {
@@ -916,10 +898,10 @@ impl StackState {
                 let vars = self.vars.get(&frame.frame_id).unwrap_or(&empty);
                 let tree_items = render_variable_tree(
                     TreeRoot::Frame { vars },
-                    &self.object_fields,
-                    &self.collection_chunks,
-                    &self.object_phases,
-                    &self.object_errors,
+                    &self.expansion.object_fields,
+                    &self.expansion.collection_chunks,
+                    &self.expansion.object_phases,
+                    &self.expansion.object_errors,
                 );
                 items.extend(tree_items);
             }
@@ -938,23 +920,12 @@ impl StackState {
     /// `value_phase` controls the expand toggle for `ObjectRef` values:
     /// pass the current [`ExpansionPhase`] of the entry's value object
     /// so that `+` / `-` is rendered correctly.
+    // === Rendering ===
     pub(crate) fn format_entry_line(
         entry: &hprof_engine::EntryInfo,
         indent: &str,
         value_phase: Option<&ExpansionPhase>,
     ) -> String {
-        let toggle = match value_phase {
-            Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
-            Some(ExpansionPhase::Failed) => "! ",
-            Some(ExpansionPhase::Collapsed) => "+ ",
-            None => "  ",
-        };
-        let val = format_entry_value_text(&entry.value);
-        if let Some(key) = &entry.key {
-            let k = format_entry_value_text(key);
-            format!("{indent}{toggle}[{}] {} => {}", entry.index, k, val)
-        } else {
-            format!("{indent}{toggle}[{}] {}", entry.index, val)
-        }
+        super::format::format_entry_line(entry, indent, value_phase)
     }
 }

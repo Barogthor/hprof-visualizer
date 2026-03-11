@@ -683,7 +683,7 @@ mod tests {
                 },
             }],
         );
-        state.collection_chunks.insert(
+        state.expansion.collection_chunks.insert(
             20,
             CollectionChunks {
                 total_count: 200,

@@ -552,7 +552,7 @@ fn toggle_expand_collapse_frame_clears_nested_object_phases() {
     // Collapse the frame
     state.toggle_expand(10, vec![]);
     // object_phases must be cleaned up
-    assert!(state.object_phases.is_empty());
+    assert!(state.expansion.object_phases.is_empty());
 }
 
 // --- Task 5.5: build_items indentation test ---
@@ -1400,7 +1400,7 @@ fn enter_on_failed_collection_entry_is_noop() {
         offset: 0,
         has_more: false,
     };
-    state.collection_chunks.insert(
+    state.expansion.collection_chunks.insert(
         200,
         CollectionChunks {
             total_count: 1,
@@ -1457,7 +1457,7 @@ fn failed_collection_entry_obj_no_phantom_cursor() {
         offset: 0,
         has_more: false,
     };
-    state.collection_chunks.insert(
+    state.expansion.collection_chunks.insert(
         200,
         CollectionChunks {
             total_count: 1,
@@ -1690,7 +1690,7 @@ fn selected_collection_entry_count_returns_some_for_nested_array_entry() {
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
     state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
-    state.collection_chunks.insert(
+    state.expansion.collection_chunks.insert(
         coll_id,
         CollectionChunks {
             total_count: 1,
@@ -1728,7 +1728,7 @@ fn selected_collection_entry_count_returns_none_when_entry_not_collection() {
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
     state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
-    state.collection_chunks.insert(
+    state.expansion.collection_chunks.insert(
         coll_id,
         CollectionChunks {
             total_count: 1,
