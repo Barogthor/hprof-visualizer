@@ -54,52 +54,81 @@ TRUNCATE_BYTES="0"
 SCENARIO="01"
 SANITIZE="off"
 
-if [[ "${1:-}" == -* ]]; then
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      -m|--mode)
-        MODE="${2:-}"
-        shift 2
-        ;;
-      -H|--hold-seconds)
-        HOLD_SECONDS="${2:-}"
-        shift 2
-        ;;
-      -p|--profile-set)
-        PROFILE_SET="${2:-}"
-        shift 2
-        ;;
-      -t|--truncate-bytes)
-        TRUNCATE_BYTES="${2:-}"
-        shift 2
-        ;;
-      -s|--scenario)
-        SCENARIO="${2:-}"
-        shift 2
-        ;;
-      -S|--sanitize)
-        SANITIZE="${2:-}"
-        shift 2
-        ;;
-      -h|--help)
-        print_help
-        exit 0
-        ;;
-      *)
-        echo "[heap-fixture] unknown option '$1'" >&2
-        print_help
-        exit 1
-        ;;
-    esac
-  done
-else
-  MODE="${1:-auto}"
-  HOLD_SECONDS="${2:-120}"
-  PROFILE_SET="${3:-standard}"
-  TRUNCATE_BYTES="${4:-0}"
-  SCENARIO="${5:-01}"
-  SANITIZE="${6:-off}"
-fi
+POSITIONAL_INDEX=1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -m|--mode)
+      MODE="${2:-}"
+      shift 2
+      ;;
+    -H|--hold-seconds)
+      HOLD_SECONDS="${2:-}"
+      shift 2
+      ;;
+    -p|--profile-set)
+      PROFILE_SET="${2:-}"
+      shift 2
+      ;;
+    -t|--truncate-bytes)
+      TRUNCATE_BYTES="${2:-}"
+      shift 2
+      ;;
+    -s|--scenario)
+      SCENARIO="${2:-}"
+      shift 2
+      ;;
+    -S|--sanitize)
+      SANITIZE="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      print_help
+      exit 0
+      ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do
+        case "${POSITIONAL_INDEX}" in
+          1) MODE="$1" ;;
+          2) HOLD_SECONDS="$1" ;;
+          3) PROFILE_SET="$1" ;;
+          4) TRUNCATE_BYTES="$1" ;;
+          5) SCENARIO="$1" ;;
+          6) SANITIZE="$1" ;;
+          *)
+            echo "[heap-fixture] too many positional arguments" >&2
+            print_help
+            exit 1
+            ;;
+        esac
+        POSITIONAL_INDEX=$((POSITIONAL_INDEX + 1))
+        shift
+      done
+      ;;
+    -*)
+      echo "[heap-fixture] unknown option '$1'" >&2
+      print_help
+      exit 1
+      ;;
+    *)
+      case "${POSITIONAL_INDEX}" in
+        1) MODE="$1" ;;
+        2) HOLD_SECONDS="$1" ;;
+        3) PROFILE_SET="$1" ;;
+        4) TRUNCATE_BYTES="$1" ;;
+        5) SCENARIO="$1" ;;
+        6) SANITIZE="$1" ;;
+        *)
+          echo "[heap-fixture] too many positional arguments" >&2
+          print_help
+          exit 1
+          ;;
+      esac
+      POSITIONAL_INDEX=$((POSITIONAL_INDEX + 1))
+      shift
+      ;;
+  esac
+done
 
 REDACT_SCRIPT="${SCRIPT_DIR}/../hprof-redact-custom/redact.sh"
 
