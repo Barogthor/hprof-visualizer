@@ -872,6 +872,7 @@ impl StackState {
         self.list_state.select(idx);
     }
 
+    // === Rendering ===
     /// Builds the list items for rendering.
     ///
     /// Frame headers are plain items; variable-tree rows are produced by
@@ -915,17 +916,4 @@ impl StackState {
         items
     }
 
-    /// Formats one collection entry as a display line.
-    ///
-    /// `value_phase` controls the expand toggle for `ObjectRef` values:
-    /// pass the current [`ExpansionPhase`] of the entry's value object
-    /// so that `+` / `-` is rendered correctly.
-    // === Rendering ===
-    pub(crate) fn format_entry_line(
-        entry: &hprof_engine::EntryInfo,
-        indent: &str,
-        value_phase: Option<&ExpansionPhase>,
-    ) -> String {
-        super::format::format_entry_line(entry, indent, value_phase)
-    }
 }

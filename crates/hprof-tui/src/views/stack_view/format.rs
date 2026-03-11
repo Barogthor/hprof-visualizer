@@ -182,7 +182,7 @@ pub(crate) fn field_value_style(v: &FieldValue) -> Style {
 /// `value_phase` controls the expand toggle for `ObjectRef` values:
 /// pass the current [`ExpansionPhase`] of the entry's value object
 /// so that `+` / `-` is rendered correctly.
-pub(super) fn format_entry_line(
+pub(crate) fn format_entry_line(
     entry: &EntryInfo,
     indent: &str,
     value_phase: Option<&ExpansionPhase>,

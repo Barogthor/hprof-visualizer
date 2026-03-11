@@ -19,5 +19,15 @@ pub(crate) use format::{
 };
 pub(crate) use types::FAILED_LABEL_SEP;
 
+impl StackState {
+    pub(crate) fn format_entry_line(
+        entry: &hprof_engine::EntryInfo,
+        indent: &str,
+        value_phase: Option<&ExpansionPhase>,
+    ) -> String {
+        format::format_entry_line(entry, indent, value_phase)
+    }
+}
+
 #[cfg(test)]
 mod tests;
