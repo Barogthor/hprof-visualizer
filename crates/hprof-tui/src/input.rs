@@ -13,6 +13,10 @@ pub enum InputEvent {
     Up,
     /// Move selection down one item.
     Down,
+    /// Expand the item at the current cursor position (stack view only).
+    Right,
+    /// Unexpand the current node, or navigate to its logical parent.
+    Left,
     /// Jump to first item.
     Home,
     /// Jump to last item.
@@ -51,6 +55,8 @@ pub fn from_key(key: KeyEvent) -> Option<InputEvent> {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(InputEvent::Quit),
         (KeyCode::Up, _) => Some(InputEvent::Up),
         (KeyCode::Down, _) => Some(InputEvent::Down),
+        (KeyCode::Right, _) => Some(InputEvent::Right),
+        (KeyCode::Left, _) => Some(InputEvent::Left),
         (KeyCode::Home, _) => Some(InputEvent::Home),
         (KeyCode::End, _) => Some(InputEvent::End),
         (KeyCode::PageUp, _) => Some(InputEvent::PageUp),
@@ -114,6 +120,14 @@ mod tests {
         assert_eq!(
             from_key(key(KeyCode::Down, KeyModifiers::NONE)),
             Some(InputEvent::Down)
+        );
+        assert_eq!(
+            from_key(key(KeyCode::Right, KeyModifiers::NONE)),
+            Some(InputEvent::Right)
+        );
+        assert_eq!(
+            from_key(key(KeyCode::Left, KeyModifiers::NONE)),
+            Some(InputEvent::Left)
         );
         assert_eq!(
             from_key(key(KeyCode::Home, KeyModifiers::NONE)),

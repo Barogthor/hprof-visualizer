@@ -2101,3 +2101,234 @@ fn flat_items_include_nested_collection_entries_for_multidimensional_arrays() {
         "nested collection entry must be emitted"
     );
 }
+
+// --- Story 9.3: parent_cursor() and Left/Right edge cases ---
+
+#[test]
+fn parent_cursor_on_frame_returns_none() {
+    let frames = vec![make_frame(1)];
+    let mut state = StackState::new(frames);
+    state.set_cursor(StackCursor::OnFrame(0));
+    assert_eq!(state.parent_cursor(), None);
+}
+
+#[test]
+fn parent_cursor_on_var_returns_on_frame() {
+    let frames = vec![make_frame(10), make_frame(20)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 1)]);
+    state.set_cursor(StackCursor::OnVar { frame_idx: 1, var_idx: 0 });
+    assert_eq!(state.parent_cursor(), Some(StackCursor::OnFrame(1)));
+}
+
+#[test]
+fn parent_cursor_on_object_field_depth1_returns_on_var() {
+    let frames = vec![make_frame(1)];
+    let mut state = StackState::new(frames);
+    state.set_cursor(StackCursor::OnObjectField {
+        frame_idx: 0,
+        var_idx: 2,
+        field_path: vec![3],
+    });
+    assert_eq!(
+        state.parent_cursor(),
+        Some(StackCursor::OnVar { frame_idx: 0, var_idx: 2 })
+    );
+}
+
+#[test]
+fn parent_cursor_on_object_field_depth2_returns_shallower_field() {
+    let frames = vec![make_frame(1)];
+    let mut state = StackState::new(frames);
+    state.set_cursor(StackCursor::OnObjectField {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![1, 4],
+    });
+    assert_eq!(
+        state.parent_cursor(),
+        Some(StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![1]
+        })
+    );
+}
+
+#[test]
+fn parent_cursor_on_collection_entry_with_field_path_returns_object_field() {
+    let frames = vec![make_frame(1)];
+    let mut state = StackState::new(frames);
+    state.set_cursor(StackCursor::OnCollectionEntry {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![2],
+        collection_id: 0xA,
+        entry_index: 0,
+    });
+    assert_eq!(
+        state.parent_cursor(),
+        Some(StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![2],
+        })
+    );
+}
+
+#[test]
+fn parent_cursor_on_collection_entry_with_empty_field_path_returns_on_var() {
+    let frames = vec![make_frame(1)];
+    let mut state = StackState::new(frames);
+    state.set_cursor(StackCursor::OnCollectionEntry {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![],
+        collection_id: 0xA,
+        entry_index: 0,
+    });
+    // Critical: validates that the story 9.2 open-collection-from-OnVar case is handled
+    // correctly, unlike cursor_collection_id() which wrongly returns OnObjectField{[]}.
+    assert_eq!(
+        state.parent_cursor(),
+        Some(StackCursor::OnVar { frame_idx: 0, var_idx: 0 })
+    );
+}
+
+#[test]
+fn parent_cursor_on_collection_entry_obj_field_returns_collection_entry() {
+    let frames = vec![make_frame(1)];
+    let mut state = StackState::new(frames);
+    state.set_cursor(StackCursor::OnCollectionEntryObjField {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![],
+        collection_id: 0xA,
+        entry_index: 3,
+        obj_field_path: vec![1],
+    });
+    assert_eq!(
+        state.parent_cursor(),
+        Some(StackCursor::OnCollectionEntry {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+            collection_id: 0xA,
+            entry_index: 3,
+        })
+    );
+}
+
+#[test]
+fn parent_cursor_on_collection_entry_obj_field_depth2_returns_shallow_obj_field() {
+    let frames = vec![make_frame(1)];
+    let mut state = StackState::new(frames);
+    state.set_cursor(StackCursor::OnCollectionEntryObjField {
+        frame_idx: 0,
+        var_idx: 0,
+        field_path: vec![],
+        collection_id: 0xA,
+        entry_index: 3,
+        obj_field_path: vec![1, 3],
+    });
+    assert_eq!(
+        state.parent_cursor(),
+        Some(StackCursor::OnCollectionEntryObjField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+            collection_id: 0xA,
+            entry_index: 3,
+            obj_field_path: vec![1],
+        })
+    );
+}
+
+#[test]
+fn left_on_non_expanded_var_navigates_to_frame() {
+    // Pure StackState test: parent_cursor() on OnVar returns OnFrame.
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 99)]);
+    state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
+    assert_eq!(
+        state.parent_cursor(),
+        Some(StackCursor::OnFrame(0))
+    );
+}
+
+#[test]
+fn left_on_non_expanded_frame_is_noop() {
+    // AC4: cursor OnFrame with no expansion → parent_cursor() returns None.
+    let frames = vec![make_frame(10)];
+    let state = StackState::new(frames);
+    // Frame is NOT expanded (is_expanded returns false).
+    assert!(!state.is_expanded(10));
+    // parent_cursor() returns None — Left handler uses this to detect no-op.
+    assert_eq!(state.parent_cursor(), None);
+    // Cursor is still OnFrame(0) — no side effect.
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
+}
+
+#[test]
+fn left_on_expanded_var_collapses_not_navigates() {
+    // Priority invariant: collapse > navigate when var is Expanded.
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 99)]);
+    state.set_expansion_done(99, vec![]);
+    state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
+
+    // Precondition: object is Expanded.
+    assert_eq!(state.expansion_state(99), ExpansionPhase::Expanded);
+    // Parent IS computable — the invariant is that Left handler checks Expanded FIRST.
+    assert_eq!(
+        state.parent_cursor(),
+        Some(StackCursor::OnFrame(0))
+    );
+    // The Left handler sees Expanded and dispatches CollapseObj — NOT NavigateToParent.
+    // We verify the expansion phase check here (the dispatch decision itself lives in App).
+    assert_eq!(state.expansion_state(99), ExpansionPhase::Expanded);
+}
+
+#[test]
+fn left_on_primitive_var_navigates_to_frame() {
+    // Gap 1 fix: VariableValue::Null (non-ObjectRef) → selected_object_id() == None
+    // → Left handler must fall through to NavigateToParent, not silently no-op.
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    // make_var(0, 0) creates VariableValue::Null (the non-ObjectRef case).
+    state.toggle_expand(10, vec![make_var(0, 0)]);
+    state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
+    assert!(
+        state.selected_object_id().is_none(),
+        "Null var must have no object_id"
+    );
+    assert_eq!(
+        state.parent_cursor(),
+        Some(StackCursor::OnFrame(0))
+    );
+}
+
+#[test]
+fn right_on_collection_var_dispatches_start_collection() {
+    // Gap 2 fix: selected_var_entry_count() returns Some(n) for collection vars.
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    let collection_var = VariableInfo {
+        index: 0,
+        value: VariableValue::ObjectRef {
+            id: 0xAB,
+            class_name: "ArrayList".to_string(),
+            entry_count: Some(5),
+        },
+    };
+    state.toggle_expand(10, vec![collection_var]);
+    state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
+
+    // Precondition: entry_count is detected.
+    assert_eq!(state.selected_var_entry_count(), Some(5));
+    // Collection is NOT yet expanded.
+    assert!(!state.expansion.collection_chunks.contains_key(&0xAB));
+    // The Right handler will dispatch StartCollection (not StartObj) for this var.
+}

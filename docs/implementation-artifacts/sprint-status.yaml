@@ -118,7 +118,7 @@ development_status:
   epic-9: in-progress
   9-1-expand-state-bugs-and-failed-resolve-non-navigable: done
   9-2-collection-data-fidelity: done
-  9-3-arrow-expand-unexpand-parent-navigation: ready-for-dev
+  9-3-arrow-expand-unexpand-parent-navigation: review
   9-4-camera-scroll: backlog
   9-5-stack-frame-variable-names-and-static-fields: backlog
   9-6-search-and-favorites-ux-polish: backlog

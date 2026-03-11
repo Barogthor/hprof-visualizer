@@ -451,6 +451,230 @@ impl<E: NavigationEngine> App<E> {
                     s.move_page_up();
                 }
             }
+            InputEvent::Right => {
+                enum RightCmd {
+                    ExpandFrame(u64),
+                    StartObj(u64),
+                    StartCollection(u64, u64, StackCursor),
+                    StartEntryObj(u64),
+                    LoadChunk(u64, usize, usize),
+                }
+                let cmd = self.stack_state.as_ref().and_then(|s| {
+                    Some(match s.cursor().clone() {
+                        StackCursor::OnFrame(_) => {
+                            let fid = s.selected_frame_id()?;
+                            if s.is_expanded(fid) {
+                                return None;
+                            }
+                            RightCmd::ExpandFrame(fid)
+                        }
+                        StackCursor::OnVar { .. } => {
+                            let oid = s.selected_object_id()?;
+                            if let Some(ec) = s.selected_var_entry_count() {
+                                if s.expansion.collection_chunks.contains_key(&oid) {
+                                    return None;
+                                }
+                                return Some(RightCmd::StartCollection(
+                                    oid,
+                                    ec,
+                                    s.cursor().clone(),
+                                ));
+                            }
+                            match s.expansion_state(oid) {
+                                ExpansionPhase::Collapsed => RightCmd::StartObj(oid),
+                                _ => return None,
+                            }
+                        }
+                        StackCursor::OnObjectField { .. } => {
+                            if let Some((cid, ec)) = s.selected_field_collection_info() {
+                                if s.expansion.collection_chunks.contains_key(&cid) {
+                                    return None;
+                                }
+                                return Some(RightCmd::StartCollection(
+                                    cid,
+                                    ec,
+                                    s.cursor().clone(),
+                                ));
+                            }
+                            let nested_id = s.selected_field_ref_id()?;
+                            match s.expansion_state(nested_id) {
+                                ExpansionPhase::Collapsed => RightCmd::StartObj(nested_id),
+                                _ => return None,
+                            }
+                        }
+                        StackCursor::OnChunkSection { .. } => {
+                            if let Some((cid, co, cl)) = s.selected_chunk_info() {
+                                match s.chunk_state(cid, co) {
+                                    Some(ChunkState::Collapsed) => RightCmd::LoadChunk(cid, co, cl),
+                                    _ => return None,
+                                }
+                            } else {
+                                return None;
+                            }
+                        }
+                        StackCursor::OnCollectionEntry { .. } => {
+                            let oid = s.selected_collection_entry_ref_id()?;
+                            match s.expansion_state(oid) {
+                                ExpansionPhase::Collapsed => RightCmd::StartEntryObj(oid),
+                                _ => return None,
+                            }
+                        }
+                        StackCursor::OnCollectionEntryObjField { .. } => {
+                            let oid = s.selected_collection_entry_obj_field_ref_id()?;
+                            match s.expansion_state(oid) {
+                                ExpansionPhase::Collapsed => RightCmd::StartEntryObj(oid),
+                                _ => return None,
+                            }
+                        }
+                        StackCursor::OnCyclicNode { .. }
+                        | StackCursor::OnObjectLoadingNode { .. }
+                        | StackCursor::NoFrames => return None,
+                    })
+                });
+                match cmd {
+                    Some(RightCmd::ExpandFrame(fid)) => {
+                        let vars = self.engine.get_local_variables(fid);
+                        if let Some(s) = &mut self.stack_state {
+                            s.toggle_expand(fid, vars);
+                        }
+                    }
+                    Some(RightCmd::StartObj(oid)) => {
+                        self.start_object_expansion(oid);
+                    }
+                    Some(RightCmd::StartCollection(cid, ec, restore_cursor)) => {
+                        let limit = (ec as usize).min(100);
+                        let chunks = CollectionChunks {
+                            total_count: ec,
+                            eager_page: None,
+                            chunk_pages: compute_chunk_ranges(ec)
+                                .into_iter()
+                                .map(|(o, _)| (o, ChunkState::Collapsed))
+                                .collect(),
+                        };
+                        if let Some(s) = &mut self.stack_state {
+                            s.expansion.collection_chunks.insert(cid, chunks);
+                            s.expansion.collection_restore_cursors.insert(cid, restore_cursor);
+                        }
+                        self.start_collection_page_load(cid, 0, limit);
+                    }
+                    Some(RightCmd::StartEntryObj(oid)) => {
+                        self.start_object_expansion(oid);
+                    }
+                    Some(RightCmd::LoadChunk(cid, offset, limit)) => {
+                        self.start_collection_page_load(cid, offset, limit);
+                    }
+                    None => {}
+                }
+            }
+            InputEvent::Left => {
+                enum LeftCmd {
+                    CollapseFrame(u64),
+                    CollapseObj(u64),
+                    CollapseNestedObj(u64),
+                    CollapseCollection(u64),
+                    CollapseEntryObj(u64),
+                    NavigateToParent(StackCursor),
+                }
+                let cmd = self.stack_state.as_ref().and_then(|s| {
+                    Some(match s.cursor().clone() {
+                        StackCursor::OnFrame(_) => {
+                            let fid = s.selected_frame_id()?;
+                            if s.is_expanded(fid) {
+                                LeftCmd::CollapseFrame(fid)
+                            } else {
+                                return None;
+                            }
+                        }
+                        StackCursor::OnVar { .. } => {
+                            let Some(oid) = s.selected_object_id() else {
+                                return Some(LeftCmd::NavigateToParent(s.parent_cursor()?));
+                            };
+                            if s.expansion.collection_chunks.contains_key(&oid) {
+                                return Some(LeftCmd::CollapseCollection(oid));
+                            }
+                            match s.expansion_state(oid) {
+                                ExpansionPhase::Expanded => LeftCmd::CollapseObj(oid),
+                                _ => LeftCmd::NavigateToParent(s.parent_cursor()?),
+                            }
+                        }
+                        StackCursor::OnObjectField { .. } => {
+                            if let Some((cid, _)) = s.selected_field_collection_info()
+                                && s.expansion.collection_chunks.contains_key(&cid)
+                            {
+                                return Some(LeftCmd::CollapseCollection(cid));
+                            }
+                            if let Some(nested_id) = s.selected_field_ref_id()
+                                && s.expansion_state(nested_id) == ExpansionPhase::Expanded
+                            {
+                                return Some(LeftCmd::CollapseNestedObj(nested_id));
+                            }
+                            LeftCmd::NavigateToParent(s.parent_cursor()?)
+                        }
+                        StackCursor::OnCollectionEntry { .. } => {
+                            let oid = s.selected_collection_entry_ref_id()?;
+                            if s.expansion_state(oid) == ExpansionPhase::Expanded {
+                                LeftCmd::CollapseEntryObj(oid)
+                            } else {
+                                LeftCmd::NavigateToParent(s.parent_cursor()?)
+                            }
+                        }
+                        StackCursor::OnCollectionEntryObjField { .. } => {
+                            let oid = s.selected_collection_entry_obj_field_ref_id()?;
+                            if s.expansion_state(oid) == ExpansionPhase::Expanded {
+                                LeftCmd::CollapseEntryObj(oid)
+                            } else {
+                                LeftCmd::NavigateToParent(s.parent_cursor()?)
+                            }
+                        }
+                        StackCursor::OnChunkSection { .. } => {
+                            LeftCmd::NavigateToParent(s.parent_cursor()?)
+                        }
+                        StackCursor::OnObjectLoadingNode { .. }
+                        | StackCursor::OnCyclicNode { .. } => {
+                            LeftCmd::NavigateToParent(s.parent_cursor()?)
+                        }
+                        StackCursor::NoFrames => return None,
+                    })
+                });
+                match cmd {
+                    Some(LeftCmd::CollapseFrame(fid)) => {
+                        if let Some(s) = &mut self.stack_state {
+                            s.toggle_expand(fid, vec![]);
+                        }
+                    }
+                    Some(LeftCmd::CollapseObj(oid)) => {
+                        self.pending_expansions.remove(&oid);
+                        if let Some(s) = &mut self.stack_state {
+                            s.collapse_object_recursive(oid);
+                        }
+                    }
+                    Some(LeftCmd::CollapseNestedObj(oid)) => {
+                        self.pending_expansions.remove(&oid);
+                        if let Some(s) = &mut self.stack_state {
+                            s.collapse_object(oid);
+                        }
+                    }
+                    Some(LeftCmd::CollapseCollection(cid)) => {
+                        if let Some(s) = &mut self.stack_state {
+                            s.expansion.collection_chunks.remove(&cid);
+                            s.expansion.collection_restore_cursors.remove(&cid);
+                        }
+                        self.pending_pages.retain(|&(id, _), _| id != cid);
+                    }
+                    Some(LeftCmd::CollapseEntryObj(oid)) => {
+                        self.pending_expansions.remove(&oid);
+                        if let Some(s) = &mut self.stack_state {
+                            s.collapse_object_recursive(oid);
+                        }
+                    }
+                    Some(LeftCmd::NavigateToParent(parent)) => {
+                        if let Some(s) = &mut self.stack_state {
+                            s.set_cursor(parent);
+                        }
+                    }
+                    None => {}
+                }
+            }
             InputEvent::Enter => {
                 // Collect the intended command from an immutable borrow, then act on it.
                 enum Cmd {

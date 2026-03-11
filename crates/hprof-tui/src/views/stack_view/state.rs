@@ -372,6 +372,102 @@ impl StackState {
         self.expansion.chunk_state(collection_id, chunk_offset)
     }
 
+    /// Returns the logical parent cursor for the current position, or `None`
+    /// if at the top level (`OnFrame` or `NoFrames`).
+    ///
+    /// Does NOT modify state — only computes where the cursor should go.
+    ///
+    /// Parent relationships:
+    /// - `OnVar` → `OnFrame`
+    /// - `OnObjectField { path: [x] }` → `OnVar`
+    /// - `OnObjectField { path: [x, y, ...] }` → `OnObjectField` with last element dropped
+    /// - `OnObjectLoadingNode` / `OnCyclicNode` → same rule as `OnObjectField`
+    /// - `OnCollectionEntry { field_path: [] }` → `OnVar`
+    /// - `OnCollectionEntry { field_path: [x, ...] }` → `OnObjectField { field_path }`
+    /// - `OnChunkSection` → same rule as `OnCollectionEntry`
+    /// - `OnCollectionEntryObjField { obj_field_path: [x] }` → `OnCollectionEntry`
+    /// - `OnCollectionEntryObjField { obj_field_path: [x, y, ...] }` → truncate
+    ///   `obj_field_path`
+    pub fn parent_cursor(&self) -> Option<StackCursor> {
+        match &self.nav.cursor().clone() {
+            StackCursor::NoFrames | StackCursor::OnFrame(_) => None,
+            StackCursor::OnVar { frame_idx, .. } => {
+                Some(StackCursor::OnFrame(*frame_idx))
+            }
+            StackCursor::OnObjectField { frame_idx, var_idx, field_path }
+            | StackCursor::OnObjectLoadingNode { frame_idx, var_idx, field_path }
+            | StackCursor::OnCyclicNode { frame_idx, var_idx, field_path } => {
+                // len() == 0: edge case (story 9.2). Both 0 and 1 map to OnVar.
+                if field_path.len() <= 1 {
+                    Some(StackCursor::OnVar {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                    })
+                } else {
+                    let parent_path = field_path[..field_path.len() - 1].to_vec();
+                    Some(StackCursor::OnObjectField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: parent_path,
+                    })
+                }
+            }
+            StackCursor::OnChunkSection {
+                frame_idx,
+                var_idx,
+                field_path,
+                ..
+            }
+            | StackCursor::OnCollectionEntry {
+                frame_idx,
+                var_idx,
+                field_path,
+                ..
+            } => {
+                if field_path.is_empty() {
+                    Some(StackCursor::OnVar {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                    })
+                } else {
+                    Some(StackCursor::OnObjectField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                    })
+                }
+            }
+            StackCursor::OnCollectionEntryObjField {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+            } => {
+                if obj_field_path.len() <= 1 {
+                    Some(StackCursor::OnCollectionEntry {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                        collection_id: *collection_id,
+                        entry_index: *entry_index,
+                    })
+                } else {
+                    let parent_obj_path = obj_field_path[..obj_field_path.len() - 1].to_vec();
+                    Some(StackCursor::OnCollectionEntryObjField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                        collection_id: *collection_id,
+                        entry_index: *entry_index,
+                        obj_field_path: parent_obj_path,
+                    })
+                }
+            }
+        }
+    }
+
     /// If cursor is inside a collection (entry or chunk
     /// section), returns the collection object ID and the
     /// `field_path` of the parent ObjectRef field so the
