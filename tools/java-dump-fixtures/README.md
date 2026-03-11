@@ -22,6 +22,11 @@ Multi-scenario Java generator to produce `.hprof` dumps with:
 - `tools/java-dump-fixtures/scenarios/Scenario03LeakPatterns.java`
 - `tools/java-dump-fixtures/scenarios/Scenario04ReferenceTypes.java`
 - `tools/java-dump-fixtures/scenarios/Scenario05HugeObjects.java`
+- `tools/java-dump-fixtures/scenarios/Scenario06Deadlock.java`
+- `tools/java-dump-fixtures/scenarios/Scenario07ThreadLocalPoolLeak.java`
+- `tools/java-dump-fixtures/scenarios/Scenario08ClassLoaderRetention.java`
+- `tools/java-dump-fixtures/scenarios/Scenario09ConcurrentMapHotBuckets.java`
+- `tools/java-dump-fixtures/scenarios/Scenario10StringExtremes.java`
 - `tools/java-dump-fixtures/support/*.java`
 - `tools/java-dump-fixtures/generate-dumps.sh`
 - `tools/java-dump-fixtures/generate-dumps.ps1`
@@ -156,6 +161,22 @@ Use those commands while the process is waiting.
 - `xlarge` includes one 500k-item wrapper collection
 - `ultra` includes one 1,000,000-item wrapper collection
 
+Detailed profile sizing (from `ProfileSpec`):
+
+| Profile | wrapper/custom collections | object/custom arrays | matrix | graph nodes | huge collection | frame-root objects | heavy blocks (`MiB x count`) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `tiny` | 10,240 | 512 / 1,024 | 48x48 | 128 | 0 | 256 | 4 x 4 |
+| `medium` | 14,336 | 1,024 / 2,048 | 64x64 | 256 | 0 | 512 | 8 x 6 |
+| `large` | 20,480 | 2,048 / 4,096 | 96x96 | 512 | 0 | 1,024 | 12 x 8 |
+| `xlarge` | 30,720 | 4,096 / 8,192 | 128x128 | 768 | 500,000 | 2,048 | 16 x 10 |
+| `ultra` | 65,536 | 16,384 / 32,768 | 256x256 | 2,048 | 1,000,000 | 8,192 | 20 x 12 |
+
+`profile-set` values in wrapper scripts:
+
+- `standard`: `tiny`, `medium`, `large`, `xlarge`
+- `all`: `tiny`, `medium`, `large`, `xlarge`, `ultra`
+- `ultra`: `ultra` only
+
 ## Scenarios
 
 - `01`: stack frames + Java types/local variables (priority visual validation)
@@ -163,6 +184,11 @@ Use those commands while the process is waiting.
 - `03`: leak patterns (static cache, thread-local, classloader-like)
 - `04`: reference types (weak/soft/phantom + queue)
 - `05`: huge objects and large arrays
+- `06`: intentional deadlock (2 threads, 2 monitors)
+- `07`: thread-local retention on fixed thread pool
+- `08`: classloader retention through static cache
+- `09`: concurrent hash map with hot collision buckets
+- `10`: string extremes (very long, utf variants, similar prefixes)
 
 ## Notes
 
@@ -173,3 +199,4 @@ Use those commands while the process is waiting.
 - If `--truncate-bytes > 0`, a `*-truncated.hprof` copy is created from each produced dump
 - If `sanitize=on`, each produced dump gets a `*-sanitized.hprof` companion file
 - If `sanitize=only`, the script skips generation and sanitizes matching existing dumps only
+- Truncated dumps are skipped by sanitization (expected, because they are intentionally corrupted)

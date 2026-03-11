@@ -13,7 +13,7 @@ param(
     [Alias("t")]
     [long]$TruncateBytes = 0,
 
-    [ValidateSet("01", "02", "03", "04", "05", "all")]
+    [ValidateSet("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "all")]
     [Alias("s")]
     [string]$Scenario = "01",
 
@@ -35,7 +35,7 @@ function Show-Usage {
     Write-Host "  HoldSeconds   default: 120"
     Write-Host "  ProfileSet    standard | all | ultra   (default: standard)"
     Write-Host "  TruncateBytes default: 0"
-    Write-Host "  Scenario      01 | 02 | 03 | 04 | 05 | all   (default: 01)"
+    Write-Host "  Scenario      01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | 10 | all   (default: 01)"
     Write-Host "  Sanitize      off | on | only   (default: off)"
     Write-Host ""
     Write-Host "Examples:"
@@ -83,6 +83,10 @@ function Invoke-SanitizeForPrefix {
         if ($dump.Name -like "*-sanitized.hprof" -or $dump.Name -like "*-sanitized-*.hprof") {
             continue
         }
+        if ($dump.Name -like "*-truncated.hprof" -or $dump.Name -like "*-truncated-*.hprof") {
+            Write-Host "[heap-fixture] sanitize skip truncated=$($dump.FullName)"
+            continue
+        }
 
         $out = [System.IO.Path]::Combine($dump.DirectoryName, ([System.IO.Path]::GetFileNameWithoutExtension($dump.Name) + "-sanitized.hprof"))
         Write-Host "[heap-fixture] sanitize input=$($dump.FullName) output=$out"
@@ -98,7 +102,7 @@ switch ($ProfileSet) {
 }
 
 switch ($Scenario) {
-    "all" { $scenarios = @("01", "02", "03", "04", "05") }
+    "all" { $scenarios = @("01", "02", "03", "04", "05", "06", "07", "08", "09", "10") }
     default { $scenarios = @($Scenario) }
 }
 

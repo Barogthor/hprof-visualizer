@@ -12,7 +12,7 @@ Arguments:
   hold_seconds   default: 120
   profile_set    standard | all | ultra   (default: standard)
   truncate_bytes default: 0
-  scenario       01 | 02 | 03 | 04 | 05 | all   (default: 01)
+  scenario       01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | 10 | all   (default: 01)
   sanitize       off | on | only   (default: off)
 
 Options:
@@ -149,7 +149,7 @@ if [[ "${SANITIZE}" != "off" && ! -x "${REDACT_SCRIPT}" ]]; then
 fi
 
 if [[ "${SCENARIO}" == "all" ]]; then
-  scenarios=(01 02 03 04 05)
+  scenarios=(01 02 03 04 05 06 07 08 09 10)
 elif [[ "${SCENARIO}" == "1" || "${SCENARIO}" == "01" ]]; then
   scenarios=(01)
 elif [[ "${SCENARIO}" == "2" || "${SCENARIO}" == "02" ]]; then
@@ -160,8 +160,18 @@ elif [[ "${SCENARIO}" == "4" || "${SCENARIO}" == "04" ]]; then
   scenarios=(04)
 elif [[ "${SCENARIO}" == "5" || "${SCENARIO}" == "05" ]]; then
   scenarios=(05)
+elif [[ "${SCENARIO}" == "6" || "${SCENARIO}" == "06" ]]; then
+  scenarios=(06)
+elif [[ "${SCENARIO}" == "7" || "${SCENARIO}" == "07" ]]; then
+  scenarios=(07)
+elif [[ "${SCENARIO}" == "8" || "${SCENARIO}" == "08" ]]; then
+  scenarios=(08)
+elif [[ "${SCENARIO}" == "9" || "${SCENARIO}" == "09" ]]; then
+  scenarios=(09)
+elif [[ "${SCENARIO}" == "10" ]]; then
+  scenarios=(10)
 else
-  echo "[heap-fixture] invalid scenario '${SCENARIO}' (expected: 01|02|03|04|05|all)" >&2
+  echo "[heap-fixture] invalid scenario '${SCENARIO}' (expected: 01|02|03|04|05|06|07|08|09|10|all)" >&2
   exit 1
 fi
 
@@ -199,6 +209,10 @@ sanitize_prefix() {
 
   for dump in "${dumps[@]}"; do
     if [[ "${dump}" == *"-sanitized.hprof" || "${dump}" == *"-sanitized-"*".hprof" ]]; then
+      continue
+    fi
+    if [[ "${dump}" == *"-truncated.hprof" || "${dump}" == *"-truncated-"*".hprof" ]]; then
+      echo "[heap-fixture] sanitize skip truncated=${dump}"
       continue
     fi
     local out="${dump%.hprof}-sanitized.hprof"

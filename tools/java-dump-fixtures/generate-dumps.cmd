@@ -116,7 +116,7 @@ if /I not "%SANITIZE%"=="off" if not exist "%REDACT_CMD%" (
 )
 
 set "SCENARIOS="
-if /I "%SCENARIO%"=="all" set "SCENARIOS=01 02 03 04 05"
+if /I "%SCENARIO%"=="all" set "SCENARIOS=01 02 03 04 05 06 07 08 09 10"
 if /I "%SCENARIO%"=="01" set "SCENARIOS=01"
 if /I "%SCENARIO%"=="1" set "SCENARIOS=01"
 if /I "%SCENARIO%"=="02" set "SCENARIOS=02"
@@ -127,9 +127,18 @@ if /I "%SCENARIO%"=="04" set "SCENARIOS=04"
 if /I "%SCENARIO%"=="4" set "SCENARIOS=04"
 if /I "%SCENARIO%"=="05" set "SCENARIOS=05"
 if /I "%SCENARIO%"=="5" set "SCENARIOS=05"
+if /I "%SCENARIO%"=="06" set "SCENARIOS=06"
+if /I "%SCENARIO%"=="6" set "SCENARIOS=06"
+if /I "%SCENARIO%"=="07" set "SCENARIOS=07"
+if /I "%SCENARIO%"=="7" set "SCENARIOS=07"
+if /I "%SCENARIO%"=="08" set "SCENARIOS=08"
+if /I "%SCENARIO%"=="8" set "SCENARIOS=08"
+if /I "%SCENARIO%"=="09" set "SCENARIOS=09"
+if /I "%SCENARIO%"=="9" set "SCENARIOS=09"
+if /I "%SCENARIO%"=="10" set "SCENARIOS=10"
 
 if "%SCENARIOS%"=="" (
-  echo [heap-fixture] invalid scenario "%SCENARIO%" ^(expected: 01^|02^|03^|04^|05^|all^)
+  echo [heap-fixture] invalid scenario "%SCENARIO%" ^(expected: 01^|02^|03^|04^|05^|06^|07^|08^|09^|10^|all^)
   goto :help_error
 )
 
@@ -188,7 +197,7 @@ echo   mode           auto ^| manual ^| both
 echo   hold_seconds   default: 120
 echo   profile_set    standard ^| all ^| ultra   ^(default: standard^)
 echo   truncate_bytes default: 0
-echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| all   ^(default: 01^)
+echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
 echo.
 echo Options:
@@ -219,7 +228,7 @@ echo   mode           auto ^| manual ^| both
 echo   hold_seconds   default: 120
 echo   profile_set    standard ^| all ^| ultra   ^(default: standard^)
 echo   truncate_bytes default: 0
-echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| all   ^(default: 01^)
+echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
 exit /b 1
 
@@ -228,12 +237,20 @@ set "PREFIX=%~1"
 for %%F in ("%PREFIX%*.hprof") do (
   set "DUMP=%%~fF"
   set "NAME=%%~nF"
-  echo !NAME! | findstr /I /R "-sanitized$ -sanitized-[0-9][0-9]*$" >nul
-  if errorlevel 1 (
-    set "SAN_OUT=%%~dpnF-sanitized.hprof"
-    echo [heap-fixture] sanitize input=!DUMP! output=!SAN_OUT!
-    call "%REDACT_CMD%" "!DUMP!" "!SAN_OUT!"
-    if errorlevel 1 exit /b 1
+  set "SKIP=0"
+  echo !NAME! | findstr /I /R "-truncated$ -truncated-[0-9][0-9]*$" >nul
+  if not errorlevel 1 (
+    set "SKIP=1"
+    echo [heap-fixture] sanitize skip truncated=!DUMP!
+  )
+  if "!SKIP!"=="0" (
+    echo !NAME! | findstr /I /R "-sanitized$ -sanitized-[0-9][0-9]*$" >nul
+    if errorlevel 1 (
+      set "SAN_OUT=%%~dpnF-sanitized.hprof"
+      echo [heap-fixture] sanitize input=!DUMP! output=!SAN_OUT!
+      call "%REDACT_CMD%" "!DUMP!" "!SAN_OUT!"
+      if errorlevel 1 exit /b 1
+    )
   )
 )
 exit /b 0
