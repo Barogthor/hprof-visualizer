@@ -53,6 +53,7 @@ cargo fmt -- --check  # Check formatting without modifying
 - Be brutally honest about whether an idea is good or bad.
 - Make side effects explicit and minimal.
 - Never go past 100 characters in a single line.
+- Avoid functions going over 120 lines.
 
 ## Naming Conventions
 - Structs & Traits: PascalCase (e.g., VoicePipeline)
