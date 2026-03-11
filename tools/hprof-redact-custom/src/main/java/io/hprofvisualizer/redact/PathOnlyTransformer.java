@@ -33,6 +33,9 @@ public final class PathOnlyTransformer implements HprofTransformer {
     private static final Pattern JVM_D_PATH_VALUE = Pattern.compile(
             "-D[\\w.]{1,80}=([A-Za-z]:[\\\\/][^\\s\"']+|/(?:home|Users|opt|usr|usr/local|var|tmp|etc|srv|mnt|media|root|private|Library)/[^\\s\"']+)"
     );
+    private static final Pattern JVM_D_USER_OS_VALUE = Pattern.compile(
+            "-D(?:user|os)\\.[\\w.-]{1,80}=([^\\s\"']+)"
+    );
 
     private static final Set<String> SENSITIVE_PREFIXES = Set.of(
             "PATH=",
@@ -110,6 +113,7 @@ public final class PathOnlyTransformer implements HprofTransformer {
         redacted = redactMatchGroup(redacted, JVM_AGENT_PATH, 1);
         redacted = redactMatchGroup(redacted, JVM_BOOTCLASSPATH, 1);
         redacted = redactMatchGroup(redacted, JVM_D_PATH_VALUE, 1);
+        redacted = redactMatchGroup(redacted, JVM_D_USER_OS_VALUE, 1);
 
         redacted = redactWholeMatches(redacted, WINDOWS_PATH);
         redacted = redactWholeMatches(redacted, WINDOWS_UNC_PATH);
@@ -177,6 +181,15 @@ public final class PathOnlyTransformer implements HprofTransformer {
                 return true;
             }
         }
+
+        int equals = value.indexOf('=');
+        if (equals > 0) {
+            String key = value.substring(0, equals).toLowerCase(Locale.ROOT);
+            if (key.startsWith("user.") || key.startsWith("os.")) {
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -217,7 +230,7 @@ public final class PathOnlyTransformer implements HprofTransformer {
     private static String maskKeepingShape(String value) {
         char[] chars = value.toCharArray();
         for (int i = 0; i < chars.length; i++) {
-            if (Character.isLetterOrDigit(chars[i])) {
+            if (!Character.isWhitespace(chars[i])) {
                 chars[i] = '*';
             }
         }

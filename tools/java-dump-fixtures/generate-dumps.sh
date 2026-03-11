@@ -4,7 +4,7 @@ set -euo pipefail
 print_help() {
   cat <<'EOF'
 Usage:
-  tools/java-dump-fixtures/generate-dumps.sh <mode> [hold_seconds] [profile_set] [truncate_bytes] [scenario] [sanitize]
+  tools/java-dump-fixtures/generate-dumps.sh <mode> [hold_seconds] [profile_set] [truncate_bytes] [scenario] [sanitize] [truncate_target]
   tools/java-dump-fixtures/generate-dumps.sh [options]
 
 Arguments:
@@ -14,6 +14,7 @@ Arguments:
   truncate_bytes default: 0
   scenario       01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | 10 | all   (default: 01)
   sanitize       off | on | only   (default: off)
+  truncate_target raw | sanitized | both   (default: raw)
 
 Options:
   -m, --mode <value>
@@ -22,6 +23,7 @@ Options:
   -t, --truncate-bytes <value>
   -s, --scenario <value>
   -S, --sanitize <value>
+  -T, --truncate-target <value>
   -h, --help
 
 Examples:
@@ -29,7 +31,7 @@ Examples:
   tools/java-dump-fixtures/generate-dumps.sh both 180 all 4194304
   tools/java-dump-fixtures/generate-dumps.sh auto 120 ultra 2097152 01
   tools/java-dump-fixtures/generate-dumps.sh auto 120 standard 0 all
-  tools/java-dump-fixtures/generate-dumps.sh --mode auto --profile-set ultra --scenario 01 --sanitize on
+  tools/java-dump-fixtures/generate-dumps.sh --mode auto --profile-set ultra --scenario 01 --sanitize on --truncate-target both
 EOF
 }
 
@@ -53,6 +55,7 @@ PROFILE_SET="standard"
 TRUNCATE_BYTES="0"
 SCENARIO="01"
 SANITIZE="off"
+TRUNCATE_TARGET="raw"
 
 POSITIONAL_INDEX=1
 while [[ $# -gt 0 ]]; do
@@ -81,6 +84,10 @@ while [[ $# -gt 0 ]]; do
       SANITIZE="${2:-}"
       shift 2
       ;;
+    -T|--truncate-target)
+      TRUNCATE_TARGET="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       print_help
       exit 0
@@ -95,6 +102,7 @@ while [[ $# -gt 0 ]]; do
           4) TRUNCATE_BYTES="$1" ;;
           5) SCENARIO="$1" ;;
           6) SANITIZE="$1" ;;
+          7) TRUNCATE_TARGET="$1" ;;
           *)
             echo "[heap-fixture] too many positional arguments" >&2
             print_help
@@ -118,6 +126,7 @@ while [[ $# -gt 0 ]]; do
         4) TRUNCATE_BYTES="$1" ;;
         5) SCENARIO="$1" ;;
         6) SANITIZE="$1" ;;
+        7) TRUNCATE_TARGET="$1" ;;
         *)
           echo "[heap-fixture] too many positional arguments" >&2
           print_help
@@ -140,6 +149,21 @@ fi
 
 if [[ "${SANITIZE}" != "off" && "${SANITIZE}" != "on" && "${SANITIZE}" != "only" ]]; then
   echo "[heap-fixture] invalid sanitize '${SANITIZE}' (expected: off|on|only)" >&2
+  exit 1
+fi
+
+if [[ "${TRUNCATE_TARGET}" != "raw" && "${TRUNCATE_TARGET}" != "sanitized" && "${TRUNCATE_TARGET}" != "both" ]]; then
+  echo "[heap-fixture] invalid truncate_target '${TRUNCATE_TARGET}' (expected: raw|sanitized|both)" >&2
+  exit 1
+fi
+
+if [[ "${TRUNCATE_TARGET}" != "raw" && "${TRUNCATE_BYTES}" == "0" ]]; then
+  echo "[heap-fixture] truncate_target '${TRUNCATE_TARGET}' requires truncate_bytes > 0" >&2
+  exit 1
+fi
+
+if [[ "${SANITIZE}" == "off" && "${TRUNCATE_TARGET}" != "raw" ]]; then
+  echo "[heap-fixture] truncate_target '${TRUNCATE_TARGET}' requires sanitize on or only" >&2
   exit 1
 fi
 
@@ -221,22 +245,82 @@ sanitize_prefix() {
   done
 }
 
+truncate_file() {
+  local input="$1"
+  local bytes_to_remove="$2"
+  local output="${input%.hprof}-truncated.hprof"
+
+  if [[ ! -f "${input}" ]]; then
+    return
+  fi
+
+  python3 - <<'PY' "$input" "$output" "$bytes_to_remove"
+import os
+import sys
+
+input_path = sys.argv[1]
+output_path = sys.argv[2]
+remove = int(sys.argv[3])
+
+size = os.path.getsize(input_path)
+keep = size - remove
+if keep < 1:
+    keep = 1
+
+if os.path.exists(output_path):
+    os.remove(output_path)
+
+with open(input_path, 'rb') as src, open(output_path, 'wb') as dst:
+    remaining = keep
+    while remaining > 0:
+        chunk = src.read(min(8192, remaining))
+        if not chunk:
+            break
+        dst.write(chunk)
+        remaining -= len(chunk)
+
+print(f"truncatedDumpPath={output_path} original={size} truncated={os.path.getsize(output_path)}")
+PY
+}
+
+truncate_sanitized_prefix() {
+  local prefix="$1"
+  local bytes_to_remove="$2"
+  shopt -s nullglob
+  local dumps=("${prefix}"*-sanitized.hprof)
+  shopt -u nullglob
+
+  for dump in "${dumps[@]}"; do
+    echo "[heap-fixture] truncate sanitized input=${dump}"
+    truncate_file "${dump}" "${bytes_to_remove}"
+  done
+}
+
 for profile in "${profiles[@]}"; do
   for scenario in "${scenarios[@]}"; do
     output="${ASSETS_DIR}/fixture-s${scenario}-${profile}.hprof"
     if [[ "${SANITIZE}" != "only" ]]; then
+      truncate_for_java="${TRUNCATE_BYTES}"
+      if [[ "${TRUNCATE_TARGET}" == "sanitized" ]]; then
+        truncate_for_java="0"
+      fi
+
       echo "[heap-fixture] scenario=${scenario} profile=${profile} mode=${MODE} output=${output} truncateBytes=${TRUNCATE_BYTES}"
       java -cp "${CLASS_DIR}" HeapDumpFixture \
         --scenario "${scenario}" \
         --profile "${profile}" \
         --dump-mode "${MODE}" \
         --hold-seconds "${HOLD_SECONDS}" \
-        --truncate-bytes "${TRUNCATE_BYTES}" \
+        --truncate-bytes "${truncate_for_java}" \
         --output "${output}"
     fi
 
     if [[ "${SANITIZE}" == "on" || "${SANITIZE}" == "only" ]]; then
       sanitize_prefix "${output%.hprof}"
+
+      if [[ "${TRUNCATE_BYTES}" != "0" && ( "${TRUNCATE_TARGET}" == "sanitized" || "${TRUNCATE_TARGET}" == "both" ) ]]; then
+        truncate_sanitized_prefix "${output%.hprof}" "${TRUNCATE_BYTES}"
+      fi
     fi
   done
 done

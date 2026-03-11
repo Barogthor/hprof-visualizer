@@ -7,8 +7,14 @@ Custom runner built on top of `hprof-redact` to redact sensitive path-like value
 - Windows paths (`C:\...`)
 - UNC paths (`\\server\share\...`)
 - Unix paths (`/home/...`, `/Users/...`, `/usr/...`, etc.)
+- System property values for `user.*` and `os.*` keys
 - JVM path args (`-javaagent:...`, `-Xbootclasspath:...`, `-Dfoo=/path/...`)
 - Common env var values (`PATH=...`, `JAVA_HOME=...`, `USERPROFILE=...`, etc.)
+
+Masking behavior:
+
+- Non-whitespace characters in matched sensitive values are replaced with `*`
+- This includes path separators (`/` and `\`) and punctuation
 
 ## What it preserves
 

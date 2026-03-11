@@ -21,6 +21,10 @@ param(
     [Alias("S")]
     [string]$Sanitize = "off",
 
+    [ValidateSet("raw", "sanitized", "both")]
+    [Alias("T")]
+    [string]$TruncateTarget = "raw",
+
     [switch]$Help
 )
 
@@ -28,7 +32,7 @@ $ErrorActionPreference = "Stop"
 
 function Show-Usage {
     Write-Host "Usage:"
-    Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode <mode> [-HoldSeconds <n>] [-ProfileSet <set>] [-TruncateBytes <n>] [-Scenario <id>] [-Sanitize <off|on|only>]"
+    Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode <mode> [-HoldSeconds <n>] [-ProfileSet <set>] [-TruncateBytes <n>] [-Scenario <id>] [-Sanitize <off|on|only>] [-TruncateTarget <raw|sanitized|both>]"
     Write-Host ""
     Write-Host "Arguments:"
     Write-Host "  Mode          auto | manual | both"
@@ -37,12 +41,13 @@ function Show-Usage {
     Write-Host "  TruncateBytes default: 0"
     Write-Host "  Scenario      01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | 10 | all   (default: 01)"
     Write-Host "  Sanitize      off | on | only   (default: off)"
+    Write-Host "  TruncateTarget raw | sanitized | both   (default: raw)"
     Write-Host ""
     Write-Host "Examples:"
     Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto"
     Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode both -HoldSeconds 180 -ProfileSet all -TruncateBytes 4194304"
     Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto -ProfileSet standard -Scenario all"
-    Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -m auto -p ultra -s 01 -S on"
+    Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -m auto -p ultra -s 01 -S on -T both"
 }
 
 if ($Help.IsPresent) {
@@ -61,6 +66,14 @@ if ($HoldSeconds -lt 1) {
 
 if ($TruncateBytes -lt 0) {
     throw "TruncateBytes must be >= 0"
+}
+
+if ($TruncateTarget -ne "raw" -and $TruncateBytes -eq 0) {
+    throw "TruncateTarget '$TruncateTarget' requires TruncateBytes > 0"
+}
+
+if ($Sanitize -eq "off" -and ($TruncateTarget -eq "sanitized" -or $TruncateTarget -eq "both")) {
+    throw "TruncateTarget '$TruncateTarget' requires Sanitize on or only"
 }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -94,6 +107,59 @@ function Invoke-SanitizeForPrefix {
     }
 }
 
+function Invoke-TruncateFile {
+    param([string]$InputPath, [long]$BytesToRemove)
+
+    if (-not (Test-Path $InputPath)) {
+        return
+    }
+
+    $output = [System.IO.Path]::Combine(
+        [System.IO.Path]::GetDirectoryName($InputPath),
+        ([System.IO.Path]::GetFileNameWithoutExtension($InputPath) + "-truncated.hprof")
+    )
+
+    $inputInfo = Get-Item $InputPath
+    $keep = $inputInfo.Length - $BytesToRemove
+    if ($keep -lt 1) {
+        $keep = 1
+    }
+
+    if (Test-Path $output) {
+        Remove-Item -Force $output
+    }
+
+    $buffer = New-Object byte[] 8192
+    $remaining = $keep
+    $src = [System.IO.File]::OpenRead($InputPath)
+    $dst = [System.IO.File]::Open($output, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+    try {
+        while ($remaining -gt 0) {
+            $toRead = [Math]::Min($buffer.Length, [int][Math]::Min($remaining, [long]2147483647))
+            $read = $src.Read($buffer, 0, $toRead)
+            if ($read -le 0) { break }
+            $dst.Write($buffer, 0, $read)
+            $remaining -= $read
+        }
+    } finally {
+        $dst.Dispose()
+        $src.Dispose()
+    }
+
+    $outInfo = Get-Item $output
+    Write-Host "truncatedDumpPath=$output original=$($inputInfo.Length) truncated=$($outInfo.Length)"
+}
+
+function Invoke-TruncateSanitizedForPrefix {
+    param([string]$Prefix, [long]$BytesToRemove)
+
+    $dumps = Get-ChildItem -Path ($Prefix + "*-sanitized.hprof") -File -ErrorAction SilentlyContinue
+    foreach ($dump in $dumps) {
+        Write-Host "[heap-fixture] truncate sanitized input=$($dump.FullName)"
+        Invoke-TruncateFile -InputPath $dump.FullName -BytesToRemove $BytesToRemove
+    }
+}
+
 switch ($ProfileSet) {
     "standard" { $profiles = @("tiny", "medium", "large", "xlarge") }
     "all" { $profiles = @("tiny", "medium", "large", "xlarge", "ultra") }
@@ -122,18 +188,27 @@ foreach ($profile in $profiles) {
         if ($Sanitize -ne "only") {
             Write-Host "[heap-fixture] scenario=$scenarioId profile=$profile mode=$Mode output=$output truncateBytes=$TruncateBytes"
 
+            $truncateForJava = $TruncateBytes
+            if ($TruncateTarget -eq "sanitized") {
+                $truncateForJava = 0
+            }
+
             java -cp $ClassDir HeapDumpFixture `
                 --scenario $scenarioId `
                 --profile $profile `
                 --dump-mode $Mode `
                 --hold-seconds $HoldSeconds `
-                --truncate-bytes $TruncateBytes `
+                --truncate-bytes $truncateForJava `
                 --output $output
         }
 
         if ($Sanitize -eq "on" -or $Sanitize -eq "only") {
             $prefix = [System.IO.Path]::Combine($AssetsDir, ("fixture-s{0}-{1}" -f $scenarioId, $profile))
             Invoke-SanitizeForPrefix -Prefix $prefix -RedactScriptPath $RedactScript
+
+            if ($TruncateBytes -gt 0 -and ($TruncateTarget -eq "sanitized" -or $TruncateTarget -eq "both")) {
+                Invoke-TruncateSanitizedForPrefix -Prefix $prefix -BytesToRemove $TruncateBytes
+            }
         }
     }
 }

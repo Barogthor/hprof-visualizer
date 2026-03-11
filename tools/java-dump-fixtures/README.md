@@ -7,7 +7,7 @@ Multi-scenario Java generator to produce `.hprof` dumps with:
 - enums
 - custom types (with and without static fields)
 - object arrays (`Object[]`, `Custom[]`)
-- wrapper collections and custom collections
+- boxed primitive collections (`Integer`, `Long`, etc.) and custom object collections
 - collections larger than 10k
 - one 500k-item collection (profile `xlarge`)
 - direct and indirect object cycles (1, 2, and 3 levels)
@@ -54,6 +54,12 @@ With automatic sanitization of generated dumps:
 tools/java-dump-fixtures/generate-dumps.sh --mode auto --scenario 01 --sanitize on
 ```
 
+Generate, sanitize, and also truncate sanitized dumps:
+
+```bash
+tools/java-dump-fixtures/generate-dumps.sh --mode auto --scenario 01 --truncate-bytes 1000 --sanitize on --truncate-target both
+```
+
 Sanitize only existing dumps (no generation):
 
 ```bash
@@ -86,6 +92,12 @@ PowerShell with sanitization:
 ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto -ProfileSet standard -Scenario 01 -Sanitize on
 ```
 
+PowerShell with sanitized truncation:
+
+```powershell
+./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto -Scenario 01 -TruncateBytes 1000 -Sanitize on -TruncateTarget both
+```
+
 PowerShell sanitize-only mode:
 
 ```powershell
@@ -108,6 +120,12 @@ CMD with sanitization:
 
 ```cmd
 tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set standard --scenario 01 --sanitize on
+```
+
+CMD with sanitized truncation:
+
+```cmd
+tools\java-dump-fixtures\generate-dumps.cmd --mode auto --scenario 01 --truncate-bytes 1000 --sanitize on --truncate-target both
 ```
 
 CMD sanitize-only mode:
@@ -163,7 +181,7 @@ Use those commands while the process is waiting.
 
 Detailed profile sizing (from `ProfileSpec`):
 
-| Profile | wrapper/custom collections | object/custom arrays | matrix | graph nodes | huge collection | frame-root objects | heavy blocks (`MiB x count`) |
+| Profile | boxed/custom collections (each) | object/custom arrays | matrix | graph nodes | huge collection | frame-root objects | heavy blocks (`MiB x count`) |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | `tiny` | 10,240 | 512 / 1,024 | 48x48 | 128 | 0 | 256 | 4 x 4 |
 | `medium` | 14,336 | 1,024 / 2,048 | 64x64 | 256 | 0 | 512 | 8 x 6 |
@@ -176,6 +194,22 @@ Detailed profile sizing (from `ProfileSpec`):
 - `standard`: `tiny`, `medium`, `large`, `xlarge`
 - `all`: `tiny`, `medium`, `large`, `xlarge`, `ultra`
 - `ultra`: `ultra` only
+
+Indicative runtime envelope (order of magnitude):
+
+| Profile | Suggested JVM heap (`-Xmx`) | Typical generated dump size (single scenario) | Typical auto dump time |
+|---|---:|---:|---:|
+| `tiny` | 512m | ~10-30 MB | < 1 s |
+| `medium` | 768m | ~15-45 MB | < 1 s |
+| `large` | 1g | ~20-80 MB | ~1 s |
+| `xlarge` | 2g | ~50-250 MB | 1-5 s |
+| `ultra` | 4g+ | ~150 MB to 1+ GB | 5-30 s |
+
+Notes on these estimates:
+
+- They are highly dependent on JDK version, GC, machine speed, and selected scenario.
+- `05` (huge objects), `07` (thread-local pool), `08` (classloader retention), and `10` (string extremes) are generally heavier than `01`.
+- `sanitize=on` adds a full extra pass over each non-truncated dump, so wall time increases roughly with dump size.
 
 ## Scenarios
 
@@ -197,6 +231,10 @@ Detailed profile sizing (from `ProfileSpec`):
 - Manual suggestions use `*-jcmd.hprof` and `*-jcmd-jmap.hprof`
 - Existing target dump file is deleted before auto dump
 - If `--truncate-bytes > 0`, a `*-truncated.hprof` copy is created from each produced dump
+- `truncate-target` controls where truncation is applied:
+  - `raw` (default): truncate raw dumps only
+  - `sanitized`: truncate sanitized dumps only
+  - `both`: truncate raw and sanitized dumps
 - If `sanitize=on`, each produced dump gets a `*-sanitized.hprof` companion file
 - If `sanitize=only`, the script skips generation and sanitizes matching existing dumps only
 - Truncated dumps are skipped by sanitization (expected, because they are intentionally corrupted)

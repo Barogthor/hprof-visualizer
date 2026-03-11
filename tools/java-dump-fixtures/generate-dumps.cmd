@@ -13,6 +13,7 @@ set "PROFILE_SET=standard"
 set "TRUNCATE_BYTES=0"
 set "SCENARIO=01"
 set "SANITIZE=off"
+set "TRUNCATE_TARGET=raw"
 
 set "FIRST_ARG=%~1"
 if "%FIRST_ARG:~0,1%"=="-" goto :parse_options
@@ -28,6 +29,8 @@ if "%~5"=="" goto :parsed_args
 set "SCENARIO=%~5"
 if "%~6"=="" goto :parsed_args
 set "SANITIZE=%~6"
+if "%~7"=="" goto :parsed_args
+set "TRUNCATE_TARGET=%~7"
 goto :parsed_args
 
 :parse_options
@@ -44,6 +47,8 @@ if /I "%~1"=="-s" goto :set_scenario
 if /I "%~1"=="--scenario" goto :set_scenario
 if /I "%~1"=="-S" goto :set_sanitize
 if /I "%~1"=="--sanitize" goto :set_sanitize
+if /I "%~1"=="-T" goto :set_truncate_target
+if /I "%~1"=="--truncate-target" goto :set_truncate_target
 
 echo [heap-fixture] unknown option "%~1"
 goto :help_error
@@ -90,6 +95,13 @@ shift
 shift
 goto :parse_options
 
+:set_truncate_target
+if "%~2"=="" goto :help_error
+set "TRUNCATE_TARGET=%~2"
+shift
+shift
+goto :parse_options
+
 :parsed_args
 
 if /I not "%MODE%"=="auto" if /I not "%MODE%"=="manual" if /I not "%MODE%"=="both" (
@@ -99,6 +111,21 @@ if /I not "%MODE%"=="auto" if /I not "%MODE%"=="manual" if /I not "%MODE%"=="bot
 
 if /I not "%SANITIZE%"=="on" if /I not "%SANITIZE%"=="off" if /I not "%SANITIZE%"=="only" (
   echo [heap-fixture] invalid sanitize "%SANITIZE%" ^(expected: off^|on^|only^)
+  goto :help_error
+)
+
+if /I not "%TRUNCATE_TARGET%"=="raw" if /I not "%TRUNCATE_TARGET%"=="sanitized" if /I not "%TRUNCATE_TARGET%"=="both" (
+  echo [heap-fixture] invalid truncate_target "%TRUNCATE_TARGET%" ^(expected: raw^|sanitized^|both^)
+  goto :help_error
+)
+
+if "%TRUNCATE_BYTES%"=="0" if /I not "%TRUNCATE_TARGET%"=="raw" (
+  echo [heap-fixture] truncate_target "%TRUNCATE_TARGET%" requires truncate_bytes ^> 0
+  goto :help_error
+)
+
+if /I "%SANITIZE%"=="off" if /I not "%TRUNCATE_TARGET%"=="raw" (
+  echo [heap-fixture] truncate_target "%TRUNCATE_TARGET%" requires sanitize on or only
   goto :help_error
 )
 
@@ -167,18 +194,28 @@ for %%P in (%PROFILES%) do (
   for %%S in (%SCENARIOS%) do (
     set "OUTPUT=%ASSETS_DIR%\fixture-s%%S-%%P.hprof"
     if /I not "%SANITIZE%"=="only" (
+      set "TRUNCATE_FOR_JAVA=%TRUNCATE_BYTES%"
+      if /I "%TRUNCATE_TARGET%"=="sanitized" set "TRUNCATE_FOR_JAVA=0"
       echo [heap-fixture] scenario=%%S profile=%%P mode=%MODE% output=!OUTPUT! truncateBytes=%TRUNCATE_BYTES%
-      java -cp "%CLASS_DIR%" HeapDumpFixture --scenario %%S --profile %%P --dump-mode %MODE% --hold-seconds %HOLD_SECONDS% --truncate-bytes %TRUNCATE_BYTES% --output "!OUTPUT!"
+      java -cp "%CLASS_DIR%" HeapDumpFixture --scenario %%S --profile %%P --dump-mode %MODE% --hold-seconds %HOLD_SECONDS% --truncate-bytes !TRUNCATE_FOR_JAVA! --output "!OUTPUT!"
       if errorlevel 1 exit /b 1
     )
 
     if /I "%SANITIZE%"=="on" (
       call :sanitize_prefix "%ASSETS_DIR%\fixture-s%%S-%%P"
       if errorlevel 1 exit /b 1
+      if not "%TRUNCATE_BYTES%"=="0" if /I not "%TRUNCATE_TARGET%"=="raw" (
+        call :truncate_sanitized_prefix "%ASSETS_DIR%\fixture-s%%S-%%P" "%TRUNCATE_BYTES%"
+        if errorlevel 1 exit /b 1
+      )
     )
     if /I "%SANITIZE%"=="only" (
       call :sanitize_prefix "%ASSETS_DIR%\fixture-s%%S-%%P"
       if errorlevel 1 exit /b 1
+      if not "%TRUNCATE_BYTES%"=="0" if /I not "%TRUNCATE_TARGET%"=="raw" (
+        call :truncate_sanitized_prefix "%ASSETS_DIR%\fixture-s%%S-%%P" "%TRUNCATE_BYTES%"
+        if errorlevel 1 exit /b 1
+      )
     )
   )
 )
@@ -190,6 +227,7 @@ exit /b 0
 echo Usage:
 echo   tools\java-dump-fixtures\generate-dumps.cmd ^<mode^> [hold_seconds] [profile_set] [truncate_bytes] [scenario]
 echo   tools\java-dump-fixtures\generate-dumps.cmd ^<mode^> [hold_seconds] [profile_set] [truncate_bytes] [scenario] [sanitize]
+echo   tools\java-dump-fixtures\generate-dumps.cmd ^<mode^> [hold_seconds] [profile_set] [truncate_bytes] [scenario] [sanitize] [truncate_target]
 echo   tools\java-dump-fixtures\generate-dumps.cmd [options]
 echo.
 echo Arguments:
@@ -199,6 +237,7 @@ echo   profile_set    standard ^| all ^| ultra   ^(default: standard^)
 echo   truncate_bytes default: 0
 echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
+echo   truncate_target raw ^| sanitized ^| both   ^(default: raw^)
 echo.
 echo Options:
 echo   -m, --mode ^<value^>
@@ -207,13 +246,14 @@ echo   -p, --profile-set ^<value^>
 echo   -t, --truncate-bytes ^<value^>
 echo   -s, --scenario ^<value^>
 echo   -S, --sanitize ^<value^>
+echo   -T, --truncate-target ^<value^>
 echo.
 echo Examples:
 echo   tools\java-dump-fixtures\generate-dumps.cmd auto
 echo   tools\java-dump-fixtures\generate-dumps.cmd both 180 all 4194304
 echo   tools\java-dump-fixtures\generate-dumps.cmd auto 120 ultra 2097152 01
 echo   tools\java-dump-fixtures\generate-dumps.cmd auto 120 standard 0 all
-echo   tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set ultra --scenario 01 --sanitize on
+echo   tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set ultra --scenario 01 --sanitize on --truncate-target both
 echo   tools\java-dump-fixtures\generate-dumps.cmd --profile-set all --scenario all --sanitize only
 exit /b 0
 
@@ -230,6 +270,7 @@ echo   profile_set    standard ^| all ^| ultra   ^(default: standard^)
 echo   truncate_bytes default: 0
 echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
+echo   truncate_target raw ^| sanitized ^| both   ^(default: raw^)
 exit /b 1
 
 :sanitize_prefix
@@ -253,4 +294,22 @@ for %%F in ("%PREFIX%*.hprof") do (
     )
   )
 )
+exit /b 0
+
+:truncate_sanitized_prefix
+set "PREFIX=%~1"
+set "BYTES=%~2"
+for %%F in ("%PREFIX%*-sanitized.hprof") do (
+  set "DUMP=%%~fF"
+  echo [heap-fixture] truncate sanitized input=!DUMP!
+  call :truncate_file_ps "!DUMP!" "%BYTES%"
+  if errorlevel 1 exit /b 1
+)
+exit /b 0
+
+:truncate_file_ps
+set "IN_FILE=%~1"
+set "BYTES=%~2"
+powershell -NoLogo -NoProfile -Command "$in='%IN_FILE%'; $bytes=[int64]'%BYTES%'; $out=[System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($in),([System.IO.Path]::GetFileNameWithoutExtension($in)+'-truncated.hprof')); $size=(Get-Item $in).Length; $keep=$size-$bytes; if($keep -lt 1){$keep=1}; if(Test-Path $out){Remove-Item -Force $out}; $src=[System.IO.File]::OpenRead($in); $dst=[System.IO.File]::Open($out,[System.IO.FileMode]::CreateNew,[System.IO.FileAccess]::Write); try { $buf=New-Object byte[] 8192; $remaining=$keep; while($remaining -gt 0){ $toRead=[Math]::Min($buf.Length,[int][Math]::Min($remaining,[int64]2147483647)); $read=$src.Read($buf,0,$toRead); if($read -le 0){break}; $dst.Write($buf,0,$read); $remaining-=$read } } finally { $dst.Dispose(); $src.Dispose() }; Write-Host ('truncatedDumpPath=' + $out + ' original=' + $size + ' truncated=' + (Get-Item $out).Length)"
+if errorlevel 1 exit /b 1
 exit /b 0
