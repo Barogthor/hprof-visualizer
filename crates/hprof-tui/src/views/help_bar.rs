@@ -169,7 +169,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn required_height_returns_thirteen_for_seventeen_entries() {
+    fn required_height_returns_fourteen_for_nineteen_entries() {
         assert_eq!(required_height(), 14);
     }
 
