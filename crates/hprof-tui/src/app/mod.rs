@@ -22,7 +22,7 @@ use ratatui::{
 };
 
 use crate::{
-    favorites::{PinKey, PinnedItem, snapshot_from_cursor},
+    favorites::{PinKey, PinnedItem, PinnedSnapshot, snapshot_from_cursor},
     input::{self, InputEvent},
     views::{
         favorites_panel::{FavoritesPanel, FavoritesPanelState},
@@ -55,6 +55,9 @@ struct PendingPage {
 
 /// Minimum terminal width to show the favorites panel.
 const MIN_WIDTH_FAVORITES_PANEL: u16 = 120;
+
+/// Maximum number of additional chunk pages loaded into a single pinned snapshot.
+const SNAPSHOT_CHUNK_PAGE_LIMIT: usize = 10;
 
 /// Which panel currently holds keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +93,9 @@ pub struct App<E: NavigationEngine> {
     /// In-flight collection page load receivers keyed by
     /// `(collection_id, chunk_offset)`.
     pending_pages: HashMap<(u64, usize), PendingPage>,
+    /// In-flight collection page load receivers for pinned snapshots keyed by
+    /// `(pinned_item_idx, collection_id, chunk_offset)`.
+    pending_pinned_pages: HashMap<(usize, u64, usize), PendingPage>,
     /// Warnings accumulated during the session (e.g. unresolved string backing arrays).
     warnings: WarningLog,
     /// Timestamp of the last periodic memory log emission.
@@ -136,6 +142,7 @@ impl<E: NavigationEngine> App<E> {
             stack_state: None,
             pending_expansions: HashMap::new(),
             pending_pages: HashMap::new(),
+            pending_pinned_pages: HashMap::new(),
             warnings: WarningLog::default(),
             last_memory_log: Instant::now(),
             pinned: Vec::new(),
@@ -359,6 +366,7 @@ impl<E: NavigationEngine> App<E> {
     fn toggle_pin(&mut self, item: PinnedItem) {
         if let Some(pos) = self.pinned.iter().position(|p| p.key == item.key) {
             self.pinned.remove(pos);
+            self.pending_pinned_pages.clear();
         } else {
             self.pinned.push(item);
         }
@@ -379,7 +387,10 @@ impl<E: NavigationEngine> App<E> {
         self.favorites_list_state.set_selected_index(sel);
     }
 
-    fn handle_favorites_input(&mut self, event: InputEvent) -> AppAction {
+    fn handle_favorites_input(&mut self, event: InputEvent) -> AppAction
+    where
+        E: Send + Sync + 'static,
+    {
         match event {
             InputEvent::Up => {
                 if !self.pinned.is_empty() {
@@ -389,6 +400,62 @@ impl<E: NavigationEngine> App<E> {
             InputEvent::Down => {
                 if !self.pinned.is_empty() {
                     self.favorites_list_state.move_down();
+                    if let Some((collection_id, chunk_offset)) =
+                        self.favorites_list_state.current_chunk_sentinel()
+                    {
+                        let item_idx = self
+                            .favorites_list_state
+                            .selected_index()
+                            .min(self.pinned.len().saturating_sub(1));
+                        let key = (item_idx, collection_id, chunk_offset);
+                        if !self.pending_pinned_pages.contains_key(&key) {
+                            let engine = Arc::clone(&self.engine);
+                            let (tx, rx) = mpsc::channel();
+                            self.pending_pinned_pages.insert(
+                                key,
+                                PendingPage {
+                                    rx,
+                                    started: Instant::now(),
+                                    loading_shown: false,
+                                },
+                            );
+                            std::thread::spawn(move || {
+                                let page = engine.get_page(collection_id, chunk_offset, 1000);
+                                let _ = tx.send(page);
+                            });
+                        }
+                    }
+                }
+            }
+            InputEvent::Right | InputEvent::Enter => {
+                if !self.pinned.is_empty()
+                    && let Some((object_id, is_collapsed)) =
+                        self.favorites_list_state.current_toggleable_object()
+                    && is_collapsed
+                {
+                    let idx = self
+                        .favorites_list_state
+                        .selected_index()
+                        .min(self.pinned.len().saturating_sub(1));
+                    if let Some(item) = self.pinned.get_mut(idx) {
+                        item.local_collapsed.remove(&object_id);
+                    }
+                }
+            }
+            InputEvent::Left => {
+                if !self.pinned.is_empty()
+                    && let Some((object_id, is_collapsed)) =
+                        self.favorites_list_state.current_toggleable_object()
+                    && !is_collapsed
+                {
+                    let idx = self
+                        .favorites_list_state
+                        .selected_index()
+                        .min(self.pinned.len().saturating_sub(1));
+                    if let Some(item) = self.pinned.get_mut(idx) {
+                        item.local_collapsed.insert(object_id);
+                    }
+                    self.favorites_list_state.clamp_sub_row();
                 }
             }
             InputEvent::ToggleFavorite => {
@@ -401,6 +468,7 @@ impl<E: NavigationEngine> App<E> {
                         return AppAction::Continue;
                     };
                     self.pinned.retain(|item| item.key != key);
+                    self.pending_pinned_pages.clear();
                     self.sync_favorites_selection();
                     if self.pinned.is_empty() {
                         self.focus = if self.stack_state.is_some() {
@@ -454,6 +522,9 @@ impl<E: NavigationEngine> App<E> {
             }
             InputEvent::Tab => {
                 self.cycle_focus();
+            }
+            InputEvent::ToggleObjectIds => {
+                self.show_object_ids = !self.show_object_ids;
             }
             InputEvent::Quit => return AppAction::Quit,
             _ => {}
@@ -1495,6 +1566,67 @@ impl<E: NavigationEngine> App<E> {
         for key in done {
             self.pending_pages.remove(&key);
         }
+
+        let mut pinned_done = Vec::new();
+        for (&(item_idx, collection_id, chunk_offset), pp) in self.pending_pinned_pages.iter_mut() {
+            match pp.rx.try_recv() {
+                Ok(Some(page)) => {
+                    if let Some(item) = self.pinned.get_mut(item_idx) {
+                        match &mut item.snapshot {
+                            PinnedSnapshot::Frame {
+                                collection_chunks, ..
+                            }
+                            | PinnedSnapshot::Subtree {
+                                collection_chunks, ..
+                            } => {
+                                if let Some(cc) = collection_chunks.get_mut(&collection_id)
+                                    && cc.chunk_pages.len() < SNAPSHOT_CHUNK_PAGE_LIMIT
+                                {
+                                    cc.chunk_pages
+                                        .insert(chunk_offset, ChunkState::Loaded(page));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    pinned_done.push((item_idx, collection_id, chunk_offset));
+                }
+                Ok(None) => {
+                    pinned_done.push((item_idx, collection_id, chunk_offset));
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    if !pp.loading_shown && pp.started.elapsed() >= EXPANSION_LOADING_THRESHOLD {
+                        if let Some(item) = self.pinned.get_mut(item_idx) {
+                            match &mut item.snapshot {
+                                PinnedSnapshot::Frame {
+                                    collection_chunks, ..
+                                }
+                                | PinnedSnapshot::Subtree {
+                                    collection_chunks, ..
+                                } => {
+                                    if let Some(cc) = collection_chunks.get_mut(&collection_id) {
+                                        cc.chunk_pages.insert(chunk_offset, ChunkState::Loading);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        pp.loading_shown = true;
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.warnings.add(format!(
+                        "pinned page load failed for collection 0x{:X}",
+                        collection_id
+                    ));
+                    pinned_done.push((item_idx, collection_id, chunk_offset));
+                }
+            }
+        }
+        for key in pinned_done {
+            self.pending_pinned_pages.remove(&key);
+        }
+
         fallback
     }
 
@@ -1683,6 +1815,7 @@ impl<E: NavigationEngine> App<E> {
             frame.render_stateful_widget(
                 FavoritesPanel {
                     focused: fav_focused,
+                    show_object_ids: self.show_object_ids,
                     pinned: &self.pinned,
                 },
                 fav_area,

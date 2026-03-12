@@ -17,7 +17,7 @@ use crate::theme::THEME;
 
 use super::stack_view::{
     ChunkState, CollectionChunks, ExpansionPhase, FAILED_LABEL_SEP, StackState,
-    compute_chunk_ranges, field_value_style, format_field_value_display,
+    compute_chunk_ranges, field_value_style, format_entry_value_text, format_field_value_display,
     format_object_ref_collapsed,
 };
 
@@ -29,6 +29,15 @@ pub(crate) enum TreeRoot<'a> {
     Subtree { root_id: u64 },
 }
 
+/// Rendering options that vary per panel.
+pub(crate) struct RenderOptions {
+    /// Whether object IDs should be shown in rendered labels.
+    pub show_object_ids: bool,
+    /// Whether rows without captured snapshot descendants should be marked as
+    /// unavailable (`?`) instead of collapsed (`+`).
+    pub snapshot_mode: bool,
+}
+
 /// Shared read-only context threaded through all render helper functions.
 struct RenderCtx<'a> {
     object_fields: &'a HashMap<u64, Vec<FieldInfo>>,
@@ -37,6 +46,7 @@ struct RenderCtx<'a> {
     object_phases: &'a HashMap<u64, ExpansionPhase>,
     object_errors: &'a HashMap<u64, String>,
     show_object_ids: bool,
+    snapshot_mode: bool,
 }
 
 /// Renders a variable tree into a flat list of styled items.
@@ -55,7 +65,7 @@ pub(crate) fn render_variable_tree(
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
-    show_object_ids: bool,
+    options: RenderOptions,
 ) -> Vec<ListItem<'static>> {
     let ctx = RenderCtx {
         object_fields,
@@ -63,7 +73,8 @@ pub(crate) fn render_variable_tree(
         collection_chunks,
         object_phases,
         object_errors,
-        show_object_ids,
+        show_object_ids: options.show_object_ids,
+        snapshot_mode: options.snapshot_mode,
     };
     let mut items = Vec::new();
     match root {
@@ -80,11 +91,38 @@ pub(crate) fn render_variable_tree(
             }
         }
         TreeRoot::Subtree { root_id } => {
-            let mut visited = HashSet::new();
-            append_object_children(root_id, "  ", 0, &ctx, &mut visited, &mut items);
+            if let Some(chunks) = ctx.collection_chunks.get(&root_id) {
+                append_collection_items(root_id, chunks, "  ", &ctx, &mut items);
+            } else {
+                let mut visited = HashSet::new();
+                append_object_children(root_id, "  ", 0, &ctx, &mut visited, &mut items);
+            }
         }
     }
     items
+}
+
+fn object_ref_state(
+    object_id: u64,
+    entry_count: Option<u64>,
+    ctx: &RenderCtx<'_>,
+) -> (Option<ExpansionPhase>, bool) {
+    if entry_count.is_some() && ctx.collection_chunks.contains_key(&object_id) {
+        if ctx.snapshot_mode {
+            return (Some(get_phase(object_id, ctx.object_phases)), false);
+        }
+        return (Some(ExpansionPhase::Expanded), false);
+    }
+
+    let has_snapshot_data = ctx.object_fields.contains_key(&object_id)
+        || ctx.object_static_fields.contains_key(&object_id)
+        || ctx.object_phases.contains_key(&object_id);
+
+    if has_snapshot_data || !ctx.snapshot_mode {
+        (Some(get_phase(object_id, ctx.object_phases)), false)
+    } else {
+        (None, true)
+    }
 }
 
 fn get_phase(object_id: u64, object_phases: &HashMap<u64, ExpansionPhase>) -> ExpansionPhase {
@@ -126,60 +164,55 @@ fn append_var(
     ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
 ) {
-    let phase = match &var.value {
+    let (toggle, val_str, val_style): (&str, String, Style) = match &var.value {
+        VariableValue::Null => ("  ", "null".to_string(), Style::new()),
         VariableValue::ObjectRef {
-            id, entry_count, ..
+            id,
+            class_name,
+            entry_count,
+            ..
         } => {
-            if entry_count.is_some() && ctx.collection_chunks.contains_key(id) {
-                ExpansionPhase::Expanded
+            let (phase, unavailable) = object_ref_state(*id, *entry_count, ctx);
+            if unavailable {
+                let label =
+                    format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
+                ("? ", format!("local variable: {label}"), THEME.null_value)
             } else {
-                get_phase(*id, ctx.object_phases)
+                match phase.unwrap_or(ExpansionPhase::Collapsed) {
+                    ExpansionPhase::Failed => {
+                        let short = if class_name.is_empty() {
+                            "Object"
+                        } else {
+                            class_name.rsplit('.').next().unwrap_or(class_name)
+                        };
+                        let err = ctx
+                            .object_errors
+                            .get(id)
+                            .map(|s| s.as_str())
+                            .unwrap_or("Failed to resolve object");
+                        let label = format!("{short}{FAILED_LABEL_SEP}{err}");
+                        ("! ", label, THEME.error_indicator)
+                    }
+                    ExpansionPhase::Collapsed => {
+                        let label = format_object_ref_collapsed(
+                            class_name,
+                            *entry_count,
+                            ctx.show_object_ids,
+                            *id,
+                        );
+                        ("+ ", format!("local variable: {label}"), Style::new())
+                    }
+                    ExpansionPhase::Expanded | ExpansionPhase::Loading => {
+                        let label = format_object_ref_collapsed(
+                            class_name,
+                            *entry_count,
+                            ctx.show_object_ids,
+                            *id,
+                        );
+                        ("- ", format!("local variable: {label}"), Style::new())
+                    }
+                }
             }
-        }
-        VariableValue::Null => ExpansionPhase::Collapsed,
-    };
-
-    let (toggle, val_str, val_style): (&str, String, Style) = match (&var.value, &phase) {
-        (VariableValue::Null, _) => ("  ", "null".to_string(), Style::new()),
-        (VariableValue::ObjectRef { id, class_name, .. }, ExpansionPhase::Failed) => {
-            let short = if class_name.is_empty() {
-                "Object"
-            } else {
-                class_name.rsplit('.').next().unwrap_or(class_name)
-            };
-            let err = ctx
-                .object_errors
-                .get(id)
-                .map(|s| s.as_str())
-                .unwrap_or("Failed to resolve object");
-            let label = format!("{short}{FAILED_LABEL_SEP}{err}");
-            ("! ", label, THEME.error_indicator)
-        }
-        (
-            VariableValue::ObjectRef {
-                id,
-                class_name,
-                entry_count,
-                ..
-            },
-            ExpansionPhase::Collapsed,
-        ) => {
-            let label =
-                format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
-            ("+ ", format!("local variable: {label}"), Style::new())
-        }
-        (
-            VariableValue::ObjectRef {
-                id,
-                class_name,
-                entry_count,
-                ..
-            },
-            _,
-        ) => {
-            let label =
-                format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
-            ("- ", format!("local variable: {label}"), Style::new())
         }
     };
 
@@ -203,10 +236,18 @@ fn append_var(
         id, entry_count, ..
     } = &var.value
     {
-        if entry_count.is_some()
-            && let Some(cc) = ctx.collection_chunks.get(id)
-        {
-            append_collection_items(*id, cc, &format!("{indent}  "), ctx, items);
+        let (phase, unavailable) = object_ref_state(*id, *entry_count, ctx);
+        if unavailable {
+            return;
+        }
+        if entry_count.is_some() {
+            if matches!(
+                phase,
+                Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
+            ) && let Some(cc) = ctx.collection_chunks.get(id)
+            {
+                append_collection_items(*id, cc, &format!("{indent}  "), ctx, items);
+            }
             return;
         }
         let mut visited = HashSet::new();
@@ -270,21 +311,18 @@ fn append_object_children(
                         continue;
                     }
 
-                    let child_phase = if let FieldValue::ObjectRef {
-                        id, entry_count, ..
-                    } = field.value
-                    {
-                        Some(
-                            if entry_count.is_some() && ctx.collection_chunks.contains_key(&id) {
-                                ExpansionPhase::Expanded
-                            } else {
-                                get_phase(id, ctx.object_phases)
-                            },
-                        )
-                    } else {
-                        None
-                    };
-                    let row_style = if matches!(child_phase, Some(ExpansionPhase::Failed)) {
+                    let (child_phase, child_unavailable) =
+                        if let FieldValue::ObjectRef {
+                            id, entry_count, ..
+                        } = &field.value
+                        {
+                            object_ref_state(*id, *entry_count, ctx)
+                        } else {
+                            (None, false)
+                        };
+                    let row_style = if child_unavailable {
+                        THEME.null_value
+                    } else if matches!(child_phase, Some(ExpansionPhase::Failed)) {
                         THEME.error_indicator
                     } else {
                         field_value_style(&field.value)
@@ -312,11 +350,13 @@ fn append_object_children(
                             ctx.show_object_ids,
                         )
                     };
-                    let toggle = match &child_phase {
-                        Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
-                        Some(ExpansionPhase::Failed) => "! ",
-                        Some(ExpansionPhase::Collapsed) => "+ ",
-                        None => "  ",
+                    let toggle = match (&child_phase, child_unavailable) {
+                        (_, true) => "? ",
+                        (Some(ExpansionPhase::Expanded), false)
+                        | (Some(ExpansionPhase::Loading), false) => "- ",
+                        (Some(ExpansionPhase::Failed), false) => "! ",
+                        (Some(ExpansionPhase::Collapsed), false) => "+ ",
+                        (None, false) => "  ",
                     };
                     let toggle_style = if toggle.trim().is_empty() {
                         row_style
@@ -333,17 +373,23 @@ fn append_object_children(
                     ));
                     items.push(ListItem::new(Line::from(row_spans)));
 
-                    if let FieldValue::ObjectRef {
-                        id,
-                        entry_count: Some(_),
-                        ..
-                    } = field.value
+                    if !child_unavailable
+                        && let FieldValue::ObjectRef {
+                            id,
+                            entry_count: Some(_),
+                            ..
+                        } = field.value
                         && let Some(cc) = ctx.collection_chunks.get(&id)
                     {
-                        append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
+                        if matches!(
+                            child_phase,
+                            Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
+                        ) {
+                            append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
+                        }
                         continue;
                     }
-                    if let FieldValue::ObjectRef { id, .. } = field.value {
+                    if !child_unavailable && let FieldValue::ObjectRef { id, .. } = field.value {
                         append_object_children(
                             id,
                             &format!("{indent}  "),
@@ -401,7 +447,11 @@ fn append_static_items(
         {
             Some(
                 if entry_count.is_some() && ctx.collection_chunks.contains_key(&id) {
-                    ExpansionPhase::Expanded
+                    if ctx.snapshot_mode {
+                        get_phase(id, ctx.object_phases)
+                    } else {
+                        ExpansionPhase::Expanded
+                    }
                 } else {
                     get_phase(id, ctx.object_phases)
                 },
@@ -460,7 +510,12 @@ fn append_static_items(
         } = field.value
             && let Some(cc) = ctx.collection_chunks.get(&id)
         {
-            append_collection_items(id, cc, &format!("{indent}    "), ctx, items);
+            if matches!(
+                child_phase,
+                Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
+            ) {
+                append_collection_items(id, cc, &format!("{indent}    "), ctx, items);
+            }
             continue;
         }
         if let FieldValue::ObjectRef { id, .. } = field.value {
@@ -544,7 +599,11 @@ fn append_static_object_children(
                 {
                     Some(
                         if entry_count.is_some() && ctx.collection_chunks.contains_key(&id) {
-                            ExpansionPhase::Expanded
+                            if ctx.snapshot_mode {
+                                get_phase(id, ctx.object_phases)
+                            } else {
+                                ExpansionPhase::Expanded
+                            }
                         } else {
                             get_phase(id, ctx.object_phases)
                         },
@@ -608,7 +667,12 @@ fn append_static_object_children(
                 } = field.value
                     && let Some(cc) = ctx.collection_chunks.get(&id)
                 {
-                    append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
+                    if matches!(
+                        child_phase,
+                        Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
+                    ) {
+                        append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
+                    }
                     continue;
                 }
                 if let FieldValue::ObjectRef { id, .. } = field.value {
@@ -712,10 +776,13 @@ fn append_collection_entry_item(
     items: &mut Vec<ListItem<'static>>,
     visited_collections: &mut HashSet<u64>,
 ) {
-    let value_phase = if let FieldValue::ObjectRef { id, .. } = &entry.value {
-        Some(get_phase(*id, ctx.object_phases))
+    let (value_phase, value_unavailable) = if let FieldValue::ObjectRef {
+        id, entry_count, ..
+    } = &entry.value
+    {
+        object_ref_state(*id, *entry_count, ctx)
     } else {
-        None
+        (None, false)
     };
     let text = if let (FieldValue::ObjectRef { id, class_name, .. }, Some(ExpansionPhase::Failed)) =
         (&entry.value, &value_phase)
@@ -742,36 +809,52 @@ fn append_collection_entry_item(
                 entry.index, short
             )
         }
+    } else if value_unavailable {
+        let val = format_entry_value_text(&entry.value, ctx.show_object_ids);
+        if let Some(key) = &entry.key {
+            let k = format_entry_value_text(key, false);
+            format!("{indent}? [{}] {} => {val}", entry.index, k)
+        } else {
+            format!("{indent}? [{}] {val}", entry.index)
+        }
     } else {
         StackState::format_entry_line(entry, indent, value_phase.as_ref(), ctx.show_object_ids)
     };
-    let row_style = if matches!(value_phase, Some(ExpansionPhase::Failed)) {
+    let row_style = if value_unavailable {
+        THEME.null_value
+    } else if matches!(value_phase, Some(ExpansionPhase::Failed)) {
         THEME.error_indicator
     } else {
         field_value_style(&entry.value)
     };
     items.push(ListItem::new(Line::from(Span::styled(text, row_style))));
 
-    if let FieldValue::ObjectRef {
-        id,
-        entry_count: Some(_),
-        ..
-    } = &entry.value
+    if !value_unavailable
+        && let FieldValue::ObjectRef {
+            id,
+            entry_count: Some(_),
+            ..
+        } = &entry.value
         && *id != collection_id
         && let Some(nested) = ctx.collection_chunks.get(id)
     {
-        append_collection_items_inner(
-            *id,
-            nested,
-            &format!("{indent}  "),
-            ctx,
-            items,
-            visited_collections,
-        );
+        if matches!(
+            value_phase,
+            Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
+        ) {
+            append_collection_items_inner(
+                *id,
+                nested,
+                &format!("{indent}  "),
+                ctx,
+                items,
+                visited_collections,
+            );
+        }
         return;
     }
 
-    if let FieldValue::ObjectRef { id, .. } = &entry.value {
+    if !value_unavailable && let FieldValue::ObjectRef { id, .. } = &entry.value {
         let mut visited = HashSet::new();
         append_collection_entry_obj(*id, &format!("{indent}  "), 0, ctx, &mut visited, items);
     }
@@ -828,21 +911,18 @@ fn append_collection_entry_obj(
                         ))));
                         continue;
                     }
-                    let child_phase = if let FieldValue::ObjectRef {
-                        id, entry_count, ..
-                    } = field.value
-                    {
-                        Some(
-                            if entry_count.is_some() && ctx.collection_chunks.contains_key(&id) {
-                                ExpansionPhase::Expanded
-                            } else {
-                                get_phase(id, ctx.object_phases)
-                            },
-                        )
-                    } else {
-                        None
-                    };
-                    let row_style = if matches!(child_phase, Some(ExpansionPhase::Failed)) {
+                    let (child_phase, child_unavailable) =
+                        if let FieldValue::ObjectRef {
+                            id, entry_count, ..
+                        } = &field.value
+                        {
+                            object_ref_state(*id, *entry_count, ctx)
+                        } else {
+                            (None, false)
+                        };
+                    let row_style = if child_unavailable {
+                        THEME.null_value
+                    } else if matches!(child_phase, Some(ExpansionPhase::Failed)) {
                         THEME.error_indicator
                     } else {
                         field_value_style(&field.value)
@@ -870,11 +950,13 @@ fn append_collection_entry_obj(
                             ctx.show_object_ids,
                         )
                     };
-                    let toggle = match &child_phase {
-                        Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
-                        Some(ExpansionPhase::Failed) => "! ",
-                        Some(ExpansionPhase::Collapsed) => "+ ",
-                        None => "  ",
+                    let toggle = match (&child_phase, child_unavailable) {
+                        (_, true) => "? ",
+                        (Some(ExpansionPhase::Expanded), false)
+                        | (Some(ExpansionPhase::Loading), false) => "- ",
+                        (Some(ExpansionPhase::Failed), false) => "! ",
+                        (Some(ExpansionPhase::Collapsed), false) => "+ ",
+                        (None, false) => "  ",
                     };
                     let toggle_style = if toggle.trim().is_empty() {
                         row_style
@@ -890,19 +972,25 @@ fn append_collection_entry_obj(
                         row_style,
                     ));
                     items.push(ListItem::new(Line::from(row_spans)));
-                    if let FieldValue::ObjectRef {
-                        id,
-                        entry_count: Some(_),
-                        ..
-                    } = field.value
+                    if !child_unavailable
+                        && let FieldValue::ObjectRef {
+                            id,
+                            entry_count: Some(_),
+                            ..
+                        } = field.value
                         && let Some(cc) = ctx.collection_chunks.get(&id)
                     {
-                        if depth + 1 < 16 {
+                        if depth + 1 < 16
+                            && matches!(
+                                child_phase,
+                                Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
+                            )
+                        {
                             append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
                         }
                         continue;
                     }
-                    if let FieldValue::ObjectRef { id, .. } = field.value {
+                    if !child_unavailable && let FieldValue::ObjectRef { id, .. } = field.value {
                         append_collection_entry_obj(
                             id,
                             &format!("{indent}  "),
@@ -977,7 +1065,10 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            false,
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: false,
+            },
         );
         let text = render_items(items);
         assert!(text.contains("(no locals)"), "got: {text:?}");
@@ -993,7 +1084,10 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            false,
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: false,
+            },
         );
         let text = render_items(items);
         assert!(text.contains("[0] null"), "got: {text:?}");
@@ -1009,11 +1103,108 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
-            false,
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: false,
+            },
         );
         let text = render_items(items);
         assert!(text.contains("+"), "expected + toggle, got: {text:?}");
         assert!(text.contains("[0]"), "expected var index, got: {text:?}");
+    }
+
+    #[test]
+    fn snapshot_mode_unavailable_var_shows_question_toggle() {
+        let vars = vec![make_var(0, 42)];
+        let items = render_variable_tree(
+            TreeRoot::Frame { vars: &vars },
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: true,
+            },
+        );
+        let text = render_items(items);
+        assert!(text.contains("?"), "expected ? toggle, got: {text:?}");
+        assert!(
+            !text.contains("+ [0]"),
+            "did not expect + toggle, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_mode_collapsed_collection_shows_plus_not_question() {
+        use crate::views::stack_view::CollectionChunks;
+
+        let vars = vec![make_var(0, 1)];
+        let mut object_fields = HashMap::new();
+        object_fields.insert(
+            1u64,
+            vec![FieldInfo {
+                name: "items".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 200,
+                    class_name: "java.util.ArrayList".to_string(),
+                    entry_count: Some(2),
+                    inline_value: None,
+                },
+            }],
+        );
+
+        let mut collection_chunks = HashMap::new();
+        collection_chunks.insert(
+            200u64,
+            CollectionChunks {
+                total_count: 2,
+                eager_page: Some(hprof_engine::CollectionPage {
+                    entries: vec![EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::Int(7),
+                    }],
+                    total_count: 2,
+                    offset: 0,
+                    has_more: false,
+                }),
+                chunk_pages: HashMap::new(),
+            },
+        );
+
+        // Parent expanded; collection id absent => collapsed in snapshot mode.
+        let mut object_phases = HashMap::new();
+        object_phases.insert(1u64, ExpansionPhase::Expanded);
+
+        let items = render_variable_tree(
+            TreeRoot::Frame { vars: &vars },
+            &object_fields,
+            &HashMap::new(),
+            &collection_chunks,
+            &object_phases,
+            &HashMap::new(),
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: true,
+            },
+        );
+        let text = render_items(items);
+
+        assert!(
+            text.contains("items: ArrayList"),
+            "expected collection row, got: {text:?}"
+        );
+        assert!(text.contains("+ items"), "expected + marker, got: {text:?}");
+        assert!(
+            !text.contains("? items"),
+            "must not show ? marker, got: {text:?}"
+        );
+        assert!(
+            !text.contains("[0] 7"),
+            "collapsed collection should hide entries"
+        );
     }
 
     #[test]
@@ -1031,7 +1222,10 @@ mod tests {
             &HashMap::new(),
             &object_phases,
             &object_errors,
-            false,
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: false,
+            },
         );
         let text = render_items(items);
         assert!(text.contains("Object — boom"), "got: {text:?}");
@@ -1062,7 +1256,10 @@ mod tests {
             &HashMap::new(),
             &object_phases,
             &HashMap::new(),
-            false,
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: false,
+            },
         );
         let text = render_items(items);
         assert!(text.contains("-"), "expected - toggle, got: {text:?}");
@@ -1096,7 +1293,10 @@ mod tests {
             &HashMap::new(),
             &object_phases,
             &HashMap::new(),
-            true,
+            RenderOptions {
+                show_object_ids: true,
+                snapshot_mode: false,
+            },
         );
         let with_ids_text = render_items(with_ids);
         assert!(
@@ -1111,7 +1311,10 @@ mod tests {
             &HashMap::new(),
             &object_phases,
             &HashMap::new(),
-            false,
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: false,
+            },
         );
         let without_ids_text = render_items(without_ids);
         assert!(
@@ -1147,7 +1350,10 @@ mod tests {
             &HashMap::new(),
             &object_phases,
             &HashMap::new(),
-            false,
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: false,
+            },
         );
         let text = render_items(items);
         // Should render without panicking and show the cyclic marker
@@ -1177,11 +1383,61 @@ mod tests {
             &HashMap::new(),
             &object_phases,
             &HashMap::new(),
-            false,
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: false,
+            },
         );
         let text = render_items(items);
         assert!(text.contains("x"), "expected field name, got: {text:?}");
         assert!(text.contains("42"), "expected field value, got: {text:?}");
+    }
+
+    #[test]
+    fn subtree_root_collection_renders_entries_without_object_fields() {
+        use crate::views::stack_view::{ChunkState, CollectionChunks};
+
+        let mut chunks = HashMap::new();
+        chunks.insert(
+            77u64,
+            CollectionChunks {
+                total_count: 120,
+                eager_page: Some(hprof_engine::CollectionPage {
+                    entries: vec![EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::Int(7),
+                    }],
+                    total_count: 120,
+                    offset: 0,
+                    has_more: true,
+                }),
+                chunk_pages: HashMap::from([(100usize, ChunkState::Collapsed)]),
+            },
+        );
+
+        let items = render_variable_tree(
+            TreeRoot::Subtree { root_id: 77 },
+            &HashMap::new(),
+            &HashMap::new(),
+            &chunks,
+            &HashMap::new(),
+            &HashMap::new(),
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: true,
+            },
+        );
+        let text = render_items(items);
+
+        assert!(
+            text.contains("[0] 7"),
+            "expected eager entry, got: {text:?}"
+        );
+        assert!(
+            text.contains("+ [100...119]"),
+            "expected chunk sentinel row, got: {text:?}"
+        );
     }
 
     #[test]
@@ -1241,7 +1497,10 @@ mod tests {
             &collection_chunks,
             &object_phases,
             &object_errors,
-            false,
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: false,
+            },
         );
         let text = render_items(items);
         assert!(

@@ -123,6 +123,6 @@ development_status:
   9-5-static-fields-in-stack-view: done
   9-6-search-and-favorites-ux-polish: done
   9-7-help-footer-context-and-visibility: review
-  9-8-pinned-item-navigation-and-array-expansion: ready-for-dev
-  9-9-value-hiding-and-reset-in-pinned-snapshots: backlog
+  9-8-pinned-item-navigation-and-array-expansion: review
+  9-9-value-hiding-and-reset-in-pinned-snapshots: ready-for-dev
   epic-9-retrospective: optional

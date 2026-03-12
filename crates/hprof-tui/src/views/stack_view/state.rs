@@ -2392,7 +2392,7 @@ impl StackState {
     }
 
     pub fn build_items_with_object_ids(&self, show_object_ids: bool) -> Vec<ListItem<'static>> {
-        use super::super::tree_render::{TreeRoot, render_variable_tree};
+        use super::super::tree_render::{RenderOptions, TreeRoot, render_variable_tree};
         let mut items = Vec::new();
         for frame in &self.frames {
             let label = format_frame_label(frame);
@@ -2417,7 +2417,10 @@ impl StackState {
                     &self.expansion.collection_chunks,
                     &self.expansion.object_phases,
                     &self.expansion.object_errors,
-                    show_object_ids,
+                    RenderOptions {
+                        show_object_ids,
+                        snapshot_mode: false,
+                    },
                 );
                 items.extend(tree_items);
             }

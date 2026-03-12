@@ -3,6 +3,7 @@ use hprof_engine::{
     ThreadInfo, ThreadState, VariableInfo, VariableValue,
 };
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use super::*;
 
@@ -248,6 +249,7 @@ fn make_favorite_item(thread_name: &str, frame_id: u64) -> crate::favorites::Pin
         snapshot: crate::favorites::PinnedSnapshot::Primitive {
             value_label: "42".to_string(),
         },
+        local_collapsed: HashSet::new(),
         key: crate::favorites::PinKey::Var {
             frame_id,
             thread_name: thread_name.to_string(),
@@ -269,6 +271,7 @@ fn make_field_favorite_item(
         snapshot: crate::favorites::PinnedSnapshot::Primitive {
             value_label: "42".to_string(),
         },
+        local_collapsed: HashSet::new(),
         key: crate::favorites::PinKey::Field {
             frame_id,
             thread_name: thread_name.to_string(),
@@ -2005,6 +2008,7 @@ fn hidden_favorites_panel_forces_focus_back_to_previous_panel() {
         snapshot: PinnedSnapshot::Primitive {
             value_label: "42".to_string(),
         },
+        local_collapsed: HashSet::new(),
         key: PinKey::Var {
             frame_id: 1,
             thread_name: "main".to_string(),
@@ -2149,6 +2153,7 @@ fn tab_from_favorites_cycles_to_thread_list() {
         snapshot: PinnedSnapshot::Primitive {
             value_label: "42".to_string(),
         },
+        local_collapsed: HashSet::new(),
         key: PinKey::Var {
             frame_id: 1,
             thread_name: "main".to_string(),
@@ -2301,6 +2306,98 @@ fn favorites_f_last_item_empty_panel_focus() {
 
     app.handle_input(InputEvent::ToggleFavorite);
     assert_eq!(app.focus, Focus::ThreadList);
+}
+
+#[test]
+fn snapshot_chunk_page_limit_respected() {
+    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+    use crate::views::stack_view::{ChunkState, CollectionChunks};
+
+    let engine = StubEngine::with_threads(&["main"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    let collection_id = 0x55;
+    let mut chunk_pages = HashMap::new();
+    for i in 0..SNAPSHOT_CHUNK_PAGE_LIMIT {
+        let offset = 100 * (i + 1);
+        chunk_pages.insert(
+            offset,
+            ChunkState::Loaded(CollectionPage {
+                entries: vec![EntryInfo {
+                    index: offset,
+                    key: None,
+                    value: FieldValue::Int(offset as i32),
+                }],
+                total_count: 10_000,
+                offset,
+                has_more: true,
+            }),
+        );
+    }
+
+    app.pinned.push(PinnedItem {
+        thread_name: "main".to_string(),
+        frame_label: "Thread.run()".to_string(),
+        item_label: "var[0]".to_string(),
+        snapshot: PinnedSnapshot::Subtree {
+            root_id: 1,
+            object_fields: HashMap::new(),
+            collection_chunks: HashMap::from([(
+                collection_id,
+                CollectionChunks {
+                    total_count: 10_000,
+                    eager_page: None,
+                    chunk_pages,
+                },
+            )]),
+            truncated: false,
+        },
+        local_collapsed: HashSet::new(),
+        key: PinKey::Var {
+            frame_id: 1,
+            thread_name: "main".to_string(),
+            var_idx: 0,
+        },
+    });
+
+    let new_offset = 9_999usize;
+    let (tx, rx) = mpsc::channel();
+    tx.send(Some(CollectionPage {
+        entries: vec![EntryInfo {
+            index: new_offset,
+            key: None,
+            value: FieldValue::Int(1),
+        }],
+        total_count: 10_000,
+        offset: new_offset,
+        has_more: false,
+    }))
+    .unwrap();
+    app.pending_pinned_pages.insert(
+        (0, collection_id, new_offset),
+        PendingPage {
+            rx,
+            started: Instant::now(),
+            loading_shown: false,
+        },
+    );
+
+    let _ = app.poll_pages();
+
+    let PinnedSnapshot::Subtree {
+        collection_chunks, ..
+    } = &app.pinned[0].snapshot
+    else {
+        panic!("expected subtree snapshot");
+    };
+    let cc = collection_chunks
+        .get(&collection_id)
+        .expect("collection must exist in pinned snapshot");
+    assert_eq!(cc.chunk_pages.len(), SNAPSHOT_CHUNK_PAGE_LIMIT);
+    assert!(
+        !cc.chunk_pages.contains_key(&new_offset),
+        "chunk beyond snapshot page cap must not be inserted"
+    );
 }
 
 #[test]

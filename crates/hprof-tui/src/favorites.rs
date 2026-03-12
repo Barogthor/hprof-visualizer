@@ -69,6 +69,10 @@ pub struct PinnedItem {
     pub item_label: String,
     /// Frozen snapshot of the pinned data.
     pub snapshot: PinnedSnapshot,
+    /// Objects or collection nodes collapsed by the user inside this snapshot.
+    ///
+    /// Default is empty: all captured nodes are expanded in the favorites view.
+    pub local_collapsed: HashSet<u64>,
     /// Structural key used for toggle detection and de-duplication.
     pub key: PinKey,
 }
@@ -93,6 +97,7 @@ pub(crate) fn subtree_snapshot(
     let truncated = collect_descendants_limited(
         root_id,
         state.object_fields(),
+        state.collection_chunks_map(),
         reachable,
         &mut desc_order,
         SNAPSHOT_OBJECT_LIMIT,
@@ -115,6 +120,7 @@ pub(crate) fn subtree_snapshot(
 fn collect_descendants_limited(
     root_id: u64,
     fields: &HashMap<u64, Vec<FieldInfo>>,
+    collection_chunks: &HashMap<u64, CollectionChunks>,
     visited: &mut HashSet<u64>,
     out: &mut Vec<u64>,
     limit: usize,
@@ -130,7 +136,7 @@ fn collect_descendants_limited(
     if let Some(field_list) = fields.get(&root_id) {
         for f in field_list {
             if let FieldValue::ObjectRef { id, .. } = f.value {
-                if collect_descendants_limited(id, fields, visited, out, limit) {
+                if collect_descendants_limited(id, fields, collection_chunks, visited, out, limit) {
                     truncated = true;
                     break;
                 }
@@ -138,6 +144,55 @@ fn collect_descendants_limited(
                     truncated = true;
                     break;
                 }
+            }
+        }
+    }
+
+    if !truncated
+        && let Some(chunks) = collection_chunks.get(&root_id)
+        && let Some(page) = &chunks.eager_page
+    {
+        for entry in &page.entries {
+            if let FieldValue::ObjectRef { id, .. } = &entry.value {
+                if collect_descendants_limited(*id, fields, collection_chunks, visited, out, limit)
+                {
+                    truncated = true;
+                    break;
+                }
+                if visited.len() >= limit {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if !truncated && let Some(chunks) = collection_chunks.get(&root_id) {
+        for page_state in chunks.chunk_pages.values() {
+            let ChunkState::Loaded(page) = page_state else {
+                continue;
+            };
+            for entry in &page.entries {
+                if let FieldValue::ObjectRef { id, .. } = &entry.value {
+                    if collect_descendants_limited(
+                        *id,
+                        fields,
+                        collection_chunks,
+                        visited,
+                        out,
+                        limit,
+                    ) {
+                        truncated = true;
+                        break;
+                    }
+                    if visited.len() >= limit {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
+            if truncated {
+                break;
             }
         }
     }
@@ -209,6 +264,7 @@ pub fn snapshot_from_cursor(
                     collection_chunks: all_chunks,
                     truncated: any_truncated,
                 },
+                local_collapsed: HashSet::new(),
                 key: PinKey::Frame {
                     frame_id,
                     thread_name: thread_name.to_string(),
@@ -225,7 +281,9 @@ pub fn snapshot_from_cursor(
 
             let snapshot = match &var.value {
                 VariableValue::ObjectRef { id, class_name, .. } => {
-                    if state.object_fields().contains_key(id) {
+                    if state.object_fields().contains_key(id)
+                        || state.collection_chunks_map().contains_key(id)
+                    {
                         let mut reachable = HashSet::new();
                         let (fields, chunks, truncated) =
                             subtree_snapshot(*id, state, &mut reachable);
@@ -252,6 +310,7 @@ pub fn snapshot_from_cursor(
                 frame_label,
                 item_label,
                 snapshot,
+                local_collapsed: HashSet::new(),
                 key: PinKey::Var {
                     frame_id,
                     thread_name: thread_name.to_string(),
@@ -293,7 +352,9 @@ pub fn snapshot_from_cursor(
 
             let snapshot = match &leaf_field.value {
                 FieldValue::ObjectRef { id, class_name, .. } => {
-                    if state.object_fields().contains_key(id) {
+                    if state.object_fields().contains_key(id)
+                        || state.collection_chunks_map().contains_key(id)
+                    {
                         let mut reachable = HashSet::new();
                         let (fields, chunks, truncated) =
                             subtree_snapshot(*id, state, &mut reachable);
@@ -323,6 +384,7 @@ pub fn snapshot_from_cursor(
                 frame_label,
                 item_label,
                 snapshot,
+                local_collapsed: HashSet::new(),
                 key: PinKey::Field {
                     frame_id,
                     thread_name: thread_name.to_string(),
@@ -407,7 +469,10 @@ fn format_primitive_field_value(v: &FieldValue) -> String {
 
 #[cfg(test)]
 mod tests {
-    use hprof_engine::{FieldInfo, FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue};
+    use hprof_engine::{
+        CollectionPage, EntryInfo, FieldInfo, FieldValue, FrameInfo, LineNumber, VariableInfo,
+        VariableValue,
+    };
 
     use super::*;
     use crate::views::stack_view::StackState;
@@ -720,6 +785,128 @@ mod tests {
                 assert!(
                     matches!(state, Some(ChunkState::Collapsed)),
                     "loading chunk must be frozen to collapsed"
+                );
+            }
+            _ => panic!("expected subtree snapshot"),
+        }
+    }
+
+    #[test]
+    fn snapshot_on_var_with_collection_chunks_only_produces_subtree() {
+        use crate::views::stack_view::CollectionChunks;
+
+        let mut state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::ObjectRef {
+                    id: 20,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(120),
+                },
+            }],
+        );
+        state.expansion.collection_chunks.insert(
+            20,
+            CollectionChunks {
+                total_count: 120,
+                eager_page: Some(CollectionPage {
+                    entries: vec![EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::Int(7),
+                    }],
+                    total_count: 120,
+                    offset: 0,
+                    has_more: true,
+                }),
+                chunk_pages: HashMap::new(),
+            },
+        );
+
+        let cursor = StackCursor::OnVar {
+            frame_idx: 0,
+            var_idx: 0,
+        };
+        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+
+        match item.snapshot {
+            PinnedSnapshot::Subtree {
+                root_id,
+                object_fields,
+                collection_chunks,
+                ..
+            } => {
+                assert_eq!(root_id, 20);
+                assert!(
+                    object_fields.is_empty(),
+                    "collection-only snapshot should not fabricate object fields"
+                );
+                assert!(
+                    collection_chunks.contains_key(&20),
+                    "collection chunks should be captured when available"
+                );
+            }
+            _ => panic!("expected subtree snapshot for collection-only root"),
+        }
+    }
+
+    #[test]
+    fn snapshot_on_var_collection_entry_expanded_object_is_captured() {
+        use crate::views::stack_view::CollectionChunks;
+
+        let mut state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::ObjectRef {
+                    id: 20,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(2),
+                },
+            }],
+        );
+        state.expansion.collection_chunks.insert(
+            20,
+            CollectionChunks {
+                total_count: 2,
+                eager_page: Some(CollectionPage {
+                    entries: vec![EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::ObjectRef {
+                            id: 30,
+                            class_name: "Node".to_string(),
+                            entry_count: None,
+                            inline_value: None,
+                        },
+                    }],
+                    total_count: 2,
+                    offset: 0,
+                    has_more: false,
+                }),
+                chunk_pages: HashMap::new(),
+            },
+        );
+        state.set_expansion_done(
+            30,
+            vec![FieldInfo {
+                name: "value".to_string(),
+                value: FieldValue::Int(7),
+            }],
+        );
+
+        let cursor = StackCursor::OnVar {
+            frame_idx: 0,
+            var_idx: 0,
+        };
+        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+
+        match item.snapshot {
+            PinnedSnapshot::Subtree { object_fields, .. } => {
+                assert!(
+                    object_fields.contains_key(&30),
+                    "expanded collection entry object must be captured into snapshot"
                 );
             }
             _ => panic!("expected subtree snapshot"),
