@@ -2732,6 +2732,131 @@ fn scroll_view_down_clamps_stale_offset_before_increment() {
 }
 
 #[test]
+fn center_view_on_selection_places_cursor_near_middle() {
+    let frames = (0..12).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    for _ in 0..7 {
+        state.move_down();
+    }
+    state.set_visible_height(5);
+    state.set_list_state_offset_for_test(0);
+
+    state.center_view_on_selection();
+
+    // selected(7), visible_height(5) => center row index = 2, offset = 7 - 2 = 5.
+    assert_eq!(state.list_state_offset_for_test(), 5);
+    assert_eq!(state.selected_frame_id(), Some(7));
+}
+
+#[test]
+fn center_view_on_selection_clamps_at_top() {
+    let frames = (0..10).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    state.move_down(); // frame 1
+    state.set_visible_height(5);
+    state.set_list_state_offset_for_test(4);
+
+    state.center_view_on_selection();
+
+    assert_eq!(state.list_state_offset_for_test(), 0);
+    assert_eq!(state.selected_frame_id(), Some(1));
+}
+
+#[test]
+fn center_view_on_selection_clamps_at_bottom() {
+    let frames = (0..10).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    for _ in 0..9 {
+        state.move_down();
+    }
+    state.set_visible_height(5);
+    state.set_list_state_offset_for_test(0);
+
+    state.center_view_on_selection();
+
+    // max_offset = 10 - 5 = 5, centered target = 9 - 2 = 7 -> clamp to 5.
+    assert_eq!(state.list_state_offset_for_test(), 5);
+    assert_eq!(state.selected_frame_id(), Some(9));
+}
+
+#[test]
+fn center_view_on_selection_no_op_when_visible_height_zero() {
+    let frames = (0..5).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    state.move_down();
+    state.move_down();
+    state.set_visible_height(0);
+    state.set_list_state_offset_for_test(1);
+
+    state.center_view_on_selection();
+
+    assert_eq!(state.list_state_offset_for_test(), 1);
+    assert_eq!(state.selected_frame_id(), Some(2));
+}
+
+#[test]
+fn scroll_view_page_down_shifts_offset_without_moving_cursor() {
+    let frames = (0..12).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    for _ in 0..7 {
+        state.move_down();
+    }
+    state.set_visible_height(4);
+    state.set_list_state_offset_for_test(0);
+
+    state.scroll_view_page_down();
+
+    assert_eq!(state.list_state_offset_for_test(), 4);
+    assert_eq!(state.selected_frame_id(), Some(7));
+}
+
+#[test]
+fn scroll_view_page_up_shifts_offset_without_moving_cursor() {
+    let frames = (0..12).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    for _ in 0..7 {
+        state.move_down();
+    }
+    state.set_visible_height(4);
+    state.set_list_state_offset_for_test(8);
+
+    state.scroll_view_page_up();
+
+    assert_eq!(state.list_state_offset_for_test(), 4);
+    assert_eq!(state.selected_frame_id(), Some(7));
+}
+
+#[test]
+fn scroll_view_page_down_snaps_back_when_cursor_would_leave_viewport() {
+    let frames = (0..12).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    state.set_visible_height(4);
+    state.set_list_state_offset_for_test(0);
+
+    state.scroll_view_page_down();
+
+    assert_eq!(state.list_state_offset_for_test(), 0);
+    assert_eq!(state.selected_frame_id(), Some(0));
+}
+
+#[test]
+fn scroll_view_page_up_snaps_when_cursor_at_bottom_edge() {
+    let frames = (0..12).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    for _ in 0..11 {
+        state.move_down();
+    }
+    state.set_visible_height(4);
+    state.set_list_state_offset_for_test(8);
+
+    state.scroll_view_page_up();
+
+    // page up: 8 -> 4, cursor(11) would be outside [4, 8) so it snaps back to offset 8.
+    assert_eq!(state.list_state_offset_for_test(), 8);
+    assert_eq!(state.selected_frame_id(), Some(11));
+}
+
+#[test]
 fn render_static_section_for_collection_entry_object() {
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);

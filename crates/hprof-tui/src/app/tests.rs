@@ -1663,6 +1663,90 @@ fn camera_scroll_in_search_mode_is_noop_and_keeps_filter() {
     assert_eq!(app.thread_list.selected_serial(), before_selected);
 }
 
+#[test]
+fn camera_center_in_stack_frames_centers_view_without_moving_cursor() {
+    let frames: Vec<_> = (0..8).map(make_frame).collect();
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    app.handle_input(InputEvent::Enter); // -> StackFrames
+    app.handle_input(InputEvent::Down); // -> frame 1
+    app.handle_input(InputEvent::Down); // -> frame 2
+    app.handle_input(InputEvent::Down); // -> frame 3
+
+    {
+        let ss = app
+            .stack_state
+            .as_mut()
+            .expect("stack_state must be present in stack focus");
+        ss.set_visible_height(5);
+        ss.set_list_state_offset_for_test(0);
+    }
+
+    app.handle_input(InputEvent::CameraCenterSelection);
+
+    let ss = app.stack_state.as_ref().unwrap();
+    // selected(3), visible_height(5): center row index = 2 => offset = 1.
+    assert_eq!(ss.list_state_offset_for_test(), 1);
+    assert_eq!(ss.selected_frame_id(), Some(3));
+    assert_eq!(app.focus, Focus::StackFrames);
+}
+
+#[test]
+fn camera_center_in_thread_list_is_noop() {
+    let engine = StubEngine::with_threads(&["main", "worker"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    let before = app.thread_list.selected_serial();
+
+    app.handle_input(InputEvent::CameraCenterSelection);
+
+    assert_eq!(app.focus, Focus::ThreadList);
+    assert_eq!(app.thread_list.selected_serial(), before);
+    assert!(app.stack_state.is_none());
+}
+
+#[test]
+fn camera_page_scroll_in_stack_frames_shifts_offset_without_moving_cursor() {
+    let frames: Vec<_> = (0..12).map(make_frame).collect();
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    app.handle_input(InputEvent::Enter); // -> StackFrames
+    for _ in 0..7 {
+        app.handle_input(InputEvent::Down);
+    }
+
+    {
+        let ss = app
+            .stack_state
+            .as_mut()
+            .expect("stack_state must be present in stack focus");
+        ss.set_visible_height(4);
+        ss.set_list_state_offset_for_test(0);
+    }
+
+    app.handle_input(InputEvent::CameraPageDown);
+
+    let ss = app.stack_state.as_ref().unwrap();
+    assert_eq!(ss.list_state_offset_for_test(), 4);
+    assert_eq!(ss.selected_frame_id(), Some(7));
+    assert_eq!(app.focus, Focus::StackFrames);
+}
+
+#[test]
+fn camera_page_scroll_in_thread_list_is_noop() {
+    let engine = StubEngine::with_threads(&["main", "worker"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    let before = app.thread_list.selected_serial();
+
+    app.handle_input(InputEvent::CameraPageDown);
+    app.handle_input(InputEvent::CameraPageUp);
+
+    assert_eq!(app.focus, Focus::ThreadList);
+    assert_eq!(app.thread_list.selected_serial(), before);
+    assert!(app.stack_state.is_none());
+}
+
 // --- Task 4: loading indicator threshold tests ---
 
 #[test]

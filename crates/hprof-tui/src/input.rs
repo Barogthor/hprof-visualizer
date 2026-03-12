@@ -39,6 +39,12 @@ pub enum InputEvent {
     CameraScrollUp,
     /// Scroll the visible window down one line without moving the cursor (stack view only).
     CameraScrollDown,
+    /// Scroll the visible window up by one page without moving the cursor (stack view only).
+    CameraPageUp,
+    /// Scroll the visible window down by one page without moving the cursor (stack view only).
+    CameraPageDown,
+    /// Center the current selection in the visible window (stack view only).
+    CameraCenterSelection,
     /// Pin/unpin the item at the current cursor position in the stack panel.
     ToggleFavorite,
     /// Move focus to/from the favorites panel.
@@ -57,8 +63,27 @@ pub fn from_key(key: KeyEvent) -> Option<InputEvent> {
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), KeyModifiers::NONE) => Some(InputEvent::Quit),
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(InputEvent::Quit),
-        (KeyCode::Up, KeyModifiers::CONTROL) => Some(InputEvent::CameraScrollUp),
-        (KeyCode::Down, KeyModifiers::CONTROL) => Some(InputEvent::CameraScrollDown),
+        (KeyCode::Up, mods)
+            if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::SHIFT) =>
+        {
+            Some(InputEvent::CameraScrollUp)
+        }
+        (KeyCode::Down, mods)
+            if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::SHIFT) =>
+        {
+            Some(InputEvent::CameraScrollDown)
+        }
+        (KeyCode::PageUp, mods)
+            if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::SHIFT) =>
+        {
+            Some(InputEvent::CameraPageUp)
+        }
+        (KeyCode::PageDown, mods)
+            if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::SHIFT) =>
+        {
+            Some(InputEvent::CameraPageDown)
+        }
+        (KeyCode::Char('l'), KeyModifiers::CONTROL) => Some(InputEvent::CameraCenterSelection),
         (KeyCode::Up, _) => Some(InputEvent::Up),
         (KeyCode::Down, _) => Some(InputEvent::Down),
         (KeyCode::Right, _) => Some(InputEvent::Right),
@@ -250,6 +275,62 @@ mod tests {
         assert_eq!(
             from_key(key(KeyCode::Down, KeyModifiers::CONTROL)),
             Some(InputEvent::CameraScrollDown)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_shift_up_to_camera_scroll_up() {
+        assert_eq!(
+            from_key(key(KeyCode::Up, KeyModifiers::SHIFT)),
+            Some(InputEvent::CameraScrollUp)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_shift_down_to_camera_scroll_down() {
+        assert_eq!(
+            from_key(key(KeyCode::Down, KeyModifiers::SHIFT)),
+            Some(InputEvent::CameraScrollDown)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_ctrl_l_to_camera_center_selection() {
+        assert_eq!(
+            from_key(key(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            Some(InputEvent::CameraCenterSelection)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_ctrl_page_up_to_camera_page_up() {
+        assert_eq!(
+            from_key(key(KeyCode::PageUp, KeyModifiers::CONTROL)),
+            Some(InputEvent::CameraPageUp)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_ctrl_page_down_to_camera_page_down() {
+        assert_eq!(
+            from_key(key(KeyCode::PageDown, KeyModifiers::CONTROL)),
+            Some(InputEvent::CameraPageDown)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_shift_page_up_to_camera_page_up() {
+        assert_eq!(
+            from_key(key(KeyCode::PageUp, KeyModifiers::SHIFT)),
+            Some(InputEvent::CameraPageUp)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_shift_page_down_to_camera_page_down() {
+        assert_eq!(
+            from_key(key(KeyCode::PageDown, KeyModifiers::SHIFT)),
+            Some(InputEvent::CameraPageDown)
         );
     }
 

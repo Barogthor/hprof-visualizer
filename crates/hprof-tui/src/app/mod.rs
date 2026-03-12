@@ -461,6 +461,21 @@ impl<E: NavigationEngine> App<E> {
                     s.scroll_view_down();
                 }
             }
+            InputEvent::CameraPageUp => {
+                if let Some(s) = &mut self.stack_state {
+                    s.scroll_view_page_up();
+                }
+            }
+            InputEvent::CameraPageDown => {
+                if let Some(s) = &mut self.stack_state {
+                    s.scroll_view_page_down();
+                }
+            }
+            InputEvent::CameraCenterSelection => {
+                if let Some(s) = &mut self.stack_state {
+                    s.center_view_on_selection();
+                }
+            }
             InputEvent::Right => {
                 enum RightCmd {
                     ExpandFrame(u64),

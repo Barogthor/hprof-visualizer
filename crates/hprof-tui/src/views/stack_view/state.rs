@@ -1550,6 +1550,82 @@ impl StackState {
         }
     }
 
+    /// Scrolls the visible window up by one page without moving the selection cursor.
+    ///
+    /// If the cursor would go off the bottom of the viewport after scrolling, the camera
+    /// snaps so the cursor is at the last visible row.
+    pub fn scroll_view_page_up(&mut self) {
+        let visible_height = self.nav.visible_height();
+        if visible_height == 0 {
+            return;
+        }
+        let flat = self.flat_items();
+        let item_count = flat.len();
+        let cursor = self.nav.cursor().clone();
+        let Some(selected_idx) = flat.iter().position(|c| c == &cursor) else {
+            return;
+        };
+        let max_offset = item_count.saturating_sub(visible_height);
+        let current_offset = self.nav.list_state().offset().min(max_offset);
+        let new_offset = current_offset.saturating_sub(visible_height);
+        *self.nav.list_state_mut().offset_mut() = new_offset;
+        if selected_idx >= new_offset + visible_height {
+            *self.nav.list_state_mut().offset_mut() = selected_idx + 1 - visible_height;
+        }
+    }
+
+    /// Scrolls the visible window down by one page without moving the selection cursor.
+    ///
+    /// If the cursor would go off the top of the viewport after scrolling, the camera
+    /// snaps so the cursor is at the first visible row.
+    pub fn scroll_view_page_down(&mut self) {
+        let visible_height = self.nav.visible_height();
+        if visible_height == 0 {
+            return;
+        }
+        let flat = self.flat_items();
+        let item_count = flat.len();
+        if item_count == 0 {
+            return;
+        }
+        let cursor = self.nav.cursor().clone();
+        let Some(selected_idx) = flat.iter().position(|c| c == &cursor) else {
+            return;
+        };
+        let max_offset = item_count.saturating_sub(visible_height);
+        let current_offset = self.nav.list_state().offset().min(max_offset);
+        let new_offset = current_offset
+            .saturating_add(visible_height)
+            .min(max_offset);
+        *self.nav.list_state_mut().offset_mut() = new_offset;
+        if selected_idx < new_offset {
+            *self.nav.list_state_mut().offset_mut() = selected_idx;
+        }
+    }
+
+    /// Centers the selected row in the visible window when possible.
+    ///
+    /// Near the top or bottom of the list, the offset is clamped to keep the
+    /// viewport within valid bounds.
+    pub fn center_view_on_selection(&mut self) {
+        let visible_height = self.nav.visible_height();
+        if visible_height == 0 {
+            return;
+        }
+
+        let flat = self.flat_items();
+        let item_count = flat.len();
+        let cursor = self.nav.cursor().clone();
+        let Some(selected_idx) = flat.iter().position(|c| c == &cursor) else {
+            return;
+        };
+
+        let max_offset = item_count.saturating_sub(visible_height);
+        let center_row = visible_height / 2;
+        let centered_offset = selected_idx.saturating_sub(center_row).min(max_offset);
+        *self.nav.list_state_mut().offset_mut() = centered_offset;
+    }
+
     #[cfg(test)]
     pub fn list_state_offset_for_test(&self) -> usize {
         self.nav.list_state().offset()
