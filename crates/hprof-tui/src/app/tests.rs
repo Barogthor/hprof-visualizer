@@ -539,7 +539,7 @@ fn escape_on_loading_node_cancels_expansion_without_leaving_stack_frames() {
     app.handle_input(InputEvent::Enter); // → StackFrames
     app.handle_input(InputEvent::Enter); // expand frame 10
     app.handle_input(InputEvent::Down); // → OnVar{0,0}
-                                        // Inject a still-pending expansion to avoid races with fast worker completion.
+    // Inject a still-pending expansion to avoid races with fast worker completion.
     let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
     app.pending_expansions.insert(
         42,
@@ -1504,6 +1504,64 @@ fn page_up_down_scrolls_tree_by_visible_height() {
     assert_eq!(*state.cursor(), StackCursor::OnFrame(5));
 }
 
+#[test]
+fn camera_scroll_in_stack_frames_shifts_offset_without_moving_cursor() {
+    let frames: Vec<_> = (0..5).map(make_frame).collect();
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    app.handle_input(InputEvent::Enter); // -> StackFrames
+    app.handle_input(InputEvent::Down); // -> frame 1
+    app.handle_input(InputEvent::Down); // -> frame 2
+
+    {
+        let ss = app
+            .stack_state
+            .as_mut()
+            .expect("stack_state must be present in stack focus");
+        ss.set_visible_height(3);
+        ss.set_list_state_offset_for_test(0);
+    }
+
+    app.handle_input(InputEvent::CameraScrollDown);
+
+    let ss = app.stack_state.as_ref().unwrap();
+    assert_eq!(ss.list_state_offset_for_test(), 1);
+    assert_eq!(ss.selected_frame_id(), Some(2));
+    assert_eq!(app.focus, Focus::StackFrames);
+}
+
+#[test]
+fn camera_scroll_in_thread_list_is_noop() {
+    let engine = StubEngine::with_threads(&["main", "worker"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    let before = app.thread_list.selected_serial();
+
+    app.handle_input(InputEvent::CameraScrollDown);
+    app.handle_input(InputEvent::CameraScrollUp);
+
+    assert_eq!(app.focus, Focus::ThreadList);
+    assert_eq!(app.thread_list.selected_serial(), before);
+    assert!(app.stack_state.is_none());
+}
+
+#[test]
+fn camera_scroll_in_search_mode_is_noop_and_keeps_filter() {
+    let engine = StubEngine::with_threads(&["main", "worker"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    app.handle_input(InputEvent::SearchActivate);
+    app.handle_input(InputEvent::SearchChar('w'));
+    let before_selected = app.thread_list.selected_serial();
+
+    app.handle_input(InputEvent::CameraScrollDown);
+
+    assert_eq!(app.focus, Focus::ThreadList);
+    assert!(app.thread_list.is_search_active());
+    assert_eq!(app.thread_list.filter(), "w");
+    assert_eq!(app.thread_list.selected_serial(), before_selected);
+}
+
 // --- Task 4: loading indicator threshold tests ---
 
 #[test]
@@ -1516,7 +1574,7 @@ fn loading_indicator_not_shown_before_1_second() {
     app.handle_input(InputEvent::Enter);
     app.handle_input(InputEvent::Down);
     app.handle_input(InputEvent::Enter); // start_object_expansion(42) — completes fast.
-                                         // Poll once without sleeping — StubEngine responds immediately.
+    // Poll once without sleeping — StubEngine responds immediately.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
         app.poll_expansions();
@@ -1635,7 +1693,7 @@ fn loading_indicator_shown_if_not_yet_complete_after_1_second() {
 #[test]
 fn hidden_favorites_panel_forces_focus_back_to_previous_panel() {
     use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     let engine = StubEngine::with_threads(&["main"]);
     let mut app = App::new(engine, "test.hprof".to_string());

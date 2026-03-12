@@ -2117,7 +2117,10 @@ fn parent_cursor_on_var_returns_on_frame() {
     let frames = vec![make_frame(10), make_frame(20)];
     let mut state = StackState::new(frames);
     state.toggle_expand(10, vec![make_var_object_ref(0, 1)]);
-    state.set_cursor(StackCursor::OnVar { frame_idx: 1, var_idx: 0 });
+    state.set_cursor(StackCursor::OnVar {
+        frame_idx: 1,
+        var_idx: 0,
+    });
     assert_eq!(state.parent_cursor(), Some(StackCursor::OnFrame(1)));
 }
 
@@ -2132,7 +2135,10 @@ fn parent_cursor_on_object_field_depth1_returns_on_var() {
     });
     assert_eq!(
         state.parent_cursor(),
-        Some(StackCursor::OnVar { frame_idx: 0, var_idx: 2 })
+        Some(StackCursor::OnVar {
+            frame_idx: 0,
+            var_idx: 2
+        })
     );
 }
 
@@ -2191,7 +2197,10 @@ fn parent_cursor_on_collection_entry_with_empty_field_path_returns_on_var() {
     // correctly, unlike cursor_collection_id() which wrongly returns OnObjectField{[]}.
     assert_eq!(
         state.parent_cursor(),
-        Some(StackCursor::OnVar { frame_idx: 0, var_idx: 0 })
+        Some(StackCursor::OnVar {
+            frame_idx: 0,
+            var_idx: 0
+        })
     );
 }
 
@@ -2250,11 +2259,11 @@ fn left_on_non_expanded_var_navigates_to_frame() {
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
     state.toggle_expand(10, vec![make_var_object_ref(0, 99)]);
-    state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
-    assert_eq!(
-        state.parent_cursor(),
-        Some(StackCursor::OnFrame(0))
-    );
+    state.set_cursor(StackCursor::OnVar {
+        frame_idx: 0,
+        var_idx: 0,
+    });
+    assert_eq!(state.parent_cursor(), Some(StackCursor::OnFrame(0)));
 }
 
 #[test]
@@ -2277,15 +2286,15 @@ fn left_on_expanded_var_collapses_not_navigates() {
     let mut state = StackState::new(frames);
     state.toggle_expand(10, vec![make_var_object_ref(0, 99)]);
     state.set_expansion_done(99, vec![]);
-    state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
+    state.set_cursor(StackCursor::OnVar {
+        frame_idx: 0,
+        var_idx: 0,
+    });
 
     // Precondition: object is Expanded.
     assert_eq!(state.expansion_state(99), ExpansionPhase::Expanded);
     // Parent IS computable — the invariant is that Left handler checks Expanded FIRST.
-    assert_eq!(
-        state.parent_cursor(),
-        Some(StackCursor::OnFrame(0))
-    );
+    assert_eq!(state.parent_cursor(), Some(StackCursor::OnFrame(0)));
     // The Left handler sees Expanded and dispatches CollapseObj — NOT NavigateToParent.
     // We verify the expansion phase check here (the dispatch decision itself lives in App).
     assert_eq!(state.expansion_state(99), ExpansionPhase::Expanded);
@@ -2299,15 +2308,15 @@ fn left_on_primitive_var_navigates_to_frame() {
     let mut state = StackState::new(frames);
     // make_var(0, 0) creates VariableValue::Null (the non-ObjectRef case).
     state.toggle_expand(10, vec![make_var(0, 0)]);
-    state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
+    state.set_cursor(StackCursor::OnVar {
+        frame_idx: 0,
+        var_idx: 0,
+    });
     assert!(
         state.selected_object_id().is_none(),
         "Null var must have no object_id"
     );
-    assert_eq!(
-        state.parent_cursor(),
-        Some(StackCursor::OnFrame(0))
-    );
+    assert_eq!(state.parent_cursor(), Some(StackCursor::OnFrame(0)));
 }
 
 #[test]
@@ -2324,7 +2333,10 @@ fn right_on_collection_var_dispatches_start_collection() {
         },
     };
     state.toggle_expand(10, vec![collection_var]);
-    state.set_cursor(StackCursor::OnVar { frame_idx: 0, var_idx: 0 });
+    state.set_cursor(StackCursor::OnVar {
+        frame_idx: 0,
+        var_idx: 0,
+    });
 
     // Precondition: entry_count is detected.
     assert_eq!(state.selected_var_entry_count(), Some(5));
@@ -2380,30 +2392,33 @@ fn left_from_collection_entry_inside_object_field_navigates_to_field_row() {
     state.toggle_expand(10, vec![obj_var]);
 
     // Expand object 100 with 3 fields: int, string, array(id=200)
-    state.set_expansion_done(100, vec![
-        FieldInfo {
-            name: "count".to_string(),
-            value: FieldValue::Int(42),
-        },
-        FieldInfo {
-            name: "name".to_string(),
-            value: FieldValue::ObjectRef {
-                id: 300,
-                class_name: "String".to_string(),
-                entry_count: None,
-                inline_value: None,
+    state.set_expansion_done(
+        100,
+        vec![
+            FieldInfo {
+                name: "count".to_string(),
+                value: FieldValue::Int(42),
             },
-        },
-        FieldInfo {
-            name: "items".to_string(),
-            value: FieldValue::ObjectRef {
-                id: 200,
-                class_name: "ArrayList".to_string(),
-                entry_count: Some(1),
-                inline_value: None,
+            FieldInfo {
+                name: "name".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 300,
+                    class_name: "String".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
             },
-        },
-    ]);
+            FieldInfo {
+                name: "items".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 200,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(1),
+                    inline_value: None,
+                },
+            },
+        ],
+    );
 
     // Expand the array collection (id=200)
     state.expansion.collection_chunks.insert(
@@ -2482,7 +2497,10 @@ fn parent_cursor_on_collection_entry_uses_restore_cursor_for_nested_collection()
         entry_index: 2,
         obj_field_path: vec![2],
     };
-    state.expansion.collection_restore_cursors.insert(0xBB, restore.clone());
+    state
+        .expansion
+        .collection_restore_cursors
+        .insert(0xBB, restore.clone());
 
     state.set_cursor(StackCursor::OnCollectionEntry {
         frame_idx: 0,
@@ -2537,19 +2555,28 @@ fn left_on_collection_entry_obj_field_with_open_collection_detects_collapse() {
     );
 
     // Expand custom type (id=200) with field[2] = inner array (id=300, ec=5)
-    state.set_expansion_done(200, vec![
-        FieldInfo { name: "x".to_string(), value: FieldValue::Int(1) },
-        FieldInfo { name: "y".to_string(), value: FieldValue::Int(2) },
-        FieldInfo {
-            name: "items".to_string(),
-            value: FieldValue::ObjectRef {
-                id: 300,
-                class_name: "int[]".to_string(),
-                entry_count: Some(5),
-                inline_value: None,
+    state.set_expansion_done(
+        200,
+        vec![
+            FieldInfo {
+                name: "x".to_string(),
+                value: FieldValue::Int(1),
             },
-        },
-    ]);
+            FieldInfo {
+                name: "y".to_string(),
+                value: FieldValue::Int(2),
+            },
+            FieldInfo {
+                name: "items".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 300,
+                    class_name: "int[]".to_string(),
+                    entry_count: Some(5),
+                    inline_value: None,
+                },
+            },
+        ],
+    );
 
     // Inner array (id=300) expanded
     state.expansion.collection_chunks.insert(
@@ -2686,4 +2713,20 @@ fn scroll_view_down_no_op_when_list_fits_in_viewport() {
     // max_offset = 3.saturating_sub(10) = 0. new_offset = (0+1).min(0) = 0. No change.
     assert_eq!(state.list_state_offset_for_test(), 0);
     assert_eq!(state.selected_frame_id(), Some(1));
+}
+
+#[test]
+fn scroll_view_down_clamps_stale_offset_before_increment() {
+    let frames = (0..5).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    state.move_down(); // frame 1
+    state.move_down(); // frame 2
+    state.set_visible_height(3);
+    state.set_list_state_offset_for_test(usize::MAX);
+    state.scroll_view_down();
+
+    // max_offset = 5 - 3 = 2. stale offset is clamped before increment.
+    assert_eq!(state.list_state_offset_for_test(), 2);
+    // Cursor must not move.
+    assert_eq!(state.selected_frame_id(), Some(2));
 }

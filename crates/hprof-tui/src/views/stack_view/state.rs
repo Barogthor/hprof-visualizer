@@ -391,12 +391,22 @@ impl StackState {
     pub fn parent_cursor(&self) -> Option<StackCursor> {
         match &self.nav.cursor().clone() {
             StackCursor::NoFrames | StackCursor::OnFrame(_) => None,
-            StackCursor::OnVar { frame_idx, .. } => {
-                Some(StackCursor::OnFrame(*frame_idx))
+            StackCursor::OnVar { frame_idx, .. } => Some(StackCursor::OnFrame(*frame_idx)),
+            StackCursor::OnObjectField {
+                frame_idx,
+                var_idx,
+                field_path,
             }
-            StackCursor::OnObjectField { frame_idx, var_idx, field_path }
-            | StackCursor::OnObjectLoadingNode { frame_idx, var_idx, field_path }
-            | StackCursor::OnCyclicNode { frame_idx, var_idx, field_path } => {
+            | StackCursor::OnObjectLoadingNode {
+                frame_idx,
+                var_idx,
+                field_path,
+            }
+            | StackCursor::OnCyclicNode {
+                frame_idx,
+                var_idx,
+                field_path,
+            } => {
                 // len() == 0: edge case (story 9.2). Both 0 and 1 map to OnVar.
                 if field_path.len() <= 1 {
                     Some(StackCursor::OnVar {
@@ -426,10 +436,7 @@ impl StackState {
                 collection_id,
                 ..
             } => {
-                if let Some(restore) = self
-                    .expansion
-                    .collection_restore_cursors
-                    .get(collection_id)
+                if let Some(restore) = self.expansion.collection_restore_cursors.get(collection_id)
                 {
                     return Some(restore.clone());
                 }
@@ -504,10 +511,8 @@ impl StackState {
                 collection_id,
                 ..
             } => {
-                if let Some(restore_cursor) = self
-                    .expansion
-                    .collection_restore_cursors
-                    .get(collection_id)
+                if let Some(restore_cursor) =
+                    self.expansion.collection_restore_cursors.get(collection_id)
                 {
                     return Some((*collection_id, restore_cursor.clone()));
                 }
@@ -780,8 +785,7 @@ impl StackState {
         //   which implies selected_idx + 1 >= visible_height + 1 > visible_height,
         //   so selected_idx + 1 - visible_height >= 1 (no usize underflow).
         if selected_idx >= new_offset + visible_height {
-            *self.nav.list_state_mut().offset_mut() =
-                selected_idx + 1 - visible_height;
+            *self.nav.list_state_mut().offset_mut() = selected_idx + 1 - visible_height;
         }
     }
 
@@ -804,7 +808,9 @@ impl StackState {
             return;
         };
         let max_offset = item_count.saturating_sub(visible_height);
-        let new_offset = (self.nav.list_state().offset() + 1).min(max_offset);
+        // Clamp stale offsets first, then advance by one line.
+        let current_offset = self.nav.list_state().offset().min(max_offset);
+        let new_offset = current_offset.saturating_add(1).min(max_offset);
         *self.nav.list_state_mut().offset_mut() = new_offset;
         // Snap back: cursor above viewport after scrolling down.
         if selected_idx < new_offset {
@@ -856,7 +862,14 @@ impl StackState {
                             if entry_count.is_some()
                                 && let Some(cc) = self.expansion.collection_chunks.get(object_id)
                             {
-                                self.emit_collection_children(fi, vi, &[], *object_id, cc, &mut out);
+                                self.emit_collection_children(
+                                    fi,
+                                    vi,
+                                    &[],
+                                    *object_id,
+                                    cc,
+                                    &mut out,
+                                );
                                 continue;
                             }
                             let mut visited = HashSet::new();
@@ -1238,5 +1251,4 @@ impl StackState {
         }
         items
     }
-
 }

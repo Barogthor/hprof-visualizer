@@ -119,7 +119,7 @@ development_status:
   9-1-expand-state-bugs-and-failed-resolve-non-navigable: done
   9-2-collection-data-fidelity: done
   9-3-arrow-expand-unexpand-parent-navigation: done  # post-release fixes 2026-03-12
-  9-4-camera-scroll: review
+  9-4-camera-scroll: done
   9-5-stack-frame-variable-names-and-static-fields: backlog
   9-6-search-and-favorites-ux-polish: backlog
   9-7-help-footer-context-and-visibility: backlog

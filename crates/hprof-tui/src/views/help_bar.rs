@@ -29,9 +29,8 @@ const ENTRIES: &[(&str, &str)] = &[
     ("Enter", "Expand / confirm"),
     ("\u{2192}", "Expand node"),
     ("\u{2190}", "Unexpand / go to parent"),
-    // TODO(7.1): remove "(Story 7.1)" annotations
-    ("f", "Pin / unpin favorite (Story 7.1)"),
-    ("F", "Focus favorites panel (Story 7.1)"),
+    ("f", "Pin / unpin favorite"),
+    ("F", "Focus favorites panel"),
     ("s or /", "Open search (thread list only)"),
     ("?", "Toggle help panel"),
 ];
@@ -43,7 +42,7 @@ pub struct HelpBar;
 ///
 /// Formula: `2 (borders) + 1 (padding) + div_ceil(ENTRY_COUNT, 2) + 1 (separator)`
 ///
-/// With `ENTRY_COUNT = 13`: `2 + 1 + 7 + 1 = 11`.
+/// With `ENTRY_COUNT = 15`: `2 + 1 + 8 + 1 = 12`.
 pub fn required_height() -> u16 {
     2 + 1 + ENTRY_COUNT.div_ceil(2) + 1
 }

@@ -1,6 +1,6 @@
 # Story 9.4: Camera Scroll (Vertical View Shift)
 
-Status: review
+Status: done
 
 ## Story
 
@@ -595,6 +595,9 @@ claude-sonnet-4-6
 - Task 4: Case B (9.3 merged) — added 2 entries, ENTRY_COUNT 13→15, updated 2 tests.
 - Task 5: 7 scroll_view tests added to stack_view/tests.rs; all pass.
 - Task 6: `cargo test --all` 252 passed; `cargo clippy --all-targets -- -D warnings` clean.
+- Task 7 (post-review hardening): clamped stale offsets in `scroll_view_down()` to avoid
+  overflow risk, added app-level CameraScroll routing/no-op tests, cleaned help footer labels,
+  and aligned story traceability notes with workspace git state.
 
 ### File List
 
@@ -603,6 +606,17 @@ claude-sonnet-4-6
 - `crates/hprof-tui/src/views/stack_view/state.rs`
 - `crates/hprof-tui/src/views/stack_view/tests.rs`
 - `crates/hprof-tui/src/app/mod.rs`
+- `crates/hprof-tui/src/app/tests.rs`
 - `crates/hprof-tui/src/views/help_bar.rs`
+- `docs/code-review/codex-story-9-4-adversarial-review-2026-03-12.md`
 - `docs/implementation-artifacts/sprint-status.yaml`
 - `docs/implementation-artifacts/9-4-camera-scroll.md`
+
+### Git Reality Notes (Review Context)
+
+- Workspace had unrelated local changes during this code review:
+  - `crates/hprof-engine/src/pagination/tests.rs`
+  - `tools/hprof-redact-custom/src/main/java/io/hprofvisualizer/redact/PathOnlyTransformer.java`
+  - `docs/code-review/claude-story-9-4-adversarial-review.md`
+  - `docs/implementation-artifacts/9-5-stack-frame-variable-names-and-static-fields.md`
+- These files are not part of story 9.4 implementation scope.
