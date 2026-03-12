@@ -103,9 +103,7 @@ fn append_var(
 ) {
     let phase = match &var.value {
         VariableValue::ObjectRef {
-            id,
-            entry_count,
-            ..
+            id, entry_count, ..
         } => {
             if entry_count.is_some() && collection_chunks.contains_key(id) {
                 ExpansionPhase::Expanded
@@ -132,13 +130,24 @@ fn append_var(
             ("! ", label, THEME.error_indicator)
         }
         (
-            VariableValue::ObjectRef { class_name, entry_count, .. },
+            VariableValue::ObjectRef {
+                class_name,
+                entry_count,
+                ..
+            },
             ExpansionPhase::Collapsed,
         ) => {
             let label = format_object_ref_collapsed(class_name, *entry_count);
             ("+ ", format!("local variable: {label}"), Style::new())
         }
-        (VariableValue::ObjectRef { class_name, entry_count, .. }, _) => {
+        (
+            VariableValue::ObjectRef {
+                class_name,
+                entry_count,
+                ..
+            },
+            _,
+        ) => {
             let label = format_object_ref_collapsed(class_name, *entry_count);
             ("- ", format!("local variable: {label}"), Style::new())
         }
@@ -157,12 +166,12 @@ fn append_var(
     ])));
 
     if let VariableValue::ObjectRef {
-        id,
-        entry_count,
-        ..
+        id, entry_count, ..
     } = &var.value
     {
-        if entry_count.is_some() && let Some(cc) = collection_chunks.get(id) {
+        if entry_count.is_some()
+            && let Some(cc) = collection_chunks.get(id)
+        {
             append_collection_items(
                 *id,
                 cc,
@@ -249,14 +258,17 @@ fn append_object_children(
                         continue;
                     }
 
-                    let child_phase = if let FieldValue::ObjectRef { id, entry_count, .. } =
-                        field.value
+                    let child_phase = if let FieldValue::ObjectRef {
+                        id, entry_count, ..
+                    } = field.value
                     {
-                        Some(if entry_count.is_some() && collection_chunks.contains_key(&id) {
-                            ExpansionPhase::Expanded
-                        } else {
-                            get_phase(id, object_phases)
-                        })
+                        Some(
+                            if entry_count.is_some() && collection_chunks.contains_key(&id) {
+                                ExpansionPhase::Expanded
+                            } else {
+                                get_phase(id, object_phases)
+                            },
+                        )
                     } else {
                         None
                     };
@@ -453,10 +465,8 @@ fn append_collection_entry_item(
     } else {
         None
     };
-    let text = if let (
-        FieldValue::ObjectRef { id, class_name, .. },
-        Some(ExpansionPhase::Failed),
-    ) = (&entry.value, &value_phase)
+    let text = if let (FieldValue::ObjectRef { id, class_name, .. }, Some(ExpansionPhase::Failed)) =
+        (&entry.value, &value_phase)
     {
         let err = object_errors
             .get(id)
@@ -474,7 +484,10 @@ fn append_collection_entry_item(
                 entry.index, k, short
             )
         } else {
-            format!("{indent}! [{}] {}{FAILED_LABEL_SEP}{err}", entry.index, short)
+            format!(
+                "{indent}! [{}] {}{FAILED_LABEL_SEP}{err}",
+                entry.index, short
+            )
         }
     } else {
         StackState::format_entry_line(entry, indent, value_phase.as_ref())
@@ -578,14 +591,17 @@ fn append_collection_entry_obj(
                         ))));
                         continue;
                     }
-                    let child_phase = if let FieldValue::ObjectRef { id, entry_count, .. } =
-                        field.value
+                    let child_phase = if let FieldValue::ObjectRef {
+                        id, entry_count, ..
+                    } = field.value
                     {
-                        Some(if entry_count.is_some() && collection_chunks.contains_key(&id) {
-                            ExpansionPhase::Expanded
-                        } else {
-                            get_phase(id, object_phases)
-                        })
+                        Some(
+                            if entry_count.is_some() && collection_chunks.contains_key(&id) {
+                                ExpansionPhase::Expanded
+                            } else {
+                                get_phase(id, object_phases)
+                            },
+                        )
                     } else {
                         None
                     };

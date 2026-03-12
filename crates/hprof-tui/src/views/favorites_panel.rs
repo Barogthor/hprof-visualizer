@@ -18,7 +18,7 @@ use crate::{
     views::{
         cursor::CursorState,
         stack_view::ExpansionPhase,
-        tree_render::{render_variable_tree, TreeRoot},
+        tree_render::{TreeRoot, render_variable_tree},
     },
 };
 
@@ -225,7 +225,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
 #[cfg(test)]
 mod tests {
     use hprof_engine::{FieldInfo, FieldValue, VariableInfo, VariableValue};
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
     use std::collections::HashMap;
 
     use super::*;

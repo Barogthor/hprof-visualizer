@@ -585,7 +585,9 @@ impl<E: NavigationEngine> App<E> {
                         };
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.insert(cid, chunks);
-                            s.expansion.collection_restore_cursors.insert(cid, restore_cursor);
+                            s.expansion
+                                .collection_restore_cursors
+                                .insert(cid, restore_cursor);
                         }
                         self.start_collection_page_load(cid, 0, limit);
                     }

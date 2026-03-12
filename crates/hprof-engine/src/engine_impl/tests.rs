@@ -1065,7 +1065,7 @@ mod collection_tests {
         data.extend_from_slice(&1i32.to_be_bytes()); // modCount
         data.extend_from_slice(&16_384i32.to_be_bytes()); // threshold
         data.extend_from_slice(&0.75f32.to_be_bytes()); // loadFactor
-                                                        // Super fields (AbstractMap)
+        // Super fields (AbstractMap)
         data.extend_from_slice(&0x0852_B150_1234_5678u64.to_be_bytes()); // keySet
         data.extend_from_slice(&0x0852_B151_1234_5678u64.to_be_bytes()); // values
 
@@ -1152,7 +1152,7 @@ mod collection_tests {
         data.extend_from_slice(&0x21u64.to_be_bytes()); // head
         data.extend_from_slice(&0x22u64.to_be_bytes()); // tail
         data.push(1u8); // accessOrder
-                        // Super class fields (HashMap)
+        // Super class fields (HashMap)
         data.extend_from_slice(&0x30u64.to_be_bytes()); // table
         data.extend_from_slice(&0x31u64.to_be_bytes()); // entrySet
         data.extend_from_slice(&14_000i32.to_be_bytes()); // size

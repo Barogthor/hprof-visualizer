@@ -19,8 +19,8 @@ use crate::{
     EngineConfig, HprofError,
     cache::lru::{EVICTION_TARGET, EVICTION_TRIGGER},
     engine::{
-        CollectionPage, FieldInfo, FieldValue, FrameInfo, LineNumber, NavigationEngine,
-        ThreadInfo, ThreadState, VariableInfo, VariableValue,
+        CollectionPage, FieldInfo, FieldValue, FrameInfo, LineNumber, NavigationEngine, ThreadInfo,
+        ThreadState, VariableInfo, VariableValue,
     },
 };
 
