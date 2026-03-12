@@ -35,6 +35,25 @@ pub enum PinKey {
         var_idx: usize,
         field_path: Vec<usize>,
     },
+    /// One entry inside a collection/array.
+    CollectionEntry {
+        frame_id: u64,
+        thread_name: String,
+        var_idx: usize,
+        field_path: Vec<usize>,
+        collection_id: u64,
+        entry_index: usize,
+    },
+    /// One field inside an object expanded from a collection entry.
+    CollectionEntryField {
+        frame_id: u64,
+        thread_name: String,
+        var_idx: usize,
+        field_path: Vec<usize>,
+        collection_id: u64,
+        entry_index: usize,
+        obj_field_path: Vec<usize>,
+    },
 }
 
 /// Frozen content captured at pin time.
@@ -220,7 +239,7 @@ fn freeze_collection_chunks(chunks: &CollectionChunks) -> CollectionChunks {
 }
 
 /// Builds a [`PinnedItem`] from the current cursor position, or `None` if the
-/// cursor position cannot be pinned (e.g. `OnCollectionEntry`, loading nodes).
+/// cursor position cannot be pinned (e.g. loading/cyclic pseudo-nodes).
 pub fn snapshot_from_cursor(
     cursor: &StackCursor,
     state: &StackState,
@@ -394,9 +413,160 @@ pub fn snapshot_from_cursor(
             })
         }
 
-        // Not supported in 7.1 — silently ignored.
-        StackCursor::OnCollectionEntry { .. } | StackCursor::OnCollectionEntryObjField { .. } => {
-            None
+        StackCursor::OnCollectionEntry {
+            frame_idx,
+            var_idx,
+            field_path,
+            collection_id,
+            entry_index,
+        } => {
+            let frame = state.frames().get(*frame_idx)?;
+            let frame_id = frame.frame_id;
+            let frame_label = format_frame_label(frame);
+            let cc = state.collection_chunks_map().get(collection_id)?;
+            let entry = cc.find_entry(*entry_index)?;
+            let item_label =
+                build_collection_entry_label(state, frame_id, *var_idx, field_path, *entry_index);
+
+            let snapshot = match &entry.value {
+                FieldValue::ObjectRef { id, class_name, .. } => {
+                    if state.object_fields().contains_key(id)
+                        || state.collection_chunks_map().contains_key(id)
+                    {
+                        let mut reachable = HashSet::new();
+                        let (fields, chunks, truncated) =
+                            subtree_snapshot(*id, state, &mut reachable);
+                        PinnedSnapshot::Subtree {
+                            root_id: *id,
+                            object_fields: fields,
+                            collection_chunks: chunks,
+                            truncated,
+                        }
+                    } else {
+                        PinnedSnapshot::UnexpandedRef {
+                            class_name: class_name.clone(),
+                            object_id: *id,
+                        }
+                    }
+                }
+                FieldValue::Null => PinnedSnapshot::Primitive {
+                    value_label: "null".to_string(),
+                },
+                other => PinnedSnapshot::Primitive {
+                    value_label: format_primitive_field_value(other),
+                },
+            };
+
+            Some(PinnedItem {
+                thread_name: thread_name.to_string(),
+                frame_label,
+                item_label,
+                snapshot,
+                local_collapsed: HashSet::new(),
+                key: PinKey::CollectionEntry {
+                    frame_id,
+                    thread_name: thread_name.to_string(),
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                    collection_id: *collection_id,
+                    entry_index: *entry_index,
+                },
+            })
+        }
+
+        StackCursor::OnCollectionEntryObjField {
+            frame_idx,
+            var_idx,
+            field_path,
+            collection_id,
+            entry_index,
+            obj_field_path,
+        } => {
+            if obj_field_path.is_empty() {
+                return None;
+            }
+
+            let frame = state.frames().get(*frame_idx)?;
+            let frame_id = frame.frame_id;
+            let frame_label = format_frame_label(frame);
+            let cc = state.collection_chunks_map().get(collection_id)?;
+            let entry = cc.find_entry(*entry_index)?;
+            let FieldValue::ObjectRef {
+                id: root_id,
+                class_name: _,
+                ..
+            } = &entry.value
+            else {
+                return None;
+            };
+
+            let mut current_id = *root_id;
+            for &field_idx in &obj_field_path[..obj_field_path.len().saturating_sub(1)] {
+                let fields = state.object_fields().get(&current_id)?;
+                match fields.get(field_idx)?.value {
+                    FieldValue::ObjectRef { id, .. } => current_id = id,
+                    _ => return None,
+                }
+            }
+            let leaf_field_idx = *obj_field_path.last()?;
+            let leaf_fields = state.object_fields().get(&current_id)?;
+            let leaf_field = leaf_fields.get(leaf_field_idx)?;
+
+            let item_label = build_collection_entry_obj_field_label(
+                state,
+                frame_id,
+                *var_idx,
+                field_path,
+                *entry_index,
+                *root_id,
+                obj_field_path,
+            );
+
+            let snapshot = match &leaf_field.value {
+                FieldValue::ObjectRef { id, class_name, .. } => {
+                    if state.object_fields().contains_key(id)
+                        || state.collection_chunks_map().contains_key(id)
+                    {
+                        let mut reachable = HashSet::new();
+                        let (fields, chunks, truncated) =
+                            subtree_snapshot(*id, state, &mut reachable);
+                        PinnedSnapshot::Subtree {
+                            root_id: *id,
+                            object_fields: fields,
+                            collection_chunks: chunks,
+                            truncated,
+                        }
+                    } else {
+                        PinnedSnapshot::UnexpandedRef {
+                            class_name: class_name.clone(),
+                            object_id: *id,
+                        }
+                    }
+                }
+                FieldValue::Null => PinnedSnapshot::Primitive {
+                    value_label: "null".to_string(),
+                },
+                other => PinnedSnapshot::Primitive {
+                    value_label: format_primitive_field_value(other),
+                },
+            };
+
+            Some(PinnedItem {
+                thread_name: thread_name.to_string(),
+                frame_label,
+                item_label,
+                snapshot,
+                local_collapsed: HashSet::new(),
+                key: PinKey::CollectionEntryField {
+                    frame_id,
+                    thread_name: thread_name.to_string(),
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                    collection_id: *collection_id,
+                    entry_index: *entry_index,
+                    obj_field_path: obj_field_path.clone(),
+                },
+            })
         }
 
         // Not pinnable.
@@ -450,6 +620,65 @@ fn build_field_path_label(
         parts.push(name);
     }
     parts.join(".")
+}
+
+fn build_collection_entry_label(
+    state: &StackState,
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    entry_index: usize,
+) -> String {
+    let base = if field_path.is_empty() {
+        format!("var[{var_idx}]")
+    } else {
+        let root_id = state
+            .vars()
+            .get(&frame_id)
+            .and_then(|vars| vars.get(var_idx))
+            .and_then(|var| {
+                if let VariableValue::ObjectRef { id, .. } = var.value {
+                    Some(id)
+                } else {
+                    None
+                }
+            });
+        if let Some(root_id) = root_id {
+            build_field_path_label(state, root_id, var_idx, field_path)
+        } else {
+            format!("var[{var_idx}]")
+        }
+    };
+    format!("{base}[{entry_index}]")
+}
+
+fn build_collection_entry_obj_field_label(
+    state: &StackState,
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    entry_index: usize,
+    root_id: u64,
+    obj_field_path: &[usize],
+) -> String {
+    let mut label = build_collection_entry_label(state, frame_id, var_idx, field_path, entry_index);
+    let mut current_id = root_id;
+    for &idx in obj_field_path {
+        let field_name = state
+            .object_fields()
+            .get(&current_id)
+            .and_then(|fields| fields.get(idx))
+            .map(|f| {
+                if let FieldValue::ObjectRef { id, .. } = f.value {
+                    current_id = id;
+                }
+                f.name.clone()
+            })
+            .unwrap_or_else(|| format!("#{idx}"));
+        label.push('.');
+        label.push_str(&field_name);
+    }
+    label
 }
 
 fn format_primitive_field_value(v: &FieldValue) -> String {
@@ -911,5 +1140,206 @@ mod tests {
             }
             _ => panic!("expected subtree snapshot"),
         }
+    }
+
+    #[test]
+    fn snapshot_on_collection_entry_primitive_produces_primitive_and_key() {
+        use crate::views::stack_view::CollectionChunks;
+
+        let mut state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::ObjectRef {
+                    id: 20,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(2),
+                },
+            }],
+        );
+        state.expansion.collection_chunks.insert(
+            20,
+            CollectionChunks {
+                total_count: 2,
+                eager_page: Some(CollectionPage {
+                    entries: vec![EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::Int(7),
+                    }],
+                    total_count: 2,
+                    offset: 0,
+                    has_more: false,
+                }),
+                chunk_pages: HashMap::new(),
+            },
+        );
+
+        let cursor = StackCursor::OnCollectionEntry {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+            collection_id: 20,
+            entry_index: 0,
+        };
+        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+
+        assert!(
+            matches!(&item.snapshot, PinnedSnapshot::Primitive { value_label } if value_label == "7")
+        );
+        assert!(matches!(
+            item.key,
+            PinKey::CollectionEntry {
+                var_idx: 0,
+                collection_id: 20,
+                entry_index: 0,
+                ..
+            }
+        ));
+        assert!(item.item_label.contains("var[0][0]"));
+    }
+
+    #[test]
+    fn snapshot_on_collection_entry_objectref_produces_subtree() {
+        use crate::views::stack_view::CollectionChunks;
+
+        let mut state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::ObjectRef {
+                    id: 20,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(2),
+                },
+            }],
+        );
+        state.expansion.collection_chunks.insert(
+            20,
+            CollectionChunks {
+                total_count: 2,
+                eager_page: Some(CollectionPage {
+                    entries: vec![EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::ObjectRef {
+                            id: 30,
+                            class_name: "Node".to_string(),
+                            entry_count: None,
+                            inline_value: None,
+                        },
+                    }],
+                    total_count: 2,
+                    offset: 0,
+                    has_more: false,
+                }),
+                chunk_pages: HashMap::new(),
+            },
+        );
+        state.set_expansion_done(
+            30,
+            vec![FieldInfo {
+                name: "value".to_string(),
+                value: FieldValue::Int(9),
+            }],
+        );
+
+        let cursor = StackCursor::OnCollectionEntry {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+            collection_id: 20,
+            entry_index: 0,
+        };
+        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+
+        assert!(matches!(
+            item.snapshot,
+            PinnedSnapshot::Subtree { root_id: 30, .. }
+        ));
+    }
+
+    #[test]
+    fn snapshot_on_collection_entry_obj_field_produces_field_pin() {
+        use crate::views::stack_view::CollectionChunks;
+
+        let mut state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::ObjectRef {
+                    id: 20,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(2),
+                },
+            }],
+        );
+        state.expansion.collection_chunks.insert(
+            20,
+            CollectionChunks {
+                total_count: 2,
+                eager_page: Some(CollectionPage {
+                    entries: vec![EntryInfo {
+                        index: 0,
+                        key: None,
+                        value: FieldValue::ObjectRef {
+                            id: 30,
+                            class_name: "Node".to_string(),
+                            entry_count: None,
+                            inline_value: None,
+                        },
+                    }],
+                    total_count: 2,
+                    offset: 0,
+                    has_more: false,
+                }),
+                chunk_pages: HashMap::new(),
+            },
+        );
+        state.set_expansion_done(
+            30,
+            vec![FieldInfo {
+                name: "value".to_string(),
+                value: FieldValue::Int(11),
+            }],
+        );
+
+        let cursor = StackCursor::OnCollectionEntryObjField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+            collection_id: 20,
+            entry_index: 0,
+            obj_field_path: vec![0],
+        };
+        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+
+        assert!(
+            matches!(&item.snapshot, PinnedSnapshot::Primitive { value_label } if value_label == "11")
+        );
+        assert!(matches!(
+            item.key,
+            PinKey::CollectionEntryField {
+                collection_id: 20,
+                entry_index: 0,
+                ..
+            }
+        ));
+        assert!(item.item_label.contains("value"));
+    }
+
+    #[test]
+    fn snapshot_on_collection_entry_obj_field_empty_path_returns_none() {
+        let state = StackState::new(vec![make_frame(1)]);
+        let cursor = StackCursor::OnCollectionEntryObjField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+            collection_id: 1,
+            entry_index: 0,
+            obj_field_path: vec![],
+        };
+
+        assert!(snapshot_from_cursor(&cursor, &state, "main").is_none());
     }
 }

@@ -185,7 +185,9 @@ impl<E: NavigationEngine> App<E> {
         let frame_id = match pin_key {
             PinKey::Frame { frame_id, .. }
             | PinKey::Var { frame_id, .. }
-            | PinKey::Field { frame_id, .. } => *frame_id,
+            | PinKey::Field { frame_id, .. }
+            | PinKey::CollectionEntry { frame_id, .. }
+            | PinKey::CollectionEntryField { frame_id, .. } => *frame_id,
         };
 
         let Some(frame_idx) = self.stack_state.as_ref().and_then(|stack_state| {
@@ -295,6 +297,103 @@ impl<E: NavigationEngine> App<E> {
                 if let Some(stack_state) = &mut self.stack_state {
                     if stack_state.flat_items().contains(&field_cursor) {
                         stack_state.set_cursor(field_cursor);
+                    } else if stack_state.flat_items().contains(&var_cursor) {
+                        stack_state.set_cursor(var_cursor);
+                    } else {
+                        stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
+                    }
+                }
+            }
+            PinKey::CollectionEntry {
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                ..
+            } => {
+                let entry_cursor = StackCursor::OnCollectionEntry {
+                    frame_idx,
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                    collection_id: *collection_id,
+                    entry_index: *entry_index,
+                };
+                let parent_cursor = if field_path.is_empty() {
+                    StackCursor::OnVar {
+                        frame_idx,
+                        var_idx: *var_idx,
+                    }
+                } else {
+                    StackCursor::OnObjectField {
+                        frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                    }
+                };
+                let var_cursor = StackCursor::OnVar {
+                    frame_idx,
+                    var_idx: *var_idx,
+                };
+
+                if let Some(stack_state) = &mut self.stack_state {
+                    if stack_state.flat_items().contains(&entry_cursor) {
+                        stack_state.set_cursor(entry_cursor);
+                    } else if stack_state.flat_items().contains(&parent_cursor) {
+                        stack_state.set_cursor(parent_cursor);
+                    } else if stack_state.flat_items().contains(&var_cursor) {
+                        stack_state.set_cursor(var_cursor);
+                    } else {
+                        stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
+                    }
+                }
+            }
+            PinKey::CollectionEntryField {
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                ..
+            } => {
+                let entry_field_cursor = StackCursor::OnCollectionEntryObjField {
+                    frame_idx,
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                    collection_id: *collection_id,
+                    entry_index: *entry_index,
+                    obj_field_path: obj_field_path.clone(),
+                };
+                let entry_cursor = StackCursor::OnCollectionEntry {
+                    frame_idx,
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                    collection_id: *collection_id,
+                    entry_index: *entry_index,
+                };
+                let parent_cursor = if field_path.is_empty() {
+                    StackCursor::OnVar {
+                        frame_idx,
+                        var_idx: *var_idx,
+                    }
+                } else {
+                    StackCursor::OnObjectField {
+                        frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                    }
+                };
+                let var_cursor = StackCursor::OnVar {
+                    frame_idx,
+                    var_idx: *var_idx,
+                };
+
+                if let Some(stack_state) = &mut self.stack_state {
+                    if stack_state.flat_items().contains(&entry_field_cursor) {
+                        stack_state.set_cursor(entry_field_cursor);
+                    } else if stack_state.flat_items().contains(&entry_cursor) {
+                        stack_state.set_cursor(entry_cursor);
+                    } else if stack_state.flat_items().contains(&parent_cursor) {
+                        stack_state.set_cursor(parent_cursor);
                     } else if stack_state.flat_items().contains(&var_cursor) {
                         stack_state.set_cursor(var_cursor);
                     } else {
@@ -495,7 +594,9 @@ impl<E: NavigationEngine> App<E> {
                 let thread_name = match &pin_key {
                     PinKey::Frame { thread_name, .. }
                     | PinKey::Var { thread_name, .. }
-                    | PinKey::Field { thread_name, .. } => thread_name.clone(),
+                    | PinKey::Field { thread_name, .. }
+                    | PinKey::CollectionEntry { thread_name, .. }
+                    | PinKey::CollectionEntryField { thread_name, .. } => thread_name.clone(),
                 };
 
                 let matches: Vec<_> = self
