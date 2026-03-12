@@ -1711,6 +1711,11 @@ impl<E: NavigationEngine> App<E> {
         } else {
             0
         };
+        let status_ctx = match self.focus {
+            Focus::ThreadList => HelpContext::ThreadList,
+            Focus::StackFrames => HelpContext::StackFrames,
+            Focus::Favorites => HelpContext::Favorites,
+        };
         frame.render_widget(
             StatusBar {
                 filename: &self.filename,
@@ -1720,6 +1725,7 @@ impl<E: NavigationEngine> App<E> {
                 last_warning: last_warning.as_deref(),
                 file_indexed_pct,
                 pinned_hidden_count,
+                context: status_ctx,
             },
             status_area,
         );

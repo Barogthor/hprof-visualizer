@@ -2,7 +2,7 @@
 //! the TUI layout.
 //!
 //! Displays: `<filename>  |  <N> threads  |  <thread-name>  <STATE>  |
-//! [q]uit  [/]search  [Esc]back`
+//! [q]uit  [/]search (ThreadList only)  [Esc]back  [?]help`
 
 use hprof_engine::{ThreadInfo, ThreadState};
 use ratatui::{
@@ -12,7 +12,7 @@ use ratatui::{
     widgets::Widget,
 };
 
-use crate::theme::THEME;
+use crate::{theme::THEME, views::help_bar::HelpContext};
 
 /// One-line status bar for the bottom of the TUI.
 pub struct StatusBar<'a> {
@@ -30,6 +30,8 @@ pub struct StatusBar<'a> {
     pub last_warning: Option<&'a str>,
     /// Number of pinned items hidden because terminal is too narrow.
     pub pinned_hidden_count: usize,
+    /// Current panel focus, used to show context-relevant key hints.
+    pub context: HelpContext,
 }
 
 pub(crate) fn state_label(state: ThreadState) -> &'static str {
@@ -83,10 +85,22 @@ impl Widget for StatusBar<'_> {
             String::new()
         };
 
+        let mut hints = String::from("  [q]uit");
+        if matches!(self.context, HelpContext::ThreadList) {
+            hints.push_str("  [/]search");
+        }
+        hints.push_str("  [Esc]back  [?]help");
+
         let line = Line::from(vec![Span::styled(
             format!(
-                " {}{}  |  {}  |  {}  |  [q]uit  [/]search  [Esc]back{}{}",
-                incomplete_part, self.filename, thread_part, selected_part, pinned_part, warn_part
+                " {}{}  |  {}  |  {}  |{}{}{}",
+                incomplete_part,
+                self.filename,
+                thread_part,
+                selected_part,
+                hints,
+                pinned_part,
+                warn_part
             ),
             THEME.status_bar_bg,
         )]);
@@ -168,6 +182,7 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
+                context: HelpContext::ThreadList,
             },
             120,
         );
@@ -188,6 +203,7 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
+                context: HelpContext::ThreadList,
             },
             120,
         );
@@ -208,6 +224,7 @@ mod tests {
                 file_indexed_pct: Some(75.3),
                 last_warning: None,
                 pinned_hidden_count: 0,
+                context: HelpContext::ThreadList,
             },
             200,
         );
@@ -228,6 +245,7 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: Some("Object 0xABC not found"),
                 pinned_hidden_count: 0,
+                context: HelpContext::ThreadList,
             },
             200,
         );
@@ -249,6 +267,7 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: Some(&long_warning),
                 pinned_hidden_count: 0,
+                context: HelpContext::ThreadList,
             },
             300,
         );
@@ -265,5 +284,75 @@ mod tests {
             content.contains('…'),
             "must contain ellipsis; got: {content:?}"
         );
+    }
+
+    fn make_bar(context: HelpContext) -> StatusBar<'static> {
+        StatusBar {
+            filename: "test.hprof",
+            thread_count: 1,
+            selected: None,
+            warning_count: 0,
+            file_indexed_pct: None,
+            last_warning: None,
+            pinned_hidden_count: 0,
+            context,
+        }
+    }
+
+    #[test]
+    fn search_hint_shown_in_thread_list_context() {
+        let content = render_status_bar(make_bar(HelpContext::ThreadList), 200);
+        assert!(
+            content.contains("[/]search"),
+            "expected [/]search; got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn search_hint_hidden_in_stack_frames_context() {
+        let content = render_status_bar(make_bar(HelpContext::StackFrames), 200);
+        assert!(
+            !content.contains("[/]search"),
+            "unexpected [/]search; got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn search_hint_hidden_in_favorites_context() {
+        let content = render_status_bar(make_bar(HelpContext::Favorites), 200);
+        assert!(
+            !content.contains("[/]search"),
+            "unexpected [/]search; got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn help_hint_always_shown() {
+        for ctx in [
+            HelpContext::ThreadList,
+            HelpContext::StackFrames,
+            HelpContext::Favorites,
+        ] {
+            let content = render_status_bar(make_bar(ctx), 200);
+            assert!(
+                content.contains("[?]help"),
+                "expected [?]help for {ctx:?}; got: {content:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn esc_hint_always_shown() {
+        for ctx in [
+            HelpContext::ThreadList,
+            HelpContext::StackFrames,
+            HelpContext::Favorites,
+        ] {
+            let content = render_status_bar(make_bar(ctx), 200);
+            assert!(
+                content.contains("[Esc]back"),
+                "expected [Esc]back for {ctx:?}; got: {content:?}"
+            );
+        }
     }
 }
