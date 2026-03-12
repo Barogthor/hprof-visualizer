@@ -138,14 +138,17 @@ pub(crate) fn format_field_value_display(
 }
 
 /// Formats a `FieldValue` for inline display in collection entries.
-pub(crate) fn format_entry_value_text(v: &FieldValue) -> String {
+///
+/// When `show_object_ids` is `true` and the value is a non-null `ObjectRef`,
+/// appends ` @ 0x<id>` after the class name.
+pub(crate) fn format_entry_value_text(v: &FieldValue, show_object_ids: bool) -> String {
     match v {
         FieldValue::Null => "null".to_string(),
         FieldValue::ObjectRef {
+            id,
             class_name,
             entry_count,
             inline_value,
-            ..
         } => {
             let display_name = if class_name.is_empty() {
                 "Object"
@@ -156,6 +159,11 @@ pub(crate) fn format_entry_value_text(v: &FieldValue) -> String {
             let base = match entry_count {
                 Some(n) => format!("{short} ({n} entries)"),
                 None => short.to_string(),
+            };
+            let base = if show_object_ids && *id != 0 {
+                format!("{base} @ 0x{id:X}")
+            } else {
+                base
             };
             match inline_value {
                 Some(v) => format!("{base} = {v}"),
@@ -198,10 +206,13 @@ pub(crate) fn field_value_style(v: &FieldValue) -> Style {
 /// `value_phase` controls the expand toggle for `ObjectRef` values:
 /// pass the current [`ExpansionPhase`] of the entry's value object
 /// so that `+` / `-` is rendered correctly.
+/// `show_object_ids` mirrors the global AC4 toggle: when `true`, non-null
+/// `ObjectRef` values append ` @ 0x<id>`.
 pub(crate) fn format_entry_line(
     entry: &EntryInfo,
     indent: &str,
     value_phase: Option<&ExpansionPhase>,
+    show_object_ids: bool,
 ) -> String {
     let toggle = match value_phase {
         Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
@@ -209,9 +220,9 @@ pub(crate) fn format_entry_line(
         Some(ExpansionPhase::Collapsed) => "+ ",
         None => "  ",
     };
-    let val = format_entry_value_text(&entry.value);
+    let val = format_entry_value_text(&entry.value, show_object_ids);
     if let Some(key) = &entry.key {
-        let k = format_entry_value_text(key);
+        let k = format_entry_value_text(key, false);
         format!("{indent}{toggle}[{}] {} => {}", entry.index, k, val)
     } else {
         format!("{indent}{toggle}[{}] {}", entry.index, val)
@@ -277,5 +288,54 @@ mod tests {
         };
         let label = format_field_value_display(&value, Some(&ExpansionPhase::Expanded), false);
         assert_eq!(label, "Node");
+    }
+
+    #[test]
+    fn render_collection_entry_id_toggle() {
+        use hprof_engine::EntryInfo;
+
+        let entry = EntryInfo {
+            index: 0,
+            key: None,
+            value: FieldValue::ObjectRef {
+                id: 0xABCD,
+                class_name: "com.example.Item".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        };
+        let with_ids =
+            super::format_entry_line(&entry, "  ", Some(&ExpansionPhase::Collapsed), true);
+        let without_ids =
+            super::format_entry_line(&entry, "  ", Some(&ExpansionPhase::Collapsed), false);
+        assert!(
+            with_ids.contains("@ 0xABCD"),
+            "expected ID suffix when enabled: {with_ids}"
+        );
+        assert!(
+            !without_ids.contains("@ 0x"),
+            "expected no ID suffix when disabled: {without_ids}"
+        );
+    }
+
+    #[test]
+    fn render_collection_entry_null_id_never_shows_address() {
+        use hprof_engine::EntryInfo;
+
+        let entry = EntryInfo {
+            index: 0,
+            key: None,
+            value: FieldValue::ObjectRef {
+                id: 0,
+                class_name: "java.lang.Object".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        };
+        let label = super::format_entry_line(&entry, "  ", None, true);
+        assert!(
+            !label.contains("@ 0x"),
+            "null id must never render address: {label}"
+        );
     }
 }

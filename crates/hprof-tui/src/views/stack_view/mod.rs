@@ -24,8 +24,9 @@ impl StackState {
         entry: &hprof_engine::EntryInfo,
         indent: &str,
         value_phase: Option<&ExpansionPhase>,
+        show_object_ids: bool,
     ) -> String {
-        format::format_entry_line(entry, indent, value_phase)
+        format::format_entry_line(entry, indent, value_phase, show_object_ids)
     }
 }
 

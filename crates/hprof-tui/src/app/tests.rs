@@ -1259,7 +1259,7 @@ fn entry_rendering_map_vs_list_format() {
         key: Some(FieldValue::Int(42)),
         value: FieldValue::Int(100),
     };
-    let line = StackState::format_entry_line(&map_entry, "  ", None);
+    let line = StackState::format_entry_line(&map_entry, "  ", None, false);
     assert!(line.contains("[5] 42 => 100"), "map entry format: {}", line);
     // List entry.
     let list_entry = EntryInfo {
@@ -1267,7 +1267,7 @@ fn entry_rendering_map_vs_list_format() {
         key: None,
         value: FieldValue::Int(77),
     };
-    let line = StackState::format_entry_line(&list_entry, "  ", None);
+    let line = StackState::format_entry_line(&list_entry, "  ", None, false);
     assert!(line.contains("[3] 77"), "list entry format: {}", line);
     assert!(
         !line.contains("=>"),
@@ -1289,6 +1289,7 @@ fn entry_rendering_map_vs_list_format() {
         &obj_entry,
         "  ",
         Some(&crate::views::stack_view::ExpansionPhase::Collapsed),
+        false,
     );
     assert!(
         line_collapsed.contains("+ [0]") && line_collapsed.contains("String"),
@@ -1299,6 +1300,7 @@ fn entry_rendering_map_vs_list_format() {
         &obj_entry,
         "  ",
         Some(&crate::views::stack_view::ExpansionPhase::Expanded),
+        false,
     );
     assert!(
         line_expanded.contains("- [0]") && line_expanded.contains("String"),

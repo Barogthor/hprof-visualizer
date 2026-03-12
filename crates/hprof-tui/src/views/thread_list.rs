@@ -390,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_filter_restores_full_list_and_selects_first() {
+    fn thread_list_clear_filter_on_empty_result_syncs_cursor() {
         let mut state = ThreadListState::new(make_threads(&["main", "worker-1", "worker-2"]));
         state.apply_filter("xyz");
         assert_eq!(state.selected_serial(), None);
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn reopen_search_preserves_existing_filter() {
+    fn thread_list_reopen_search_preserves_existing_filter_in_input() {
         let mut state = ThreadListState::new(make_threads(&["main", "worker-1"]));
         state.apply_filter("work");
         state.activate_search();

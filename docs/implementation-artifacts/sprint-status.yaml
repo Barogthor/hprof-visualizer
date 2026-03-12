@@ -121,7 +121,7 @@ development_status:
   9-3-arrow-expand-unexpand-parent-navigation: done  # post-release fixes 2026-03-12
   9-4-camera-scroll: done
   9-5-static-fields-in-stack-view: done
-  9-6-search-and-favorites-ux-polish: review
+  9-6-search-and-favorites-ux-polish: done
   9-7-help-footer-context-and-visibility: ready-for-dev
   9-8-pinned-item-navigation-and-array-expansion: ready-for-dev
   9-9-value-hiding-and-reset-in-pinned-snapshots: backlog

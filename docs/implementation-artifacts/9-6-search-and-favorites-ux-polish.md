@@ -1,6 +1,6 @@
 # Story 9.6: Search & Favorites UX Polish
 
-Status: review
+Status: done
 
 ## Story
 
@@ -351,7 +351,7 @@ becomes empty. Task 3.2 changes this to conditional: `StackFrames` if a stack is
 
 ### Agent Model Used
 
-openai/gpt-5.3-codex
+claude-sonnet-4-6
 
 ### Debug Log References
 

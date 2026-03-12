@@ -243,6 +243,9 @@ impl<E: NavigationEngine> App<E> {
                     return;
                 };
 
+                // Synchronous expansion: each depth level calls expand_object on the main
+                // thread. Acceptable for best-effort cursor positioning, but may be slow
+                // on very deep field paths with a large hprof. Known limitation; no timeout.
                 for (depth, field_idx) in field_path.iter().enumerate() {
                     let is_expanded = self.stack_state.as_ref().is_some_and(|stack_state| {
                         stack_state.expansion_state(current_object_id) == ExpansionPhase::Expanded

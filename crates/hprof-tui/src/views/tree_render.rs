@@ -731,7 +731,7 @@ fn append_collection_entry_item(
             class_name.rsplit('.').next().unwrap_or(class_name)
         };
         if let Some(key) = &entry.key {
-            let k = super::stack_view::format_entry_value_text(key);
+            let k = super::stack_view::format_entry_value_text(key, false);
             format!(
                 "{indent}! [{}] {} => {}{FAILED_LABEL_SEP}{err}",
                 entry.index, k, short
@@ -743,7 +743,7 @@ fn append_collection_entry_item(
             )
         }
     } else {
-        StackState::format_entry_line(entry, indent, value_phase.as_ref())
+        StackState::format_entry_line(entry, indent, value_phase.as_ref(), ctx.show_object_ids)
     };
     let row_style = if matches!(value_phase, Some(ExpansionPhase::Failed)) {
         THEME.error_indicator
