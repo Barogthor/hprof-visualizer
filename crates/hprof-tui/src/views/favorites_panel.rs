@@ -159,6 +159,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                     let tree = render_variable_tree(
                         TreeRoot::Frame { vars: variables },
                         object_fields,
+                        &HashMap::new(),
                         collection_chunks,
                         &object_phases,
                         &HashMap::new(),
@@ -184,6 +185,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                     let tree = render_variable_tree(
                         TreeRoot::Subtree { root_id: *root_id },
                         object_fields,
+                        &HashMap::new(),
                         collection_chunks,
                         &object_phases,
                         &HashMap::new(),

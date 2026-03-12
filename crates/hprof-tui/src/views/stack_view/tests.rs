@@ -2730,3 +2730,253 @@ fn scroll_view_down_clamps_stale_offset_before_increment() {
     // Cursor must not move.
     assert_eq!(state.selected_frame_id(), Some(2));
 }
+
+#[test]
+fn render_static_section_for_collection_entry_object() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done(
+        0xA00,
+        vec![FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 0xC00,
+                class_name: "java.util.ArrayList".to_string(),
+                entry_count: Some(1),
+                inline_value: None,
+            },
+        }],
+    );
+    state.expansion.collection_chunks.insert(
+        0xC00,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: 0x700,
+                        class_name: "Node".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+    state.set_expansion_done(
+        0x700,
+        vec![FieldInfo {
+            name: "value".to_string(),
+            value: FieldValue::Int(7),
+        }],
+    );
+    state.set_static_fields(
+        0x700,
+        vec![FieldInfo {
+            name: "STATIC_ONE".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+
+    let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
+    assert!(
+        rendered.iter().any(|l| l.contains("[static]")),
+        "static header must be rendered for collection entry object: {rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|l| l.contains("STATIC_ONE: 1")),
+        "static field row must be rendered for collection entry object: {rendered:?}"
+    );
+    assert_eq!(
+        state.flat_items().len(),
+        state.build_items().len(),
+        "flat/build item lengths must remain aligned with collection static rows"
+    );
+}
+
+#[test]
+fn render_collection_entry_static_helper_rows_not_navigable() {
+    let frames = vec![make_frame(10), make_frame(20)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xB00)]);
+    state.set_expansion_done(
+        0xB00,
+        vec![FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 0xC10,
+                class_name: "java.util.ArrayList".to_string(),
+                entry_count: Some(1),
+                inline_value: None,
+            },
+        }],
+    );
+    state.expansion.collection_chunks.insert(
+        0xC10,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: 0x710,
+                        class_name: "Node".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+    state.set_expansion_done(
+        0x710,
+        vec![FieldInfo {
+            name: "v".to_string(),
+            value: FieldValue::Int(9),
+        }],
+    );
+    let static_fields: Vec<FieldInfo> = (0..21)
+        .map(|idx| FieldInfo {
+            name: format!("S_{idx}"),
+            value: FieldValue::Int(idx),
+        })
+        .collect();
+    state.set_static_fields(0x710, static_fields);
+
+    state.move_down(); // Frame(0) -> Var
+    state.move_down(); // Var -> items field
+    state.move_down(); // items field -> entry[0]
+    state.move_down(); // entry[0] -> entry obj field [0]
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnCollectionEntryObjField {
+            obj_field_path,
+            ..
+        } if *obj_field_path == vec![0]
+    ));
+
+    // Skip non-interactive [static] header.
+    state.move_down();
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnCollectionEntryStaticField { static_idx: 0, .. }
+    ));
+
+    // Reach last rendered static field (idx 19).
+    for _ in 0..19 {
+        state.move_down();
+    }
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnCollectionEntryStaticField { static_idx: 19, .. }
+    ));
+
+    // Skip non-interactive overflow row.
+    state.move_down();
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
+
+    // Moving up must also skip overflow and land back on static idx 19.
+    state.move_up();
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnCollectionEntryStaticField { static_idx: 19, .. }
+    ));
+}
+
+#[test]
+fn render_static_section_separator_not_navigable() {
+    let frames = vec![make_frame(10), make_frame(20)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done(
+        0xA00,
+        vec![FieldInfo {
+            name: "instance".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "STATIC_ONE".to_string(),
+            value: FieldValue::Int(42),
+        }],
+    );
+
+    state.move_down(); // Frame(0) -> Var
+    state.move_down(); // Var -> instance field
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnObjectField { field_path, .. } if *field_path == vec![0]
+    ));
+
+    // Must skip non-interactive [static] header.
+    state.move_down();
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnStaticField { static_idx: 0, .. }
+    ));
+
+    // Must also skip header when moving back up.
+    state.move_up();
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnObjectField { field_path, .. } if *field_path == vec![0]
+    ));
+}
+
+#[test]
+fn render_static_overflow_row_not_navigable() {
+    let frames = vec![make_frame(10), make_frame(20)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xB00)]);
+    state.set_expansion_done(
+        0xB00,
+        vec![FieldInfo {
+            name: "instance".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+
+    let static_fields: Vec<FieldInfo> = (0..21)
+        .map(|idx| FieldInfo {
+            name: format!("STATIC_{idx}"),
+            value: FieldValue::Int(idx),
+        })
+        .collect();
+    state.set_static_fields(0xB00, static_fields);
+
+    state.move_down(); // Frame(0) -> Var
+    state.move_down(); // Var -> instance field
+    state.move_down(); // instance field -> static[0], skipping [static]
+    for _ in 0..19 {
+        state.move_down();
+    }
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnStaticField { static_idx: 19, .. }
+    ));
+
+    // Must skip non-interactive overflow row to next interactive row.
+    state.move_down();
+    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
+
+    // And skip overflow row when navigating upward.
+    state.move_up();
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnStaticField { static_idx: 19, .. }
+    ));
+}

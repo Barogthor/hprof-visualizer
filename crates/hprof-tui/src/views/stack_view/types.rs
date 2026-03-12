@@ -10,6 +10,9 @@ use hprof_engine::CollectionPage;
 /// Separator used in Failed node labels: `"! ClassName — error message"`.
 pub(crate) const FAILED_LABEL_SEP: &str = " — ";
 
+/// Maximum number of static fields rendered per object before overflow marker.
+pub(crate) const STATIC_FIELDS_RENDER_LIMIT: usize = 20;
+
 /// Phase of an object expansion driven by `App`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpansionPhase {
@@ -95,6 +98,28 @@ pub enum StackCursor {
         var_idx: usize,
         field_path: Vec<usize>,
     },
+    /// Non-interactive `[static]` section header below instance fields.
+    OnStaticSectionHeader {
+        frame_idx: usize,
+        var_idx: usize,
+        /// Path to the object row whose static fields are displayed.
+        field_path: Vec<usize>,
+    },
+    /// Cursor on one static field row.
+    OnStaticField {
+        frame_idx: usize,
+        var_idx: usize,
+        /// Path to the object row whose static fields are displayed.
+        field_path: Vec<usize>,
+        static_idx: usize,
+    },
+    /// Non-interactive static overflow marker row (`[+N more static fields]`).
+    OnStaticOverflowRow {
+        frame_idx: usize,
+        var_idx: usize,
+        /// Path to the object row whose static fields are displayed.
+        field_path: Vec<usize>,
+    },
     /// Cursor on a chunk section header inside a
     /// paginated collection.
     OnChunkSection {
@@ -123,6 +148,46 @@ pub enum StackCursor {
         collection_id: u64,
         entry_index: usize,
         /// Path within the entry's root object.
+        obj_field_path: Vec<usize>,
+    },
+    /// Non-interactive `[static]` section header for an object expanded
+    /// from a collection entry value.
+    OnCollectionEntryStaticSectionHeader {
+        frame_idx: usize,
+        var_idx: usize,
+        /// Path to the collection's parent [`FieldValue::ObjectRef`] field.
+        field_path: Vec<usize>,
+        collection_id: u64,
+        entry_index: usize,
+        /// Path to the expanded object that owns this static section.
+        /// Empty means the entry's root object.
+        obj_field_path: Vec<usize>,
+    },
+    /// Cursor on one static field row under an object expanded from a
+    /// collection entry value.
+    OnCollectionEntryStaticField {
+        frame_idx: usize,
+        var_idx: usize,
+        /// Path to the collection's parent [`FieldValue::ObjectRef`] field.
+        field_path: Vec<usize>,
+        collection_id: u64,
+        entry_index: usize,
+        /// Path to the expanded object that owns this static section.
+        /// Empty means the entry's root object.
+        obj_field_path: Vec<usize>,
+        static_idx: usize,
+    },
+    /// Non-interactive static overflow marker row (`[+N more static fields]`)
+    /// under an object expanded from a collection entry value.
+    OnCollectionEntryStaticOverflowRow {
+        frame_idx: usize,
+        var_idx: usize,
+        /// Path to the collection's parent [`FieldValue::ObjectRef`] field.
+        field_path: Vec<usize>,
+        collection_id: u64,
+        entry_index: usize,
+        /// Path to the expanded object that owns this static section.
+        /// Empty means the entry's root object.
         obj_field_path: Vec<usize>,
     },
 }

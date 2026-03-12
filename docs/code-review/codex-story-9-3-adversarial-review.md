@@ -21,7 +21,7 @@
   - `tools/hprof-redact-custom/src/main/java/io/hprofvisualizer/redact/PathOnlyTransformer.java`
   - `docs/code-review/claude-story-9-4-adversarial-review.md`
   - `docs/implementation-artifacts/9-4-camera-scroll.md`
-  - `docs/implementation-artifacts/9-5-stack-frame-variable-names-and-static-fields.md`
+  - `docs/implementation-artifacts/9-5-static-fields-in-stack-view.md`
 - Files listed in story File List but with no current git diff:
   - `crates/hprof-tui/src/input.rs`
   - `crates/hprof-tui/src/views/stack_view/state.rs`

@@ -104,6 +104,12 @@ impl NavigationEngine for StubEngine {
             },
         ])
     }
+    fn class_of_object(&self, _object_id: u64) -> Option<u64> {
+        None
+    }
+    fn get_static_fields(&self, _class_object_id: u64) -> Vec<FieldInfo> {
+        vec![]
+    }
     fn get_page(&self, collection_id: u64, offset: usize, limit: usize) -> Option<CollectionPage> {
         match collection_id {
             888 => {

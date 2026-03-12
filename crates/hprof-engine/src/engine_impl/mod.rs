@@ -11,7 +11,7 @@ use std::sync::Arc;
 use hprof_api::{NullProgressObserver, ParseProgressObserver, ProgressNotifier};
 use rayon::prelude::*;
 
-use hprof_parser::{HprofFile, PreciseIndex, RawInstance};
+use hprof_parser::{HprofFile, PreciseIndex, RawInstance, StaticValue};
 
 use hprof_parser::jvm_to_java;
 
@@ -514,6 +514,66 @@ fn thread_state_from_status(status: i32) -> ThreadState {
 }
 
 impl Engine {
+    /// Resolves display metadata for an object reference.
+    fn enrich_object_ref_parts(&self, object_id: u64) -> (String, Option<u64>, Option<String>) {
+        if let Some(child_raw) = Self::read_instance(&self.hfile, object_id) {
+            let class_name = self
+                .hfile
+                .index
+                .class_names_by_id
+                .get(&child_raw.class_object_id)
+                .cloned()
+                .unwrap_or_else(|| "Object".to_string());
+            let inline_value = resolve_inline_value(&class_name, &self.hfile, object_id);
+            let entry_count = collection_entry_count(
+                &child_raw,
+                &self.hfile.index,
+                self.hfile.header.id_size,
+                self.hfile.records_bytes(),
+            );
+            (class_name, entry_count, inline_value)
+        } else if let Some((_class_id, elems)) = self.hfile.find_object_array(object_id) {
+            ("Object[]".to_string(), Some(elems.len() as u64), None)
+        } else if let Some((elem_type, bytes)) = self.hfile.find_prim_array(object_id) {
+            let type_name = prim_array_type_name(elem_type);
+            let elem_size = field_byte_size(elem_type, 0);
+            let count = if elem_size > 0 {
+                bytes.len() / elem_size
+            } else {
+                0
+            };
+            (format!("{type_name}[]"), Some(count as u64), None)
+        } else {
+            ("Object".to_string(), None, None)
+        }
+    }
+
+    fn static_value_to_field_value(&self, value: &StaticValue) -> FieldValue {
+        match value {
+            StaticValue::ObjectRef(id) => {
+                if *id == 0 {
+                    FieldValue::Null
+                } else {
+                    let (class_name, entry_count, inline_value) = self.enrich_object_ref_parts(*id);
+                    FieldValue::ObjectRef {
+                        id: *id,
+                        class_name,
+                        entry_count,
+                        inline_value,
+                    }
+                }
+            }
+            StaticValue::Bool(v) => FieldValue::Bool(*v),
+            StaticValue::Char(v) => FieldValue::Char(*v),
+            StaticValue::Float(v) => FieldValue::Float(*v),
+            StaticValue::Double(v) => FieldValue::Double(*v),
+            StaticValue::Byte(v) => FieldValue::Byte(*v),
+            StaticValue::Short(v) => FieldValue::Short(*v),
+            StaticValue::Int(v) => FieldValue::Int(*v),
+            StaticValue::Long(v) => FieldValue::Long(*v),
+        }
+    }
+
     fn resolve_name(&self, name_string_id: u64) -> String {
         self.hfile
             .index
@@ -557,39 +617,11 @@ impl Engine {
                 inline_value,
             } = &mut field.value
             {
-                let child_id = *id;
-                if let Some(child_raw) = Self::read_instance(&self.hfile, child_id) {
-                    let name = self
-                        .hfile
-                        .index
-                        .class_names_by_id
-                        .get(&child_raw.class_object_id)
-                        .cloned()
-                        .unwrap_or_else(|| "Object".to_string());
-                    *inline_value = resolve_inline_value(&name, &self.hfile, child_id);
-                    *entry_count = collection_entry_count(
-                        &child_raw,
-                        &self.hfile.index,
-                        self.hfile.header.id_size,
-                        self.hfile.records_bytes(),
-                    );
-                    *class_name = name;
-                } else if let Some((_class_id, elems)) = self.hfile.find_object_array(child_id) {
-                    *class_name = "Object[]".to_string();
-                    *entry_count = Some(elems.len() as u64);
-                } else if let Some((elem_type, bytes)) = self.hfile.find_prim_array(child_id) {
-                    let type_name = prim_array_type_name(elem_type);
-                    let elem_size = field_byte_size(elem_type, 0);
-                    let count = if elem_size > 0 {
-                        bytes.len() / elem_size
-                    } else {
-                        0
-                    };
-                    *class_name = format!("{type_name}[]");
-                    *entry_count = Some(count as u64);
-                } else {
-                    *class_name = "Object".to_string();
-                }
+                let (resolved_class_name, resolved_entry_count, resolved_inline_value) =
+                    self.enrich_object_ref_parts(*id);
+                *class_name = resolved_class_name;
+                *entry_count = resolved_entry_count;
+                *inline_value = resolved_inline_value;
             }
         }
         Some(fields)
@@ -751,6 +783,50 @@ impl NavigationEngine for Engine {
             }
         }
         Some(fields)
+    }
+
+    fn class_of_object(&self, object_id: u64) -> Option<u64> {
+        let Some(raw) = Self::read_instance(&self.hfile, object_id) else {
+            dbg_log!("class_of_object(0x{:X}) -> <none>", object_id);
+            return None;
+        };
+        dbg_log!(
+            "class_of_object(0x{:X}) -> class=0x{:X}",
+            object_id,
+            raw.class_object_id
+        );
+        Some(raw.class_object_id)
+    }
+
+    fn get_static_fields(&self, class_object_id: u64) -> Vec<FieldInfo> {
+        let Some(class_dump) = self.hfile.index.class_dumps.get(&class_object_id) else {
+            dbg_log!(
+                "get_static_fields(class=0x{:X}) -> class_dump missing",
+                class_object_id
+            );
+            return Vec::new();
+        };
+
+        dbg_log!(
+            "get_static_fields(class=0x{:X}) -> raw_static_fields={}",
+            class_object_id,
+            class_dump.static_fields.len()
+        );
+
+        let fields: Vec<FieldInfo> = class_dump
+            .static_fields
+            .iter()
+            .map(|f| FieldInfo {
+                name: self.resolve_name(f.name_string_id),
+                value: self.static_value_to_field_value(&f.value),
+            })
+            .collect();
+        dbg_log!(
+            "get_static_fields(class=0x{:X}) -> resolved_static_fields={}",
+            class_object_id,
+            fields.len()
+        );
+        fields
     }
 
     fn get_page(&self, collection_id: u64, offset: usize, limit: usize) -> Option<CollectionPage> {

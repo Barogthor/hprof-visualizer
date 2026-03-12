@@ -13,7 +13,9 @@ use crate::views::cursor::CursorState;
 
 use super::expansion::ExpansionRegistry;
 use super::format::{collect_descendants, compute_chunk_ranges, format_frame_label};
-use super::types::{ChunkState, CollectionChunks, ExpansionPhase, StackCursor};
+use super::types::{
+    ChunkState, CollectionChunks, ExpansionPhase, STATIC_FIELDS_RENDER_LIMIT, StackCursor,
+};
 
 /// State for the stack frame panel.
 pub struct StackState {
@@ -57,9 +59,15 @@ impl StackState {
             | StackCursor::OnObjectField { frame_idx, .. }
             | StackCursor::OnObjectLoadingNode { frame_idx, .. }
             | StackCursor::OnCyclicNode { frame_idx, .. }
+            | StackCursor::OnStaticSectionHeader { frame_idx, .. }
+            | StackCursor::OnStaticField { frame_idx, .. }
+            | StackCursor::OnStaticOverflowRow { frame_idx, .. }
             | StackCursor::OnChunkSection { frame_idx, .. }
             | StackCursor::OnCollectionEntry { frame_idx, .. }
-            | StackCursor::OnCollectionEntryObjField { frame_idx, .. } => {
+            | StackCursor::OnCollectionEntryObjField { frame_idx, .. }
+            | StackCursor::OnCollectionEntryStaticSectionHeader { frame_idx, .. }
+            | StackCursor::OnCollectionEntryStaticField { frame_idx, .. }
+            | StackCursor::OnCollectionEntryStaticOverflowRow { frame_idx, .. } => {
                 self.frames.get(*frame_idx).map(|f| f.frame_id)
             }
         }
@@ -382,6 +390,8 @@ impl StackState {
     /// - `OnObjectField { path: [x] }` → `OnVar`
     /// - `OnObjectField { path: [x, y, ...] }` → `OnObjectField` with last element dropped
     /// - `OnObjectLoadingNode` / `OnCyclicNode` → same rule as `OnObjectField`
+    /// - `OnStaticSectionHeader` / `OnStaticField` / `OnStaticOverflowRow` →
+    ///   same rule as `OnObjectField`
     /// - `OnCollectionEntry { field_path: [] }` → `OnVar`
     /// - `OnCollectionEntry { field_path: [x, ...] }` → `OnObjectField { field_path }`
     /// - `OnChunkSection` → same rule as `OnCollectionEntry`
@@ -419,6 +429,35 @@ impl StackState {
                         frame_idx: *frame_idx,
                         var_idx: *var_idx,
                         field_path: parent_path,
+                    })
+                }
+            }
+            StackCursor::OnStaticSectionHeader {
+                frame_idx,
+                var_idx,
+                field_path,
+            }
+            | StackCursor::OnStaticField {
+                frame_idx,
+                var_idx,
+                field_path,
+                ..
+            }
+            | StackCursor::OnStaticOverflowRow {
+                frame_idx,
+                var_idx,
+                field_path,
+            } => {
+                if field_path.is_empty() {
+                    Some(StackCursor::OnVar {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                    })
+                } else {
+                    Some(StackCursor::OnObjectField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
                     })
                 }
             }
@@ -481,6 +520,50 @@ impl StackState {
                     })
                 }
             }
+            StackCursor::OnCollectionEntryStaticSectionHeader {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+            }
+            | StackCursor::OnCollectionEntryStaticField {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                ..
+            }
+            | StackCursor::OnCollectionEntryStaticOverflowRow {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+            } => {
+                if obj_field_path.is_empty() {
+                    Some(StackCursor::OnCollectionEntry {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                        collection_id: *collection_id,
+                        entry_index: *entry_index,
+                    })
+                } else {
+                    Some(StackCursor::OnCollectionEntryObjField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                        collection_id: *collection_id,
+                        entry_index: *entry_index,
+                        obj_field_path: obj_field_path.clone(),
+                    })
+                }
+            }
         }
     }
 
@@ -505,6 +588,27 @@ impl StackState {
                 ..
             }
             | StackCursor::OnCollectionEntryObjField {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                ..
+            }
+            | StackCursor::OnCollectionEntryStaticSectionHeader {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                ..
+            }
+            | StackCursor::OnCollectionEntryStaticField {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                ..
+            }
+            | StackCursor::OnCollectionEntryStaticOverflowRow {
                 frame_idx,
                 var_idx,
                 field_path,
@@ -547,6 +651,26 @@ impl StackState {
     /// Marks an object expansion as complete with decoded fields.
     pub fn set_expansion_done(&mut self, object_id: u64, fields: Vec<FieldInfo>) {
         self.expansion.set_expansion_done(object_id, fields);
+        self.expansion.object_static_fields.remove(&object_id);
+    }
+
+    /// Stores resolved static fields for an expanded object.
+    pub fn set_static_fields(&mut self, object_id: u64, fields: Vec<FieldInfo>) {
+        dbg_log!(
+            "set_static_fields(0x{:X}): incoming_count={}",
+            object_id,
+            fields.len()
+        );
+        if fields.is_empty() {
+            self.expansion.object_static_fields.remove(&object_id);
+            dbg_log!("set_static_fields(0x{:X}): removed", object_id);
+        } else {
+            self.expansion
+                .object_static_fields
+                .insert(object_id, fields);
+            dbg_log!("set_static_fields(0x{:X}): stored", object_id);
+        }
+        self.nav.sync(&self.flat_items());
     }
 
     /// Marks an object expansion as failed with an error message.
@@ -628,6 +752,15 @@ impl StackState {
             }
             | StackCursor::OnObjectLoadingNode {
                 frame_idx, var_idx, ..
+            }
+            | StackCursor::OnStaticSectionHeader {
+                frame_idx, var_idx, ..
+            }
+            | StackCursor::OnStaticField {
+                frame_idx, var_idx, ..
+            }
+            | StackCursor::OnStaticOverflowRow {
+                frame_idx, var_idx, ..
             } => {
                 let candidate = StackCursor::OnVar {
                     frame_idx: *frame_idx,
@@ -653,6 +786,55 @@ impl StackState {
                     field_path: field_path.clone(),
                     collection_id: *collection_id,
                     entry_index: *entry_index,
+                };
+                if flat.contains(&candidate) {
+                    fallback = Some(candidate);
+                } else {
+                    fallback = Some(StackCursor::OnFrame(*frame_idx));
+                }
+            }
+            StackCursor::OnCollectionEntryStaticSectionHeader {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+            }
+            | StackCursor::OnCollectionEntryStaticField {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                ..
+            }
+            | StackCursor::OnCollectionEntryStaticOverflowRow {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+            } => {
+                let candidate = if obj_field_path.is_empty() {
+                    StackCursor::OnCollectionEntry {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                        collection_id: *collection_id,
+                        entry_index: *entry_index,
+                    }
+                } else {
+                    StackCursor::OnCollectionEntryObjField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                        collection_id: *collection_id,
+                        entry_index: *entry_index,
+                        obj_field_path: obj_field_path.clone(),
+                    }
                 };
                 if flat.contains(&candidate) {
                     fallback = Some(candidate);
@@ -698,9 +880,16 @@ impl StackState {
             | StackCursor::OnObjectField { frame_idx, .. }
             | StackCursor::OnObjectLoadingNode { frame_idx, .. }
             | StackCursor::OnCyclicNode { frame_idx, .. }
+            | StackCursor::OnStaticSectionHeader { frame_idx, .. }
+            | StackCursor::OnStaticField { frame_idx, .. }
+            | StackCursor::OnStaticOverflowRow { frame_idx, .. }
             | StackCursor::OnChunkSection { frame_idx, .. }
             | StackCursor::OnCollectionEntry { frame_idx, .. }
-            | StackCursor::OnCollectionEntryObjField { frame_idx, .. } = self.nav.cursor()
+            | StackCursor::OnCollectionEntryObjField { frame_idx, .. }
+            | StackCursor::OnCollectionEntryStaticSectionHeader { frame_idx, .. }
+            | StackCursor::OnCollectionEntryStaticField { frame_idx, .. }
+            | StackCursor::OnCollectionEntryStaticOverflowRow { frame_idx, .. } =
+                self.nav.cursor()
             {
                 self.nav
                     .set_cursor_and_sync(StackCursor::OnFrame(*frame_idx), &self.flat_items());
@@ -719,28 +908,112 @@ impl StackState {
         self.expanded.contains(&frame_id)
     }
 
+    fn is_non_interactive_cursor(cursor: &StackCursor) -> bool {
+        matches!(
+            cursor,
+            StackCursor::OnStaticSectionHeader { .. }
+                | StackCursor::OnStaticOverflowRow { .. }
+                | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
+                | StackCursor::OnCollectionEntryStaticOverflowRow { .. }
+        )
+    }
+
+    fn first_interactive_index(flat: &[StackCursor]) -> Option<usize> {
+        flat.iter()
+            .position(|c| !Self::is_non_interactive_cursor(c))
+    }
+
+    fn last_interactive_index(flat: &[StackCursor]) -> Option<usize> {
+        flat.iter()
+            .rposition(|c| !Self::is_non_interactive_cursor(c))
+    }
+
+    fn next_interactive_index(flat: &[StackCursor], current: usize) -> Option<usize> {
+        ((current + 1)..flat.len()).find(|&idx| !Self::is_non_interactive_cursor(&flat[idx]))
+    }
+
+    fn prev_interactive_index(flat: &[StackCursor], current: usize) -> Option<usize> {
+        if current == 0 {
+            return None;
+        }
+        (0..current)
+            .rev()
+            .find(|&idx| !Self::is_non_interactive_cursor(&flat[idx]))
+    }
+
+    fn snap_cursor_to_interactive(&mut self, flat: &[StackCursor], prefer_down: bool) {
+        let Some(current_idx) = flat.iter().position(|c| c == self.nav.cursor()) else {
+            if let Some(idx) = Self::first_interactive_index(flat) {
+                self.nav.set_cursor_and_sync(flat[idx].clone(), flat);
+            }
+            return;
+        };
+        if !Self::is_non_interactive_cursor(&flat[current_idx]) {
+            return;
+        }
+
+        let preferred = if prefer_down {
+            Self::next_interactive_index(flat, current_idx)
+        } else {
+            Self::prev_interactive_index(flat, current_idx)
+        };
+        let fallback = if prefer_down {
+            Self::prev_interactive_index(flat, current_idx)
+        } else {
+            Self::next_interactive_index(flat, current_idx)
+        };
+
+        if let Some(idx) = preferred.or(fallback) {
+            self.nav.set_cursor_and_sync(flat[idx].clone(), flat);
+        }
+    }
+
     /// Moves the cursor one step down.
     pub fn move_down(&mut self) {
         let flat = self.flat_items();
-        self.nav.move_down(&flat);
+        if flat.is_empty() {
+            return;
+        }
+        let current_idx = flat
+            .iter()
+            .position(|c| c == self.nav.cursor())
+            .or_else(|| Self::first_interactive_index(&flat))
+            .unwrap_or(0);
+        let target_idx = Self::next_interactive_index(&flat, current_idx).unwrap_or(current_idx);
+        self.nav
+            .set_cursor_and_sync(flat[target_idx].clone(), &flat);
     }
 
     /// Moves the cursor one step up.
     pub fn move_up(&mut self) {
         let flat = self.flat_items();
-        self.nav.move_up(&flat);
+        if flat.is_empty() {
+            return;
+        }
+        let current_idx = flat
+            .iter()
+            .position(|c| c == self.nav.cursor())
+            .or_else(|| Self::first_interactive_index(&flat))
+            .unwrap_or(0);
+        let target_idx = Self::prev_interactive_index(&flat, current_idx).unwrap_or(current_idx);
+        self.nav
+            .set_cursor_and_sync(flat[target_idx].clone(), &flat);
     }
 
     /// Moves the cursor to the first item.
     pub fn move_home(&mut self) {
         let flat = self.flat_items();
-        self.nav.move_home(&flat);
+        if let Some(idx) = Self::first_interactive_index(&flat) {
+            self.nav.set_cursor_and_sync(flat[idx].clone(), &flat);
+        }
     }
 
     /// Moves the cursor to the last item.
     pub fn move_end(&mut self) {
         let flat = self.flat_items();
-        self.nav.move_end(&flat);
+        if let Some(idx) = Self::last_interactive_index(&flat) {
+            self.nav.set_cursor_and_sync(flat[idx].clone(), &flat);
+        }
     }
 
     /// Sets the visible height (called during render).
@@ -752,12 +1025,14 @@ impl StackState {
     pub fn move_page_down(&mut self) {
         let flat = self.flat_items();
         self.nav.move_page_down(&flat);
+        self.snap_cursor_to_interactive(&flat, true);
     }
 
     /// Moves the cursor backward by `visible_height` items.
     pub fn move_page_up(&mut self) {
         let flat = self.flat_items();
         self.nav.move_page_up(&flat);
+        self.snap_cursor_to_interactive(&flat, false);
     }
 
     /// Scrolls the visible window up by one line without moving the selection cursor.
@@ -960,11 +1235,105 @@ impl StackState {
                         }
                     }
                 }
+                self.emit_static_rows(fi, vi, &parent_path, object_id, out);
                 visited.remove(&object_id);
             }
             ExpansionPhase::Failed => {
                 // Error state is styled on the parent node — no child row emitted here.
             }
+        }
+    }
+
+    fn emit_static_rows(
+        &self,
+        fi: usize,
+        vi: usize,
+        parent_path: &[usize],
+        object_id: u64,
+        out: &mut Vec<StackCursor>,
+    ) {
+        let Some(static_fields) = self.expansion.object_static_fields.get(&object_id) else {
+            return;
+        };
+        if static_fields.is_empty() {
+            return;
+        }
+
+        out.push(StackCursor::OnStaticSectionHeader {
+            frame_idx: fi,
+            var_idx: vi,
+            field_path: parent_path.to_vec(),
+        });
+
+        let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
+        for static_idx in 0..shown {
+            out.push(StackCursor::OnStaticField {
+                frame_idx: fi,
+                var_idx: vi,
+                field_path: parent_path.to_vec(),
+                static_idx,
+            });
+        }
+
+        if static_fields.len() > STATIC_FIELDS_RENDER_LIMIT {
+            out.push(StackCursor::OnStaticOverflowRow {
+                frame_idx: fi,
+                var_idx: vi,
+                field_path: parent_path.to_vec(),
+            });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_collection_entry_static_rows(
+        &self,
+        fi: usize,
+        vi: usize,
+        field_path: &[usize],
+        collection_id: u64,
+        entry_index: usize,
+        obj_field_path: &[usize],
+        object_id: u64,
+        out: &mut Vec<StackCursor>,
+    ) {
+        let Some(static_fields) = self.expansion.object_static_fields.get(&object_id) else {
+            return;
+        };
+        if static_fields.is_empty() {
+            return;
+        }
+
+        out.push(StackCursor::OnCollectionEntryStaticSectionHeader {
+            frame_idx: fi,
+            var_idx: vi,
+            field_path: field_path.to_vec(),
+            collection_id,
+            entry_index,
+            obj_field_path: obj_field_path.to_vec(),
+        });
+
+        let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
+        for static_idx in 0..shown {
+            out.push(StackCursor::OnCollectionEntryStaticField {
+                frame_idx: fi,
+                var_idx: vi,
+                field_path: field_path.to_vec(),
+                collection_id,
+                entry_index,
+                obj_field_path: obj_field_path.to_vec(),
+                static_idx,
+            });
+        }
+
+        if static_fields.len() > STATIC_FIELDS_RENDER_LIMIT {
+            out.push(StackCursor::OnCollectionEntryStaticOverflowRow {
+                frame_idx: fi,
+                var_idx: vi,
+                field_path: field_path.to_vec(),
+                collection_id,
+                entry_index,
+                obj_field_path: obj_field_path.to_vec(),
+            });
         }
     }
 
@@ -1204,6 +1573,16 @@ impl StackState {
                     }
                     visited.remove(&obj_id);
                 }
+                self.emit_collection_entry_static_rows(
+                    fi,
+                    vi,
+                    field_path,
+                    collection_id,
+                    entry_index,
+                    obj_path,
+                    obj_id,
+                    out,
+                );
             }
         }
     }
@@ -1236,6 +1615,7 @@ impl StackState {
                 let tree_items = render_variable_tree(
                     TreeRoot::Frame { vars },
                     &self.expansion.object_fields,
+                    &self.expansion.object_static_fields,
                     &self.expansion.collection_chunks,
                     &self.expansion.object_phases,
                     &self.expansion.object_errors,

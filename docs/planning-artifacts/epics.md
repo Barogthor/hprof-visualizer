@@ -3,7 +3,7 @@ stepsCompleted: ['step-01-validate-prerequisites', 'step-02-design-epics', 'step
 status: 'complete'
 completedAt: '2026-03-06'
 revisedAt: '2026-03-10'
-revisionNotes: 'Added Epic 9: Navigation & Data Fidelity (stories 9.1-9.7) — bug fixes, collection correctness, keyboard navigation, camera scroll, variable display, search/favorites UX, footer polish. Sourced from real user testing session 2026-03-10.'
+revisionNotes: 'Added Epic 9: Navigation & Data Fidelity (stories 9.1-9.7) — bug fixes, collection correctness, keyboard navigation, camera scroll, static field display, search/favorites UX, footer polish. Sourced from real user testing session 2026-03-10.'
 inputDocuments:
   - 'docs/planning-artifacts/prd.md'
   - 'docs/planning-artifacts/architecture.md'
@@ -204,7 +204,7 @@ The system loads and indexes heap dumps significantly faster through optimized d
 **NFRs improved:** NFR1 (indexing performance beyond original target)
 
 ### Epic 9: Navigation & Data Fidelity
-Fixes critical bugs discovered during real user testing, corrects collection data extraction (ArrayList cardinality, Object[] support), adds keyboard shortcuts for expand/unexpand/parent navigation and camera scroll, improves stack frame variable display (real names + static variables), and polishes search/favorites UX and the keyboard help footer.
+Fixes critical bugs discovered during real user testing, corrects collection data extraction (ArrayList cardinality, Object[] support), adds keyboard shortcuts for expand/unexpand/parent navigation and camera scroll, improves stack frame data display with static fields, and polishes search/favorites UX and the keyboard help footer.
 **FRs added:** FR36–FR50
 **Source:** User testing session 2026-03-10
 
@@ -1234,35 +1234,30 @@ So that I can see context around the current node without losing my position.
 **When** rendered
 **Then** Ctrl+Up / Ctrl+Down are listed as "Scroll view up / down"
 
-### Story 9.5: Stack Frame Variable Names & Static Fields
+### Story 9.5: Static Fields in Stack View
 
 As a user,
-I want to see the real local variable name (e.g., `myList`) from debug info instead of a generic
-`local variable: <Class>` label, and to see static fields alongside instance fields,
-So that stack frames are as informative as in VisualVM.
+I want static fields to be visible when I expand an object in stack view,
+So that I can inspect class-level state without switching tools.
 
-**FRs covered:** FR44, FR45
+**FRs covered:** FR45
 
 **Priority:** P1
 
 **Acceptance Criteria:**
 
-**Given** a stack frame with local variables that have debug name information in the hprof
-**When** the stack frame is displayed
-**Then** each local variable shows its real name (e.g., `myList: ArrayList`) not a generic label
-
-**Given** a stack frame where debug name information is absent for a variable
-**When** displayed
-**Then** a fallback label is shown (e.g., `<unnamed>: ArrayList`) — no crash, no silent omission
-
 **Given** a class instance is expanded
 **When** its fields are rendered
-**Then** static fields are displayed in a clearly labeled section (e.g., `[static]`) below or
-above instance fields
+**Then** static fields are displayed in a clearly labeled section (e.g., `[static]`) below
+instance fields
 
 **Given** a class with no static fields
 **When** expanded
 **Then** the static section is omitted (no empty section header)
+
+**Given** the cursor moves through expanded rows
+**When** it reaches static helper rows (section header / overflow marker)
+**Then** those rows are skipped because they are non-interactive
 
 ### Story 9.6: Search & Favorites UX Polish
 

@@ -41,6 +41,7 @@ pub(crate) enum TreeRoot<'a> {
 pub(crate) fn render_variable_tree(
     root: TreeRoot<'_>,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
+    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
@@ -59,6 +60,7 @@ pub(crate) fn render_variable_tree(
                         var,
                         "  ",
                         object_fields,
+                        object_static_fields,
                         collection_chunks,
                         object_phases,
                         object_errors,
@@ -74,6 +76,7 @@ pub(crate) fn render_variable_tree(
                 "  ",
                 0,
                 object_fields,
+                object_static_fields,
                 collection_chunks,
                 object_phases,
                 object_errors,
@@ -92,10 +95,12 @@ fn get_phase(object_id: u64, object_phases: &HashMap<u64, ExpansionPhase>) -> Ex
         .unwrap_or(ExpansionPhase::Collapsed)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_var(
     var: &VariableInfo,
     indent: &str,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
+    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
@@ -177,6 +182,7 @@ fn append_var(
                 cc,
                 &format!("{indent}  "),
                 object_fields,
+                object_static_fields,
                 collection_chunks,
                 object_phases,
                 object_errors,
@@ -190,6 +196,7 @@ fn append_var(
             &format!("{indent}  "),
             0,
             object_fields,
+            object_static_fields,
             collection_chunks,
             object_phases,
             object_errors,
@@ -208,6 +215,7 @@ fn append_object_children(
     indent: &str,
     depth: usize,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
+    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
@@ -324,6 +332,7 @@ fn append_object_children(
                             cc,
                             &format!("{indent}  "),
                             object_fields,
+                            object_static_fields,
                             collection_chunks,
                             object_phases,
                             object_errors,
@@ -337,6 +346,7 @@ fn append_object_children(
                             &format!("{indent}  "),
                             depth + 1,
                             object_fields,
+                            object_static_fields,
                             collection_chunks,
                             object_phases,
                             object_errors,
@@ -346,11 +356,59 @@ fn append_object_children(
                     }
                 }
             }
+            append_static_items(object_id, indent, object_static_fields, items);
             visited.remove(&object_id);
         }
         ExpansionPhase::Failed => {
             // Error state is styled on the parent node — no child row emitted here.
         }
+    }
+}
+
+fn append_static_items(
+    object_id: u64,
+    indent: &str,
+    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
+    items: &mut Vec<ListItem<'static>>,
+) {
+    use super::stack_view::STATIC_FIELDS_RENDER_LIMIT;
+
+    let Some(static_fields) = object_static_fields.get(&object_id) else {
+        return;
+    };
+    if static_fields.is_empty() {
+        return;
+    }
+
+    let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
+    let hidden = static_fields.len().saturating_sub(shown);
+    dbg_log!(
+        "append_static_items(0x{:X}): total={} shown={} hidden={}",
+        object_id,
+        static_fields.len(),
+        shown,
+        hidden
+    );
+
+    items.push(ListItem::new(Line::from(Span::styled(
+        format!("{indent}[static]"),
+        THEME.null_value,
+    ))));
+
+    for field in static_fields.iter().take(shown) {
+        let row_style = field_value_style(&field.value);
+        let val = format_field_value_display(&field.value, None);
+        items.push(ListItem::new(Line::from(vec![
+            Span::raw(format!("{indent}  ")),
+            Span::styled(format!("{}: {val}", field.name), row_style),
+        ])));
+    }
+
+    if hidden > 0 {
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!("{indent}  [+{hidden} more static fields]"),
+            THEME.null_value,
+        ))));
     }
 }
 
@@ -361,6 +419,7 @@ fn append_collection_items(
     cc: &CollectionChunks,
     indent: &str,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
+    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
@@ -372,6 +431,7 @@ fn append_collection_items(
         cc,
         indent,
         object_fields,
+        object_static_fields,
         collection_chunks,
         object_phases,
         object_errors,
@@ -386,6 +446,7 @@ fn append_collection_items_inner(
     cc: &CollectionChunks,
     indent: &str,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
+    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
@@ -403,6 +464,7 @@ fn append_collection_items_inner(
                 entry,
                 indent,
                 object_fields,
+                object_static_fields,
                 collection_chunks,
                 object_phases,
                 object_errors,
@@ -435,6 +497,7 @@ fn append_collection_items_inner(
                     entry,
                     indent,
                     object_fields,
+                    object_static_fields,
                     collection_chunks,
                     object_phases,
                     object_errors,
@@ -454,6 +517,7 @@ fn append_collection_entry_item(
     entry: &EntryInfo,
     indent: &str,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
+    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
@@ -512,6 +576,7 @@ fn append_collection_entry_item(
             nested,
             &format!("{indent}  "),
             object_fields,
+            object_static_fields,
             collection_chunks,
             object_phases,
             object_errors,
@@ -528,6 +593,7 @@ fn append_collection_entry_item(
             &format!("{indent}  "),
             0,
             object_fields,
+            object_static_fields,
             collection_chunks,
             object_phases,
             object_errors,
@@ -546,6 +612,7 @@ fn append_collection_entry_obj(
     indent: &str,
     depth: usize,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
+    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
@@ -657,6 +724,7 @@ fn append_collection_entry_obj(
                                 cc,
                                 &format!("{indent}  "),
                                 object_fields,
+                                object_static_fields,
                                 collection_chunks,
                                 object_phases,
                                 object_errors,
@@ -671,6 +739,7 @@ fn append_collection_entry_obj(
                             &format!("{indent}  "),
                             depth + 1,
                             object_fields,
+                            object_static_fields,
                             collection_chunks,
                             object_phases,
                             object_errors,
@@ -681,6 +750,7 @@ fn append_collection_entry_obj(
                 }
                 visited.remove(&obj_id);
             }
+            append_static_items(obj_id, indent, object_static_fields, items);
         }
         ExpansionPhase::Failed => {
             // Error state is styled on the parent node — no child row emitted here.
@@ -741,6 +811,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
         );
         let text = render_items(items);
         assert!(text.contains("(no locals)"), "got: {text:?}");
@@ -755,6 +826,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
         );
         let text = render_items(items);
         assert!(text.contains("[0] null"), "got: {text:?}");
@@ -765,6 +837,7 @@ mod tests {
         let vars = vec![make_var(0, 42)];
         let items = render_variable_tree(
             TreeRoot::Frame { vars: &vars },
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -785,6 +858,7 @@ mod tests {
 
         let items = render_variable_tree(
             TreeRoot::Frame { vars: &vars },
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &object_phases,
@@ -815,6 +889,7 @@ mod tests {
         let items = render_variable_tree(
             TreeRoot::Frame { vars: &vars },
             &object_fields,
+            &HashMap::new(),
             &HashMap::new(),
             &object_phases,
             &HashMap::new(),
@@ -849,6 +924,7 @@ mod tests {
             TreeRoot::Frame { vars: &vars },
             &object_fields,
             &HashMap::new(),
+            &HashMap::new(),
             &object_phases,
             &HashMap::new(),
         );
@@ -876,6 +952,7 @@ mod tests {
         let items = render_variable_tree(
             TreeRoot::Subtree { root_id: 99 },
             &object_fields,
+            &HashMap::new(),
             &HashMap::new(),
             &object_phases,
             &HashMap::new(),
@@ -938,6 +1015,7 @@ mod tests {
         let items = render_variable_tree(
             TreeRoot::Frame { vars: &vars },
             &object_fields,
+            &HashMap::new(),
             &collection_chunks,
             &object_phases,
             &object_errors,

@@ -87,6 +87,27 @@ pub struct FieldDef {
     pub field_type: u8,
 }
 
+/// Decoded value of a static field from a `CLASS_DUMP` sub-record.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StaticValue {
+    ObjectRef(u64),
+    Bool(bool),
+    Char(char),
+    Float(f32),
+    Double(f64),
+    Byte(i8),
+    Short(i16),
+    Int(i32),
+    Long(i64),
+}
+
+/// One decoded static field from a `CLASS_DUMP` sub-record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StaticFieldDef {
+    pub name_string_id: u64,
+    pub value: StaticValue,
+}
+
 /// Parsed instance field layout extracted from a `CLASS_DUMP` sub-record
 /// (heap sub-tag `0x20`).
 #[derive(Debug, Clone)]
@@ -94,6 +115,8 @@ pub struct ClassDumpInfo {
     pub class_object_id: u64,
     pub super_class_id: u64,
     pub instance_size: u32,
+    /// Static fields declared on this class.
+    pub static_fields: Vec<StaticFieldDef>,
     /// Instance fields in declaration order (NOT including inherited fields).
     pub instance_fields: Vec<FieldDef>,
 }
@@ -137,9 +160,22 @@ impl MemorySize for FieldDef {
     }
 }
 
+impl MemorySize for StaticValue {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl MemorySize for StaticFieldDef {
+    fn memory_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
 impl MemorySize for ClassDumpInfo {
     fn memory_size(&self) -> usize {
         std::mem::size_of::<Self>()
+            + self.static_fields.capacity() * std::mem::size_of::<StaticFieldDef>()
             + self.instance_fields.capacity() * std::mem::size_of::<FieldDef>()
     }
 }
@@ -358,13 +394,21 @@ mod memory_size_tests {
             name_string_id: 1,
             field_type: 10,
         });
+        let mut static_fields = Vec::with_capacity(3);
+        static_fields.push(StaticFieldDef {
+            name_string_id: 2,
+            value: StaticValue::Int(7),
+        });
         let c = ClassDumpInfo {
             class_object_id: 100,
             super_class_id: 50,
             instance_size: 16,
+            static_fields,
             instance_fields: fields,
         };
-        let expected = size_of::<ClassDumpInfo>() + 5 * size_of::<FieldDef>();
+        let expected = size_of::<ClassDumpInfo>()
+            + 3 * size_of::<StaticFieldDef>()
+            + 5 * size_of::<FieldDef>();
         assert_eq!(c.memory_size(), expected);
     }
 
@@ -411,6 +455,10 @@ mod new_type_compile_tests {
             class_object_id: 100,
             super_class_id: 50,
             instance_size: 16,
+            static_fields: vec![StaticFieldDef {
+                name_string_id: 2,
+                value: StaticValue::Int(9),
+            }],
             instance_fields: vec![FieldDef {
                 name_string_id: 1,
                 field_type: 10,
@@ -419,6 +467,7 @@ mod new_type_compile_tests {
         assert_eq!(c.class_object_id, 100);
         assert_eq!(c.super_class_id, 50);
         assert_eq!(c.instance_size, 16);
+        assert_eq!(c.static_fields.len(), 1);
         assert_eq!(c.instance_fields.len(), 1);
     }
 

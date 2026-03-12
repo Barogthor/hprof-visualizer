@@ -618,5 +618,5 @@ claude-sonnet-4-6
   - `crates/hprof-engine/src/pagination/tests.rs`
   - `tools/hprof-redact-custom/src/main/java/io/hprofvisualizer/redact/PathOnlyTransformer.java`
   - `docs/code-review/claude-story-9-4-adversarial-review.md`
-  - `docs/implementation-artifacts/9-5-stack-frame-variable-names-and-static-fields.md`
+  - `docs/implementation-artifacts/9-5-static-fields-in-stack-view.md`
 - These files are not part of story 9.4 implementation scope.

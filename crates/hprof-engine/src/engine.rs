@@ -278,6 +278,17 @@ pub trait NavigationEngine {
     /// BinaryFuse8 false positive).
     fn expand_object(&self, object_id: u64) -> Option<Vec<FieldInfo>>;
 
+    /// Returns the class object ID of an instance object.
+    ///
+    /// Returns `None` when `object_id` cannot be resolved to an instance.
+    fn class_of_object(&self, object_id: u64) -> Option<u64>;
+
+    /// Returns static fields for a class object as resolved [`FieldInfo`] rows.
+    ///
+    /// Returns an empty vector when the class has no static fields or the class
+    /// dump is unavailable.
+    fn get_static_fields(&self, class_object_id: u64) -> Vec<FieldInfo>;
+
     /// Returns a page of entries from a paginated collection.
     ///
     /// Returns `None` if the object is not found, not a
@@ -351,6 +362,12 @@ mod tests {
         fn expand_object(&self, _object_id: u64) -> Option<Vec<FieldInfo>> {
             Some(vec![])
         }
+        fn class_of_object(&self, _object_id: u64) -> Option<u64> {
+            None
+        }
+        fn get_static_fields(&self, _class_object_id: u64) -> Vec<FieldInfo> {
+            vec![]
+        }
         fn get_page(
             &self,
             _collection_id: u64,
@@ -418,6 +435,8 @@ mod tests {
         assert_eq!(engine.get_stack_frames(0).len(), 1);
         assert_eq!(engine.get_local_variables(0).len(), 1);
         assert!(engine.expand_object(0).unwrap().is_empty());
+        assert!(engine.class_of_object(0).is_none());
+        assert!(engine.get_static_fields(0).is_empty());
         assert!(engine.get_page(0, 0, 10).is_none());
     }
 

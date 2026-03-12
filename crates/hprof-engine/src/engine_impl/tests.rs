@@ -892,6 +892,7 @@ mod collection_tests {
                 class_object_id: class_id,
                 super_class_id: super_id,
                 instance_size: 4,
+                static_fields: vec![],
                 instance_fields: vec![FieldDef {
                     name_string_id: 1,
                     field_type: type_code,
@@ -1008,6 +1009,7 @@ mod collection_tests {
                 class_object_id: abstract_map_id,
                 super_class_id: 0,
                 instance_size: 16,
+                static_fields: vec![],
                 instance_fields: vec![
                     FieldDef {
                         name_string_id: sid_key_set,
@@ -1026,6 +1028,7 @@ mod collection_tests {
                 class_object_id: hashmap_id,
                 super_class_id: abstract_map_id,
                 instance_size: 36,
+                static_fields: vec![],
                 instance_fields: vec![
                     FieldDef {
                         name_string_id: sid_table,
@@ -1105,6 +1108,7 @@ mod collection_tests {
                 class_object_id: hashmap_id,
                 super_class_id: 0,
                 instance_size: 20,
+                static_fields: vec![],
                 instance_fields: vec![
                     FieldDef {
                         name_string_id: sid_table,
@@ -1127,6 +1131,7 @@ mod collection_tests {
                 class_object_id: linked_hashmap_id,
                 super_class_id: hashmap_id,
                 instance_size: 17,
+                static_fields: vec![],
                 instance_fields: vec![
                     FieldDef {
                         name_string_id: sid_head,
@@ -1330,6 +1335,89 @@ mod expand_object_tests {
                 inline_value: None,
             }
         );
+    }
+}
+
+mod static_fields_tests {
+    use std::io::Write as IoWrite;
+
+    use hprof_parser::{HprofTestBuilder, StaticValue};
+
+    use super::*;
+
+    fn engine_from_bytes(bytes: &[u8]) -> Engine {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(bytes).unwrap();
+        tmp.flush().unwrap();
+        let config = EngineConfig::default();
+        Engine::from_file(tmp.path(), &config).unwrap()
+    }
+
+    #[test]
+    fn class_of_object_returns_class_id() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_class_dump(100, 0, 0, &[])
+            .add_instance(0xABCD, 0, 100, &[])
+            .build();
+        let engine = engine_from_bytes(&bytes);
+        assert_eq!(engine.class_of_object(0xABCD), Some(100));
+    }
+
+    #[test]
+    fn class_of_object_returns_none_for_unknown_object() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_class_dump(100, 0, 0, &[])
+            .add_instance(0xABCD, 0, 100, &[])
+            .build();
+        let engine = engine_from_bytes(&bytes);
+        assert_eq!(engine.class_of_object(0xDEAD), None);
+    }
+
+    #[test]
+    fn get_static_fields_returns_resolved_fields() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_string(1, "counter")
+            .add_string(2, "owner")
+            .add_string(3, "java/lang/String")
+            .add_class(1, 200, 0, 3)
+            .add_class_dump_with_static_fields(
+                100,
+                0,
+                0,
+                &[],
+                &[
+                    (1, StaticValue::Int(42)),
+                    (2, StaticValue::ObjectRef(0xDEAD)),
+                ],
+            )
+            .add_class_dump(200, 0, 0, &[])
+            .add_instance(0xDEAD, 0, 200, &[])
+            .build();
+        let engine = engine_from_bytes(&bytes);
+        let fields = engine.get_static_fields(100);
+
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "counter");
+        assert_eq!(fields[0].value, crate::engine::FieldValue::Int(42));
+        assert_eq!(fields[1].name, "owner");
+        assert_eq!(
+            fields[1].value,
+            crate::engine::FieldValue::ObjectRef {
+                id: 0xDEAD,
+                class_name: "java.lang.String".to_string(),
+                entry_count: None,
+                inline_value: None,
+            }
+        );
+    }
+
+    #[test]
+    fn get_static_fields_empty_when_no_statics() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_class_dump(100, 0, 0, &[])
+            .build();
+        let engine = engine_from_bytes(&bytes);
+        assert!(engine.get_static_fields(100).is_empty());
     }
 }
 

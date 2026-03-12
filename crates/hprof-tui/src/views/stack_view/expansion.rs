@@ -13,6 +13,7 @@ use super::types::{ChunkState, CollectionChunks, ExpansionPhase, StackCursor};
 pub struct ExpansionRegistry {
     pub(crate) object_phases: HashMap<u64, ExpansionPhase>,
     pub(crate) object_fields: HashMap<u64, Vec<FieldInfo>>,
+    pub(crate) object_static_fields: HashMap<u64, Vec<FieldInfo>>,
     pub(crate) object_errors: HashMap<u64, String>,
     pub(crate) collection_chunks: HashMap<u64, CollectionChunks>,
     pub(crate) collection_restore_cursors: HashMap<u64, StackCursor>,
@@ -24,6 +25,7 @@ impl ExpansionRegistry {
         Self {
             object_phases: HashMap::new(),
             object_fields: HashMap::new(),
+            object_static_fields: HashMap::new(),
             object_errors: HashMap::new(),
             collection_chunks: HashMap::new(),
             collection_restore_cursors: HashMap::new(),
@@ -57,6 +59,7 @@ impl ExpansionRegistry {
     /// `StackState::set_expansion_failed`.
     pub fn set_expansion_failed(&mut self, object_id: u64, error: String) {
         self.object_errors.insert(object_id, error);
+        self.object_static_fields.remove(&object_id);
         self.object_phases.insert(object_id, ExpansionPhase::Failed);
     }
 
@@ -64,6 +67,7 @@ impl ExpansionRegistry {
     pub fn cancel_expansion(&mut self, object_id: u64) {
         self.object_phases.remove(&object_id);
         self.object_fields.remove(&object_id);
+        self.object_static_fields.remove(&object_id);
         self.object_errors.remove(&object_id);
     }
 
@@ -71,6 +75,7 @@ impl ExpansionRegistry {
     pub fn collapse_object(&mut self, object_id: u64) {
         self.object_phases.remove(&object_id);
         self.object_fields.remove(&object_id);
+        self.object_static_fields.remove(&object_id);
         self.object_errors.remove(&object_id);
     }
 

@@ -558,6 +558,12 @@ impl<E: NavigationEngine> App<E> {
                                 _ => return None,
                             }
                         }
+                        StackCursor::OnStaticSectionHeader { .. }
+                        | StackCursor::OnStaticField { .. }
+                        | StackCursor::OnStaticOverflowRow { .. }
+                        | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
+                        | StackCursor::OnCollectionEntryStaticField { .. }
+                        | StackCursor::OnCollectionEntryStaticOverflowRow { .. } => return None,
                         StackCursor::OnCyclicNode { .. }
                         | StackCursor::OnObjectLoadingNode { .. }
                         | StackCursor::NoFrames => return None,
@@ -665,6 +671,14 @@ impl<E: NavigationEngine> App<E> {
                             {
                                 return Some(LeftCmd::CollapseEntryObj(oid));
                             }
+                            LeftCmd::NavigateToParent(s.parent_cursor()?)
+                        }
+                        StackCursor::OnStaticSectionHeader { .. }
+                        | StackCursor::OnStaticField { .. }
+                        | StackCursor::OnStaticOverflowRow { .. }
+                        | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
+                        | StackCursor::OnCollectionEntryStaticField { .. }
+                        | StackCursor::OnCollectionEntryStaticOverflowRow { .. } => {
                             LeftCmd::NavigateToParent(s.parent_cursor()?)
                         }
                         StackCursor::OnChunkSection { .. } => {
@@ -833,6 +847,12 @@ impl<E: NavigationEngine> App<E> {
                                 ExpansionPhase::Loading => return None,
                             }
                         }
+                        StackCursor::OnStaticSectionHeader { .. }
+                        | StackCursor::OnStaticField { .. }
+                        | StackCursor::OnStaticOverflowRow { .. }
+                        | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
+                        | StackCursor::OnCollectionEntryStaticField { .. }
+                        | StackCursor::OnCollectionEntryStaticOverflowRow { .. } => return None,
                         StackCursor::OnCyclicNode { .. }
                         | StackCursor::OnObjectLoadingNode { .. }
                         | StackCursor::NoFrames => return None,
@@ -1077,8 +1097,28 @@ impl<E: NavigationEngine> App<E> {
         for (&object_id, pe) in self.pending_expansions.iter_mut() {
             match pe.rx.try_recv() {
                 Ok(Some(fields)) => {
+                    let class_id = self.engine.class_of_object(object_id);
+                    let static_fields = class_id
+                        .map(|cid| self.engine.get_static_fields(cid))
+                        .unwrap_or_default();
+                    #[cfg(feature = "dev-profiling")]
+                    match class_id {
+                        Some(cid) => dbg_log!(
+                            "poll_expansions(0x{:X}): class=0x{:X} instance_fields={} static_fields={}",
+                            object_id,
+                            cid,
+                            fields.len(),
+                            static_fields.len()
+                        ),
+                        None => dbg_log!(
+                            "poll_expansions(0x{:X}): class=<none> instance_fields={} static_fields=0",
+                            object_id,
+                            fields.len()
+                        ),
+                    }
                     if let Some(s) = &mut self.stack_state {
                         s.set_expansion_done(object_id, fields);
+                        s.set_static_fields(object_id, static_fields);
                     }
                     done.push(object_id);
                 }

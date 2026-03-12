@@ -341,6 +341,12 @@ pub fn snapshot_from_cursor(
         StackCursor::NoFrames
         | StackCursor::OnObjectLoadingNode { .. }
         | StackCursor::OnCyclicNode { .. }
+        | StackCursor::OnStaticSectionHeader { .. }
+        | StackCursor::OnStaticField { .. }
+        | StackCursor::OnStaticOverflowRow { .. }
+        | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
+        | StackCursor::OnCollectionEntryStaticField { .. }
+        | StackCursor::OnCollectionEntryStaticOverflowRow { .. }
         | StackCursor::OnChunkSection { .. } => None,
     }
 }

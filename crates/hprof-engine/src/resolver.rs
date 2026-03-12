@@ -143,6 +143,7 @@ mod tests {
                 class_object_id: class_id,
                 super_class_id: super_id,
                 instance_size: 0,
+                static_fields: vec![],
                 instance_fields: fields
                     .iter()
                     .map(|&(name_id, ft)| FieldDef {
@@ -190,6 +191,7 @@ mod tests {
                 class_object_id: 50,
                 super_class_id: 0,
                 instance_size: 0,
+                static_fields: vec![],
                 instance_fields: vec![FieldDef {
                     name_string_id: 1,
                     field_type: 10,
@@ -202,6 +204,7 @@ mod tests {
                 class_object_id: 100,
                 super_class_id: 50,
                 instance_size: 0,
+                static_fields: vec![],
                 instance_fields: vec![FieldDef {
                     name_string_id: 2,
                     field_type: 10,
