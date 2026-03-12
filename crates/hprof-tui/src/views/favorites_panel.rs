@@ -233,15 +233,6 @@ fn object_phases_for_item(
         .collect()
 }
 
-fn visible_collection_chunks(
-    collection_chunks: &HashMap<u64, CollectionChunks>,
-) -> HashMap<u64, CollectionChunks> {
-    collection_chunks
-        .iter()
-        .map(|(&id, chunks)| (id, chunks.clone()))
-        .collect()
-}
-
 struct MetadataCollector<'a> {
     object_fields: &'a HashMap<u64, Vec<FieldInfo>>,
     object_static_fields: &'a HashMap<u64, Vec<FieldInfo>>,
@@ -729,11 +720,10 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                 collection_chunks,
                 &item.local_collapsed,
             );
-            let visible_chunks = visible_collection_chunks(collection_chunks);
             let mut collector = MetadataCollector::new(
                 object_fields,
                 object_static_fields,
-                &visible_chunks,
+                collection_chunks,
                 &object_phases,
                 start_count,
             );
@@ -746,7 +736,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                     TreeRoot::Frame { vars: variables },
                     object_fields,
                     object_static_fields,
-                    &visible_chunks,
+                    collection_chunks,
                     &object_phases,
                     &HashMap::new(),
                     RenderOptions {
@@ -775,15 +765,14 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                 collection_chunks,
                 &item.local_collapsed,
             );
-            let visible_chunks = visible_collection_chunks(collection_chunks);
             let mut collector = MetadataCollector::new(
                 object_fields,
                 object_static_fields,
-                &visible_chunks,
+                collection_chunks,
                 &object_phases,
                 start_count,
             );
-            if let Some(root_chunks) = visible_chunks.get(root_id) {
+            if let Some(root_chunks) = collection_chunks.get(root_id) {
                 collector.collect_collection_rows(*root_id, root_chunks);
             } else {
                 let mut visited = HashSet::new();
@@ -797,7 +786,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                     TreeRoot::Subtree { root_id: *root_id },
                     object_fields,
                     object_static_fields,
-                    &visible_chunks,
+                    collection_chunks,
                     &object_phases,
                     &HashMap::new(),
                     RenderOptions {
@@ -889,12 +878,11 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         collection_chunks,
                         &item.local_collapsed,
                     );
-                    let visible_chunks = visible_collection_chunks(collection_chunks);
                     let tree = render_variable_tree(
                         TreeRoot::Frame { vars: variables },
                         object_fields,
                         object_static_fields,
-                        &visible_chunks,
+                        collection_chunks,
                         &object_phases,
                         &HashMap::new(),
                         RenderOptions {
@@ -923,12 +911,11 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         collection_chunks,
                         &item.local_collapsed,
                     );
-                    let visible_chunks = visible_collection_chunks(collection_chunks);
                     let tree = render_variable_tree(
                         TreeRoot::Subtree { root_id: *root_id },
                         object_fields,
                         object_static_fields,
-                        &visible_chunks,
+                        collection_chunks,
                         &object_phases,
                         &HashMap::new(),
                         RenderOptions {
@@ -1256,12 +1243,11 @@ mod tests {
             collection_chunks,
             &item.local_collapsed,
         );
-        let visible_chunks = visible_collection_chunks(collection_chunks);
         let rendered = render_variable_tree(
             TreeRoot::Frame { vars: variables },
             object_fields,
             &HashMap::new(),
-            &visible_chunks,
+            collection_chunks,
             &object_phases,
             &HashMap::new(),
             RenderOptions {
@@ -1576,12 +1562,11 @@ mod tests {
             collection_chunks,
             &item.local_collapsed,
         );
-        let visible_chunks = visible_collection_chunks(collection_chunks);
         let rendered = render_variable_tree(
             TreeRoot::Subtree { root_id: *root_id },
             object_fields,
             &HashMap::new(),
-            &visible_chunks,
+            collection_chunks,
             &object_phases,
             &HashMap::new(),
             RenderOptions {
@@ -1745,8 +1730,8 @@ mod tests {
 
         let (row_count, _, _) = collect_row_metadata(&item);
 
-        assert!(row_count > 0);
-        assert!(row_count < 100);
+        // 1 header + A-row + b-field-row + cyclic-A-row + 1 separator = 5
+        assert_eq!(row_count, 5);
     }
 
     #[test]
