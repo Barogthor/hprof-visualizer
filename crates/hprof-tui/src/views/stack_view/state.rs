@@ -100,6 +100,11 @@ impl StackState {
         &self.expansion.object_fields
     }
 
+    /// Returns the decoded static fields map keyed by object id.
+    pub(crate) fn object_static_fields(&self) -> &HashMap<u64, Vec<FieldInfo>> {
+        &self.expansion.object_static_fields
+    }
+
     /// Returns the collection chunks map.
     pub(crate) fn collection_chunks_map(&self) -> &HashMap<u64, CollectionChunks> {
         &self.expansion.collection_chunks

@@ -2342,6 +2342,7 @@ fn snapshot_chunk_page_limit_respected() {
         snapshot: PinnedSnapshot::Subtree {
             root_id: 1,
             object_fields: HashMap::new(),
+            object_static_fields: HashMap::new(),
             collection_chunks: HashMap::from([(
                 collection_id,
                 CollectionChunks {

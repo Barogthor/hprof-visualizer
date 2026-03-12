@@ -17,7 +17,10 @@ use crate::{
     favorites::{PinnedItem, PinnedSnapshot},
     theme::THEME,
     views::{
-        stack_view::{ChunkState, CollectionChunks, ExpansionPhase, compute_chunk_ranges},
+        stack_view::{
+            ChunkState, CollectionChunks, ExpansionPhase, STATIC_FIELDS_RENDER_LIMIT,
+            compute_chunk_ranges,
+        },
         tree_render::{RenderOptions, TreeRoot, render_variable_tree},
     },
 };
@@ -217,11 +220,13 @@ fn get_phase(object_id: u64, object_phases: &HashMap<u64, ExpansionPhase>) -> Ex
 
 fn object_phases_for_item(
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
+    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
     local_collapsed: &HashSet<u64>,
 ) -> HashMap<u64, ExpansionPhase> {
     object_fields
         .keys()
+        .chain(object_static_fields.keys())
         .chain(collection_chunks.keys())
         .filter(|id| !local_collapsed.contains(id))
         .map(|&id| (id, ExpansionPhase::Expanded))
@@ -239,6 +244,7 @@ fn visible_collection_chunks(
 
 struct MetadataCollector<'a> {
     object_fields: &'a HashMap<u64, Vec<FieldInfo>>,
+    object_static_fields: &'a HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &'a HashMap<u64, CollectionChunks>,
     object_phases: &'a HashMap<u64, ExpansionPhase>,
     row_count: usize,
@@ -249,12 +255,14 @@ struct MetadataCollector<'a> {
 impl<'a> MetadataCollector<'a> {
     fn new(
         object_fields: &'a HashMap<u64, Vec<FieldInfo>>,
+        object_static_fields: &'a HashMap<u64, Vec<FieldInfo>>,
         collection_chunks: &'a HashMap<u64, CollectionChunks>,
         object_phases: &'a HashMap<u64, ExpansionPhase>,
         row_count: usize,
     ) -> Self {
         Self {
             object_fields,
+            object_static_fields,
             collection_chunks,
             object_phases,
             row_count,
@@ -284,11 +292,153 @@ impl<'a> MetadataCollector<'a> {
             return (get_phase(object_id, self.object_phases), true, true);
         }
 
-        let has_object_data = self.object_fields.contains_key(&object_id);
+        let has_object_data = self.object_fields.contains_key(&object_id)
+            || self.object_static_fields.contains_key(&object_id);
         if has_object_data {
             (get_phase(object_id, self.object_phases), true, false)
         } else {
             (ExpansionPhase::Collapsed, false, false)
+        }
+    }
+
+    fn collect_static_rows(&mut self, object_id: u64, depth: usize) {
+        let Some(static_fields) = self.object_static_fields.get(&object_id) else {
+            return;
+        };
+        if static_fields.is_empty() {
+            return;
+        }
+
+        self.push_row(); // [static]
+        let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
+        for field in static_fields.iter().take(shown) {
+            let (child_phase, toggleable, is_collection) =
+                if let FieldValue::ObjectRef {
+                    id, entry_count, ..
+                } = field.value
+                {
+                    self.resolve_object_ref_state(id, entry_count)
+                } else {
+                    (ExpansionPhase::Collapsed, false, false)
+                };
+
+            let row = self.push_row();
+            if toggleable
+                && let FieldValue::ObjectRef { id, .. } = field.value
+                && !matches!(
+                    child_phase,
+                    ExpansionPhase::Failed | ExpansionPhase::Loading
+                )
+            {
+                self.kind_map
+                    .insert(row, (id, matches!(child_phase, ExpansionPhase::Collapsed)));
+            }
+
+            if is_collection {
+                if matches!(
+                    child_phase,
+                    ExpansionPhase::Expanded | ExpansionPhase::Loading
+                ) && let FieldValue::ObjectRef {
+                    id,
+                    entry_count: Some(_),
+                    ..
+                } = field.value
+                    && let Some(cc) = self.collection_chunks.get(&id)
+                {
+                    self.collect_collection_rows(id, cc);
+                }
+                continue;
+            }
+
+            if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
+                let mut visited = HashSet::new();
+                self.collect_static_object_rows(id, &mut visited, depth + 1);
+            }
+        }
+
+        if static_fields.len() > shown {
+            self.push_row(); // [+N more static fields]
+        }
+    }
+
+    fn collect_static_object_rows(
+        &mut self,
+        obj_id: u64,
+        visited: &mut HashSet<u64>,
+        depth: usize,
+    ) {
+        if depth >= 16 {
+            return;
+        }
+        match get_phase(obj_id, self.object_phases) {
+            ExpansionPhase::Collapsed | ExpansionPhase::Failed => {}
+            ExpansionPhase::Loading => {
+                self.push_row();
+            }
+            ExpansionPhase::Expanded => {
+                let field_list = self
+                    .object_fields
+                    .get(&obj_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                if field_list.is_empty() {
+                    self.push_row();
+                    return;
+                }
+
+                visited.insert(obj_id);
+                for field in field_list {
+                    if let FieldValue::ObjectRef { id, .. } = &field.value
+                        && visited.contains(id)
+                    {
+                        self.push_row();
+                        continue;
+                    }
+
+                    let (child_phase, toggleable, is_collection) =
+                        if let FieldValue::ObjectRef {
+                            id, entry_count, ..
+                        } = field.value
+                        {
+                            self.resolve_object_ref_state(id, entry_count)
+                        } else {
+                            (ExpansionPhase::Collapsed, false, false)
+                        };
+
+                    let row = self.push_row();
+                    if toggleable
+                        && let FieldValue::ObjectRef { id, .. } = field.value
+                        && !matches!(
+                            child_phase,
+                            ExpansionPhase::Failed | ExpansionPhase::Loading
+                        )
+                    {
+                        self.kind_map
+                            .insert(row, (id, matches!(child_phase, ExpansionPhase::Collapsed)));
+                    }
+
+                    if is_collection {
+                        if matches!(
+                            child_phase,
+                            ExpansionPhase::Expanded | ExpansionPhase::Loading
+                        ) && let FieldValue::ObjectRef {
+                            id,
+                            entry_count: Some(_),
+                            ..
+                        } = field.value
+                            && let Some(cc) = self.collection_chunks.get(&id)
+                        {
+                            self.collect_collection_rows(id, cc);
+                        }
+                        continue;
+                    }
+
+                    if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
+                        self.collect_static_object_rows(id, visited, depth + 1);
+                    }
+                }
+                visited.remove(&obj_id);
+            }
         }
     }
 
@@ -413,6 +563,7 @@ impl<'a> MetadataCollector<'a> {
                         }
                     }
                 }
+                self.collect_static_rows(object_id, depth);
                 visited.remove(&object_id);
             }
         }
@@ -552,6 +703,7 @@ impl<'a> MetadataCollector<'a> {
                     }
                     visited.remove(&obj_id);
                 }
+                self.collect_static_rows(obj_id, depth);
             }
         }
     }
@@ -566,15 +718,25 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
         PinnedSnapshot::Frame {
             variables,
             object_fields,
+            object_static_fields,
             collection_chunks,
             truncated,
         } => {
             let start_count = row_count + usize::from(*truncated);
-            let object_phases =
-                object_phases_for_item(object_fields, collection_chunks, &item.local_collapsed);
+            let object_phases = object_phases_for_item(
+                object_fields,
+                object_static_fields,
+                collection_chunks,
+                &item.local_collapsed,
+            );
             let visible_chunks = visible_collection_chunks(collection_chunks);
-            let mut collector =
-                MetadataCollector::new(object_fields, &visible_chunks, &object_phases, start_count);
+            let mut collector = MetadataCollector::new(
+                object_fields,
+                object_static_fields,
+                &visible_chunks,
+                &object_phases,
+                start_count,
+            );
             collector.collect_frame_rows(variables);
             (row_count, kind_map, sentinel_map) = collector.into_parts();
 
@@ -583,7 +745,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                 render_variable_tree(
                     TreeRoot::Frame { vars: variables },
                     object_fields,
-                    &HashMap::new(),
+                    object_static_fields,
                     &visible_chunks,
                     &object_phases,
                     &HashMap::new(),
@@ -602,15 +764,25 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
         PinnedSnapshot::Subtree {
             root_id,
             object_fields,
+            object_static_fields,
             collection_chunks,
             truncated,
         } => {
             let start_count = row_count + usize::from(*truncated);
-            let object_phases =
-                object_phases_for_item(object_fields, collection_chunks, &item.local_collapsed);
+            let object_phases = object_phases_for_item(
+                object_fields,
+                object_static_fields,
+                collection_chunks,
+                &item.local_collapsed,
+            );
             let visible_chunks = visible_collection_chunks(collection_chunks);
-            let mut collector =
-                MetadataCollector::new(object_fields, &visible_chunks, &object_phases, start_count);
+            let mut collector = MetadataCollector::new(
+                object_fields,
+                object_static_fields,
+                &visible_chunks,
+                &object_phases,
+                start_count,
+            );
             if let Some(root_chunks) = visible_chunks.get(root_id) {
                 collector.collect_collection_rows(*root_id, root_chunks);
             } else {
@@ -624,7 +796,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                 render_variable_tree(
                     TreeRoot::Subtree { root_id: *root_id },
                     object_fields,
-                    &HashMap::new(),
+                    object_static_fields,
                     &visible_chunks,
                     &object_phases,
                     &HashMap::new(),
@@ -701,6 +873,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                 PinnedSnapshot::Frame {
                     variables,
                     object_fields,
+                    object_static_fields,
                     collection_chunks,
                     truncated,
                 } => {
@@ -712,6 +885,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                     }
                     let object_phases = object_phases_for_item(
                         object_fields,
+                        object_static_fields,
                         collection_chunks,
                         &item.local_collapsed,
                     );
@@ -719,7 +893,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                     let tree = render_variable_tree(
                         TreeRoot::Frame { vars: variables },
                         object_fields,
-                        &HashMap::new(),
+                        object_static_fields,
                         &visible_chunks,
                         &object_phases,
                         &HashMap::new(),
@@ -733,6 +907,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                 PinnedSnapshot::Subtree {
                     root_id,
                     object_fields,
+                    object_static_fields,
                     collection_chunks,
                     truncated,
                 } => {
@@ -744,6 +919,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                     }
                     let object_phases = object_phases_for_item(
                         object_fields,
+                        object_static_fields,
                         collection_chunks,
                         &item.local_collapsed,
                     );
@@ -751,7 +927,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                     let tree = render_variable_tree(
                         TreeRoot::Subtree { root_id: *root_id },
                         object_fields,
-                        &HashMap::new(),
+                        object_static_fields,
                         &visible_chunks,
                         &object_phases,
                         &HashMap::new(),
@@ -842,6 +1018,7 @@ mod tests {
                     value: VariableValue::Null,
                 }],
                 object_fields: HashMap::new(),
+                object_static_fields: HashMap::new(),
                 collection_chunks: HashMap::new(),
                 truncated: false,
             },
@@ -905,6 +1082,7 @@ mod tests {
                     },
                 }],
                 object_fields,
+                object_static_fields: HashMap::new(),
                 collection_chunks: HashMap::new(),
                 truncated: false,
             },
@@ -1072,8 +1250,12 @@ mod tests {
         else {
             panic!("expected frame snapshot");
         };
-        let object_phases =
-            object_phases_for_item(object_fields, collection_chunks, &item.local_collapsed);
+        let object_phases = object_phases_for_item(
+            object_fields,
+            &HashMap::new(),
+            collection_chunks,
+            &item.local_collapsed,
+        );
         let visible_chunks = visible_collection_chunks(collection_chunks);
         let rendered = render_variable_tree(
             TreeRoot::Frame { vars: variables },
@@ -1176,6 +1358,7 @@ mod tests {
                     },
                 }],
                 object_fields: object_fields.clone(),
+                object_static_fields: HashMap::new(),
                 collection_chunks: collection_chunks.clone(),
                 truncated: false,
             },
@@ -1189,8 +1372,12 @@ mod tests {
 
         let (row_count, _kind_map, _sentinel_map) = collect_row_metadata(&item);
 
-        let object_phases =
-            object_phases_for_item(&object_fields, &collection_chunks, &item.local_collapsed);
+        let object_phases = object_phases_for_item(
+            &object_fields,
+            &HashMap::new(),
+            &collection_chunks,
+            &item.local_collapsed,
+        );
         let rendered = render_variable_tree(
             TreeRoot::Frame {
                 vars: match &item.snapshot {
@@ -1272,6 +1459,7 @@ mod tests {
                     },
                 }],
                 object_fields: HashMap::new(),
+                object_static_fields: HashMap::new(),
                 collection_chunks: HashMap::new(),
                 truncated: false,
             },
@@ -1313,6 +1501,7 @@ mod tests {
                     },
                 }],
                 object_fields: HashMap::new(),
+                object_static_fields: HashMap::new(),
                 collection_chunks: HashMap::new(),
                 truncated: false,
             },
@@ -1343,6 +1532,7 @@ mod tests {
             snapshot: PinnedSnapshot::Subtree {
                 root_id: 77,
                 object_fields: HashMap::new(),
+                object_static_fields: HashMap::new(),
                 collection_chunks: HashMap::from([(
                     77u64,
                     CollectionChunks {
@@ -1380,8 +1570,12 @@ mod tests {
         else {
             panic!("expected subtree snapshot");
         };
-        let object_phases =
-            object_phases_for_item(object_fields, collection_chunks, &item.local_collapsed);
+        let object_phases = object_phases_for_item(
+            object_fields,
+            &HashMap::new(),
+            collection_chunks,
+            &item.local_collapsed,
+        );
         let visible_chunks = visible_collection_chunks(collection_chunks);
         let rendered = render_variable_tree(
             TreeRoot::Subtree { root_id: *root_id },
@@ -1451,6 +1645,7 @@ mod tests {
                     },
                 }],
                 object_fields,
+                object_static_fields: HashMap::new(),
                 collection_chunks,
                 truncated: false,
             },
@@ -1536,6 +1731,7 @@ mod tests {
                     },
                 }],
                 object_fields,
+                object_static_fields: HashMap::new(),
                 collection_chunks: HashMap::new(),
                 truncated: false,
             },
@@ -1576,5 +1772,69 @@ mod tests {
         };
         let (unexpanded_rows, _, _) = collect_row_metadata(&unexpanded);
         assert_eq!(unexpanded_rows, 3);
+    }
+
+    #[test]
+    fn favorites_panel_renders_static_fields_for_pinned_object() {
+        let mut object_fields = HashMap::new();
+        object_fields.insert(
+            10,
+            vec![FieldInfo {
+                name: "value".to_string(),
+                value: FieldValue::Int(1),
+            }],
+        );
+        let mut object_static_fields = HashMap::new();
+        object_static_fields.insert(
+            10,
+            vec![FieldInfo {
+                name: "SOME_STATIC".to_string(),
+                value: FieldValue::Int(99),
+            }],
+        );
+
+        let items = vec![PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Foo.bar()".to_string(),
+            item_label: "var[0]".to_string(),
+            snapshot: PinnedSnapshot::Frame {
+                variables: vec![VariableInfo {
+                    index: 0,
+                    value: VariableValue::ObjectRef {
+                        id: 10,
+                        class_name: "Node".to_string(),
+                        entry_count: None,
+                    },
+                }],
+                object_fields: object_fields.clone(),
+                object_static_fields: object_static_fields.clone(),
+                collection_chunks: HashMap::new(),
+                truncated: false,
+            },
+            local_collapsed: HashSet::new(),
+            key: PinKey::Var {
+                frame_id: 1,
+                thread_name: "main".to_string(),
+                var_idx: 0,
+            },
+        }];
+        let text = render_panel(
+            FavoritesPanel {
+                focused: false,
+                show_object_ids: false,
+                pinned: &items,
+            },
+            120,
+            30,
+        );
+
+        assert!(
+            text.contains("[static]"),
+            "expected static section, got: {text:?}"
+        );
+        assert!(
+            text.contains("SOME_STATIC"),
+            "expected static field label, got: {text:?}"
+        );
     }
 }

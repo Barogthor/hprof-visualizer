@@ -15,6 +15,16 @@ use crate::views::stack_view::{
 /// vars of a frame). Prevents unbounded memory use on deep object graphs.
 const SNAPSHOT_OBJECT_LIMIT: usize = 500;
 
+type SnapshotObjectFields = HashMap<u64, Vec<FieldInfo>>;
+type SnapshotStaticFields = HashMap<u64, Vec<FieldInfo>>;
+type SnapshotCollectionChunks = HashMap<u64, CollectionChunks>;
+type SubtreeSnapshot = (
+    SnapshotObjectFields,
+    SnapshotStaticFields,
+    SnapshotCollectionChunks,
+    bool,
+);
+
 /// Structural position identifier used for toggle detection.
 ///
 /// Two pins are the same if and only if their `PinKey` compares equal.
@@ -62,6 +72,7 @@ pub enum PinnedSnapshot {
     Frame {
         variables: Vec<VariableInfo>,
         object_fields: HashMap<u64, Vec<FieldInfo>>,
+        object_static_fields: HashMap<u64, Vec<FieldInfo>>,
         collection_chunks: HashMap<u64, CollectionChunks>,
         truncated: bool,
     },
@@ -69,6 +80,7 @@ pub enum PinnedSnapshot {
     Subtree {
         root_id: u64,
         object_fields: HashMap<u64, Vec<FieldInfo>>,
+        object_static_fields: HashMap<u64, Vec<FieldInfo>>,
         collection_chunks: HashMap<u64, CollectionChunks>,
         truncated: bool,
     },
@@ -102,16 +114,13 @@ pub struct PinnedItem {
 /// `reachable` is shared across all vars of a frame so the global
 /// `SNAPSHOT_OBJECT_LIMIT` applies across the entire frame snapshot.
 ///
-/// Returns `(object_fields, collection_chunks, truncated)`.
+/// Returns
+/// `(object_fields, object_static_fields, collection_chunks, truncated)`.
 pub(crate) fn subtree_snapshot(
     root_id: u64,
     state: &StackState,
     reachable: &mut HashSet<u64>,
-) -> (
-    HashMap<u64, Vec<FieldInfo>>,
-    HashMap<u64, CollectionChunks>,
-    bool,
-) {
+) -> SubtreeSnapshot {
     let mut desc_order: Vec<u64> = Vec::new();
     let truncated = collect_descendants_limited(
         root_id,
@@ -122,18 +131,22 @@ pub(crate) fn subtree_snapshot(
         SNAPSHOT_OBJECT_LIMIT,
     ) || reachable.len() >= SNAPSHOT_OBJECT_LIMIT;
 
-    let mut snap_fields: HashMap<u64, Vec<FieldInfo>> = HashMap::new();
-    let mut snap_chunks: HashMap<u64, CollectionChunks> = HashMap::new();
+    let mut snap_fields: SnapshotObjectFields = HashMap::new();
+    let mut snap_static_fields: SnapshotStaticFields = HashMap::new();
+    let mut snap_chunks: SnapshotCollectionChunks = HashMap::new();
 
     for &id in &desc_order {
         if let Some(fields) = state.object_fields().get(&id) {
             snap_fields.insert(id, fields.clone());
         }
+        if let Some(fields) = state.object_static_fields().get(&id) {
+            snap_static_fields.insert(id, fields.clone());
+        }
         if let Some(cc) = state.collection_chunks_map().get(&id) {
             snap_chunks.insert(id, freeze_collection_chunks(cc));
         }
     }
-    (snap_fields, snap_chunks, truncated)
+    (snap_fields, snap_static_fields, snap_chunks, truncated)
 }
 
 fn collect_descendants_limited(
@@ -255,6 +268,7 @@ pub fn snapshot_from_cursor(
 
             let mut reachable = HashSet::new();
             let mut all_fields: HashMap<u64, Vec<FieldInfo>> = HashMap::new();
+            let mut all_static_fields: HashMap<u64, Vec<FieldInfo>> = HashMap::new();
             let mut all_chunks: HashMap<u64, CollectionChunks> = HashMap::new();
             let mut any_truncated = false;
 
@@ -264,8 +278,10 @@ pub fn snapshot_from_cursor(
                     break;
                 }
                 if let VariableValue::ObjectRef { id, .. } = var.value {
-                    let (fields, chunks, trunc) = subtree_snapshot(id, state, &mut reachable);
+                    let (fields, static_fields, chunks, trunc) =
+                        subtree_snapshot(id, state, &mut reachable);
                     all_fields.extend(fields);
+                    all_static_fields.extend(static_fields);
                     all_chunks.extend(chunks);
                     if trunc {
                         any_truncated = true;
@@ -280,6 +296,7 @@ pub fn snapshot_from_cursor(
                 snapshot: PinnedSnapshot::Frame {
                     variables: vars,
                     object_fields: all_fields,
+                    object_static_fields: all_static_fields,
                     collection_chunks: all_chunks,
                     truncated: any_truncated,
                 },
@@ -304,11 +321,12 @@ pub fn snapshot_from_cursor(
                         || state.collection_chunks_map().contains_key(id)
                     {
                         let mut reachable = HashSet::new();
-                        let (fields, chunks, truncated) =
+                        let (fields, static_fields, chunks, truncated) =
                             subtree_snapshot(*id, state, &mut reachable);
                         PinnedSnapshot::Subtree {
                             root_id: *id,
                             object_fields: fields,
+                            object_static_fields: static_fields,
                             collection_chunks: chunks,
                             truncated,
                         }
@@ -375,11 +393,12 @@ pub fn snapshot_from_cursor(
                         || state.collection_chunks_map().contains_key(id)
                     {
                         let mut reachable = HashSet::new();
-                        let (fields, chunks, truncated) =
+                        let (fields, static_fields, chunks, truncated) =
                             subtree_snapshot(*id, state, &mut reachable);
                         PinnedSnapshot::Subtree {
                             root_id: *id,
                             object_fields: fields,
+                            object_static_fields: static_fields,
                             collection_chunks: chunks,
                             truncated,
                         }
@@ -434,11 +453,12 @@ pub fn snapshot_from_cursor(
                         || state.collection_chunks_map().contains_key(id)
                     {
                         let mut reachable = HashSet::new();
-                        let (fields, chunks, truncated) =
+                        let (fields, static_fields, chunks, truncated) =
                             subtree_snapshot(*id, state, &mut reachable);
                         PinnedSnapshot::Subtree {
                             root_id: *id,
                             object_fields: fields,
+                            object_static_fields: static_fields,
                             collection_chunks: chunks,
                             truncated,
                         }
@@ -528,11 +548,12 @@ pub fn snapshot_from_cursor(
                         || state.collection_chunks_map().contains_key(id)
                     {
                         let mut reachable = HashSet::new();
-                        let (fields, chunks, truncated) =
+                        let (fields, static_fields, chunks, truncated) =
                             subtree_snapshot(*id, state, &mut reachable);
                         PinnedSnapshot::Subtree {
                             root_id: *id,
                             object_fields: fields,
+                            object_static_fields: static_fields,
                             collection_chunks: chunks,
                             truncated,
                         }
@@ -1341,5 +1362,54 @@ mod tests {
         };
 
         assert!(snapshot_from_cursor(&cursor, &state, "main").is_none());
+    }
+
+    #[test]
+    fn snapshot_captures_static_fields_for_expanded_object() {
+        let mut state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::ObjectRef {
+                    id: 42,
+                    class_name: "Node".to_string(),
+                    entry_count: None,
+                },
+            }],
+        );
+        state.set_expansion_done(
+            42,
+            vec![FieldInfo {
+                name: "value".to_string(),
+                value: FieldValue::Int(1),
+            }],
+        );
+        state.set_static_fields(
+            42,
+            vec![FieldInfo {
+                name: "SOME_STATIC".to_string(),
+                value: FieldValue::Int(99),
+            }],
+        );
+
+        let cursor = StackCursor::OnVar {
+            frame_idx: 0,
+            var_idx: 0,
+        };
+        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+
+        match item.snapshot {
+            PinnedSnapshot::Subtree {
+                object_static_fields,
+                ..
+            } => {
+                let Some(fields) = object_static_fields.get(&42) else {
+                    panic!("expected static fields for object 42 in snapshot");
+                };
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name, "SOME_STATIC");
+            }
+            _ => panic!("expected subtree snapshot"),
+        }
     }
 }
