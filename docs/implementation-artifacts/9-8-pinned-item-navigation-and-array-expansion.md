@@ -1,6 +1,6 @@
 # Story 9.8: Pinned Item Navigation & Array Expansion
 
-Status: review
+Status: done
 
 ## Story
 
@@ -701,11 +701,17 @@ openai/gpt-5.3-codex
 - Added snapshot-only unavailable marker behavior in favorites: object refs without captured descendants render with `?` and are not toggleable (no misleading `+/-`).
 - Fixed collection-only pinned snapshots: when a pinned root has collection chunks but no captured object fields, favorites now renders collection entries/chunks instead of appearing empty.
 - Follow-up trace (future option 2): support on-demand live expansion/loading from favorites for `?` rows by querying the engine beyond the frozen snapshot.
+- Added pin support for collection entries and collection-entry object fields (`OnCollectionEntry`, `OnCollectionEntryObjField`) with dedicated `PinKey` variants and `g` navigation fallbacks.
+- Fixed snapshot capture for expanded collection entries so descendants reached via collection pages are included (prevents false `?` on already-expanded children).
+- Added pinned static-field support: snapshot now captures `object_static_fields`, and favorites render/metadata traversal includes static sections consistently with stack rendering.
+- Refactored favorites pinning internals: introduced `PinnedItemFactory`, then colocated subtree/descendant snapshot walkers and chunk-freeze helper inside the factory to reduce top-level complexity.
 
 ### File List
 
 - `crates/hprof-tui/src/favorites.rs`
 - `crates/hprof-tui/src/views/favorites_panel.rs`
+- `crates/hprof-tui/src/views/tree_render.rs`
+- `crates/hprof-tui/src/views/stack_view/state.rs`
 - `crates/hprof-tui/src/app/mod.rs`
 - `crates/hprof-tui/src/app/tests.rs`
 - `docs/implementation-artifacts/9-8-pinned-item-navigation-and-array-expansion.md`
@@ -714,3 +720,5 @@ openai/gpt-5.3-codex
 ### Change Log
 
 - 2026-03-12: Implemented AC1–AC5 for pinned-item navigation, local expansion/collapse, and pinned array pagination with automated validation (`cargo test --all`, clippy, fmt).
+- 2026-03-12: Added follow-up fixes from interactive QA: unavailable-vs-collapsed markers for snapshot data, collection-entry pin support, collection-descendant capture, and static-field rendering in favorites.
+- 2026-03-12: Refactored `favorites.rs` pinning/snapshot internals around a `PinnedItemFactory` and internal descendant collector methods (behavior preserved; readability improved).
