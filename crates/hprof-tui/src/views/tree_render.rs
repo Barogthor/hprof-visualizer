@@ -29,6 +29,15 @@ pub(crate) enum TreeRoot<'a> {
     Subtree { root_id: u64 },
 }
 
+/// Shared read-only context threaded through all render helper functions.
+struct RenderCtx<'a> {
+    object_fields: &'a HashMap<u64, Vec<FieldInfo>>,
+    object_static_fields: &'a HashMap<u64, Vec<FieldInfo>>,
+    collection_chunks: &'a HashMap<u64, CollectionChunks>,
+    object_phases: &'a HashMap<u64, ExpansionPhase>,
+    object_errors: &'a HashMap<u64, String>,
+}
+
 /// Renders a variable tree into a flat list of styled items.
 ///
 /// No cursor is embedded — selection is handled by the caller via
@@ -46,6 +55,13 @@ pub(crate) fn render_variable_tree(
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
 ) -> Vec<ListItem<'static>> {
+    let ctx = RenderCtx {
+        object_fields,
+        object_static_fields,
+        collection_chunks,
+        object_phases,
+        object_errors,
+    };
     let mut items = Vec::new();
     match root {
         TreeRoot::Frame { vars } => {
@@ -56,33 +72,13 @@ pub(crate) fn render_variable_tree(
                 ))));
             } else {
                 for var in vars {
-                    append_var(
-                        var,
-                        "  ",
-                        object_fields,
-                        object_static_fields,
-                        collection_chunks,
-                        object_phases,
-                        object_errors,
-                        &mut items,
-                    );
+                    append_var(var, "  ", &ctx, &mut items);
                 }
             }
         }
         TreeRoot::Subtree { root_id } => {
             let mut visited = HashSet::new();
-            append_object_children(
-                root_id,
-                "  ",
-                0,
-                object_fields,
-                object_static_fields,
-                collection_chunks,
-                object_phases,
-                object_errors,
-                &mut visited,
-                &mut items,
-            );
+            append_object_children(root_id, "  ", 0, &ctx, &mut visited, &mut items);
         }
     }
     items
@@ -95,25 +91,20 @@ fn get_phase(object_id: u64, object_phases: &HashMap<u64, ExpansionPhase>) -> Ex
         .unwrap_or(ExpansionPhase::Collapsed)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_var(
     var: &VariableInfo,
     indent: &str,
-    object_fields: &HashMap<u64, Vec<FieldInfo>>,
-    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
-    collection_chunks: &HashMap<u64, CollectionChunks>,
-    object_phases: &HashMap<u64, ExpansionPhase>,
-    object_errors: &HashMap<u64, String>,
+    ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
 ) {
     let phase = match &var.value {
         VariableValue::ObjectRef {
             id, entry_count, ..
         } => {
-            if entry_count.is_some() && collection_chunks.contains_key(id) {
+            if entry_count.is_some() && ctx.collection_chunks.contains_key(id) {
                 ExpansionPhase::Expanded
             } else {
-                get_phase(*id, object_phases)
+                get_phase(*id, ctx.object_phases)
             }
         }
         VariableValue::Null => ExpansionPhase::Collapsed,
@@ -127,7 +118,8 @@ fn append_var(
             } else {
                 class_name.rsplit('.').next().unwrap_or(class_name)
             };
-            let err = object_errors
+            let err = ctx
+                .object_errors
                 .get(id)
                 .map(|s| s.as_str())
                 .unwrap_or("Failed to resolve object");
@@ -175,57 +167,31 @@ fn append_var(
     } = &var.value
     {
         if entry_count.is_some()
-            && let Some(cc) = collection_chunks.get(id)
+            && let Some(cc) = ctx.collection_chunks.get(id)
         {
-            append_collection_items(
-                *id,
-                cc,
-                &format!("{indent}  "),
-                object_fields,
-                object_static_fields,
-                collection_chunks,
-                object_phases,
-                object_errors,
-                items,
-            );
+            append_collection_items(*id, cc, &format!("{indent}  "), ctx, items);
             return;
         }
         let mut visited = HashSet::new();
-        append_object_children(
-            *id,
-            &format!("{indent}  "),
-            0,
-            object_fields,
-            object_static_fields,
-            collection_chunks,
-            object_phases,
-            object_errors,
-            &mut visited,
-            items,
-        );
+        append_object_children(*id, &format!("{indent}  "), 0, ctx, &mut visited, items);
     }
 }
 
 /// Appends items for `object_id`'s children at the given `indent`.
 ///
 /// `depth` is used only for the recursion guard (max 16 levels).
-#[allow(clippy::too_many_arguments)]
 fn append_object_children(
     object_id: u64,
     indent: &str,
     depth: usize,
-    object_fields: &HashMap<u64, Vec<FieldInfo>>,
-    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
-    collection_chunks: &HashMap<u64, CollectionChunks>,
-    object_phases: &HashMap<u64, ExpansionPhase>,
-    object_errors: &HashMap<u64, String>,
+    ctx: &RenderCtx<'_>,
     visited: &mut HashSet<u64>,
     items: &mut Vec<ListItem<'static>>,
 ) {
     if depth >= 16 {
         return;
     }
-    match get_phase(object_id, object_phases) {
+    match get_phase(object_id, ctx.object_phases) {
         ExpansionPhase::Collapsed => {}
         ExpansionPhase::Loading => {
             items.push(ListItem::new(Line::from(Span::styled(
@@ -235,7 +201,8 @@ fn append_object_children(
         }
         ExpansionPhase::Expanded => {
             visited.insert(object_id);
-            let field_list = object_fields
+            let field_list = ctx
+                .object_fields
                 .get(&object_id)
                 .map(|f| f.as_slice())
                 .unwrap_or(&[]);
@@ -271,10 +238,10 @@ fn append_object_children(
                     } = field.value
                     {
                         Some(
-                            if entry_count.is_some() && collection_chunks.contains_key(&id) {
+                            if entry_count.is_some() && ctx.collection_chunks.contains_key(&id) {
                                 ExpansionPhase::Expanded
                             } else {
-                                get_phase(id, object_phases)
+                                get_phase(id, ctx.object_phases)
                             },
                         )
                     } else {
@@ -290,7 +257,8 @@ fn append_object_children(
                         Some(ExpansionPhase::Failed),
                     ) = (&field.value, &child_phase)
                     {
-                        let err = object_errors
+                        let err = ctx
+                            .object_errors
                             .get(id)
                             .map(|s| s.as_str())
                             .unwrap_or("Failed to resolve object");
@@ -325,19 +293,9 @@ fn append_object_children(
                         entry_count: Some(_),
                         ..
                     } = field.value
-                        && let Some(cc) = collection_chunks.get(&id)
+                        && let Some(cc) = ctx.collection_chunks.get(&id)
                     {
-                        append_collection_items(
-                            id,
-                            cc,
-                            &format!("{indent}  "),
-                            object_fields,
-                            object_static_fields,
-                            collection_chunks,
-                            object_phases,
-                            object_errors,
-                            items,
-                        );
+                        append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
                         continue;
                     }
                     if let FieldValue::ObjectRef { id, .. } = field.value {
@@ -345,27 +303,14 @@ fn append_object_children(
                             id,
                             &format!("{indent}  "),
                             depth + 1,
-                            object_fields,
-                            object_static_fields,
-                            collection_chunks,
-                            object_phases,
-                            object_errors,
+                            ctx,
                             visited,
                             items,
                         );
                     }
                 }
             }
-            append_static_items(
-                object_id,
-                indent,
-                object_fields,
-                object_static_fields,
-                collection_chunks,
-                object_phases,
-                object_errors,
-                items,
-            );
+            append_static_items(object_id, indent, ctx, items);
             visited.remove(&object_id);
         }
         ExpansionPhase::Failed => {
@@ -374,20 +319,15 @@ fn append_object_children(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_static_items(
     object_id: u64,
     indent: &str,
-    object_fields: &HashMap<u64, Vec<FieldInfo>>,
-    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
-    collection_chunks: &HashMap<u64, CollectionChunks>,
-    object_phases: &HashMap<u64, ExpansionPhase>,
-    object_errors: &HashMap<u64, String>,
+    ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
 ) {
     use super::stack_view::STATIC_FIELDS_RENDER_LIMIT;
 
-    let Some(static_fields) = object_static_fields.get(&object_id) else {
+    let Some(static_fields) = ctx.object_static_fields.get(&object_id) else {
         return;
     };
     if static_fields.is_empty() {
@@ -415,10 +355,10 @@ fn append_static_items(
         } = field.value
         {
             Some(
-                if entry_count.is_some() && collection_chunks.contains_key(&id) {
+                if entry_count.is_some() && ctx.collection_chunks.contains_key(&id) {
                     ExpansionPhase::Expanded
                 } else {
-                    get_phase(id, object_phases)
+                    get_phase(id, ctx.object_phases)
                 },
             )
         } else {
@@ -433,7 +373,8 @@ fn append_static_items(
             if let (FieldValue::ObjectRef { id, class_name, .. }, Some(ExpansionPhase::Failed)) =
                 (&field.value, &child_phase)
             {
-                let err = object_errors
+                let err = ctx
+                    .object_errors
                     .get(id)
                     .map(|s| s.as_str())
                     .unwrap_or("Failed to resolve object");
@@ -468,19 +409,9 @@ fn append_static_items(
             entry_count: Some(_),
             ..
         } = field.value
-            && let Some(cc) = collection_chunks.get(&id)
+            && let Some(cc) = ctx.collection_chunks.get(&id)
         {
-            append_collection_items(
-                id,
-                cc,
-                &format!("{indent}    "),
-                object_fields,
-                object_static_fields,
-                collection_chunks,
-                object_phases,
-                object_errors,
-                items,
-            );
+            append_collection_items(id, cc, &format!("{indent}    "), ctx, items);
             continue;
         }
         if let FieldValue::ObjectRef { id, .. } = field.value {
@@ -489,11 +420,7 @@ fn append_static_items(
                 id,
                 &format!("{indent}    "),
                 0,
-                object_fields,
-                object_static_fields,
-                collection_chunks,
-                object_phases,
-                object_errors,
+                ctx,
                 &mut visited,
                 items,
             );
@@ -508,23 +435,18 @@ fn append_static_items(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_static_object_children(
     obj_id: u64,
     indent: &str,
     depth: usize,
-    object_fields: &HashMap<u64, Vec<FieldInfo>>,
-    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
-    collection_chunks: &HashMap<u64, CollectionChunks>,
-    object_phases: &HashMap<u64, ExpansionPhase>,
-    object_errors: &HashMap<u64, String>,
+    ctx: &RenderCtx<'_>,
     visited: &mut HashSet<u64>,
     items: &mut Vec<ListItem<'static>>,
 ) {
     if depth >= 16 {
         return;
     }
-    match get_phase(obj_id, object_phases) {
+    match get_phase(obj_id, ctx.object_phases) {
         ExpansionPhase::Collapsed => {}
         ExpansionPhase::Loading => {
             items.push(ListItem::new(Line::from(Span::styled(
@@ -536,7 +458,8 @@ fn append_static_object_children(
             // Error state is styled on the parent static row — no child row emitted here.
         }
         ExpansionPhase::Expanded => {
-            let field_list = object_fields
+            let field_list = ctx
+                .object_fields
                 .get(&obj_id)
                 .map(|f| f.as_slice())
                 .unwrap_or(&[]);
@@ -571,10 +494,10 @@ fn append_static_object_children(
                 } = field.value
                 {
                     Some(
-                        if entry_count.is_some() && collection_chunks.contains_key(&id) {
+                        if entry_count.is_some() && ctx.collection_chunks.contains_key(&id) {
                             ExpansionPhase::Expanded
                         } else {
-                            get_phase(id, object_phases)
+                            get_phase(id, ctx.object_phases)
                         },
                     )
                 } else {
@@ -590,7 +513,8 @@ fn append_static_object_children(
                     Some(ExpansionPhase::Failed),
                 ) = (&field.value, &child_phase)
                 {
-                    let err = object_errors
+                    let err = ctx
+                        .object_errors
                         .get(id)
                         .map(|s| s.as_str())
                         .unwrap_or("Failed to resolve object");
@@ -625,19 +549,9 @@ fn append_static_object_children(
                     entry_count: Some(_),
                     ..
                 } = field.value
-                    && let Some(cc) = collection_chunks.get(&id)
+                    && let Some(cc) = ctx.collection_chunks.get(&id)
                 {
-                    append_collection_items(
-                        id,
-                        cc,
-                        &format!("{indent}  "),
-                        object_fields,
-                        object_static_fields,
-                        collection_chunks,
-                        object_phases,
-                        object_errors,
-                        items,
-                    );
+                    append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
                     continue;
                 }
                 if let FieldValue::ObjectRef { id, .. } = field.value {
@@ -645,11 +559,7 @@ fn append_static_object_children(
                         id,
                         &format!("{indent}  "),
                         depth + 1,
-                        object_fields,
-                        object_static_fields,
-                        collection_chunks,
-                        object_phases,
-                        object_errors,
+                        ctx,
                         visited,
                         items,
                     );
@@ -661,16 +571,11 @@ fn append_static_object_children(
 }
 
 /// Appends items for collection entries and chunk section placeholders.
-#[allow(clippy::too_many_arguments)]
 fn append_collection_items(
     collection_id: u64,
     cc: &CollectionChunks,
     indent: &str,
-    object_fields: &HashMap<u64, Vec<FieldInfo>>,
-    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
-    collection_chunks: &HashMap<u64, CollectionChunks>,
-    object_phases: &HashMap<u64, ExpansionPhase>,
-    object_errors: &HashMap<u64, String>,
+    ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
 ) {
     let mut visited_collections = HashSet::new();
@@ -678,26 +583,17 @@ fn append_collection_items(
         collection_id,
         cc,
         indent,
-        object_fields,
-        object_static_fields,
-        collection_chunks,
-        object_phases,
-        object_errors,
+        ctx,
         items,
         &mut visited_collections,
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_collection_items_inner(
     collection_id: u64,
     cc: &CollectionChunks,
     indent: &str,
-    object_fields: &HashMap<u64, Vec<FieldInfo>>,
-    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
-    collection_chunks: &HashMap<u64, CollectionChunks>,
-    object_phases: &HashMap<u64, ExpansionPhase>,
-    object_errors: &HashMap<u64, String>,
+    ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
     visited_collections: &mut HashSet<u64>,
 ) {
@@ -711,11 +607,7 @@ fn append_collection_items_inner(
                 collection_id,
                 entry,
                 indent,
-                object_fields,
-                object_static_fields,
-                collection_chunks,
-                object_phases,
-                object_errors,
+                ctx,
                 items,
                 visited_collections,
             );
@@ -744,11 +636,7 @@ fn append_collection_items_inner(
                     collection_id,
                     entry,
                     indent,
-                    object_fields,
-                    object_static_fields,
-                    collection_chunks,
-                    object_phases,
-                    object_errors,
+                    ctx,
                     items,
                     visited_collections,
                 );
@@ -759,28 +647,24 @@ fn append_collection_items_inner(
     visited_collections.remove(&collection_id);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn append_collection_entry_item(
     collection_id: u64,
     entry: &EntryInfo,
     indent: &str,
-    object_fields: &HashMap<u64, Vec<FieldInfo>>,
-    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
-    collection_chunks: &HashMap<u64, CollectionChunks>,
-    object_phases: &HashMap<u64, ExpansionPhase>,
-    object_errors: &HashMap<u64, String>,
+    ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
     visited_collections: &mut HashSet<u64>,
 ) {
     let value_phase = if let FieldValue::ObjectRef { id, .. } = &entry.value {
-        Some(get_phase(*id, object_phases))
+        Some(get_phase(*id, ctx.object_phases))
     } else {
         None
     };
     let text = if let (FieldValue::ObjectRef { id, class_name, .. }, Some(ExpansionPhase::Failed)) =
         (&entry.value, &value_phase)
     {
-        let err = object_errors
+        let err = ctx
+            .object_errors
             .get(id)
             .map(|s| s.as_str())
             .unwrap_or("Failed to resolve object");
@@ -817,17 +701,13 @@ fn append_collection_entry_item(
         ..
     } = &entry.value
         && *id != collection_id
-        && let Some(nested) = collection_chunks.get(id)
+        && let Some(nested) = ctx.collection_chunks.get(id)
     {
         append_collection_items_inner(
             *id,
             nested,
             &format!("{indent}  "),
-            object_fields,
-            object_static_fields,
-            collection_chunks,
-            object_phases,
-            object_errors,
+            ctx,
             items,
             visited_collections,
         );
@@ -836,41 +716,25 @@ fn append_collection_entry_item(
 
     if let FieldValue::ObjectRef { id, .. } = &entry.value {
         let mut visited = HashSet::new();
-        append_collection_entry_obj(
-            *id,
-            &format!("{indent}  "),
-            0,
-            object_fields,
-            object_static_fields,
-            collection_chunks,
-            object_phases,
-            object_errors,
-            &mut visited,
-            items,
-        );
+        append_collection_entry_obj(*id, &format!("{indent}  "), 0, ctx, &mut visited, items);
     }
 }
 
 /// Appends items for an object expanded from a collection entry value.
 ///
 /// `depth` used for the recursion guard (max 16 levels).
-#[allow(clippy::too_many_arguments)]
 fn append_collection_entry_obj(
     obj_id: u64,
     indent: &str,
     depth: usize,
-    object_fields: &HashMap<u64, Vec<FieldInfo>>,
-    object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
-    collection_chunks: &HashMap<u64, CollectionChunks>,
-    object_phases: &HashMap<u64, ExpansionPhase>,
-    object_errors: &HashMap<u64, String>,
+    ctx: &RenderCtx<'_>,
     visited: &mut HashSet<u64>,
     items: &mut Vec<ListItem<'static>>,
 ) {
     if depth >= 16 {
         return;
     }
-    match get_phase(obj_id, object_phases) {
+    match get_phase(obj_id, ctx.object_phases) {
         ExpansionPhase::Collapsed => {}
         ExpansionPhase::Loading => {
             items.push(ListItem::new(Line::from(Span::styled(
@@ -879,7 +743,8 @@ fn append_collection_entry_obj(
             ))));
         }
         ExpansionPhase::Expanded => {
-            let field_list = object_fields
+            let field_list = ctx
+                .object_fields
                 .get(&obj_id)
                 .map(|f| f.as_slice())
                 .unwrap_or(&[]);
@@ -911,10 +776,10 @@ fn append_collection_entry_obj(
                     } = field.value
                     {
                         Some(
-                            if entry_count.is_some() && collection_chunks.contains_key(&id) {
+                            if entry_count.is_some() && ctx.collection_chunks.contains_key(&id) {
                                 ExpansionPhase::Expanded
                             } else {
-                                get_phase(id, object_phases)
+                                get_phase(id, ctx.object_phases)
                             },
                         )
                     } else {
@@ -930,7 +795,8 @@ fn append_collection_entry_obj(
                         Some(ExpansionPhase::Failed),
                     ) = (&field.value, &child_phase)
                     {
-                        let err = object_errors
+                        let err = ctx
+                            .object_errors
                             .get(id)
                             .map(|s| s.as_str())
                             .unwrap_or("Failed to resolve object");
@@ -964,20 +830,10 @@ fn append_collection_entry_obj(
                         entry_count: Some(_),
                         ..
                     } = field.value
-                        && let Some(cc) = collection_chunks.get(&id)
+                        && let Some(cc) = ctx.collection_chunks.get(&id)
                     {
                         if depth + 1 < 16 {
-                            append_collection_items(
-                                id,
-                                cc,
-                                &format!("{indent}  "),
-                                object_fields,
-                                object_static_fields,
-                                collection_chunks,
-                                object_phases,
-                                object_errors,
-                                items,
-                            );
+                            append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
                         }
                         continue;
                     }
@@ -986,11 +842,7 @@ fn append_collection_entry_obj(
                             id,
                             &format!("{indent}  "),
                             depth + 1,
-                            object_fields,
-                            object_static_fields,
-                            collection_chunks,
-                            object_phases,
-                            object_errors,
+                            ctx,
                             visited,
                             items,
                         );
@@ -998,16 +850,7 @@ fn append_collection_entry_obj(
                 }
                 visited.remove(&obj_id);
             }
-            append_static_items(
-                obj_id,
-                indent,
-                object_fields,
-                object_static_fields,
-                collection_chunks,
-                object_phases,
-                object_errors,
-                items,
-            );
+            append_static_items(obj_id, indent, ctx, items);
         }
         ExpansionPhase::Failed => {
             // Error state is styled on the parent node — no child row emitted here.

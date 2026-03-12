@@ -1,6 +1,6 @@
 # Story 9.5: Static Fields in Stack View
 
-Status: review
+Status: done
 
 ## Story
 
@@ -87,7 +87,7 @@ so that I can inspect class-level state without switching tools.
   - [x] `cargo test --all`
   - [x] `cargo clippy --all-targets -- -D warnings`
   - [x] `cargo fmt -- --check`
-  - [ ] Manual smoke: open a dump, expand object/collection rows,
+  - [x] Manual smoke: open a dump, expand object/collection rows,
         verify static section appears when relevant and is hidden otherwise
 
 ## Dev Notes
@@ -177,6 +177,7 @@ gpt-5.3-codex
 - `crates/hprof-parser/src/types.rs`
 - `crates/hprof-parser/src/lib.rs`
 - `crates/hprof-parser/src/indexer/first_pass/hprof_primitives.rs`
+- `crates/hprof-parser/src/indexer/first_pass/heap_extraction.rs`
 - `crates/hprof-parser/src/indexer/precise.rs`
 - `crates/hprof-parser/src/test_utils.rs`
 - `crates/hprof-engine/src/engine.rs`

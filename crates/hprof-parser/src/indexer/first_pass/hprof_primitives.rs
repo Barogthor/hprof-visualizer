@@ -167,25 +167,52 @@ pub(crate) fn parse_class_dump(cursor: &mut Cursor<&[u8]>, id_size: u32) -> Opti
         );
     }
     let mut static_fields = Vec::with_capacity(static_count as usize);
+    let mut static_parse_ok = true;
     for _ in 0..static_count {
-        let name_string_id = read_id(cursor, id_size).ok()?;
-        let field_type = cursor.read_u8().ok()?;
-        let value = match read_static_value(cursor, id_size, field_type) {
-            Some(v) => v,
+        let name_string_id = match read_id(cursor, id_size).ok() {
+            Some(id) => id,
             None => {
-                #[cfg(feature = "dev-profiling")]
-                tracing::debug!(
-                    "parse_class_dump class=0x{:X}: failed static field idx={} type=0x{:02X}",
-                    class_object_id,
-                    static_fields.len(),
-                    field_type
-                );
-                return None;
+                static_parse_ok = false;
+                break;
             }
         };
-        static_fields.push(StaticFieldDef {
-            name_string_id,
-            value,
+        let field_type = match cursor.read_u8().ok() {
+            Some(t) => t,
+            None => {
+                static_parse_ok = false;
+                break;
+            }
+        };
+        match read_static_value(cursor, id_size, field_type) {
+            Some(v) => static_fields.push(StaticFieldDef {
+                name_string_id,
+                value: v,
+            }),
+            None => {
+                // Unknown or unreadable type: cursor is at an unknown position
+                // so we cannot safely parse the remaining static or instance
+                // fields. Preserve class identity with empty field lists.
+                #[cfg(feature = "dev-profiling")]
+                tracing::debug!(
+                    "parse_class_dump class=0x{:X}: unknown static field type=0x{:02X} \
+                     at idx={}, dropping remaining fields",
+                    class_object_id,
+                    field_type,
+                    static_fields.len(),
+                );
+                static_parse_ok = false;
+                break;
+            }
+        }
+    }
+
+    if !static_parse_ok {
+        return Some(ClassDumpInfo {
+            class_object_id,
+            super_class_id,
+            instance_size,
+            static_fields: vec![],
+            instance_fields: vec![],
         });
     }
 
@@ -294,7 +321,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_class_dump_unknown_static_field_type_returns_none() {
+    fn parse_class_dump_unknown_static_field_type_returns_partial_info() {
+        // When a static field has an unknown type, the parser cannot advance
+        // the cursor past the value (unknown byte size).  Rather than dropping
+        // the whole class dump (losing class identity), it returns a partial
+        // ClassDumpInfo with empty field lists so the class is still indexed.
         let id_size = 8;
         let mut body = make_minimal_class_dump_body(id_size);
         body.extend_from_slice(&1u16.to_be_bytes()); // static_fields_count
@@ -303,6 +334,17 @@ mod tests {
         body.extend_from_slice(&0u16.to_be_bytes()); // instance_fields_count
 
         let mut cursor = Cursor::new(body.as_slice());
-        assert!(parse_class_dump(&mut cursor, id_size).is_none());
+        let result = parse_class_dump(&mut cursor, id_size);
+        let info = result.expect("partial ClassDumpInfo must be returned, not None");
+        assert_eq!(info.class_object_id, 100);
+        assert_eq!(info.super_class_id, 50);
+        assert!(
+            info.static_fields.is_empty(),
+            "static_fields must be empty on unknown type"
+        );
+        assert!(
+            info.instance_fields.is_empty(),
+            "instance_fields must be empty (cursor position unknown after bad static type)"
+        );
     }
 }
