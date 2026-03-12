@@ -16,31 +16,64 @@ use crate::theme::THEME;
 /// Number of keymap entries documented in the help panel.
 const ENTRY_COUNT: u16 = 19;
 
-/// Keymap entries: `(key label, action label)`.
-const ENTRIES: &[(&str, &str)] = &[
-    ("q / Ctrl+C", "Quit"),
-    ("Esc", "Search off -> clear filter -> back"),
-    ("Tab", "Cycle panel focus"),
-    ("\u{2191} / \u{2193}", "Move selection"),
-    ("PgUp / PgDn", "Scroll one page"),
-    ("Ctrl/Shift+\u{2191}", "Scroll view up"),
-    ("Ctrl/Shift+\u{2193}", "Scroll view down"),
-    ("Ctrl/Shift+PgUp/PgDn", "Scroll view one page"),
-    ("Ctrl+L", "Center selection"),
-    ("Home / End", "Jump to first / last"),
-    ("Enter", "Expand / confirm"),
-    ("\u{2192}", "Expand node"),
-    ("\u{2190}", "Unexpand / go to parent"),
-    ("f", "Pin / unpin favorite"),
-    ("F", "Focus favorites panel"),
-    ("g", "Favorites: go to source"),
-    ("i", "Toggle object IDs (stack)"),
-    ("s or /", "Open search (thread list only)"),
-    ("?", "Toggle help panel"),
+// Context bitmask constants — private to this module.
+const THREAD: u8 = 0b001;
+const STACK: u8 = 0b010;
+const FAV: u8 = 0b100;
+const ALL: u8 = 0b111;
+
+/// Keymap entries: `(key label, action label, context_mask)`.
+const ENTRIES: &[(&str, &str, u8)] = &[
+    ("q / Ctrl+C", "Quit", ALL),
+    ("Esc", "Search off -> clear filter -> back", ALL),
+    ("Tab", "Cycle panel focus", ALL),
+    ("\u{2191} / \u{2193}", "Move selection", ALL),
+    ("PgUp / PgDn", "Scroll one page", ALL),
+    ("Ctrl/Shift+\u{2191}", "Scroll view up", STACK),
+    ("Ctrl/Shift+\u{2193}", "Scroll view down", STACK),
+    ("Ctrl/Shift+PgUp/PgDn", "Scroll view one page", STACK),
+    ("Ctrl+L", "Center selection", STACK),
+    ("Home / End", "Jump to first / last", ALL),
+    ("Enter", "Expand / confirm", THREAD | STACK),
+    ("\u{2192}", "Expand node", STACK),
+    ("\u{2190}", "Unexpand / go to parent", STACK),
+    ("f", "Pin / unpin favorite", STACK | FAV),
+    ("F", "Focus favorites panel", ALL),
+    ("g", "Favorites: go to source", FAV),
+    ("i", "Toggle object IDs (stack)", STACK),
+    ("s or /", "Open search (thread list only)", THREAD),
+    ("?", "Toggle help panel", ALL),
 ];
 
+/// Panel focus context passed to [`HelpBar`] for context-aware dimming.
+///
+/// Variants map one-to-one with `app::Focus` and are converted at the render
+/// call site to avoid a circular dependency (`app` imports `views::help_bar`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HelpContext {
+    ThreadList,
+    StackFrames,
+    Favorites,
+}
+
 /// Stateless keyboard shortcut help widget.
-pub struct HelpBar;
+///
+/// Construct with a [`HelpContext`] to apply context-aware dimming: shortcuts
+/// not applicable in the current panel focus are visually dimmed.
+pub struct HelpBar {
+    pub context: HelpContext,
+}
+
+/// Returns the context bitmask bit for a given [`HelpContext`].
+///
+/// `pub(crate)` so tests in this module can verify masks without rendering.
+pub(crate) fn context_bit(ctx: &HelpContext) -> u8 {
+    match ctx {
+        HelpContext::ThreadList => THREAD,
+        HelpContext::StackFrames => STACK,
+        HelpContext::Favorites => FAV,
+    }
+}
 
 /// Returns the total height (in terminal rows) required to render [`HelpBar`].
 ///
@@ -61,7 +94,7 @@ impl Widget for HelpBar {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let rows = build_rows();
+        let rows = build_rows(self.context);
         let text = Text::from(rows);
         Paragraph::new(text).render(inner, buf);
     }
@@ -70,10 +103,13 @@ impl Widget for HelpBar {
 /// Builds the display lines for the help panel inner area.
 ///
 /// Returns one [`Line`] per pair of entries (two entries per row), followed
-/// by a blank separator line.
-fn build_rows() -> Vec<Line<'static>> {
+/// by a blank separator line. Entries inapplicable in `ctx` are visually
+/// dimmed (action span styled with `THEME.null_value`); row count is always
+/// stable regardless of context (no omission).
+pub(crate) fn build_rows(ctx: HelpContext) -> Vec<Line<'static>> {
     let key_col_width: usize = 18;
     let entry_col_width: usize = 36;
+    let ctx_bit = context_bit(&ctx);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -82,25 +118,40 @@ fn build_rows() -> Vec<Line<'static>> {
 
     let mut i = 0;
     while i < ENTRIES.len() {
-        let (key_a, action_a) = ENTRIES[i];
+        let (key_a, action_a, mask_a) = ENTRIES[i];
+        let applicable_a = ctx_bit & mask_a != 0;
         let left_key = format!("  {:width$}", key_a, width = key_col_width);
         let left_action = format!("{:<width$}", action_a, width = entry_col_width);
 
         let spans: Vec<Span<'static>> = if i + 1 < ENTRIES.len() {
-            let (key_b, action_b) = ENTRIES[i + 1];
+            let (key_b, action_b, mask_b) = ENTRIES[i + 1];
+            let applicable_b = ctx_bit & mask_b != 0;
             let right_key = format!("{:width$}", key_b, width = key_col_width);
             let right_action = action_b.to_string();
+
+            let left_action_span = if applicable_a {
+                Span::raw(left_action)
+            } else {
+                Span::styled(left_action, THEME.null_value)
+            };
+            let right_action_span = if applicable_b {
+                Span::raw(right_action)
+            } else {
+                Span::styled(right_action, THEME.null_value)
+            };
             vec![
                 Span::styled(left_key, THEME.null_value),
-                Span::raw(left_action),
+                left_action_span,
                 Span::styled(right_key, THEME.null_value),
-                Span::raw(right_action),
+                right_action_span,
             ]
         } else {
-            vec![
-                Span::styled(left_key, THEME.null_value),
-                Span::raw(left_action),
-            ]
+            let left_action_span = if applicable_a {
+                Span::raw(left_action)
+            } else {
+                Span::styled(left_action, THEME.null_value)
+            };
+            vec![Span::styled(left_key, THEME.null_value), left_action_span]
         };
 
         lines.push(Line::from(spans));
@@ -130,7 +181,65 @@ mod tests {
     #[test]
     fn build_rows_produces_correct_line_count() {
         // 1 padding + ceil(19/2) + 1 separator = 1 + 10 + 1 = 12
-        let rows = build_rows();
-        assert_eq!(rows.len(), 12);
+        assert_eq!(build_rows(HelpContext::ThreadList).len(), 12);
+        assert_eq!(build_rows(HelpContext::StackFrames).len(), 12);
+        assert_eq!(build_rows(HelpContext::Favorites).len(), 12);
+    }
+
+    // --- Task 2 tests ---
+
+    #[test]
+    fn help_bar_context_bit_returns_correct_value() {
+        assert_eq!(context_bit(&HelpContext::ThreadList), 0b001);
+        assert_eq!(context_bit(&HelpContext::StackFrames), 0b010);
+        assert_eq!(context_bit(&HelpContext::Favorites), 0b100);
+    }
+
+    #[test]
+    fn help_bar_search_entry_applicable_only_in_thread_list() {
+        let idx = ENTRIES
+            .iter()
+            .position(|(k, _, _)| k.contains("s or"))
+            .unwrap();
+        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
+    }
+
+    #[test]
+    fn help_bar_camera_scroll_applicable_only_in_stack_frames() {
+        let idx = ENTRIES
+            .iter()
+            .position(|(k, _, _)| k.contains("Ctrl/Shift+\u{2191}"))
+            .unwrap();
+        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
+    }
+
+    #[test]
+    fn help_bar_f_key_applicable_in_stack_and_favorites_not_thread() {
+        let idx = ENTRIES.iter().position(|(k, _, _)| *k == "f").unwrap();
+        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+    }
+
+    #[test]
+    fn help_bar_global_entries_applicable_in_all_contexts() {
+        for key_label in ["q / Ctrl+C", "Esc", "?"] {
+            let idx = ENTRIES
+                .iter()
+                .position(|(k, _, _)| *k == key_label)
+                .unwrap();
+            assert_eq!(ENTRIES[idx].2, ALL, "mask for '{key_label}' should be ALL");
+        }
+    }
+
+    #[test]
+    fn help_bar_all_entries_have_valid_mask() {
+        for (key, _action, mask) in ENTRIES {
+            assert!(*mask != 0 && *mask <= ALL, "invalid mask for entry '{key}'");
+        }
     }
 }

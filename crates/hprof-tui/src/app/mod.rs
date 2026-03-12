@@ -26,7 +26,7 @@ use crate::{
     input::{self, InputEvent},
     views::{
         favorites_panel::{FavoritesPanel, FavoritesPanelState},
-        help_bar::{self, HelpBar},
+        help_bar::{self, HelpBar, HelpContext},
         stack_view::{
             ChunkState, CollectionChunks, ExpansionPhase, StackCursor, StackState, StackView,
             compute_chunk_ranges,
@@ -1725,7 +1725,12 @@ impl<E: NavigationEngine> App<E> {
         );
 
         if let Some(area) = help_area {
-            frame.render_widget(HelpBar, area);
+            let ctx = match self.focus {
+                Focus::ThreadList => HelpContext::ThreadList,
+                Focus::StackFrames => HelpContext::StackFrames,
+                Focus::Favorites => HelpContext::Favorites,
+            };
+            frame.render_widget(HelpBar { context: ctx }, area);
         }
     }
 }
