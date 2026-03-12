@@ -14,12 +14,12 @@ use ratatui::{
 use crate::theme::THEME;
 
 /// Number of keymap entries documented in the help panel.
-const ENTRY_COUNT: u16 = 17;
+const ENTRY_COUNT: u16 = 19;
 
 /// Keymap entries: `(key label, action label)`.
 const ENTRIES: &[(&str, &str)] = &[
     ("q / Ctrl+C", "Quit"),
-    ("Esc", "Go back / cancel search"),
+    ("Esc", "Search off -> clear filter -> back"),
     ("Tab", "Cycle panel focus"),
     ("\u{2191} / \u{2193}", "Move selection"),
     ("PgUp / PgDn", "Scroll one page"),
@@ -33,6 +33,8 @@ const ENTRIES: &[(&str, &str)] = &[
     ("\u{2190}", "Unexpand / go to parent"),
     ("f", "Pin / unpin favorite"),
     ("F", "Focus favorites panel"),
+    ("g", "Favorites: go to source"),
+    ("i", "Toggle object IDs (stack)"),
     ("s or /", "Open search (thread list only)"),
     ("?", "Toggle help panel"),
 ];
@@ -44,7 +46,7 @@ pub struct HelpBar;
 ///
 /// Formula: `2 (borders) + 1 (padding) + div_ceil(ENTRY_COUNT, 2) + 1 (separator)`
 ///
-/// With `ENTRY_COUNT = 17`: `2 + 1 + 9 + 1 = 13`.
+/// With `ENTRY_COUNT = 19`: `2 + 1 + 10 + 1 = 14`.
 pub fn required_height() -> u16 {
     2 + 1 + ENTRY_COUNT.div_ceil(2) + 1
 }
@@ -117,7 +119,7 @@ mod tests {
 
     #[test]
     fn required_height_returns_thirteen_for_seventeen_entries() {
-        assert_eq!(required_height(), 13);
+        assert_eq!(required_height(), 14);
     }
 
     #[test]
@@ -127,8 +129,8 @@ mod tests {
 
     #[test]
     fn build_rows_produces_correct_line_count() {
-        // 1 padding + ceil(17/2) + 1 separator = 1 + 9 + 1 = 11
+        // 1 padding + ceil(19/2) + 1 separator = 1 + 10 + 1 = 12
         let rows = build_rows();
-        assert_eq!(rows.len(), 11);
+        assert_eq!(rows.len(), 12);
     }
 }

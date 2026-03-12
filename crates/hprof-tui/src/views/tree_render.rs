@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use hprof_engine::{EntryInfo, FieldInfo, FieldValue, VariableInfo, VariableValue};
 use ratatui::{
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::ListItem,
 };
@@ -36,6 +36,7 @@ struct RenderCtx<'a> {
     collection_chunks: &'a HashMap<u64, CollectionChunks>,
     object_phases: &'a HashMap<u64, ExpansionPhase>,
     object_errors: &'a HashMap<u64, String>,
+    show_object_ids: bool,
 }
 
 /// Renders a variable tree into a flat list of styled items.
@@ -54,6 +55,7 @@ pub(crate) fn render_variable_tree(
     collection_chunks: &HashMap<u64, CollectionChunks>,
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
+    show_object_ids: bool,
 ) -> Vec<ListItem<'static>> {
     let ctx = RenderCtx {
         object_fields,
@@ -61,6 +63,7 @@ pub(crate) fn render_variable_tree(
         collection_chunks,
         object_phases,
         object_errors,
+        show_object_ids,
     };
     let mut items = Vec::new();
     match root {
@@ -89,6 +92,32 @@ fn get_phase(object_id: u64, object_phases: &HashMap<u64, ExpansionPhase>) -> Ex
         .get(&object_id)
         .cloned()
         .unwrap_or(ExpansionPhase::Collapsed)
+}
+
+fn split_object_id_range(text: &str) -> Option<(usize, usize)> {
+    let start = text.find(" @ 0x")? + 1;
+    let end = text[start..]
+        .find(" = ")
+        .map(|offset| start + offset)
+        .unwrap_or(text.len());
+    if end <= start + 5 {
+        None
+    } else {
+        Some((start, end))
+    }
+}
+
+fn spans_with_dimmed_object_id(text: String, base_style: Style) -> Vec<Span<'static>> {
+    if let Some((start, end)) = split_object_id_range(&text) {
+        let id_style = THEME.object_id_hint.add_modifier(Modifier::DIM);
+        vec![
+            Span::styled(text[..start].to_string(), base_style),
+            Span::styled(text[start..end].to_string(), id_style),
+            Span::styled(text[end..].to_string(), base_style),
+        ]
+    } else {
+        vec![Span::styled(text, base_style)]
+    }
 }
 
 fn append_var(
@@ -128,24 +157,28 @@ fn append_var(
         }
         (
             VariableValue::ObjectRef {
+                id,
                 class_name,
                 entry_count,
                 ..
             },
             ExpansionPhase::Collapsed,
         ) => {
-            let label = format_object_ref_collapsed(class_name, *entry_count);
+            let label =
+                format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
             ("+ ", format!("local variable: {label}"), Style::new())
         }
         (
             VariableValue::ObjectRef {
+                id,
                 class_name,
                 entry_count,
                 ..
             },
             _,
         ) => {
-            let label = format_object_ref_collapsed(class_name, *entry_count);
+            let label =
+                format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
             ("- ", format!("local variable: {label}"), Style::new())
         }
     };
@@ -156,11 +189,15 @@ fn append_var(
         THEME.expand_indicator
     };
 
-    items.push(ListItem::new(Line::from(vec![
+    let mut row_spans = vec![
         Span::raw(indent.to_string()),
         Span::styled(toggle.to_string(), toggle_style),
-        Span::styled(format!("[{}] {val_str}", var.index), val_style),
-    ])));
+    ];
+    row_spans.extend(spans_with_dimmed_object_id(
+        format!("[{}] {val_str}", var.index),
+        val_style,
+    ));
+    items.push(ListItem::new(Line::from(row_spans)));
 
     if let VariableValue::ObjectRef {
         id, entry_count, ..
@@ -228,7 +265,7 @@ fn append_object_children(
                         );
                         items.push(ListItem::new(Line::from(Span::styled(
                             text,
-                            THEME.null_value,
+                            THEME.cyclic_ref,
                         ))));
                         continue;
                     }
@@ -269,7 +306,11 @@ fn append_object_children(
                         };
                         format!("{short}{FAILED_LABEL_SEP}{err}")
                     } else {
-                        format_field_value_display(&field.value, child_phase.as_ref())
+                        format_field_value_display(
+                            &field.value,
+                            child_phase.as_ref(),
+                            ctx.show_object_ids,
+                        )
                     };
                     let toggle = match &child_phase {
                         Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
@@ -282,11 +323,15 @@ fn append_object_children(
                     } else {
                         THEME.expand_indicator
                     };
-                    items.push(ListItem::new(Line::from(vec![
+                    let mut row_spans = vec![
                         Span::raw(indent.to_string()),
                         Span::styled(toggle.to_string(), toggle_style),
-                        Span::styled(format!("{}: {val}", field.name), row_style),
-                    ])));
+                    ];
+                    row_spans.extend(spans_with_dimmed_object_id(
+                        format!("{}: {val}", field.name),
+                        row_style,
+                    ));
+                    items.push(ListItem::new(Line::from(row_spans)));
 
                     if let FieldValue::ObjectRef {
                         id,
@@ -385,7 +430,7 @@ fn append_static_items(
                 };
                 format!("{short}{FAILED_LABEL_SEP}{err}")
             } else {
-                format_field_value_display(&field.value, child_phase.as_ref())
+                format_field_value_display(&field.value, child_phase.as_ref(), ctx.show_object_ids)
             };
         let toggle = match &child_phase {
             Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
@@ -398,11 +443,15 @@ fn append_static_items(
         } else {
             THEME.expand_indicator
         };
-        items.push(ListItem::new(Line::from(vec![
+        let mut row_spans = vec![
             Span::raw(format!("{indent}  ")),
             Span::styled(toggle.to_string(), toggle_style),
-            Span::styled(format!("{}: {val}", field.name), row_style),
-        ])));
+        ];
+        row_spans.extend(spans_with_dimmed_object_id(
+            format!("{}: {val}", field.name),
+            row_style,
+        ));
+        items.push(ListItem::new(Line::from(row_spans)));
 
         if let FieldValue::ObjectRef {
             id,
@@ -484,7 +533,7 @@ fn append_static_object_children(
                     );
                     items.push(ListItem::new(Line::from(Span::styled(
                         text,
-                        THEME.null_value,
+                        THEME.cyclic_ref,
                     ))));
                     continue;
                 }
@@ -525,7 +574,11 @@ fn append_static_object_children(
                     };
                     format!("{short}{FAILED_LABEL_SEP}{err}")
                 } else {
-                    format_field_value_display(&field.value, child_phase.as_ref())
+                    format_field_value_display(
+                        &field.value,
+                        child_phase.as_ref(),
+                        ctx.show_object_ids,
+                    )
                 };
                 let toggle = match &child_phase {
                     Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
@@ -538,11 +591,15 @@ fn append_static_object_children(
                 } else {
                     THEME.expand_indicator
                 };
-                items.push(ListItem::new(Line::from(vec![
+                let mut row_spans = vec![
                     Span::raw(indent.to_string()),
                     Span::styled(toggle.to_string(), toggle_style),
-                    Span::styled(format!("{}: {val}", field.name), row_style),
-                ])));
+                ];
+                row_spans.extend(spans_with_dimmed_object_id(
+                    format!("{}: {val}", field.name),
+                    row_style,
+                ));
+                items.push(ListItem::new(Line::from(row_spans)));
 
                 if let FieldValue::ObjectRef {
                     id,
@@ -767,7 +824,7 @@ fn append_collection_entry_obj(
                         );
                         items.push(ListItem::new(Line::from(Span::styled(
                             text,
-                            THEME.null_value,
+                            THEME.cyclic_ref,
                         ))));
                         continue;
                     }
@@ -807,7 +864,11 @@ fn append_collection_entry_obj(
                         };
                         format!("{short}{FAILED_LABEL_SEP}{err}")
                     } else {
-                        format_field_value_display(&field.value, child_phase.as_ref())
+                        format_field_value_display(
+                            &field.value,
+                            child_phase.as_ref(),
+                            ctx.show_object_ids,
+                        )
                     };
                     let toggle = match &child_phase {
                         Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
@@ -820,11 +881,15 @@ fn append_collection_entry_obj(
                     } else {
                         THEME.expand_indicator
                     };
-                    items.push(ListItem::new(Line::from(vec![
+                    let mut row_spans = vec![
                         Span::raw(indent.to_string()),
                         Span::styled(toggle.to_string(), toggle_style),
-                        Span::styled(format!("{}: {val}", field.name), row_style),
-                    ])));
+                    ];
+                    row_spans.extend(spans_with_dimmed_object_id(
+                        format!("{}: {val}", field.name),
+                        row_style,
+                    ));
+                    items.push(ListItem::new(Line::from(row_spans)));
                     if let FieldValue::ObjectRef {
                         id,
                         entry_count: Some(_),
@@ -912,6 +977,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
         let text = render_items(items);
         assert!(text.contains("(no locals)"), "got: {text:?}");
@@ -927,6 +993,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
         let text = render_items(items);
         assert!(text.contains("[0] null"), "got: {text:?}");
@@ -942,6 +1009,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            false,
         );
         let text = render_items(items);
         assert!(text.contains("+"), "expected + toggle, got: {text:?}");
@@ -963,6 +1031,7 @@ mod tests {
             &HashMap::new(),
             &object_phases,
             &object_errors,
+            false,
         );
         let text = render_items(items);
         assert!(text.contains("Object — boom"), "got: {text:?}");
@@ -993,11 +1062,62 @@ mod tests {
             &HashMap::new(),
             &object_phases,
             &HashMap::new(),
+            false,
         );
         let text = render_items(items);
         assert!(text.contains("-"), "expected - toggle, got: {text:?}");
         assert!(text.contains("count"), "expected field name, got: {text:?}");
         assert!(text.contains("7"), "expected field value, got: {text:?}");
+    }
+
+    #[test]
+    fn nested_object_field_respects_object_id_toggle() {
+        let vars = vec![make_var(0, 42)];
+        let mut object_fields = HashMap::new();
+        object_fields.insert(
+            42u64,
+            vec![FieldInfo {
+                name: "child".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 77,
+                    class_name: "com.example.Child".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            }],
+        );
+        let mut object_phases = HashMap::new();
+        object_phases.insert(42u64, ExpansionPhase::Expanded);
+
+        let with_ids = render_variable_tree(
+            TreeRoot::Frame { vars: &vars },
+            &object_fields,
+            &HashMap::new(),
+            &HashMap::new(),
+            &object_phases,
+            &HashMap::new(),
+            true,
+        );
+        let with_ids_text = render_items(with_ids);
+        assert!(
+            with_ids_text.contains("Child @ 0x4D"),
+            "expected nested object id in field row, got: {with_ids_text:?}"
+        );
+
+        let without_ids = render_variable_tree(
+            TreeRoot::Frame { vars: &vars },
+            &object_fields,
+            &HashMap::new(),
+            &HashMap::new(),
+            &object_phases,
+            &HashMap::new(),
+            false,
+        );
+        let without_ids_text = render_items(without_ids);
+        assert!(
+            !without_ids_text.contains("@ 0x4D"),
+            "expected no nested object id when toggle is off, got: {without_ids_text:?}"
+        );
     }
 
     #[test]
@@ -1027,6 +1147,7 @@ mod tests {
             &HashMap::new(),
             &object_phases,
             &HashMap::new(),
+            false,
         );
         let text = render_items(items);
         // Should render without panicking and show the cyclic marker
@@ -1056,6 +1177,7 @@ mod tests {
             &HashMap::new(),
             &object_phases,
             &HashMap::new(),
+            false,
         );
         let text = render_items(items);
         assert!(text.contains("x"), "expected field name, got: {text:?}");
@@ -1119,11 +1241,19 @@ mod tests {
             &collection_chunks,
             &object_phases,
             &object_errors,
+            false,
         );
         let text = render_items(items);
         assert!(
             text.contains("! [0] String — entry missing"),
             "failed collection entry must include inline error message, got: {text:?}"
         );
+    }
+
+    #[test]
+    fn split_object_id_range_handles_inline_value_suffix() {
+        let text = "Node @ 0x2A = \"abc\"";
+        let (start, end) = split_object_id_range(text).unwrap();
+        assert_eq!(&text[start..end], "@ 0x2A");
     }
 }

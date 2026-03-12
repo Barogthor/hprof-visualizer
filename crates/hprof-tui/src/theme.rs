@@ -18,6 +18,8 @@
 //! | `primitive_value` | Yellow | Numeric / bool / char field values |
 //! | `string_value` | Green | String wrapper field values |
 //! | `null_value` | DarkGray | Null values, secondary info |
+//! | `object_id_hint` | DarkGray | Object ID metadata suffix (`@ 0x...`) |
+//! | `cyclic_ref` | DarkGray | Cyclic/self-ref marker rows |
 //! | `expand_indicator` | DarkGray | `+`/`-` expand toggle prefix |
 //! | `loading_indicator` | Cyan | `~ Loading...` row text |
 //! | `error_indicator` | Red | Failed expansion rows |
@@ -50,6 +52,10 @@ pub struct Theme {
     pub string_value: Style,
     /// Null value and secondary info style.
     pub null_value: Style,
+    /// Object ID metadata suffix style (`@ 0x...`).
+    pub object_id_hint: Style,
+    /// Cyclic/self-reference marker row style.
+    pub cyclic_ref: Style,
     /// Expand/collapse toggle prefix style (`+` / `-`).
     pub expand_indicator: Style,
     /// Loading indicator row style (`~ Loading...`).
@@ -86,6 +92,8 @@ pub const THEME: Theme = Theme {
     primitive_value: Style::new().fg(Color::Yellow),
     string_value: Style::new().fg(Color::Green),
     null_value: Style::new().fg(Color::DarkGray),
+    object_id_hint: Style::new().fg(Color::DarkGray),
+    cyclic_ref: Style::new().fg(Color::DarkGray),
     expand_indicator: Style::new().fg(Color::DarkGray),
     loading_indicator: Style::new().fg(Color::Cyan),
     error_indicator: Style::new().fg(Color::Red),
@@ -114,6 +122,8 @@ mod tests {
         assert_style(THEME.primitive_value);
         assert_style(THEME.string_value);
         assert_style(THEME.null_value);
+        assert_style(THEME.object_id_hint);
+        assert_style(THEME.cyclic_ref);
         assert_style(THEME.expand_indicator);
         assert_style(THEME.loading_indicator);
         assert_style(THEME.error_indicator);

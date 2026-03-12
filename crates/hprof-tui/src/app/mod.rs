@@ -14,7 +14,7 @@ use std::{
 };
 
 use crossterm::event::{self, Event, KeyEventKind};
-use hprof_engine::{CollectionPage, FieldInfo, NavigationEngine};
+use hprof_engine::{CollectionPage, FieldInfo, FieldValue, NavigationEngine, VariableValue};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -22,7 +22,7 @@ use ratatui::{
 };
 
 use crate::{
-    favorites::{PinnedItem, snapshot_from_cursor},
+    favorites::{PinKey, PinnedItem, snapshot_from_cursor},
     input::{self, InputEvent},
     views::{
         favorites_panel::{FavoritesPanel, FavoritesPanelState},
@@ -106,6 +106,8 @@ pub struct App<E: NavigationEngine> {
     last_area_width: u16,
     /// Whether the keyboard shortcut help panel is visible.
     show_help: bool,
+    /// Whether object IDs are displayed in stack frame rows.
+    show_object_ids: bool,
 }
 
 impl<E: NavigationEngine> App<E> {
@@ -142,6 +144,154 @@ impl<E: NavigationEngine> App<E> {
             ui_status: None,
             last_area_width: 0,
             show_help: false,
+            show_object_ids: false,
+        }
+    }
+
+    fn open_stack_for_selected_thread(&mut self, serial: u32) {
+        self.thread_list.select_serial(serial);
+        let frames = self.engine.get_stack_frames(serial);
+        let mut stack_state = StackState::new(frames);
+        stack_state.set_visible_height(0);
+        self.stack_state = Some(stack_state);
+        self.focus = Focus::StackFrames;
+    }
+
+    fn expand_object_sync(&mut self, object_id: u64) -> bool {
+        let Some(fields) = self.engine.expand_object(object_id) else {
+            return false;
+        };
+        let static_fields = self
+            .engine
+            .class_of_object(object_id)
+            .map(|cid| self.engine.get_static_fields(cid))
+            .unwrap_or_default();
+        let Some(stack_state) = &mut self.stack_state else {
+            return false;
+        };
+        stack_state.set_expansion_done(object_id, fields);
+        stack_state.set_static_fields(object_id, static_fields);
+        true
+    }
+
+    fn navigate_stack_cursor_to_pin_key(&mut self, pin_key: &PinKey) {
+        let frame_id = match pin_key {
+            PinKey::Frame { frame_id, .. }
+            | PinKey::Var { frame_id, .. }
+            | PinKey::Field { frame_id, .. } => *frame_id,
+        };
+
+        let Some(frame_idx) = self.stack_state.as_ref().and_then(|stack_state| {
+            stack_state
+                .frames()
+                .iter()
+                .position(|frame| frame.frame_id == frame_id)
+        }) else {
+            return;
+        };
+
+        let needs_expand = self
+            .stack_state
+            .as_ref()
+            .is_some_and(|stack_state| !stack_state.is_expanded(frame_id));
+        if needs_expand {
+            let vars = self.engine.get_local_variables(frame_id);
+            if let Some(stack_state) = &mut self.stack_state {
+                stack_state.toggle_expand(frame_id, vars);
+            }
+        }
+
+        match pin_key {
+            PinKey::Frame { .. } => {
+                if let Some(stack_state) = &mut self.stack_state {
+                    stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
+                }
+            }
+            PinKey::Var { var_idx, .. } => {
+                let cursor = StackCursor::OnVar {
+                    frame_idx,
+                    var_idx: *var_idx,
+                };
+                if let Some(stack_state) = &mut self.stack_state {
+                    if stack_state.flat_items().contains(&cursor) {
+                        stack_state.set_cursor(cursor);
+                    } else {
+                        stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
+                    }
+                }
+            }
+            PinKey::Field {
+                var_idx,
+                field_path,
+                ..
+            } => {
+                let Some(mut current_object_id) =
+                    self.stack_state.as_ref().and_then(|stack_state| {
+                        stack_state
+                            .vars()
+                            .get(&frame_id)
+                            .and_then(|vars| vars.get(*var_idx))
+                            .and_then(|var| {
+                                if let VariableValue::ObjectRef { id, .. } = var.value {
+                                    Some(id)
+                                } else {
+                                    None
+                                }
+                            })
+                    })
+                else {
+                    return;
+                };
+
+                for (depth, field_idx) in field_path.iter().enumerate() {
+                    let is_expanded = self.stack_state.as_ref().is_some_and(|stack_state| {
+                        stack_state.expansion_state(current_object_id) == ExpansionPhase::Expanded
+                    });
+                    if !is_expanded && !self.expand_object_sync(current_object_id) {
+                        break;
+                    }
+
+                    if depth + 1 < field_path.len() {
+                        let next_object_id = self.stack_state.as_ref().and_then(|stack_state| {
+                            stack_state
+                                .object_fields()
+                                .get(&current_object_id)
+                                .and_then(|fields| fields.get(*field_idx))
+                                .and_then(|field| {
+                                    if let FieldValue::ObjectRef { id, .. } = field.value {
+                                        Some(id)
+                                    } else {
+                                        None
+                                    }
+                                })
+                        });
+                        let Some(next_object_id) = next_object_id else {
+                            break;
+                        };
+                        current_object_id = next_object_id;
+                    }
+                }
+
+                let field_cursor = StackCursor::OnObjectField {
+                    frame_idx,
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                };
+                let var_cursor = StackCursor::OnVar {
+                    frame_idx,
+                    var_idx: *var_idx,
+                };
+
+                if let Some(stack_state) = &mut self.stack_state {
+                    if stack_state.flat_items().contains(&field_cursor) {
+                        stack_state.set_cursor(field_cursor);
+                    } else if stack_state.flat_items().contains(&var_cursor) {
+                        stack_state.set_cursor(var_cursor);
+                    } else {
+                        stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
+                    }
+                }
+            }
         }
     }
 
@@ -244,13 +394,57 @@ impl<E: NavigationEngine> App<E> {
                         .favorites_list_state
                         .selected_index()
                         .min(self.pinned.len().saturating_sub(1));
-                    let key = self.pinned[idx].key.clone();
-                    self.pinned.retain(|i| i.key != key);
+                    let Some(key) = self.pinned.get(idx).map(|item| item.key.clone()) else {
+                        return AppAction::Continue;
+                    };
+                    self.pinned.retain(|item| item.key != key);
                     self.sync_favorites_selection();
                     if self.pinned.is_empty() {
-                        self.focus = self.prev_focus;
+                        self.focus = if self.stack_state.is_some() {
+                            Focus::StackFrames
+                        } else {
+                            Focus::ThreadList
+                        };
                     }
                 }
+            }
+            InputEvent::NavigateToSource => {
+                if self.pinned.is_empty() {
+                    return AppAction::Continue;
+                }
+                let idx = self
+                    .favorites_list_state
+                    .selected_index()
+                    .min(self.pinned.len().saturating_sub(1));
+                let Some(item) = self.pinned.get(idx) else {
+                    return AppAction::Continue;
+                };
+                let pin_key = item.key.clone();
+
+                let thread_name = match &pin_key {
+                    PinKey::Frame { thread_name, .. }
+                    | PinKey::Var { thread_name, .. }
+                    | PinKey::Field { thread_name, .. } => thread_name.clone(),
+                };
+
+                let matches: Vec<_> = self
+                    .engine
+                    .list_threads()
+                    .into_iter()
+                    .filter(|t| t.name == thread_name)
+                    .collect();
+                let Some(target) = matches.first() else {
+                    self.ui_status = Some(format!("Thread '{thread_name}' no longer found"));
+                    return AppAction::Continue;
+                };
+                if matches.len() > 1 {
+                    self.ui_status = Some(format!(
+                        "Multiple threads named '{thread_name}' — navigated to first match"
+                    ));
+                }
+
+                self.open_stack_for_selected_thread(target.thread_serial);
+                self.navigate_stack_cursor_to_pin_key(&pin_key);
             }
             InputEvent::FocusFavorites | InputEvent::Escape => {
                 self.focus = self.prev_focus;
@@ -271,13 +465,22 @@ impl<E: NavigationEngine> App<E> {
 
     fn handle_thread_list_input(&mut self, event: InputEvent) -> AppAction {
         let mut refresh_preview = false;
+        if event == InputEvent::Escape {
+            // ORDER MATTERS: deactivate before clear
+            if self.thread_list.is_search_active() {
+                self.thread_list.deactivate_search();
+            } else if !self.thread_list.filter().is_empty() {
+                self.thread_list.clear_filter();
+                refresh_preview = true;
+            }
+            if refresh_preview {
+                self.refresh_preview_stack();
+            }
+            return AppAction::Continue;
+        }
+
         if self.thread_list.is_search_active() {
             match event {
-                InputEvent::Escape => {
-                    self.thread_list.deactivate_search();
-                    self.thread_list.apply_filter("");
-                    refresh_preview = true;
-                }
                 InputEvent::SearchChar(c) => {
                     let mut q = self.thread_list.filter().to_string();
                     q.push(c);
@@ -326,6 +529,12 @@ impl<E: NavigationEngine> App<E> {
                     self.thread_list.apply_filter(&q);
                     refresh_preview = true;
                 }
+                InputEvent::Enter => {
+                    self.thread_list.deactivate_search();
+                    if let Some(serial) = self.thread_list.selected_serial() {
+                        self.open_stack_for_selected_thread(serial);
+                    }
+                }
                 InputEvent::Tab => {
                     self.cycle_focus();
                 }
@@ -363,11 +572,7 @@ impl<E: NavigationEngine> App<E> {
                 }
                 InputEvent::Enter => {
                     if let Some(serial) = self.thread_list.selected_serial() {
-                        let frames = self.engine.get_stack_frames(serial);
-                        let mut stack_state = StackState::new(frames);
-                        stack_state.set_visible_height(0);
-                        self.stack_state = Some(stack_state);
-                        self.focus = Focus::StackFrames;
+                        self.open_stack_for_selected_thread(serial);
                     }
                 }
                 InputEvent::FocusFavorites => {
@@ -1151,6 +1356,9 @@ impl<E: NavigationEngine> App<E> {
             InputEvent::Tab => {
                 self.cycle_focus();
             }
+            InputEvent::ToggleObjectIds => {
+                self.show_object_ids = !self.show_object_ids;
+            }
             InputEvent::Quit => return AppAction::Quit,
             _ => {}
         }
@@ -1440,6 +1648,7 @@ impl<E: NavigationEngine> App<E> {
                 frame.render_stateful_widget(
                     StackView {
                         focused: stack_focused,
+                        show_object_ids: self.show_object_ids,
                     },
                     stack_area,
                     ss,
@@ -1448,6 +1657,7 @@ impl<E: NavigationEngine> App<E> {
                 frame.render_stateful_widget(
                     StackView {
                         focused: stack_focused,
+                        show_object_ids: self.show_object_ids,
                     },
                     stack_area,
                     &mut self.preview_stack_state,
@@ -1457,6 +1667,7 @@ impl<E: NavigationEngine> App<E> {
             frame.render_stateful_widget(
                 StackView {
                     focused: stack_focused,
+                    show_object_ids: self.show_object_ids,
                 },
                 stack_area,
                 &mut self.preview_stack_state,

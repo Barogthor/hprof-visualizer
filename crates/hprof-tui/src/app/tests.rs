@@ -240,6 +240,44 @@ fn make_obj_var(index: usize, object_id: u64) -> VariableInfo {
     }
 }
 
+fn make_favorite_item(thread_name: &str, frame_id: u64) -> crate::favorites::PinnedItem {
+    crate::favorites::PinnedItem {
+        thread_name: thread_name.to_string(),
+        frame_label: "Thread.run()".to_string(),
+        item_label: "var[0]".to_string(),
+        snapshot: crate::favorites::PinnedSnapshot::Primitive {
+            value_label: "42".to_string(),
+        },
+        key: crate::favorites::PinKey::Var {
+            frame_id,
+            thread_name: thread_name.to_string(),
+            var_idx: 0,
+        },
+    }
+}
+
+fn make_field_favorite_item(
+    thread_name: &str,
+    frame_id: u64,
+    var_idx: usize,
+    field_path: Vec<usize>,
+) -> crate::favorites::PinnedItem {
+    crate::favorites::PinnedItem {
+        thread_name: thread_name.to_string(),
+        frame_label: "Thread.run()".to_string(),
+        item_label: "var[0].field".to_string(),
+        snapshot: crate::favorites::PinnedSnapshot::Primitive {
+            value_label: "42".to_string(),
+        },
+        key: crate::favorites::PinKey::Field {
+            frame_id,
+            thread_name: thread_name.to_string(),
+            var_idx,
+            field_path,
+        },
+    }
+}
+
 #[test]
 fn app_new_builds_without_panic_with_zero_threads() {
     let engine = StubEngine::with_threads(&[]);
@@ -285,13 +323,54 @@ fn handle_input_search_char_appends_to_filter_query() {
 }
 
 #[test]
-fn handle_input_escape_in_search_mode_clears_filter_and_deactivates() {
+fn thread_list_search_bar_visible_when_filter_active_not_in_input_mode() {
+    let engine = StubEngine::with_threads(&["main", "worker"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    app.handle_input(InputEvent::SearchActivate);
+    app.handle_input(InputEvent::SearchChar('w'));
+    app.handle_input(InputEvent::Escape);
+
+    assert!(!app.thread_list.filter().is_empty());
+    assert!(!app.thread_list.is_search_active());
+}
+
+#[test]
+fn search_backspace_uses_pop_for_utf8_safety() {
+    let engine = StubEngine::with_threads(&["main", "worker"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    app.handle_input(InputEvent::SearchActivate);
+    app.handle_input(InputEvent::SearchChar('é'));
+    app.handle_input(InputEvent::SearchBackspace);
+
+    assert_eq!(app.thread_list.filter(), "");
+}
+
+#[test]
+fn thread_list_esc_in_search_mode_preserves_filter() {
     let engine = StubEngine::with_threads(&["main", "worker"]);
     let mut app = App::new(engine, "test.hprof".to_string());
     app.handle_input(InputEvent::SearchActivate);
     app.handle_input(InputEvent::SearchChar('w'));
     app.handle_input(InputEvent::Escape);
     assert!(!app.thread_list.is_search_active());
+    assert_eq!(app.thread_list.filter(), "w");
+    assert_eq!(app.thread_list.filtered_count(), 1);
+}
+
+#[test]
+fn thread_list_second_esc_clears_filter() {
+    let engine = StubEngine::with_threads(&["main", "worker"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.handle_input(InputEvent::SearchActivate);
+    app.handle_input(InputEvent::SearchChar('w'));
+    app.handle_input(InputEvent::Escape);
+
+    app.handle_input(InputEvent::Escape);
+
+    assert!(!app.thread_list.is_search_active());
+    assert_eq!(app.thread_list.filter(), "");
     assert_eq!(app.thread_list.filtered_count(), 2);
 }
 
@@ -304,6 +383,41 @@ fn handle_input_enter_in_thread_list_loads_frames_and_transitions_to_stack_frame
     assert_eq!(app.focus, Focus::StackFrames);
     let ss = app.stack_state.as_ref().expect("stack_state must be Some");
     assert_eq!(ss.selected_frame_id(), Some(10));
+}
+
+#[test]
+fn thread_list_enter_in_search_mode_deactivates_input_keeps_filter() {
+    let frames = vec![make_frame(10)];
+    let engine = StubEngine::with_threads_and_frames(&["main", "worker"], frames);
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    app.handle_input(InputEvent::SearchActivate);
+    app.handle_input(InputEvent::SearchChar('w'));
+    app.handle_input(InputEvent::Enter);
+
+    assert_eq!(app.focus, Focus::StackFrames);
+    assert!(!app.thread_list.is_search_active());
+    assert_eq!(app.thread_list.filter(), "w");
+}
+
+#[test]
+fn thread_list_esc_routing_does_not_clear_filter_from_other_focus() {
+    let frames = vec![make_frame(10)];
+    let engine = StubEngine::with_threads_and_frames(&["main", "worker"], frames);
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    app.handle_input(InputEvent::SearchActivate);
+    app.handle_input(InputEvent::SearchChar('w'));
+    app.handle_input(InputEvent::Escape);
+    assert_eq!(app.thread_list.filter(), "w");
+
+    app.handle_input(InputEvent::Enter);
+    assert_eq!(app.focus, Focus::StackFrames);
+
+    app.handle_input(InputEvent::Escape);
+
+    assert_eq!(app.focus, Focus::ThreadList);
+    assert_eq!(app.thread_list.filter(), "w");
 }
 
 #[test]
@@ -2044,4 +2158,190 @@ fn tab_from_favorites_cycles_to_thread_list() {
 
     app.handle_input(InputEvent::Tab);
     assert_eq!(app.focus, Focus::ThreadList);
+}
+
+#[test]
+fn favorites_navigate_to_source_empty_list_no_panic() {
+    let engine = StubEngine::with_threads(&["main"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.focus = Focus::Favorites;
+
+    let action = app.handle_input(InputEvent::NavigateToSource);
+
+    assert_eq!(action, AppAction::Continue);
+    assert_eq!(app.focus, Focus::Favorites);
+    assert!(app.stack_state.is_none());
+}
+
+#[test]
+fn favorites_navigate_to_source_zero_match_emits_warning() {
+    let engine = StubEngine::with_threads(&["main"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.pinned.push(make_favorite_item("worker", 10));
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::NavigateToSource);
+
+    assert_eq!(
+        app.ui_status.as_deref(),
+        Some("Thread 'worker' no longer found")
+    );
+    assert_eq!(app.focus, Focus::Favorites);
+    assert!(app.stack_state.is_none());
+}
+
+#[test]
+fn favorites_navigate_to_source_selects_correct_thread() {
+    let engine = StubEngine::with_thread_specific_frames(
+        &["main", "worker"],
+        &[(1, vec![make_frame(11)]), (2, vec![make_frame(22)])],
+    );
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.pinned.push(make_favorite_item("worker", 22));
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::NavigateToSource);
+
+    assert_eq!(app.focus, Focus::StackFrames);
+    assert!(app.ui_status.is_none());
+    assert_eq!(
+        app.stack_state.as_ref().unwrap().selected_frame_id(),
+        Some(22)
+    );
+    assert_eq!(app.thread_list.selected_serial(), Some(2));
+}
+
+#[test]
+fn favorites_navigate_to_source_positions_on_field_when_possible() {
+    let frames = vec![make_frame(10)];
+    let vars = vec![make_obj_var(0, 42)];
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.pinned
+        .push(make_field_favorite_item("main", 10, 0, vec![1]));
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::NavigateToSource);
+
+    assert_eq!(app.focus, Focus::StackFrames);
+    assert_eq!(
+        app.stack_state.as_ref().unwrap().cursor(),
+        &StackCursor::OnObjectField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![1],
+        }
+    );
+}
+
+#[test]
+fn favorites_navigate_to_source_warns_on_duplicate_thread_name() {
+    let engine = StubEngine::with_thread_specific_frames(
+        &["dup", "dup"],
+        &[(1, vec![make_frame(11)]), (2, vec![make_frame(22)])],
+    );
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.pinned.push(make_favorite_item("dup", 11));
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::NavigateToSource);
+
+    assert_eq!(app.focus, Focus::StackFrames);
+    assert_eq!(
+        app.ui_status.as_deref(),
+        Some("Multiple threads named 'dup' — navigated to first match")
+    );
+}
+
+#[test]
+fn favorites_navigate_to_source_frame_positioning_found() {
+    let engine = StubEngine::with_thread_specific_frames(
+        &["main"],
+        &[(1, vec![make_frame(10), make_frame(20)])],
+    );
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.pinned.push(make_favorite_item("main", 20));
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::NavigateToSource);
+
+    assert_eq!(app.focus, Focus::StackFrames);
+    assert_eq!(
+        app.stack_state.as_ref().unwrap().selected_frame_id(),
+        Some(20)
+    );
+}
+
+#[test]
+fn favorites_f_last_item_empty_panel_focus() {
+    let frames = vec![make_frame(10)];
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.handle_input(InputEvent::Enter);
+    assert_eq!(app.focus, Focus::StackFrames);
+    app.pinned.push(make_favorite_item("main", 10));
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::ToggleFavorite);
+    assert_eq!(app.focus, Focus::StackFrames);
+
+    let engine = StubEngine::with_threads(&["main"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.pinned.push(make_favorite_item("main", 10));
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::ToggleFavorite);
+    assert_eq!(app.focus, Focus::ThreadList);
+}
+
+#[test]
+fn toggle_object_ids_noop_outside_stack_frames_focus() {
+    let engine = StubEngine::with_threads(&["main"]);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    assert!(!app.show_object_ids);
+
+    app.handle_input(InputEvent::ToggleObjectIds);
+
+    assert!(!app.show_object_ids);
+}
+
+#[test]
+fn toggle_object_ids_in_stack_frames_focus_toggles_flag() {
+    let frames = vec![make_frame(10)];
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.handle_input(InputEvent::Enter);
+    assert_eq!(app.focus, Focus::StackFrames);
+    assert!(!app.show_object_ids);
+
+    app.handle_input(InputEvent::ToggleObjectIds);
+    assert!(app.show_object_ids);
+
+    app.handle_input(InputEvent::ToggleObjectIds);
+    assert!(!app.show_object_ids);
+}
+
+#[test]
+fn esc_from_stack_frames_to_thread_list_preserves_filter() {
+    let frames = vec![make_frame(10)];
+    let engine = StubEngine::with_threads_and_frames(&["main", "worker"], frames);
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    app.handle_input(InputEvent::SearchActivate);
+    app.handle_input(InputEvent::SearchChar('w'));
+    app.handle_input(InputEvent::Escape);
+    app.handle_input(InputEvent::Enter);
+    assert_eq!(app.focus, Focus::StackFrames);
+
+    app.handle_input(InputEvent::Escape);
+
+    assert_eq!(app.focus, Focus::ThreadList);
+    assert_eq!(app.thread_list.filter(), "w");
 }

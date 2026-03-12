@@ -14,6 +14,8 @@ use super::state::StackState;
 pub struct StackView {
     /// Whether this panel has keyboard focus.
     pub focused: bool,
+    /// Whether object IDs are displayed inline for object references.
+    pub show_object_ids: bool,
 }
 
 impl StatefulWidget for StackView {
@@ -33,7 +35,7 @@ impl StatefulWidget for StackView {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let items = state.build_items();
+        let items = state.build_items_with_object_ids(self.show_object_ids);
         let list = List::new(items).highlight_style(THEME.selection_bg);
         StatefulWidget::render(list, inner, buf, state.list_state_mut());
     }

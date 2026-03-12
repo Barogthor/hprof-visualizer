@@ -117,6 +117,13 @@ impl ThreadListState {
         &self.filter
     }
 
+    /// Selects a thread by serial when it is visible in the current filtered list.
+    pub fn select_serial(&mut self, serial: u32) {
+        if self.filtered_serials.contains(&serial) {
+            self.nav.set_cursor_and_sync(serial, &self.filtered_serials);
+        }
+    }
+
     /// Number of threads in the filtered view.
     pub fn filtered_count(&self) -> usize {
         self.filtered_serials.len()
@@ -129,12 +136,20 @@ impl ThreadListState {
 
     /// Activates the search input box.
     pub fn activate_search(&mut self) {
+        if self.search_active {
+            return;
+        }
         self.search_active = true;
     }
 
     /// Deactivates the search input box.
     pub fn deactivate_search(&mut self) {
         self.search_active = false;
+    }
+
+    /// Clears the active filter and restores the full list.
+    pub fn clear_filter(&mut self) {
+        self.apply_filter("");
     }
 
     /// Returns the [`ThreadInfo`] for the currently selected thread, or `None`.
@@ -198,6 +213,11 @@ impl StatefulWidget for SearchableList {
                 Span::styled("/ ", THEME.search_active),
                 Span::styled(state.filter(), THEME.search_active),
                 Span::styled("_", THEME.search_active),
+            ])
+        } else if !state.filter().is_empty() {
+            Line::from(vec![
+                Span::styled("/ ", THEME.search_active),
+                Span::styled(state.filter(), THEME.search_active),
             ])
         } else {
             Line::from(Span::styled("Press / to search", THEME.null_value))
@@ -366,6 +386,47 @@ mod tests {
         state.move_end();
         state.set_visible_height(10);
         state.page_up();
+        assert_eq!(state.selected_serial(), Some(1));
+    }
+
+    #[test]
+    fn clear_filter_restores_full_list_and_selects_first() {
+        let mut state = ThreadListState::new(make_threads(&["main", "worker-1", "worker-2"]));
+        state.apply_filter("xyz");
+        assert_eq!(state.selected_serial(), None);
+
+        state.clear_filter();
+
+        assert_eq!(state.filter(), "");
+        assert_eq!(state.filtered_count(), 3);
+        assert_eq!(state.selected_serial(), Some(1));
+    }
+
+    #[test]
+    fn reopen_search_preserves_existing_filter() {
+        let mut state = ThreadListState::new(make_threads(&["main", "worker-1"]));
+        state.apply_filter("work");
+        state.activate_search();
+        state.deactivate_search();
+
+        state.activate_search();
+
+        assert!(state.is_search_active());
+        assert_eq!(state.filter(), "work");
+    }
+
+    #[test]
+    fn select_serial_sets_cursor_when_visible() {
+        let mut state = ThreadListState::new(make_threads(&["main", "worker-1", "worker-2"]));
+        state.select_serial(3);
+        assert_eq!(state.selected_serial(), Some(3));
+    }
+
+    #[test]
+    fn select_serial_noop_when_hidden_by_filter() {
+        let mut state = ThreadListState::new(make_threads(&["main", "worker-1", "worker-2"]));
+        state.apply_filter("main");
+        state.select_serial(3);
         assert_eq!(state.selected_serial(), Some(1));
     }
 }

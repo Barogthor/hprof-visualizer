@@ -163,6 +163,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         collection_chunks,
                         &object_phases,
                         &HashMap::new(),
+                        false,
                     );
                     items.extend(tree);
                 }
@@ -189,6 +190,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         collection_chunks,
                         &object_phases,
                         &HashMap::new(),
+                        false,
                     );
                     items.extend(tree);
                 }
@@ -197,9 +199,12 @@ impl StatefulWidget for FavoritesPanel<'_> {
                     object_id,
                 } => {
                     let short = class_name.rsplit('.').next().unwrap_or(class_name);
-                    items.push(ListItem::new(Line::from(Span::raw(format!(
-                        "  {short} @ 0x{object_id:X} [not expanded]"
-                    )))));
+                    let label = if *object_id == 0 {
+                        format!("  {short} [not expanded]")
+                    } else {
+                        format!("  {short} @ 0x{object_id:X} [not expanded]")
+                    };
+                    items.push(ListItem::new(Line::from(Span::raw(label))));
                 }
                 PinnedSnapshot::Primitive { value_label } => {
                     items.push(ListItem::new(Line::from(Span::raw(format!(

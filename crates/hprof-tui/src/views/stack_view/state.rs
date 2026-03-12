@@ -2388,6 +2388,10 @@ impl StackState {
     /// [`render_variable_tree`] (no per-item cursor styling — selection is
     /// applied by ratatui's `List` via [`Self::list_state_mut`]).
     pub fn build_items(&self) -> Vec<ListItem<'static>> {
+        self.build_items_with_object_ids(false)
+    }
+
+    pub fn build_items_with_object_ids(&self, show_object_ids: bool) -> Vec<ListItem<'static>> {
         use super::super::tree_render::{TreeRoot, render_variable_tree};
         let mut items = Vec::new();
         for frame in &self.frames {
@@ -2413,6 +2417,7 @@ impl StackState {
                     &self.expansion.collection_chunks,
                     &self.expansion.object_phases,
                     &self.expansion.object_errors,
+                    show_object_ids,
                 );
                 items.extend(tree_items);
             }

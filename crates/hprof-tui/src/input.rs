@@ -49,6 +49,10 @@ pub enum InputEvent {
     ToggleFavorite,
     /// Move focus to/from the favorites panel.
     FocusFavorites,
+    /// Navigate from favorites to source thread/frame.
+    NavigateToSource,
+    /// Toggle object id suffix display in stack frames.
+    ToggleObjectIds,
     /// Cycle keyboard focus to the next panel.
     Tab,
     /// Toggle the keyboard shortcut help panel.
@@ -100,6 +104,8 @@ pub fn from_key(key: KeyEvent) -> Option<InputEvent> {
         (KeyCode::Backspace, _) => Some(InputEvent::SearchBackspace),
         (KeyCode::Char('f'), KeyModifiers::NONE) => Some(InputEvent::ToggleFavorite),
         (KeyCode::Char('F'), KeyModifiers::SHIFT) => Some(InputEvent::FocusFavorites),
+        (KeyCode::Char('g'), KeyModifiers::NONE) => Some(InputEvent::NavigateToSource),
+        (KeyCode::Char('i'), KeyModifiers::NONE) => Some(InputEvent::ToggleObjectIds),
         (KeyCode::Tab, _) => Some(InputEvent::Tab),
         (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             Some(InputEvent::ToggleHelp)
@@ -231,6 +237,22 @@ mod tests {
         assert_eq!(
             from_key(key(KeyCode::Char('F'), KeyModifiers::SHIFT)),
             Some(InputEvent::FocusFavorites)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_g_to_navigate_to_source() {
+        assert_eq!(
+            from_key(key(KeyCode::Char('g'), KeyModifiers::NONE)),
+            Some(InputEvent::NavigateToSource)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_i_to_toggle_object_ids() {
+        assert_eq!(
+            from_key(key(KeyCode::Char('i'), KeyModifiers::NONE)),
+            Some(InputEvent::ToggleObjectIds)
         );
     }
 
