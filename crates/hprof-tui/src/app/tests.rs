@@ -12,6 +12,8 @@ struct StubEngine {
     frames_by_thread: HashMap<u32, Vec<FrameInfo>>,
     vars_by_frame: HashMap<u64, Vec<VariableInfo>>,
     expand_results: HashMap<u64, Option<Vec<FieldInfo>>>,
+    class_by_object: HashMap<u64, u64>,
+    static_by_class: HashMap<u64, Vec<FieldInfo>>,
 }
 
 impl StubEngine {
@@ -30,6 +32,8 @@ impl StubEngine {
             frames_by_thread: HashMap::new(),
             vars_by_frame: HashMap::new(),
             expand_results: HashMap::new(),
+            class_by_object: HashMap::new(),
+            static_by_class: HashMap::new(),
         }
     }
 
@@ -55,6 +59,16 @@ impl StubEngine {
 
     fn with_expand(mut self, oid: u64, fields: Option<Vec<FieldInfo>>) -> Self {
         self.expand_results.insert(oid, fields);
+        self
+    }
+
+    fn with_class_of(mut self, object_id: u64, class_id: u64) -> Self {
+        self.class_by_object.insert(object_id, class_id);
+        self
+    }
+
+    fn with_static_fields(mut self, class_id: u64, fields: Vec<FieldInfo>) -> Self {
+        self.static_by_class.insert(class_id, fields);
         self
     }
 }
@@ -104,11 +118,14 @@ impl NavigationEngine for StubEngine {
             },
         ])
     }
-    fn class_of_object(&self, _object_id: u64) -> Option<u64> {
-        None
+    fn class_of_object(&self, object_id: u64) -> Option<u64> {
+        self.class_by_object.get(&object_id).copied()
     }
-    fn get_static_fields(&self, _class_object_id: u64) -> Vec<FieldInfo> {
-        vec![]
+    fn get_static_fields(&self, class_object_id: u64) -> Vec<FieldInfo> {
+        self.static_by_class
+            .get(&class_object_id)
+            .cloned()
+            .unwrap_or_default()
     }
     fn get_page(&self, collection_id: u64, offset: usize, limit: usize) -> Option<CollectionPage> {
         match collection_id {
@@ -532,6 +549,84 @@ fn enter_twice_on_nested_object_field_collapses_it() {
     app.handle_input(InputEvent::Enter);
     assert_eq!(
         app.stack_state.as_ref().unwrap().expansion_state(999),
+        ExpansionPhase::Collapsed
+    );
+}
+
+#[test]
+fn enter_on_static_object_field_starts_and_collapses_expansion() {
+    let frames = vec![make_frame(10)];
+    let vars = vec![make_obj_var(0, 42)];
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+        .with_vars(10, vars)
+        .with_expand(
+            42,
+            Some(vec![FieldInfo {
+                name: "x".to_string(),
+                value: FieldValue::Int(1),
+            }]),
+        )
+        .with_class_of(42, 500)
+        .with_static_fields(
+            500,
+            vec![FieldInfo {
+                name: "S_CHILD".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 777,
+                    class_name: "Child".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            }],
+        )
+        .with_expand(
+            777,
+            Some(vec![FieldInfo {
+                name: "leaf".to_string(),
+                value: FieldValue::Int(9),
+            }]),
+        );
+    let mut app = App::new(engine, "test.hprof".to_string());
+
+    app.handle_input(InputEvent::Enter); // -> StackFrames
+    app.handle_input(InputEvent::Enter); // expand frame 10
+    app.handle_input(InputEvent::Down); // -> OnVar{0,0}
+    app.handle_input(InputEvent::Enter); // expand object 42
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+        app.poll_expansions();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    // OnObjectField([0]) then OnStaticField([0]).
+    app.handle_input(InputEvent::Down);
+    app.handle_input(InputEvent::Down);
+    assert!(matches!(
+        app.stack_state.as_ref().unwrap().cursor(),
+        StackCursor::OnStaticField { static_idx: 0, .. }
+    ));
+
+    app.handle_input(InputEvent::Enter); // expand static object ref 777
+    assert!(
+        app.pending_expansions.contains_key(&777),
+        "pending expansion for static object 777 must be registered"
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+        app.poll_expansions();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    assert_eq!(
+        app.stack_state.as_ref().unwrap().expansion_state(777),
+        ExpansionPhase::Expanded
+    );
+
+    app.handle_input(InputEvent::Enter); // collapse static object ref 777
+    assert_eq!(
+        app.stack_state.as_ref().unwrap().expansion_state(777),
         ExpansionPhase::Collapsed
     );
 }

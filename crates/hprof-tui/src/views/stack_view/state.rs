@@ -62,12 +62,14 @@ impl StackState {
             | StackCursor::OnStaticSectionHeader { frame_idx, .. }
             | StackCursor::OnStaticField { frame_idx, .. }
             | StackCursor::OnStaticOverflowRow { frame_idx, .. }
+            | StackCursor::OnStaticObjectField { frame_idx, .. }
             | StackCursor::OnChunkSection { frame_idx, .. }
             | StackCursor::OnCollectionEntry { frame_idx, .. }
             | StackCursor::OnCollectionEntryObjField { frame_idx, .. }
             | StackCursor::OnCollectionEntryStaticSectionHeader { frame_idx, .. }
             | StackCursor::OnCollectionEntryStaticField { frame_idx, .. }
-            | StackCursor::OnCollectionEntryStaticOverflowRow { frame_idx, .. } => {
+            | StackCursor::OnCollectionEntryStaticOverflowRow { frame_idx, .. }
+            | StackCursor::OnCollectionEntryStaticObjectField { frame_idx, .. } => {
                 self.frames.get(*frame_idx).map(|f| f.frame_id)
             }
         }
@@ -218,6 +220,341 @@ impl StackState {
                     return Some((id, ec));
                 }
             }
+        }
+        None
+    }
+
+    fn static_owner_object_id(
+        &self,
+        frame_idx: usize,
+        var_idx: usize,
+        field_path: &[usize],
+    ) -> Option<u64> {
+        let frame = self.frames.get(frame_idx)?;
+        let vars = self.vars.get(&frame.frame_id)?;
+        let var = vars.get(var_idx)?;
+        let VariableValue::ObjectRef { id: root_id, .. } = var.value else {
+            return None;
+        };
+        if field_path.is_empty() {
+            Some(root_id)
+        } else {
+            Some(self.resolve_object_at_path(root_id, field_path))
+        }
+    }
+
+    fn static_field_for(
+        &self,
+        frame_idx: usize,
+        var_idx: usize,
+        field_path: &[usize],
+        static_idx: usize,
+    ) -> Option<&FieldInfo> {
+        let owner_id = self.static_owner_object_id(frame_idx, var_idx, field_path)?;
+        let static_fields = self.expansion.object_static_fields.get(&owner_id)?;
+        static_fields.get(static_idx)
+    }
+
+    fn static_field_under_cursor(&self) -> Option<&FieldInfo> {
+        if let StackCursor::OnStaticField {
+            frame_idx,
+            var_idx,
+            field_path,
+            static_idx,
+        } = self.nav.cursor()
+        {
+            return self.static_field_for(*frame_idx, *var_idx, field_path, *static_idx);
+        }
+        None
+    }
+
+    /// Returns the `ObjectRef` id when cursor is `OnStaticField`
+    /// and that static field value is an `ObjectRef`.
+    pub fn selected_static_field_ref_id(&self) -> Option<u64> {
+        let field = self.static_field_under_cursor()?;
+        if let FieldValue::ObjectRef { id, .. } = field.value {
+            return Some(id);
+        }
+        None
+    }
+
+    /// Returns `(object_id, entry_count)` when cursor is `OnStaticField`
+    /// pointing to a collection/array `ObjectRef` value.
+    pub fn selected_static_field_collection_info(&self) -> Option<(u64, u64)> {
+        let field = self.static_field_under_cursor()?;
+        if let FieldValue::ObjectRef {
+            id,
+            entry_count: Some(ec),
+            ..
+        } = field.value
+            && ec > 0
+        {
+            return Some((id, ec));
+        }
+        None
+    }
+
+    /// Resolves the field under cursor when on `OnStaticObjectField`.
+    ///
+    /// Returns `None` for cyclic terminal rows so Enter is a no-op.
+    fn static_obj_cursor_field(&self) -> Option<&FieldInfo> {
+        if let StackCursor::OnStaticObjectField {
+            frame_idx,
+            var_idx,
+            field_path,
+            static_idx,
+            obj_field_path,
+        } = self.nav.cursor()
+        {
+            let static_root_id = {
+                let field = self.static_field_for(*frame_idx, *var_idx, field_path, *static_idx)?;
+                if let FieldValue::ObjectRef { id, .. } = field.value {
+                    id
+                } else {
+                    return None;
+                }
+            };
+
+            let mut ancestor_ids = HashSet::new();
+            ancestor_ids.insert(static_root_id);
+
+            let parent_path = &obj_field_path[..obj_field_path.len().saturating_sub(1)];
+            let mut parent_id = static_root_id;
+            for &step in parent_path {
+                let parent_fields = self.expansion.object_fields.get(&parent_id)?;
+                let parent_field = parent_fields.get(step)?;
+                if let FieldValue::ObjectRef { id, .. } = parent_field.value {
+                    parent_id = id;
+                    ancestor_ids.insert(parent_id);
+                } else {
+                    return None;
+                }
+            }
+
+            let field_idx = *obj_field_path.last()?;
+            let fields = self.expansion.object_fields.get(&parent_id)?;
+            let field = fields.get(field_idx)?;
+            if let FieldValue::ObjectRef { id, .. } = field.value
+                && ancestor_ids.contains(&id)
+            {
+                return None;
+            }
+            return Some(field);
+        }
+        None
+    }
+
+    /// Returns the `ObjectRef` id when cursor is `OnStaticObjectField`
+    /// pointing to an `ObjectRef` field.
+    pub fn selected_static_obj_field_ref_id(&self) -> Option<u64> {
+        let field = self.static_obj_cursor_field()?;
+        if let FieldValue::ObjectRef { id, .. } = field.value {
+            return Some(id);
+        }
+        None
+    }
+
+    /// Returns `(object_id, entry_count)` when cursor is `OnStaticObjectField`
+    /// pointing to a collection/array field.
+    pub fn selected_static_obj_field_collection_info(&self) -> Option<(u64, u64)> {
+        let field = self.static_obj_cursor_field()?;
+        if let FieldValue::ObjectRef {
+            id,
+            entry_count: Some(ec),
+            ..
+        } = field.value
+            && ec > 0
+        {
+            return Some((id, ec));
+        }
+        None
+    }
+
+    fn collection_entry_object_id(&self, collection_id: u64, entry_index: usize) -> Option<u64> {
+        let cc = self.expansion.collection_chunks.get(&collection_id)?;
+        let entry = cc.find_entry(entry_index)?;
+        if let FieldValue::ObjectRef { id, .. } = &entry.value {
+            Some(*id)
+        } else {
+            None
+        }
+    }
+
+    fn resolve_collection_entry_object_at_path(
+        &self,
+        collection_id: u64,
+        entry_index: usize,
+        obj_field_path: &[usize],
+    ) -> Option<u64> {
+        let mut current = self.collection_entry_object_id(collection_id, entry_index)?;
+        for &step in obj_field_path {
+            let fields = self.expansion.object_fields.get(&current)?;
+            let field = fields.get(step)?;
+            if let FieldValue::ObjectRef { id, .. } = field.value {
+                current = id;
+            } else {
+                return None;
+            }
+        }
+        Some(current)
+    }
+
+    fn collection_entry_static_field_for(
+        &self,
+        collection_id: u64,
+        entry_index: usize,
+        obj_field_path: &[usize],
+        static_idx: usize,
+    ) -> Option<&FieldInfo> {
+        let owner_id = self.resolve_collection_entry_object_at_path(
+            collection_id,
+            entry_index,
+            obj_field_path,
+        )?;
+        let static_fields = self.expansion.object_static_fields.get(&owner_id)?;
+        static_fields.get(static_idx)
+    }
+
+    /// Returns the `ObjectRef` id when cursor is
+    /// `OnCollectionEntryStaticField` and that static value is an `ObjectRef`.
+    pub fn selected_collection_entry_static_field_ref_id(&self) -> Option<u64> {
+        if let StackCursor::OnCollectionEntryStaticField {
+            collection_id,
+            entry_index,
+            obj_field_path,
+            static_idx,
+            ..
+        } = self.nav.cursor()
+        {
+            let field = self.collection_entry_static_field_for(
+                *collection_id,
+                *entry_index,
+                obj_field_path,
+                *static_idx,
+            )?;
+            if let FieldValue::ObjectRef { id, .. } = field.value {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    /// Returns `(object_id, entry_count)` when cursor is
+    /// `OnCollectionEntryStaticField` pointing to a collection/array static
+    /// value.
+    pub fn selected_collection_entry_static_field_collection_info(&self) -> Option<(u64, u64)> {
+        if let StackCursor::OnCollectionEntryStaticField {
+            collection_id,
+            entry_index,
+            obj_field_path,
+            static_idx,
+            ..
+        } = self.nav.cursor()
+        {
+            let field = self.collection_entry_static_field_for(
+                *collection_id,
+                *entry_index,
+                obj_field_path,
+                *static_idx,
+            )?;
+            if let FieldValue::ObjectRef {
+                id,
+                entry_count: Some(ec),
+                ..
+            } = field.value
+            {
+                if id == 0 || ec == 0 {
+                    return None;
+                }
+                return Some((id, ec));
+            }
+        }
+        None
+    }
+
+    /// Resolves the field under cursor when on
+    /// `OnCollectionEntryStaticObjectField`.
+    ///
+    /// Returns `None` for cyclic terminal rows so Enter is a no-op.
+    fn collection_entry_static_obj_cursor_field(&self) -> Option<&FieldInfo> {
+        if let StackCursor::OnCollectionEntryStaticObjectField {
+            collection_id,
+            entry_index,
+            obj_field_path,
+            static_idx,
+            static_obj_field_path,
+            ..
+        } = self.nav.cursor()
+        {
+            let static_root_id = {
+                let field = self.collection_entry_static_field_for(
+                    *collection_id,
+                    *entry_index,
+                    obj_field_path,
+                    *static_idx,
+                )?;
+                if let FieldValue::ObjectRef { id, .. } = field.value {
+                    id
+                } else {
+                    return None;
+                }
+            };
+
+            let mut ancestor_ids = HashSet::new();
+            ancestor_ids.insert(static_root_id);
+
+            let parent_path =
+                &static_obj_field_path[..static_obj_field_path.len().saturating_sub(1)];
+            let mut parent_id = static_root_id;
+            for &step in parent_path {
+                let parent_fields = self.expansion.object_fields.get(&parent_id)?;
+                let parent_field = parent_fields.get(step)?;
+                if let FieldValue::ObjectRef { id, .. } = parent_field.value {
+                    parent_id = id;
+                    ancestor_ids.insert(parent_id);
+                } else {
+                    return None;
+                }
+            }
+
+            let field_idx = *static_obj_field_path.last()?;
+            let fields = self.expansion.object_fields.get(&parent_id)?;
+            let field = fields.get(field_idx)?;
+            if let FieldValue::ObjectRef { id, .. } = field.value
+                && ancestor_ids.contains(&id)
+            {
+                return None;
+            }
+            return Some(field);
+        }
+        None
+    }
+
+    /// Returns the `ObjectRef` id when cursor is
+    /// `OnCollectionEntryStaticObjectField` and the field is an `ObjectRef`.
+    pub fn selected_collection_entry_static_obj_field_ref_id(&self) -> Option<u64> {
+        let field = self.collection_entry_static_obj_cursor_field()?;
+        if let FieldValue::ObjectRef { id, .. } = field.value {
+            return Some(id);
+        }
+        None
+    }
+
+    /// Returns `(object_id, entry_count)` when cursor is
+    /// `OnCollectionEntryStaticObjectField` and the field is a
+    /// collection/array `ObjectRef`.
+    pub fn selected_collection_entry_static_obj_field_collection_info(&self) -> Option<(u64, u64)> {
+        let field = self.collection_entry_static_obj_cursor_field()?;
+        if let FieldValue::ObjectRef {
+            id,
+            entry_count: Some(ec),
+            ..
+        } = field.value
+        {
+            if id == 0 || ec == 0 {
+                return None;
+            }
+            return Some((id, ec));
         }
         None
     }
@@ -392,12 +729,19 @@ impl StackState {
     /// - `OnObjectLoadingNode` / `OnCyclicNode` → same rule as `OnObjectField`
     /// - `OnStaticSectionHeader` / `OnStaticField` / `OnStaticOverflowRow` →
     ///   same rule as `OnObjectField`
+    /// - `OnStaticObjectField { obj_field_path: [x] }` → `OnStaticField`
+    /// - `OnStaticObjectField { obj_field_path: [x, y, ...] }` → truncate
+    ///   `obj_field_path`
     /// - `OnCollectionEntry { field_path: [] }` → `OnVar`
     /// - `OnCollectionEntry { field_path: [x, ...] }` → `OnObjectField { field_path }`
     /// - `OnChunkSection` → same rule as `OnCollectionEntry`
     /// - `OnCollectionEntryObjField { obj_field_path: [x] }` → `OnCollectionEntry`
     /// - `OnCollectionEntryObjField { obj_field_path: [x, y, ...] }` → truncate
     ///   `obj_field_path`
+    /// - `OnCollectionEntryStaticObjectField { static_obj_field_path: [x] }`
+    ///   → `OnCollectionEntryStaticField`
+    /// - `OnCollectionEntryStaticObjectField { static_obj_field_path: [x, y, ...] }`
+    ///   → truncate `static_obj_field_path`
     pub fn parent_cursor(&self) -> Option<StackCursor> {
         match &self.nav.cursor().clone() {
             StackCursor::NoFrames | StackCursor::OnFrame(_) => None,
@@ -458,6 +802,31 @@ impl StackState {
                         frame_idx: *frame_idx,
                         var_idx: *var_idx,
                         field_path: field_path.clone(),
+                    })
+                }
+            }
+            StackCursor::OnStaticObjectField {
+                frame_idx,
+                var_idx,
+                field_path,
+                static_idx,
+                obj_field_path,
+            } => {
+                if obj_field_path.len() <= 1 {
+                    Some(StackCursor::OnStaticField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                        static_idx: *static_idx,
+                    })
+                } else {
+                    let parent_obj_path = obj_field_path[..obj_field_path.len() - 1].to_vec();
+                    Some(StackCursor::OnStaticObjectField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                        static_idx: *static_idx,
+                        obj_field_path: parent_obj_path,
                     })
                 }
             }
@@ -564,6 +933,41 @@ impl StackState {
                     })
                 }
             }
+            StackCursor::OnCollectionEntryStaticObjectField {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                static_idx,
+                static_obj_field_path,
+            } => {
+                if static_obj_field_path.len() <= 1 {
+                    Some(StackCursor::OnCollectionEntryStaticField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                        collection_id: *collection_id,
+                        entry_index: *entry_index,
+                        obj_field_path: obj_field_path.clone(),
+                        static_idx: *static_idx,
+                    })
+                } else {
+                    let parent_obj_path =
+                        static_obj_field_path[..static_obj_field_path.len() - 1].to_vec();
+                    Some(StackCursor::OnCollectionEntryStaticObjectField {
+                        frame_idx: *frame_idx,
+                        var_idx: *var_idx,
+                        field_path: field_path.clone(),
+                        collection_id: *collection_id,
+                        entry_index: *entry_index,
+                        obj_field_path: obj_field_path.clone(),
+                        static_idx: *static_idx,
+                        static_obj_field_path: parent_obj_path,
+                    })
+                }
+            }
         }
     }
 
@@ -609,6 +1013,13 @@ impl StackState {
                 ..
             }
             | StackCursor::OnCollectionEntryStaticOverflowRow {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                ..
+            }
+            | StackCursor::OnCollectionEntryStaticObjectField {
                 frame_idx,
                 var_idx,
                 field_path,
@@ -772,6 +1183,25 @@ impl StackState {
                     fallback = Some(StackCursor::OnFrame(*frame_idx));
                 }
             }
+            StackCursor::OnStaticObjectField {
+                frame_idx,
+                var_idx,
+                field_path,
+                static_idx,
+                ..
+            } => {
+                let candidate = StackCursor::OnStaticField {
+                    frame_idx: *frame_idx,
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                    static_idx: *static_idx,
+                };
+                if flat.contains(&candidate) {
+                    fallback = Some(candidate);
+                } else {
+                    fallback = Some(StackCursor::OnFrame(*frame_idx));
+                }
+            }
             StackCursor::OnCollectionEntryObjField {
                 frame_idx,
                 var_idx,
@@ -842,6 +1272,31 @@ impl StackState {
                     fallback = Some(StackCursor::OnFrame(*frame_idx));
                 }
             }
+            StackCursor::OnCollectionEntryStaticObjectField {
+                frame_idx,
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                static_idx,
+                ..
+            } => {
+                let candidate = StackCursor::OnCollectionEntryStaticField {
+                    frame_idx: *frame_idx,
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                    collection_id: *collection_id,
+                    entry_index: *entry_index,
+                    obj_field_path: obj_field_path.clone(),
+                    static_idx: *static_idx,
+                };
+                if flat.contains(&candidate) {
+                    fallback = Some(candidate);
+                } else {
+                    fallback = Some(StackCursor::OnFrame(*frame_idx));
+                }
+            }
             _ => {}
         }
         if let Some(cursor) = fallback {
@@ -883,12 +1338,14 @@ impl StackState {
             | StackCursor::OnStaticSectionHeader { frame_idx, .. }
             | StackCursor::OnStaticField { frame_idx, .. }
             | StackCursor::OnStaticOverflowRow { frame_idx, .. }
+            | StackCursor::OnStaticObjectField { frame_idx, .. }
             | StackCursor::OnChunkSection { frame_idx, .. }
             | StackCursor::OnCollectionEntry { frame_idx, .. }
             | StackCursor::OnCollectionEntryObjField { frame_idx, .. }
             | StackCursor::OnCollectionEntryStaticSectionHeader { frame_idx, .. }
             | StackCursor::OnCollectionEntryStaticField { frame_idx, .. }
-            | StackCursor::OnCollectionEntryStaticOverflowRow { frame_idx, .. } =
+            | StackCursor::OnCollectionEntryStaticOverflowRow { frame_idx, .. }
+            | StackCursor::OnCollectionEntryStaticObjectField { frame_idx, .. } =
                 self.nav.cursor()
             {
                 self.nav
@@ -1266,13 +1723,38 @@ impl StackState {
         });
 
         let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
-        for static_idx in 0..shown {
+        for (static_idx, field) in static_fields.iter().take(shown).enumerate() {
             out.push(StackCursor::OnStaticField {
                 frame_idx: fi,
                 var_idx: vi,
                 field_path: parent_path.to_vec(),
                 static_idx,
             });
+
+            if let FieldValue::ObjectRef {
+                id,
+                entry_count: Some(_),
+                ..
+            } = field.value
+                && let Some(cc) = self.expansion.collection_chunks.get(&id)
+            {
+                self.emit_collection_children(fi, vi, parent_path, id, cc, out);
+                continue;
+            }
+
+            if let FieldValue::ObjectRef { id, .. } = field.value {
+                let mut visited = HashSet::new();
+                self.emit_static_object_children(
+                    fi,
+                    vi,
+                    parent_path,
+                    static_idx,
+                    id,
+                    &[],
+                    &mut visited,
+                    out,
+                );
+            }
         }
 
         if static_fields.len() > STATIC_FIELDS_RENDER_LIMIT {
@@ -1281,6 +1763,97 @@ impl StackState {
                 var_idx: vi,
                 field_path: parent_path.to_vec(),
             });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_static_object_children(
+        &self,
+        fi: usize,
+        vi: usize,
+        field_path: &[usize],
+        static_idx: usize,
+        obj_id: u64,
+        obj_path: &[usize],
+        visited: &mut HashSet<u64>,
+        out: &mut Vec<StackCursor>,
+    ) {
+        if obj_path.len() >= 16 {
+            return;
+        }
+
+        match self.expansion_state(obj_id) {
+            ExpansionPhase::Collapsed => {}
+            ExpansionPhase::Loading => {
+                out.push(StackCursor::OnStaticObjectField {
+                    frame_idx: fi,
+                    var_idx: vi,
+                    field_path: field_path.to_vec(),
+                    static_idx,
+                    obj_field_path: obj_path.to_vec(),
+                });
+            }
+            ExpansionPhase::Failed => {
+                // Error state is styled on the parent static row — no child cursor emitted here.
+            }
+            ExpansionPhase::Expanded => {
+                let fields = self.expansion.object_fields.get(&obj_id);
+                let field_count = fields.map(|f| f.len()).unwrap_or(0);
+                if field_count == 0 {
+                    out.push(StackCursor::OnStaticObjectField {
+                        frame_idx: fi,
+                        var_idx: vi,
+                        field_path: field_path.to_vec(),
+                        static_idx,
+                        obj_field_path: obj_path.to_vec(),
+                    });
+                } else {
+                    visited.insert(obj_id);
+                    let field_list = fields.unwrap();
+                    for (idx, field) in field_list.iter().enumerate() {
+                        let mut path = obj_path.to_vec();
+                        path.push(idx);
+                        if let FieldValue::ObjectRef { id, .. } = field.value
+                            && visited.contains(&id)
+                        {
+                            out.push(StackCursor::OnStaticObjectField {
+                                frame_idx: fi,
+                                var_idx: vi,
+                                field_path: field_path.to_vec(),
+                                static_idx,
+                                obj_field_path: path,
+                            });
+                            continue;
+                        }
+
+                        out.push(StackCursor::OnStaticObjectField {
+                            frame_idx: fi,
+                            var_idx: vi,
+                            field_path: field_path.to_vec(),
+                            static_idx,
+                            obj_field_path: path.clone(),
+                        });
+
+                        if let FieldValue::ObjectRef {
+                            id,
+                            entry_count: Some(_),
+                            ..
+                        } = field.value
+                            && let Some(cc) = self.expansion.collection_chunks.get(&id)
+                        {
+                            self.emit_collection_children(fi, vi, field_path, id, cc, out);
+                            continue;
+                        }
+
+                        if let FieldValue::ObjectRef { id, .. } = field.value {
+                            self.emit_static_object_children(
+                                fi, vi, field_path, static_idx, id, &path, visited, out,
+                            );
+                        }
+                    }
+                    visited.remove(&obj_id);
+                }
+            }
         }
     }
 
@@ -1313,7 +1886,7 @@ impl StackState {
         });
 
         let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
-        for static_idx in 0..shown {
+        for (static_idx, field) in static_fields.iter().take(shown).enumerate() {
             out.push(StackCursor::OnCollectionEntryStaticField {
                 frame_idx: fi,
                 var_idx: vi,
@@ -1323,6 +1896,34 @@ impl StackState {
                 obj_field_path: obj_field_path.to_vec(),
                 static_idx,
             });
+
+            if let FieldValue::ObjectRef {
+                id,
+                entry_count: Some(_),
+                ..
+            } = field.value
+                && let Some(cc) = self.expansion.collection_chunks.get(&id)
+            {
+                self.emit_collection_children(fi, vi, field_path, id, cc, out);
+                continue;
+            }
+
+            if let FieldValue::ObjectRef { id, .. } = field.value {
+                let mut visited = HashSet::new();
+                self.emit_collection_entry_static_object_children(
+                    fi,
+                    vi,
+                    field_path,
+                    collection_id,
+                    entry_index,
+                    obj_field_path,
+                    static_idx,
+                    id,
+                    &[],
+                    &mut visited,
+                    out,
+                );
+            }
         }
 
         if static_fields.len() > STATIC_FIELDS_RENDER_LIMIT {
@@ -1334,6 +1935,123 @@ impl StackState {
                 entry_index,
                 obj_field_path: obj_field_path.to_vec(),
             });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_collection_entry_static_object_children(
+        &self,
+        fi: usize,
+        vi: usize,
+        field_path: &[usize],
+        collection_id: u64,
+        entry_index: usize,
+        obj_field_path: &[usize],
+        static_idx: usize,
+        obj_id: u64,
+        static_obj_path: &[usize],
+        visited: &mut HashSet<u64>,
+        out: &mut Vec<StackCursor>,
+    ) {
+        if static_obj_path.len() >= 16 {
+            return;
+        }
+
+        match self.expansion_state(obj_id) {
+            ExpansionPhase::Collapsed => {}
+            ExpansionPhase::Loading => {
+                out.push(StackCursor::OnCollectionEntryStaticObjectField {
+                    frame_idx: fi,
+                    var_idx: vi,
+                    field_path: field_path.to_vec(),
+                    collection_id,
+                    entry_index,
+                    obj_field_path: obj_field_path.to_vec(),
+                    static_idx,
+                    static_obj_field_path: static_obj_path.to_vec(),
+                });
+            }
+            ExpansionPhase::Failed => {
+                // Error state is styled on the parent static row — no child cursor emitted here.
+            }
+            ExpansionPhase::Expanded => {
+                let fields = self.expansion.object_fields.get(&obj_id);
+                let field_count = fields.map(|f| f.len()).unwrap_or(0);
+                if field_count == 0 {
+                    out.push(StackCursor::OnCollectionEntryStaticObjectField {
+                        frame_idx: fi,
+                        var_idx: vi,
+                        field_path: field_path.to_vec(),
+                        collection_id,
+                        entry_index,
+                        obj_field_path: obj_field_path.to_vec(),
+                        static_idx,
+                        static_obj_field_path: static_obj_path.to_vec(),
+                    });
+                } else {
+                    visited.insert(obj_id);
+                    let field_list = fields.unwrap();
+                    for (idx, field) in field_list.iter().enumerate() {
+                        let mut path = static_obj_path.to_vec();
+                        path.push(idx);
+
+                        if let FieldValue::ObjectRef { id, .. } = field.value
+                            && visited.contains(&id)
+                        {
+                            out.push(StackCursor::OnCollectionEntryStaticObjectField {
+                                frame_idx: fi,
+                                var_idx: vi,
+                                field_path: field_path.to_vec(),
+                                collection_id,
+                                entry_index,
+                                obj_field_path: obj_field_path.to_vec(),
+                                static_idx,
+                                static_obj_field_path: path,
+                            });
+                            continue;
+                        }
+
+                        out.push(StackCursor::OnCollectionEntryStaticObjectField {
+                            frame_idx: fi,
+                            var_idx: vi,
+                            field_path: field_path.to_vec(),
+                            collection_id,
+                            entry_index,
+                            obj_field_path: obj_field_path.to_vec(),
+                            static_idx,
+                            static_obj_field_path: path.clone(),
+                        });
+
+                        if let FieldValue::ObjectRef {
+                            id,
+                            entry_count: Some(_),
+                            ..
+                        } = field.value
+                            && let Some(cc) = self.expansion.collection_chunks.get(&id)
+                        {
+                            self.emit_collection_children(fi, vi, field_path, id, cc, out);
+                            continue;
+                        }
+
+                        if let FieldValue::ObjectRef { id, .. } = field.value {
+                            self.emit_collection_entry_static_object_children(
+                                fi,
+                                vi,
+                                field_path,
+                                collection_id,
+                                entry_index,
+                                obj_field_path,
+                                static_idx,
+                                id,
+                                &path,
+                                visited,
+                                out,
+                            );
+                        }
+                    }
+                    visited.remove(&obj_id);
+                }
+            }
         }
     }
 

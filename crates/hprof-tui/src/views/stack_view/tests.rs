@@ -2980,3 +2980,166 @@ fn render_static_overflow_row_not_navigable() {
         StackCursor::OnStaticField { static_idx: 19, .. }
     ));
 }
+
+#[test]
+fn static_object_field_rows_are_emitted_and_navigable() {
+    let frames = vec![make_frame(10), make_frame(20)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done(
+        0xA00,
+        vec![FieldInfo {
+            name: "instance".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S_CHILD".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 0xB00,
+                class_name: "Child".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }],
+    );
+    state.set_expansion_done(
+        0xB00,
+        vec![FieldInfo {
+            name: "leaf".to_string(),
+            value: FieldValue::Int(7),
+        }],
+    );
+
+    state.move_down(); // Frame(0) -> Var
+    state.move_down(); // Var -> instance field
+    state.move_down(); // instance field -> static field
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnStaticField { static_idx: 0, .. }
+    ));
+
+    state.move_down(); // static field -> static object child field
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnStaticObjectField { obj_field_path, .. } if *obj_field_path == vec![0]
+    ));
+
+    assert_eq!(
+        state.parent_cursor(),
+        Some(StackCursor::OnStaticField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+            static_idx: 0,
+        })
+    );
+
+    let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
+    assert!(
+        rendered.iter().any(|l| l.contains("leaf: 7")),
+        "expanded static object children must be rendered: {rendered:?}"
+    );
+    assert_eq!(
+        state.flat_items().len(),
+        state.build_items().len(),
+        "flat/build item lengths must stay aligned for static object children"
+    );
+}
+
+#[test]
+fn collection_entry_static_object_field_rows_are_emitted() {
+    let frames = vec![make_frame(10), make_frame(20)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xC00)]);
+    state.set_expansion_done(
+        0xC00,
+        vec![FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 0xD00,
+                class_name: "java.util.ArrayList".to_string(),
+                entry_count: Some(1),
+                inline_value: None,
+            },
+        }],
+    );
+    state.expansion.collection_chunks.insert(
+        0xD00,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: 0x710,
+                        class_name: "Node".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+    state.set_expansion_done(
+        0x710,
+        vec![FieldInfo {
+            name: "v".to_string(),
+            value: FieldValue::Int(9),
+        }],
+    );
+    state.set_static_fields(
+        0x710,
+        vec![FieldInfo {
+            name: "S_CHILD".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 0x720,
+                class_name: "Child".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }],
+    );
+    state.set_expansion_done(
+        0x720,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(3),
+        }],
+    );
+
+    state.move_down(); // Frame(0) -> Var
+    state.move_down(); // Var -> items field
+    state.move_down(); // items field -> entry[0]
+    state.move_down(); // entry[0] -> entry obj field [0]
+    state.move_down(); // -> static field
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnCollectionEntryStaticField { static_idx: 0, .. }
+    ));
+
+    state.move_down(); // -> static child field
+    assert!(matches!(
+        state.cursor(),
+        StackCursor::OnCollectionEntryStaticObjectField { static_obj_field_path, .. }
+            if *static_obj_field_path == vec![0]
+    ));
+
+    let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
+    assert!(
+        rendered.iter().any(|l| l.contains("x: 3")),
+        "expanded collection-entry static object children must be rendered: {rendered:?}"
+    );
+    assert_eq!(
+        state.flat_items().len(),
+        state.build_items().len(),
+        "flat/build item lengths must stay aligned for collection-entry static object children"
+    );
+}

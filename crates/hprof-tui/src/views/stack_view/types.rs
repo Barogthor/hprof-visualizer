@@ -120,6 +120,20 @@ pub enum StackCursor {
         /// Path to the object row whose static fields are displayed.
         field_path: Vec<usize>,
     },
+    /// Cursor on a field within an object expanded from a static field value.
+    ///
+    /// `obj_field_path` is empty for the loading/error/empty node; non-empty
+    /// encodes the field path within the static object's root object.
+    OnStaticObjectField {
+        frame_idx: usize,
+        var_idx: usize,
+        /// Path to the object row whose static fields are displayed.
+        field_path: Vec<usize>,
+        /// Index of the static field row that owns this expanded subtree.
+        static_idx: usize,
+        /// Path within the static field value's root object.
+        obj_field_path: Vec<usize>,
+    },
     /// Cursor on a chunk section header inside a
     /// paginated collection.
     OnChunkSection {
@@ -189,5 +203,26 @@ pub enum StackCursor {
         /// Path to the expanded object that owns this static section.
         /// Empty means the entry's root object.
         obj_field_path: Vec<usize>,
+    },
+    /// Cursor on a field within an object expanded from a static field value
+    /// that belongs to a collection-entry object.
+    ///
+    /// `static_obj_field_path` is empty for the loading/error/empty node;
+    /// non-empty encodes the field path within the static field value's root
+    /// object.
+    OnCollectionEntryStaticObjectField {
+        frame_idx: usize,
+        var_idx: usize,
+        /// Path to the collection's parent [`FieldValue::ObjectRef`] field.
+        field_path: Vec<usize>,
+        collection_id: u64,
+        entry_index: usize,
+        /// Path to the expanded object that owns this static section.
+        /// Empty means the entry's root object.
+        obj_field_path: Vec<usize>,
+        /// Index of the static field row that owns this expanded subtree.
+        static_idx: usize,
+        /// Path within the static field value's root object.
+        static_obj_field_path: Vec<usize>,
     },
 }

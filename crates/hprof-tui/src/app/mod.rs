@@ -558,12 +558,83 @@ impl<E: NavigationEngine> App<E> {
                                 _ => return None,
                             }
                         }
-                        StackCursor::OnStaticSectionHeader { .. }
-                        | StackCursor::OnStaticField { .. }
-                        | StackCursor::OnStaticOverflowRow { .. }
+                        StackCursor::OnStaticSectionHeader { .. } => return None,
+                        StackCursor::OnStaticField { .. } => {
+                            if let Some((cid, ec)) = s.selected_static_field_collection_info() {
+                                if s.expansion.collection_chunks.contains_key(&cid) {
+                                    return None;
+                                }
+                                return Some(RightCmd::StartCollection(
+                                    cid,
+                                    ec,
+                                    s.cursor().clone(),
+                                ));
+                            }
+                            let nested_id = s.selected_static_field_ref_id()?;
+                            match s.expansion_state(nested_id) {
+                                ExpansionPhase::Collapsed => RightCmd::StartObj(nested_id),
+                                _ => return None,
+                            }
+                        }
+                        StackCursor::OnStaticOverflowRow { .. }
                         | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
-                        | StackCursor::OnCollectionEntryStaticField { .. }
                         | StackCursor::OnCollectionEntryStaticOverflowRow { .. } => return None,
+                        StackCursor::OnStaticObjectField { .. } => {
+                            if let Some((cid, ec)) = s.selected_static_obj_field_collection_info() {
+                                if s.expansion.collection_chunks.contains_key(&cid) {
+                                    return None;
+                                }
+                                return Some(RightCmd::StartCollection(
+                                    cid,
+                                    ec,
+                                    s.cursor().clone(),
+                                ));
+                            }
+                            let nested_id = s.selected_static_obj_field_ref_id()?;
+                            match s.expansion_state(nested_id) {
+                                ExpansionPhase::Collapsed => RightCmd::StartObj(nested_id),
+                                _ => return None,
+                            }
+                        }
+                        StackCursor::OnCollectionEntryStaticField { .. } => {
+                            if let Some((cid, ec)) =
+                                s.selected_collection_entry_static_field_collection_info()
+                            {
+                                if s.expansion.collection_chunks.contains_key(&cid) {
+                                    return None;
+                                }
+                                return Some(RightCmd::StartCollection(
+                                    cid,
+                                    ec,
+                                    s.cursor().clone(),
+                                ));
+                            }
+                            let nested_id = s.selected_collection_entry_static_field_ref_id()?;
+                            match s.expansion_state(nested_id) {
+                                ExpansionPhase::Collapsed => RightCmd::StartEntryObj(nested_id),
+                                _ => return None,
+                            }
+                        }
+                        StackCursor::OnCollectionEntryStaticObjectField { .. } => {
+                            if let Some((cid, ec)) =
+                                s.selected_collection_entry_static_obj_field_collection_info()
+                            {
+                                if s.expansion.collection_chunks.contains_key(&cid) {
+                                    return None;
+                                }
+                                return Some(RightCmd::StartCollection(
+                                    cid,
+                                    ec,
+                                    s.cursor().clone(),
+                                ));
+                            }
+                            let nested_id =
+                                s.selected_collection_entry_static_obj_field_ref_id()?;
+                            match s.expansion_state(nested_id) {
+                                ExpansionPhase::Collapsed => RightCmd::StartEntryObj(nested_id),
+                                _ => return None,
+                            }
+                        }
                         StackCursor::OnCyclicNode { .. }
                         | StackCursor::OnObjectLoadingNode { .. }
                         | StackCursor::NoFrames => return None,
@@ -674,11 +745,63 @@ impl<E: NavigationEngine> App<E> {
                             LeftCmd::NavigateToParent(s.parent_cursor()?)
                         }
                         StackCursor::OnStaticSectionHeader { .. }
-                        | StackCursor::OnStaticField { .. }
                         | StackCursor::OnStaticOverflowRow { .. }
                         | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
-                        | StackCursor::OnCollectionEntryStaticField { .. }
                         | StackCursor::OnCollectionEntryStaticOverflowRow { .. } => {
+                            LeftCmd::NavigateToParent(s.parent_cursor()?)
+                        }
+                        StackCursor::OnStaticField { .. } => {
+                            if let Some((cid, _)) = s.selected_static_field_collection_info()
+                                && s.expansion.collection_chunks.contains_key(&cid)
+                            {
+                                return Some(LeftCmd::CollapseCollection(cid));
+                            }
+                            if let Some(nested_id) = s.selected_static_field_ref_id()
+                                && s.expansion_state(nested_id) == ExpansionPhase::Expanded
+                            {
+                                return Some(LeftCmd::CollapseNestedObj(nested_id));
+                            }
+                            LeftCmd::NavigateToParent(s.parent_cursor()?)
+                        }
+                        StackCursor::OnStaticObjectField { .. } => {
+                            if let Some((cid, _)) = s.selected_static_obj_field_collection_info()
+                                && s.expansion.collection_chunks.contains_key(&cid)
+                            {
+                                return Some(LeftCmd::CollapseCollection(cid));
+                            }
+                            if let Some(nested_id) = s.selected_static_obj_field_ref_id()
+                                && s.expansion_state(nested_id) == ExpansionPhase::Expanded
+                            {
+                                return Some(LeftCmd::CollapseNestedObj(nested_id));
+                            }
+                            LeftCmd::NavigateToParent(s.parent_cursor()?)
+                        }
+                        StackCursor::OnCollectionEntryStaticField { .. } => {
+                            if let Some((cid, _)) =
+                                s.selected_collection_entry_static_field_collection_info()
+                                && s.expansion.collection_chunks.contains_key(&cid)
+                            {
+                                return Some(LeftCmd::CollapseCollection(cid));
+                            }
+                            if let Some(oid) = s.selected_collection_entry_static_field_ref_id()
+                                && s.expansion_state(oid) == ExpansionPhase::Expanded
+                            {
+                                return Some(LeftCmd::CollapseEntryObj(oid));
+                            }
+                            LeftCmd::NavigateToParent(s.parent_cursor()?)
+                        }
+                        StackCursor::OnCollectionEntryStaticObjectField { .. } => {
+                            if let Some((cid, _)) =
+                                s.selected_collection_entry_static_obj_field_collection_info()
+                                && s.expansion.collection_chunks.contains_key(&cid)
+                            {
+                                return Some(LeftCmd::CollapseCollection(cid));
+                            }
+                            if let Some(oid) = s.selected_collection_entry_static_obj_field_ref_id()
+                                && s.expansion_state(oid) == ExpansionPhase::Expanded
+                            {
+                                return Some(LeftCmd::CollapseEntryObj(oid));
+                            }
                             LeftCmd::NavigateToParent(s.parent_cursor()?)
                         }
                         StackCursor::OnChunkSection { .. } => {
@@ -848,11 +971,73 @@ impl<E: NavigationEngine> App<E> {
                             }
                         }
                         StackCursor::OnStaticSectionHeader { .. }
-                        | StackCursor::OnStaticField { .. }
                         | StackCursor::OnStaticOverflowRow { .. }
                         | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
-                        | StackCursor::OnCollectionEntryStaticField { .. }
                         | StackCursor::OnCollectionEntryStaticOverflowRow { .. } => return None,
+                        StackCursor::OnStaticField { .. } => {
+                            if let Some((cid, ec)) = s.selected_static_field_collection_info() {
+                                if s.expansion.collection_chunks.contains_key(&cid) {
+                                    return Some(Cmd::CollapseCollection(cid));
+                                }
+                                return Some(Cmd::StartCollection(cid, ec, s.cursor().clone()));
+                            }
+                            let nested_id = s.selected_static_field_ref_id()?;
+                            match s.expansion_state(nested_id) {
+                                ExpansionPhase::Collapsed => Cmd::StartNestedObj(nested_id),
+                                ExpansionPhase::Failed => return None,
+                                ExpansionPhase::Expanded => Cmd::CollapseNestedObj(nested_id),
+                                ExpansionPhase::Loading => return None,
+                            }
+                        }
+                        StackCursor::OnStaticObjectField { .. } => {
+                            if let Some((cid, ec)) = s.selected_static_obj_field_collection_info() {
+                                if s.expansion.collection_chunks.contains_key(&cid) {
+                                    return Some(Cmd::CollapseCollection(cid));
+                                }
+                                return Some(Cmd::StartCollection(cid, ec, s.cursor().clone()));
+                            }
+                            let nested_id = s.selected_static_obj_field_ref_id()?;
+                            match s.expansion_state(nested_id) {
+                                ExpansionPhase::Collapsed => Cmd::StartNestedObj(nested_id),
+                                ExpansionPhase::Failed => return None,
+                                ExpansionPhase::Expanded => Cmd::CollapseNestedObj(nested_id),
+                                ExpansionPhase::Loading => return None,
+                            }
+                        }
+                        StackCursor::OnCollectionEntryStaticField { .. } => {
+                            if let Some((oid, ec)) =
+                                s.selected_collection_entry_static_field_collection_info()
+                            {
+                                if s.expansion.collection_chunks.contains_key(&oid) {
+                                    return Some(Cmd::CollapseCollection(oid));
+                                }
+                                return Some(Cmd::StartCollection(oid, ec, s.cursor().clone()));
+                            }
+                            let oid = s.selected_collection_entry_static_field_ref_id()?;
+                            match s.expansion_state(oid) {
+                                ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
+                                ExpansionPhase::Failed => return None,
+                                ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
+                                ExpansionPhase::Loading => return None,
+                            }
+                        }
+                        StackCursor::OnCollectionEntryStaticObjectField { .. } => {
+                            if let Some((oid, ec)) =
+                                s.selected_collection_entry_static_obj_field_collection_info()
+                            {
+                                if s.expansion.collection_chunks.contains_key(&oid) {
+                                    return Some(Cmd::CollapseCollection(oid));
+                                }
+                                return Some(Cmd::StartCollection(oid, ec, s.cursor().clone()));
+                            }
+                            let oid = s.selected_collection_entry_static_obj_field_ref_id()?;
+                            match s.expansion_state(oid) {
+                                ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
+                                ExpansionPhase::Failed => return None,
+                                ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
+                                ExpansionPhase::Loading => return None,
+                            }
+                        }
                         StackCursor::OnCyclicNode { .. }
                         | StackCursor::OnObjectLoadingNode { .. }
                         | StackCursor::NoFrames => return None,

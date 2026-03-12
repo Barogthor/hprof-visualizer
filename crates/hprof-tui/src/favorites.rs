@@ -344,9 +344,11 @@ pub fn snapshot_from_cursor(
         | StackCursor::OnStaticSectionHeader { .. }
         | StackCursor::OnStaticField { .. }
         | StackCursor::OnStaticOverflowRow { .. }
+        | StackCursor::OnStaticObjectField { .. }
         | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
         | StackCursor::OnCollectionEntryStaticField { .. }
         | StackCursor::OnCollectionEntryStaticOverflowRow { .. }
+        | StackCursor::OnCollectionEntryStaticObjectField { .. }
         | StackCursor::OnChunkSection { .. } => None,
     }
 }
