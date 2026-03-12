@@ -31,7 +31,7 @@ impl StatefulWidget for StackView {
             .borders(Borders::ALL)
             .border_type(BorderType::Plain)
             .border_style(border_style)
-            .title("Stack Frames  [Enter] expand  [Esc] back");
+            .title("Stack Frames");
         let inner = block.inner(area);
         block.render(area, buf);
 
