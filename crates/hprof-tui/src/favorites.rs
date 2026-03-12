@@ -108,65 +108,6 @@ pub struct PinnedItem {
     pub key: PinKey,
 }
 
-/// Walks the reachable object graph from `root_id`, cloning fields and
-/// collection chunks into fresh maps.
-///
-/// `reachable` is shared across all vars of a frame so the global
-/// `SNAPSHOT_OBJECT_LIMIT` applies across the entire frame snapshot.
-///
-/// Returns
-/// `(object_fields, object_static_fields, collection_chunks, truncated)`.
-pub(crate) fn subtree_snapshot(
-    root_id: u64,
-    state: &StackState,
-    reachable: &mut HashSet<u64>,
-) -> SubtreeSnapshot {
-    let mut desc_order: Vec<u64> = Vec::new();
-    let truncated = collect_descendants_limited(
-        root_id,
-        state.object_fields(),
-        state.collection_chunks_map(),
-        reachable,
-        &mut desc_order,
-        SNAPSHOT_OBJECT_LIMIT,
-    ) || reachable.len() >= SNAPSHOT_OBJECT_LIMIT;
-
-    let mut snap_fields: SnapshotObjectFields = HashMap::new();
-    let mut snap_static_fields: SnapshotStaticFields = HashMap::new();
-    let mut snap_chunks: SnapshotCollectionChunks = HashMap::new();
-
-    for &id in &desc_order {
-        if let Some(fields) = state.object_fields().get(&id) {
-            snap_fields.insert(id, fields.clone());
-        }
-        if let Some(fields) = state.object_static_fields().get(&id) {
-            snap_static_fields.insert(id, fields.clone());
-        }
-        if let Some(cc) = state.collection_chunks_map().get(&id) {
-            snap_chunks.insert(id, freeze_collection_chunks(cc));
-        }
-    }
-    (snap_fields, snap_static_fields, snap_chunks, truncated)
-}
-
-fn collect_descendants_limited(
-    root_id: u64,
-    fields: &HashMap<u64, Vec<FieldInfo>>,
-    collection_chunks: &HashMap<u64, CollectionChunks>,
-    visited: &mut HashSet<u64>,
-    out: &mut Vec<u64>,
-    limit: usize,
-) -> bool {
-    let mut collector = DescendantsCollector {
-        fields,
-        collection_chunks,
-        visited,
-        out,
-        limit,
-    };
-    collector.walk(root_id)
-}
-
 struct DescendantsCollector<'a> {
     fields: &'a HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &'a HashMap<u64, CollectionChunks>,
@@ -250,24 +191,6 @@ impl DescendantsCollector<'_> {
     }
 }
 
-fn freeze_collection_chunks(chunks: &CollectionChunks) -> CollectionChunks {
-    let mut chunk_pages = HashMap::with_capacity(chunks.chunk_pages.len());
-    for (offset, state) in &chunks.chunk_pages {
-        let frozen = match state {
-            ChunkState::Collapsed => ChunkState::Collapsed,
-            ChunkState::Loading => ChunkState::Collapsed,
-            ChunkState::Loaded(page) => ChunkState::Loaded(page.clone()),
-        };
-        chunk_pages.insert(*offset, frozen);
-    }
-
-    CollectionChunks {
-        total_count: chunks.total_count,
-        eager_page: chunks.eager_page.clone(),
-        chunk_pages,
-    }
-}
-
 /// Builds a [`PinnedItem`] from the current cursor position, or `None` if the
 /// cursor position cannot be pinned (e.g. loading/cyclic pseudo-nodes).
 pub fn snapshot_from_cursor(
@@ -347,6 +270,76 @@ impl<'a> PinnedItemFactory<'a> {
         }
     }
 
+    /// Walks the reachable object graph from `root_id`, cloning fields and
+    /// collection chunks into fresh maps.
+    ///
+    /// `reachable` is shared across all vars of a frame so the global
+    /// `SNAPSHOT_OBJECT_LIMIT` applies across the entire frame snapshot.
+    ///
+    /// Returns
+    /// `(object_fields, object_static_fields, collection_chunks, truncated)`.
+    fn subtree_snapshot(&self, root_id: u64, reachable: &mut HashSet<u64>) -> SubtreeSnapshot {
+        let mut desc_order: Vec<u64> = Vec::new();
+        let truncated = self.collect_descendants_limited(
+            root_id,
+            reachable,
+            &mut desc_order,
+            SNAPSHOT_OBJECT_LIMIT,
+        ) || reachable.len() >= SNAPSHOT_OBJECT_LIMIT;
+
+        let mut snap_fields: SnapshotObjectFields = HashMap::new();
+        let mut snap_static_fields: SnapshotStaticFields = HashMap::new();
+        let mut snap_chunks: SnapshotCollectionChunks = HashMap::new();
+
+        for &id in &desc_order {
+            if let Some(fields) = self.state.object_fields().get(&id) {
+                snap_fields.insert(id, fields.clone());
+            }
+            if let Some(fields) = self.state.object_static_fields().get(&id) {
+                snap_static_fields.insert(id, fields.clone());
+            }
+            if let Some(cc) = self.state.collection_chunks_map().get(&id) {
+                snap_chunks.insert(id, self.freeze_collection_chunks(cc));
+            }
+        }
+        (snap_fields, snap_static_fields, snap_chunks, truncated)
+    }
+
+    fn collect_descendants_limited(
+        &self,
+        root_id: u64,
+        visited: &mut HashSet<u64>,
+        out: &mut Vec<u64>,
+        limit: usize,
+    ) -> bool {
+        let mut collector = DescendantsCollector {
+            fields: self.state.object_fields(),
+            collection_chunks: self.state.collection_chunks_map(),
+            visited,
+            out,
+            limit,
+        };
+        collector.walk(root_id)
+    }
+
+    fn freeze_collection_chunks(&self, chunks: &CollectionChunks) -> CollectionChunks {
+        let mut chunk_pages = HashMap::with_capacity(chunks.chunk_pages.len());
+        for (offset, state) in &chunks.chunk_pages {
+            let frozen = match state {
+                ChunkState::Collapsed => ChunkState::Collapsed,
+                ChunkState::Loading => ChunkState::Collapsed,
+                ChunkState::Loaded(page) => ChunkState::Loaded(page.clone()),
+            };
+            chunk_pages.insert(*offset, frozen);
+        }
+
+        CollectionChunks {
+            total_count: chunks.total_count,
+            eager_page: chunks.eager_page.clone(),
+            chunk_pages,
+        }
+    }
+
     fn snapshot_on_frame(&self, frame_idx: usize) -> Option<PinnedItem> {
         let ctx = self.frame_context(frame_idx)?;
         let vars = self
@@ -369,7 +362,7 @@ impl<'a> PinnedItemFactory<'a> {
             }
             if let VariableValue::ObjectRef { id, .. } = var.value {
                 let (fields, static_fields, chunks, trunc) =
-                    subtree_snapshot(id, self.state, &mut reachable);
+                    self.subtree_snapshot(id, &mut reachable);
                 all_fields.extend(fields);
                 all_static_fields.extend(static_fields);
                 all_chunks.extend(chunks);
@@ -558,7 +551,7 @@ impl<'a> PinnedItemFactory<'a> {
         if self.object_has_snapshot_data(object_id) {
             let mut reachable = HashSet::new();
             let (fields, static_fields, chunks, truncated) =
-                subtree_snapshot(object_id, self.state, &mut reachable);
+                self.subtree_snapshot(object_id, &mut reachable);
             PinnedSnapshot::Subtree {
                 root_id: object_id,
                 object_fields: fields,
