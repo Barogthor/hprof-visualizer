@@ -4,7 +4,7 @@ set -euo pipefail
 print_help() {
   cat <<'EOF'
 Usage:
-  tools/java-dump-fixtures/generate-dumps.sh <mode> [hold_seconds] [profile_set] [truncate_bytes] [scenario] [sanitize] [truncate_target]
+  tools/java-dump-fixtures/generate-dumps.sh <mode> [hold_seconds] [profile_set] [truncate_bytes] [scenario] [sanitize] [truncate_target] [remove_raw]
   tools/java-dump-fixtures/generate-dumps.sh [options]
 
 Arguments:
@@ -15,6 +15,7 @@ Arguments:
   scenario       01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | 10 | all   (default: 01)
   sanitize       off | on | only   (default: off)
   truncate_target raw | sanitized | both   (default: raw)
+  remove_raw     off | on   (default: off)
 
 Options:
   -m, --mode <value>
@@ -24,6 +25,7 @@ Options:
   -s, --scenario <value>
   -S, --sanitize <value>
   -T, --truncate-target <value>
+  -R, --remove-raw <value>
   -h, --help
 
 Examples:
@@ -31,7 +33,7 @@ Examples:
   tools/java-dump-fixtures/generate-dumps.sh both 180 all 4194304
   tools/java-dump-fixtures/generate-dumps.sh auto 120 ultra 2097152 01
   tools/java-dump-fixtures/generate-dumps.sh auto 120 standard 0 all
-  tools/java-dump-fixtures/generate-dumps.sh --mode auto --profile-set ultra --scenario 01 --sanitize on --truncate-target both
+  tools/java-dump-fixtures/generate-dumps.sh --mode auto --profile-set ultra --scenario 01 --sanitize on --truncate-target both --remove-raw on
 EOF
 }
 
@@ -56,6 +58,7 @@ TRUNCATE_BYTES="0"
 SCENARIO="01"
 SANITIZE="off"
 TRUNCATE_TARGET="raw"
+REMOVE_RAW="off"
 
 POSITIONAL_INDEX=1
 while [[ $# -gt 0 ]]; do
@@ -88,6 +91,10 @@ while [[ $# -gt 0 ]]; do
       TRUNCATE_TARGET="${2:-}"
       shift 2
       ;;
+    -R|--remove-raw)
+      REMOVE_RAW="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       print_help
       exit 0
@@ -103,6 +110,7 @@ while [[ $# -gt 0 ]]; do
           5) SCENARIO="$1" ;;
           6) SANITIZE="$1" ;;
           7) TRUNCATE_TARGET="$1" ;;
+          8) REMOVE_RAW="$1" ;;
           *)
             echo "[heap-fixture] too many positional arguments" >&2
             print_help
@@ -127,6 +135,7 @@ while [[ $# -gt 0 ]]; do
         5) SCENARIO="$1" ;;
         6) SANITIZE="$1" ;;
         7) TRUNCATE_TARGET="$1" ;;
+        8) REMOVE_RAW="$1" ;;
         *)
           echo "[heap-fixture] too many positional arguments" >&2
           print_help
@@ -157,6 +166,11 @@ if [[ "${TRUNCATE_TARGET}" != "raw" && "${TRUNCATE_TARGET}" != "sanitized" && "$
   exit 1
 fi
 
+if [[ "${REMOVE_RAW}" != "off" && "${REMOVE_RAW}" != "on" ]]; then
+  echo "[heap-fixture] invalid remove_raw '${REMOVE_RAW}' (expected: off|on)" >&2
+  exit 1
+fi
+
 if [[ "${TRUNCATE_TARGET}" != "raw" && "${TRUNCATE_BYTES}" == "0" ]]; then
   echo "[heap-fixture] truncate_target '${TRUNCATE_TARGET}' requires truncate_bytes > 0" >&2
   exit 1
@@ -164,6 +178,11 @@ fi
 
 if [[ "${SANITIZE}" == "off" && "${TRUNCATE_TARGET}" != "raw" ]]; then
   echo "[heap-fixture] truncate_target '${TRUNCATE_TARGET}' requires sanitize on or only" >&2
+  exit 1
+fi
+
+if [[ "${REMOVE_RAW}" == "on" && "${SANITIZE}" != "on" ]]; then
+  echo "[heap-fixture] remove_raw 'on' requires sanitize=on" >&2
   exit 1
 fi
 
@@ -232,14 +251,19 @@ sanitize_prefix() {
   shopt -u nullglob
 
   for dump in "${dumps[@]}"; do
-    if [[ "${dump}" == *"-sanitized.hprof" || "${dump}" == *"-sanitized-"*".hprof" ]]; then
+    if [[ "${dump}" == *"-san.hprof" || "${dump}" == *"-san-"*".hprof" || "${dump}" == *"-sanitized.hprof" || "${dump}" == *"-sanitized-"*".hprof" ]]; then
       continue
     fi
     if [[ "${dump}" == *"-truncated.hprof" || "${dump}" == *"-truncated-"*".hprof" ]]; then
       echo "[heap-fixture] sanitize skip truncated=${dump}"
       continue
     fi
-    local out="${dump%.hprof}-sanitized.hprof"
+    local out
+    if [[ "${dump}" == *"-raw.hprof" ]]; then
+      out="${dump%-raw.hprof}-san.hprof"
+    else
+      out="${dump%.hprof}-san.hprof"
+    fi
     echo "[heap-fixture] sanitize input=${dump} output=${out}"
     "${REDACT_SCRIPT}" "${dump}" "${out}"
   done
@@ -286,8 +310,9 @@ PY
 truncate_sanitized_prefix() {
   local prefix="$1"
   local bytes_to_remove="$2"
+  local base_prefix="${prefix%-raw}"
   shopt -s nullglob
-  local dumps=("${prefix}"*-sanitized.hprof)
+  local dumps=("${base_prefix}"*-san.hprof "${base_prefix}"*-sanitized.hprof)
   shopt -u nullglob
 
   for dump in "${dumps[@]}"; do
@@ -296,9 +321,24 @@ truncate_sanitized_prefix() {
   done
 }
 
+remove_raw_prefix() {
+  local prefix="$1"
+  shopt -s nullglob
+  local dumps=("${prefix}"*.hprof)
+  shopt -u nullglob
+
+  for dump in "${dumps[@]}"; do
+    if [[ "${dump}" == *"-san.hprof" || "${dump}" == *"-san-"*".hprof" || "${dump}" == *"-sanitized.hprof" || "${dump}" == *"-sanitized-"*".hprof" ]]; then
+      continue
+    fi
+    echo "[heap-fixture] remove raw=${dump}"
+    rm -f "${dump}"
+  done
+}
+
 for profile in "${profiles[@]}"; do
   for scenario in "${scenarios[@]}"; do
-    output="${ASSETS_DIR}/fixture-s${scenario}-${profile}.hprof"
+    output="${ASSETS_DIR}/fixture-s${scenario}-${profile}-raw.hprof"
     if [[ "${SANITIZE}" != "only" ]]; then
       truncate_for_java="${TRUNCATE_BYTES}"
       if [[ "${TRUNCATE_TARGET}" == "sanitized" ]]; then
@@ -320,6 +360,10 @@ for profile in "${profiles[@]}"; do
 
       if [[ "${TRUNCATE_BYTES}" != "0" && ( "${TRUNCATE_TARGET}" == "sanitized" || "${TRUNCATE_TARGET}" == "both" ) ]]; then
         truncate_sanitized_prefix "${output%.hprof}" "${TRUNCATE_BYTES}"
+      fi
+
+      if [[ "${REMOVE_RAW}" == "on" ]]; then
+        remove_raw_prefix "${output%.hprof}"
       fi
     fi
   done

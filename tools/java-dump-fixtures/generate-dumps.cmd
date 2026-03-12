@@ -14,6 +14,7 @@ set "TRUNCATE_BYTES=0"
 set "SCENARIO=01"
 set "SANITIZE=off"
 set "TRUNCATE_TARGET=raw"
+set "REMOVE_RAW=off"
 
 set "FIRST_ARG=%~1"
 if "%FIRST_ARG:~0,1%"=="-" goto :parse_options
@@ -31,6 +32,8 @@ if "%~6"=="" goto :parsed_args
 set "SANITIZE=%~6"
 if "%~7"=="" goto :parsed_args
 set "TRUNCATE_TARGET=%~7"
+if "%~8"=="" goto :parsed_args
+set "REMOVE_RAW=%~8"
 goto :parsed_args
 
 :parse_options
@@ -49,6 +52,8 @@ if /I "%~1"=="-S" goto :set_sanitize
 if /I "%~1"=="--sanitize" goto :set_sanitize
 if /I "%~1"=="-T" goto :set_truncate_target
 if /I "%~1"=="--truncate-target" goto :set_truncate_target
+if /I "%~1"=="-R" goto :set_remove_raw
+if /I "%~1"=="--remove-raw" goto :set_remove_raw
 
 echo [heap-fixture] unknown option "%~1"
 goto :help_error
@@ -102,6 +107,13 @@ shift
 shift
 goto :parse_options
 
+:set_remove_raw
+if "%~2"=="" goto :help_error
+set "REMOVE_RAW=%~2"
+shift
+shift
+goto :parse_options
+
 :parsed_args
 
 if /I not "%MODE%"=="auto" if /I not "%MODE%"=="manual" if /I not "%MODE%"=="both" (
@@ -119,6 +131,11 @@ if /I not "%TRUNCATE_TARGET%"=="raw" if /I not "%TRUNCATE_TARGET%"=="sanitized" 
   goto :help_error
 )
 
+if /I not "%REMOVE_RAW%"=="off" if /I not "%REMOVE_RAW%"=="on" (
+  echo [heap-fixture] invalid remove_raw "%REMOVE_RAW%" ^(expected: off^|on^)
+  goto :help_error
+)
+
 if "%TRUNCATE_BYTES%"=="0" if /I not "%TRUNCATE_TARGET%"=="raw" (
   echo [heap-fixture] truncate_target "%TRUNCATE_TARGET%" requires truncate_bytes ^> 0
   goto :help_error
@@ -126,6 +143,11 @@ if "%TRUNCATE_BYTES%"=="0" if /I not "%TRUNCATE_TARGET%"=="raw" (
 
 if /I "%SANITIZE%"=="off" if /I not "%TRUNCATE_TARGET%"=="raw" (
   echo [heap-fixture] truncate_target "%TRUNCATE_TARGET%" requires sanitize on or only
+  goto :help_error
+)
+
+if /I "%REMOVE_RAW%"=="on" if /I not "%SANITIZE%"=="on" (
+  echo [heap-fixture] remove_raw "on" requires sanitize=on
   goto :help_error
 )
 
@@ -192,7 +214,7 @@ if "%PROFILES%"=="" (
 
 for %%P in (%PROFILES%) do (
   for %%S in (%SCENARIOS%) do (
-    set "OUTPUT=%ASSETS_DIR%\fixture-s%%S-%%P.hprof"
+    set "OUTPUT=%ASSETS_DIR%\fixture-s%%S-%%P-raw.hprof"
     if /I not "%SANITIZE%"=="only" (
       set "TRUNCATE_FOR_JAVA=%TRUNCATE_BYTES%"
       if /I "%TRUNCATE_TARGET%"=="sanitized" set "TRUNCATE_FOR_JAVA=0"
@@ -202,18 +224,22 @@ for %%P in (%PROFILES%) do (
     )
 
     if /I "%SANITIZE%"=="on" (
-      call :sanitize_prefix "%ASSETS_DIR%\fixture-s%%S-%%P"
+      call :sanitize_prefix "%ASSETS_DIR%\fixture-s%%S-%%P-raw"
       if errorlevel 1 exit /b 1
       if not "%TRUNCATE_BYTES%"=="0" if /I not "%TRUNCATE_TARGET%"=="raw" (
-        call :truncate_sanitized_prefix "%ASSETS_DIR%\fixture-s%%S-%%P" "%TRUNCATE_BYTES%"
+        call :truncate_sanitized_prefix "%ASSETS_DIR%\fixture-s%%S-%%P-raw" "%TRUNCATE_BYTES%"
+        if errorlevel 1 exit /b 1
+      )
+      if /I "%REMOVE_RAW%"=="on" (
+        call :remove_raw_prefix "%ASSETS_DIR%\fixture-s%%S-%%P-raw"
         if errorlevel 1 exit /b 1
       )
     )
     if /I "%SANITIZE%"=="only" (
-      call :sanitize_prefix "%ASSETS_DIR%\fixture-s%%S-%%P"
+      call :sanitize_prefix "%ASSETS_DIR%\fixture-s%%S-%%P-raw"
       if errorlevel 1 exit /b 1
       if not "%TRUNCATE_BYTES%"=="0" if /I not "%TRUNCATE_TARGET%"=="raw" (
-        call :truncate_sanitized_prefix "%ASSETS_DIR%\fixture-s%%S-%%P" "%TRUNCATE_BYTES%"
+        call :truncate_sanitized_prefix "%ASSETS_DIR%\fixture-s%%S-%%P-raw" "%TRUNCATE_BYTES%"
         if errorlevel 1 exit /b 1
       )
     )
@@ -228,6 +254,7 @@ echo Usage:
 echo   tools\java-dump-fixtures\generate-dumps.cmd ^<mode^> [hold_seconds] [profile_set] [truncate_bytes] [scenario]
 echo   tools\java-dump-fixtures\generate-dumps.cmd ^<mode^> [hold_seconds] [profile_set] [truncate_bytes] [scenario] [sanitize]
 echo   tools\java-dump-fixtures\generate-dumps.cmd ^<mode^> [hold_seconds] [profile_set] [truncate_bytes] [scenario] [sanitize] [truncate_target]
+echo   tools\java-dump-fixtures\generate-dumps.cmd ^<mode^> [hold_seconds] [profile_set] [truncate_bytes] [scenario] [sanitize] [truncate_target] [remove_raw]
 echo   tools\java-dump-fixtures\generate-dumps.cmd [options]
 echo.
 echo Arguments:
@@ -238,6 +265,7 @@ echo   truncate_bytes default: 0
 echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
 echo   truncate_target raw ^| sanitized ^| both   ^(default: raw^)
+echo   remove_raw     off ^| on   ^(default: off, requires sanitize=on^)
 echo.
 echo Options:
 echo   -m, --mode ^<value^>
@@ -247,13 +275,14 @@ echo   -t, --truncate-bytes ^<value^>
 echo   -s, --scenario ^<value^>
 echo   -S, --sanitize ^<value^>
 echo   -T, --truncate-target ^<value^>
+echo   -R, --remove-raw ^<value^>
 echo.
 echo Examples:
 echo   tools\java-dump-fixtures\generate-dumps.cmd auto
 echo   tools\java-dump-fixtures\generate-dumps.cmd both 180 all 4194304
 echo   tools\java-dump-fixtures\generate-dumps.cmd auto 120 ultra 2097152 01
 echo   tools\java-dump-fixtures\generate-dumps.cmd auto 120 standard 0 all
-echo   tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set ultra --scenario 01 --sanitize on --truncate-target both
+echo   tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set ultra --scenario 01 --sanitize on --truncate-target both --remove-raw on
 echo   tools\java-dump-fixtures\generate-dumps.cmd --profile-set all --scenario all --sanitize only
 exit /b 0
 
@@ -271,6 +300,7 @@ echo   truncate_bytes default: 0
 echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
 echo   truncate_target raw ^| sanitized ^| both   ^(default: raw^)
+echo   remove_raw     off ^| on   ^(default: off^)
 exit /b 1
 
 :sanitize_prefix
@@ -285,9 +315,11 @@ for %%F in ("%PREFIX%*.hprof") do (
     echo [heap-fixture] sanitize skip truncated=!DUMP!
   )
   if "!SKIP!"=="0" (
-    echo !NAME! | findstr /I /R "-sanitized$ -sanitized-[0-9][0-9]*$" >nul
+    echo !NAME! | findstr /I /R "-san$ -san-[0-9][0-9]*$ -sanitized$ -sanitized-[0-9][0-9]*$" >nul
     if errorlevel 1 (
-      set "SAN_OUT=%%~dpnF-sanitized.hprof"
+      set "BASE_NAME=!NAME!"
+      if /I "!BASE_NAME:~-4!"=="-raw" set "BASE_NAME=!BASE_NAME:~0,-4!"
+      set "SAN_OUT=%%~dpF!BASE_NAME!-san.hprof"
       echo [heap-fixture] sanitize input=!DUMP! output=!SAN_OUT!
       call "%REDACT_CMD%" "!DUMP!" "!SAN_OUT!"
       if errorlevel 1 exit /b 1
@@ -299,11 +331,34 @@ exit /b 0
 :truncate_sanitized_prefix
 set "PREFIX=%~1"
 set "BYTES=%~2"
-for %%F in ("%PREFIX%*-sanitized.hprof") do (
+set "BASE_PREFIX=%PREFIX%"
+if /I "%BASE_PREFIX:~-4%"=="-raw" set "BASE_PREFIX=%BASE_PREFIX:~0,-4%"
+for %%F in ("%BASE_PREFIX%*-sanitized.hprof") do (
   set "DUMP=%%~fF"
   echo [heap-fixture] truncate sanitized input=!DUMP!
   call :truncate_file_ps "!DUMP!" "%BYTES%"
   if errorlevel 1 exit /b 1
+)
+for %%F in ("%BASE_PREFIX%*-san.hprof") do (
+  set "DUMP=%%~fF"
+  echo [heap-fixture] truncate sanitized input=!DUMP!
+  call :truncate_file_ps "!DUMP!" "%BYTES%"
+  if errorlevel 1 exit /b 1
+)
+exit /b 0
+
+:remove_raw_prefix
+set "PREFIX=%~1"
+for %%F in ("%PREFIX%*.hprof") do (
+  set "DUMP=%%~fF"
+  set "NAME=%%~nF"
+  set "KEEP=0"
+  echo !NAME! | findstr /I /R "-san$ -san-[0-9][0-9]*$ -sanitized$ -sanitized-[0-9][0-9]*$" >nul
+  if not errorlevel 1 set "KEEP=1"
+  if "!KEEP!"=="0" (
+    echo [heap-fixture] remove raw=!DUMP!
+    del /f /q "!DUMP!" >nul 2>nul
+  )
 )
 exit /b 0
 

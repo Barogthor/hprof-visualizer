@@ -4,7 +4,9 @@ import me.bechberger.hprof.transformer.HprofTransformer;
 
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Properties;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -34,7 +36,10 @@ public final class PathOnlyTransformer implements HprofTransformer {
             "-D[\\w.]{1,80}=([A-Za-z]:[\\\\/][^\\s\"']+|/(?:home|Users|opt|usr|usr/local|var|tmp|etc|srv|mnt|media|root|private|Library)/[^\\s\"']+)"
     );
     private static final Pattern JVM_D_USER_OS_VALUE = Pattern.compile(
-            "-D(?:user|os)\\.[\\w.-]{1,80}=([^\\s\"']+)"
+            "-D(?:sun\\.)?(?:user|os)\\.[\\w.-]{1,80}=([^\\s\"']+)"
+    );
+    private static final Pattern USER_OS_KEY_VALUE = Pattern.compile(
+            "(?<![\\w.-])((?:sun\\.)?(?:user|os)\\.[\\w.-]{1,80}=)([^\\s\\u0000\\r\\n\\t]+)"
     );
 
     private static final Set<String> SENSITIVE_PREFIXES = Set.of(
@@ -54,6 +59,7 @@ public final class PathOnlyTransformer implements HprofTransformer {
             "PROGRAMFILES=",
             "PROGRAMFILES(X86)="
     );
+    private static final Set<String> SENSITIVE_SYSTEM_PROPERTY_VALUES = loadSensitiveSystemPropertyValues();
 
     @Override
     public String transformUtf8(String value) {
@@ -105,6 +111,10 @@ public final class PathOnlyTransformer implements HprofTransformer {
             return value;
         }
 
+        if (SENSITIVE_SYSTEM_PROPERTY_VALUES.contains(value)) {
+            return maskKeepingShape(value);
+        }
+
         if (startsWithSensitivePrefix(value)) {
             return maskAfterEquals(value);
         }
@@ -114,6 +124,7 @@ public final class PathOnlyTransformer implements HprofTransformer {
         redacted = redactMatchGroup(redacted, JVM_BOOTCLASSPATH, 1);
         redacted = redactMatchGroup(redacted, JVM_D_PATH_VALUE, 1);
         redacted = redactMatchGroup(redacted, JVM_D_USER_OS_VALUE, 1);
+        redacted = redactMatchGroup(redacted, USER_OS_KEY_VALUE, 2);
 
         redacted = redactWholeMatches(redacted, WINDOWS_PATH);
         redacted = redactWholeMatches(redacted, WINDOWS_UNC_PATH);
@@ -185,7 +196,7 @@ public final class PathOnlyTransformer implements HprofTransformer {
         int equals = value.indexOf('=');
         if (equals > 0) {
             String key = value.substring(0, equals).toLowerCase(Locale.ROOT);
-            if (key.startsWith("user.") || key.startsWith("os.")) {
+            if (key.startsWith("user.") || key.startsWith("os.") || key.startsWith("sun.user.") || key.startsWith("sun.os.")) {
                 return true;
             }
         }
@@ -235,5 +246,20 @@ public final class PathOnlyTransformer implements HprofTransformer {
             }
         }
         return new String(chars);
+    }
+
+    private static Set<String> loadSensitiveSystemPropertyValues() {
+        Set<String> values = new HashSet<>();
+        Properties props = System.getProperties();
+        for (String key : props.stringPropertyNames()) {
+            String lower = key.toLowerCase(Locale.ROOT);
+            if (lower.startsWith("user.") || lower.startsWith("os.") || lower.startsWith("sun.user.") || lower.startsWith("sun.os.")) {
+                String value = props.getProperty(key);
+                if (value != null && !value.isBlank()) {
+                    values.add(value);
+                }
+            }
+        }
+        return values;
     }
 }

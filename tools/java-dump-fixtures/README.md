@@ -54,6 +54,12 @@ With automatic sanitization of generated dumps:
 tools/java-dump-fixtures/generate-dumps.sh --mode auto --scenario 01 --sanitize on
 ```
 
+With raw cleanup (keep only sanitized outputs):
+
+```bash
+tools/java-dump-fixtures/generate-dumps.sh --mode auto --scenario 01 --sanitize on --remove-raw on
+```
+
 Generate, sanitize, and also truncate sanitized dumps:
 
 ```bash
@@ -92,6 +98,12 @@ PowerShell with sanitization:
 ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto -ProfileSet standard -Scenario 01 -Sanitize on
 ```
 
+PowerShell with raw cleanup:
+
+```powershell
+./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto -Scenario 01 -Sanitize on -RemoveRaw on
+```
+
 PowerShell with sanitized truncation:
 
 ```powershell
@@ -120,6 +132,12 @@ CMD with sanitization:
 
 ```cmd
 tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set standard --scenario 01 --sanitize on
+```
+
+CMD with raw cleanup:
+
+```cmd
+tools\java-dump-fixtures\generate-dumps.cmd --mode auto --scenario 01 --sanitize on --remove-raw on
 ```
 
 CMD with sanitized truncation:
@@ -227,6 +245,7 @@ Notes on these estimates:
 ## Notes
 
 - Output path defaults to `assets/generated/fixture-s<scenario>-<profile>.hprof`
+- Wrapper scripts generate raw dumps with `-raw` suffix, e.g. `fixture-s01-medium-raw.hprof`
 - In `both` mode, auto dump goes to `*-auto.hprof`
 - Manual suggestions use `*-jcmd.hprof` and `*-jcmd-jmap.hprof`
 - Existing target dump file is deleted before auto dump
@@ -235,6 +254,7 @@ Notes on these estimates:
   - `raw` (default): truncate raw dumps only
   - `sanitized`: truncate sanitized dumps only
   - `both`: truncate raw and sanitized dumps
-- If `sanitize=on`, each produced dump gets a `*-sanitized.hprof` companion file
+- If `sanitize=on`, each produced dump gets a `*-san.hprof` companion file (e.g. `fixture-s01-medium-san.hprof`)
 - If `sanitize=only`, the script skips generation and sanitizes matching existing dumps only
 - Truncated dumps are skipped by sanitization (expected, because they are intentionally corrupted)
+- If `remove_raw=on`, raw dumps (`*.hprof` without `-san`) are deleted after successful sanitization (requires `sanitize=on`)

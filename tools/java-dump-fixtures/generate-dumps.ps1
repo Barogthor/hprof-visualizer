@@ -25,6 +25,10 @@ param(
     [Alias("T")]
     [string]$TruncateTarget = "raw",
 
+    [ValidateSet("off", "on")]
+    [Alias("R")]
+    [string]$RemoveRaw = "off",
+
     [switch]$Help
 )
 
@@ -32,7 +36,7 @@ $ErrorActionPreference = "Stop"
 
 function Show-Usage {
     Write-Host "Usage:"
-    Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode <mode> [-HoldSeconds <n>] [-ProfileSet <set>] [-TruncateBytes <n>] [-Scenario <id>] [-Sanitize <off|on|only>] [-TruncateTarget <raw|sanitized|both>]"
+    Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode <mode> [-HoldSeconds <n>] [-ProfileSet <set>] [-TruncateBytes <n>] [-Scenario <id>] [-Sanitize <off|on|only>] [-TruncateTarget <raw|sanitized|both>] [-RemoveRaw <off|on>]"
     Write-Host ""
     Write-Host "Arguments:"
     Write-Host "  Mode          auto | manual | both"
@@ -42,12 +46,13 @@ function Show-Usage {
     Write-Host "  Scenario      01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | 10 | all   (default: 01)"
     Write-Host "  Sanitize      off | on | only   (default: off)"
     Write-Host "  TruncateTarget raw | sanitized | both   (default: raw)"
+    Write-Host "  RemoveRaw     off | on   (default: off; requires Sanitize=on)"
     Write-Host ""
     Write-Host "Examples:"
     Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto"
     Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode both -HoldSeconds 180 -ProfileSet all -TruncateBytes 4194304"
     Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto -ProfileSet standard -Scenario all"
-    Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -m auto -p ultra -s 01 -S on -T both"
+    Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -m auto -p ultra -s 01 -S on -T both -R on"
 }
 
 if ($Help.IsPresent) {
@@ -76,6 +81,10 @@ if ($Sanitize -eq "off" -and ($TruncateTarget -eq "sanitized" -or $TruncateTarge
     throw "TruncateTarget '$TruncateTarget' requires Sanitize on or only"
 }
 
+if ($RemoveRaw -eq "on" -and $Sanitize -ne "on") {
+    throw "RemoveRaw 'on' requires Sanitize=on"
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ClassDir = Join-Path $ScriptDir "out"
 $AssetsDir = Join-Path $ScriptDir "..\..\assets\generated"
@@ -93,7 +102,7 @@ function Invoke-SanitizeForPrefix {
 
     $dumps = Get-ChildItem -Path ($Prefix + "*.hprof") -File -ErrorAction SilentlyContinue
     foreach ($dump in $dumps) {
-        if ($dump.Name -like "*-sanitized.hprof" -or $dump.Name -like "*-sanitized-*.hprof") {
+        if ($dump.Name -like "*-san.hprof" -or $dump.Name -like "*-san-*.hprof" -or $dump.Name -like "*-sanitized.hprof" -or $dump.Name -like "*-sanitized-*.hprof") {
             continue
         }
         if ($dump.Name -like "*-truncated.hprof" -or $dump.Name -like "*-truncated-*.hprof") {
@@ -101,7 +110,12 @@ function Invoke-SanitizeForPrefix {
             continue
         }
 
-        $out = [System.IO.Path]::Combine($dump.DirectoryName, ([System.IO.Path]::GetFileNameWithoutExtension($dump.Name) + "-sanitized.hprof"))
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($dump.Name)
+        if ($baseName.EndsWith("-raw")) {
+            $baseName = $baseName.Substring(0, $baseName.Length - 4)
+        }
+
+        $out = [System.IO.Path]::Combine($dump.DirectoryName, ($baseName + "-san.hprof"))
         Write-Host "[heap-fixture] sanitize input=$($dump.FullName) output=$out"
         & $RedactScriptPath $dump.FullName $out
     }
@@ -153,10 +167,30 @@ function Invoke-TruncateFile {
 function Invoke-TruncateSanitizedForPrefix {
     param([string]$Prefix, [long]$BytesToRemove)
 
-    $dumps = Get-ChildItem -Path ($Prefix + "*-sanitized.hprof") -File -ErrorAction SilentlyContinue
+    $basePrefix = $Prefix
+    if ($basePrefix.EndsWith("-raw")) {
+        $basePrefix = $basePrefix.Substring(0, $basePrefix.Length - 4)
+    }
+
+    $dumps = @()
+    $dumps += Get-ChildItem -Path ($basePrefix + "*-san.hprof") -File -ErrorAction SilentlyContinue
+    $dumps += Get-ChildItem -Path ($basePrefix + "*-sanitized.hprof") -File -ErrorAction SilentlyContinue
     foreach ($dump in $dumps) {
         Write-Host "[heap-fixture] truncate sanitized input=$($dump.FullName)"
         Invoke-TruncateFile -InputPath $dump.FullName -BytesToRemove $BytesToRemove
+    }
+}
+
+function Remove-RawForPrefix {
+    param([string]$Prefix)
+
+    $dumps = Get-ChildItem -Path ($Prefix + "*.hprof") -File -ErrorAction SilentlyContinue
+    foreach ($dump in $dumps) {
+        if ($dump.Name -like "*-san.hprof" -or $dump.Name -like "*-san-*.hprof" -or $dump.Name -like "*-sanitized.hprof" -or $dump.Name -like "*-sanitized-*.hprof") {
+            continue
+        }
+        Write-Host "[heap-fixture] remove raw=$($dump.FullName)"
+        Remove-Item -Force $dump.FullName
     }
 }
 
@@ -184,7 +218,7 @@ if ($Sanitize -ne "only") {
 
 foreach ($profile in $profiles) {
     foreach ($scenarioId in $scenarios) {
-        $output = Join-Path $AssetsDir ("fixture-s{0}-{1}.hprof" -f $scenarioId, $profile)
+        $output = Join-Path $AssetsDir ("fixture-s{0}-{1}-raw.hprof" -f $scenarioId, $profile)
         if ($Sanitize -ne "only") {
             Write-Host "[heap-fixture] scenario=$scenarioId profile=$profile mode=$Mode output=$output truncateBytes=$TruncateBytes"
 
@@ -203,11 +237,15 @@ foreach ($profile in $profiles) {
         }
 
         if ($Sanitize -eq "on" -or $Sanitize -eq "only") {
-            $prefix = [System.IO.Path]::Combine($AssetsDir, ("fixture-s{0}-{1}" -f $scenarioId, $profile))
+            $prefix = [System.IO.Path]::Combine($AssetsDir, ("fixture-s{0}-{1}-raw" -f $scenarioId, $profile))
             Invoke-SanitizeForPrefix -Prefix $prefix -RedactScriptPath $RedactScript
 
             if ($TruncateBytes -gt 0 -and ($TruncateTarget -eq "sanitized" -or $TruncateTarget -eq "both")) {
                 Invoke-TruncateSanitizedForPrefix -Prefix $prefix -BytesToRemove $TruncateBytes
+            }
+
+            if ($RemoveRaw -eq "on") {
+                Remove-RawForPrefix -Prefix $prefix
             }
         }
     }
