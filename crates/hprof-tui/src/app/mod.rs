@@ -1301,8 +1301,11 @@ struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = crossterm::terminal::disable_raw_mode();
+        let mut stdout = io::stdout();
+        // Non-fatal: terminals that don't support Kitty protocol ignore this.
+        let _ = crossterm::execute!(stdout, crossterm::event::PopKeyboardEnhancementFlags);
         let _ = crossterm::execute!(
-            io::stdout(),
+            stdout,
             crossterm::terminal::LeaveAlternateScreen,
             crossterm::cursor::Show,
         );
@@ -1325,6 +1328,14 @@ pub fn run_tui<E: NavigationEngine + Send + Sync + 'static>(
         let _ = crossterm::terminal::disable_raw_mode();
         return Err(err);
     }
+    // Enable Kitty keyboard protocol for modifier+arrow support (Ctrl+Up/Down).
+    // Non-fatal: terminals that don't support it silently ignore the sequence.
+    let _ = crossterm::execute!(
+        stdout,
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+        ),
+    );
     // Guard created before `Terminal::new`: if terminal init fails,
     // raw mode and alternate screen are still restored.
     let _guard = TerminalGuard;
