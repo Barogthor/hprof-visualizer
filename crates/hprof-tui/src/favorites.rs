@@ -157,80 +157,97 @@ fn collect_descendants_limited(
     out: &mut Vec<u64>,
     limit: usize,
 ) -> bool {
-    if visited.len() >= limit {
-        return true;
-    }
-    if !visited.insert(root_id) {
-        return false;
+    let mut collector = DescendantsCollector {
+        fields,
+        collection_chunks,
+        visited,
+        out,
+        limit,
+    };
+    collector.walk(root_id)
+}
+
+struct DescendantsCollector<'a> {
+    fields: &'a HashMap<u64, Vec<FieldInfo>>,
+    collection_chunks: &'a HashMap<u64, CollectionChunks>,
+    visited: &'a mut HashSet<u64>,
+    out: &'a mut Vec<u64>,
+    limit: usize,
+}
+
+impl DescendantsCollector<'_> {
+    fn walk(&mut self, object_id: u64) -> bool {
+        if self.visited.len() >= self.limit {
+            return true;
+        }
+        if !self.visited.insert(object_id) {
+            return false;
+        }
+
+        let mut truncated = self.walk_object_fields(object_id);
+        if !truncated {
+            truncated = self.walk_collection_pages(object_id);
+        }
+
+        self.out.push(object_id);
+        truncated
     }
 
-    let mut truncated = false;
-    if let Some(field_list) = fields.get(&root_id) {
-        for f in field_list {
-            if let FieldValue::ObjectRef { id, .. } = f.value {
-                if collect_descendants_limited(id, fields, collection_chunks, visited, out, limit) {
-                    truncated = true;
-                    break;
-                }
-                if visited.len() >= limit {
-                    truncated = true;
-                    break;
-                }
+    fn walk_object_fields(&mut self, object_id: u64) -> bool {
+        let Some(field_list) = self.fields.get(&object_id) else {
+            return false;
+        };
+
+        for field in field_list {
+            if let FieldValue::ObjectRef { id, .. } = field.value
+                && self.walk_child(id)
+            {
+                return true;
             }
         }
+        false
     }
 
-    if !truncated
-        && let Some(chunks) = collection_chunks.get(&root_id)
-        && let Some(page) = &chunks.eager_page
-    {
-        for entry in &page.entries {
-            if let FieldValue::ObjectRef { id, .. } = &entry.value {
-                if collect_descendants_limited(*id, fields, collection_chunks, visited, out, limit)
-                {
-                    truncated = true;
-                    break;
-                }
-                if visited.len() >= limit {
-                    truncated = true;
-                    break;
-                }
-            }
+    fn walk_collection_pages(&mut self, object_id: u64) -> bool {
+        let Some(chunks) = self.collection_chunks.get(&object_id) else {
+            return false;
+        };
+
+        if let Some(page) = &chunks.eager_page
+            && self.walk_collection_entries(page.entries.as_slice())
+        {
+            return true;
         }
-    }
 
-    if !truncated && let Some(chunks) = collection_chunks.get(&root_id) {
         for page_state in chunks.chunk_pages.values() {
             let ChunkState::Loaded(page) = page_state else {
                 continue;
             };
-            for entry in &page.entries {
-                if let FieldValue::ObjectRef { id, .. } = &entry.value {
-                    if collect_descendants_limited(
-                        *id,
-                        fields,
-                        collection_chunks,
-                        visited,
-                        out,
-                        limit,
-                    ) {
-                        truncated = true;
-                        break;
-                    }
-                    if visited.len() >= limit {
-                        truncated = true;
-                        break;
-                    }
-                }
-            }
-            if truncated {
-                break;
+            if self.walk_collection_entries(page.entries.as_slice()) {
+                return true;
             }
         }
+
+        false
     }
 
-    out.push(root_id);
-    truncated
+    fn walk_collection_entries(&mut self, entries: &[hprof_engine::EntryInfo]) -> bool {
+        for entry in entries {
+            if let FieldValue::ObjectRef { id, .. } = &entry.value
+                && self.walk_child(*id)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn walk_child(&mut self, object_id: u64) -> bool {
+        if self.walk(object_id) {
+            return true;
+        }
+        self.visited.len() >= self.limit
+    }
 }
 
 fn freeze_collection_chunks(chunks: &CollectionChunks) -> CollectionChunks {
