@@ -716,9 +716,11 @@ openai/gpt-5.3-codex
 - `crates/hprof-tui/src/app/tests.rs`
 - `docs/implementation-artifacts/9-8-pinned-item-navigation-and-array-expansion.md`
 - `docs/implementation-artifacts/sprint-status.yaml`
+- `docs/code-review/claude-story-9-8-adversarial-review.md`
 
 ### Change Log
 
 - 2026-03-12: Implemented AC1–AC5 for pinned-item navigation, local expansion/collapse, and pinned array pagination with automated validation (`cargo test --all`, clippy, fmt).
 - 2026-03-12: Added follow-up fixes from interactive QA: unavailable-vs-collapsed markers for snapshot data, collection-entry pin support, collection-descendant capture, and static-field rendering in favorites.
 - 2026-03-12: Refactored `favorites.rs` pinning/snapshot internals around a `PinnedItemFactory` and internal descendant collector methods (behavior preserved; readability improved).
+- 2026-03-12: Code review (Claude): deleted `visible_collection_chunks` (unnecessary full clone, 6 call sites now pass reference directly); pinned exact row count in cyclic test 6.14 (`assert_eq!(row_count, 5)`).
