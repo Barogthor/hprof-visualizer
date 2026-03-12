@@ -14,7 +14,7 @@ use ratatui::{
 use crate::theme::THEME;
 
 /// Number of keymap entries documented in the help panel.
-const ENTRY_COUNT: u16 = 13;
+const ENTRY_COUNT: u16 = 15;
 
 /// Keymap entries: `(key label, action label)`.
 const ENTRIES: &[(&str, &str)] = &[
@@ -23,6 +23,8 @@ const ENTRIES: &[(&str, &str)] = &[
     ("Tab", "Cycle panel focus"),
     ("\u{2191} / \u{2193}", "Move selection"),
     ("PgUp / PgDn", "Scroll one page"),
+    ("Ctrl+\u{2191}", "Scroll view up"),
+    ("Ctrl+\u{2193}", "Scroll view down"),
     ("Home / End", "Jump to first / last"),
     ("Enter", "Expand / confirm"),
     ("\u{2192}", "Expand node"),
@@ -113,8 +115,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn required_height_returns_eleven_for_thirteen_entries() {
-        assert_eq!(required_height(), 11);
+    fn required_height_returns_twelve_for_fifteen_entries() {
+        assert_eq!(required_height(), 12);
     }
 
     #[test]
@@ -124,8 +126,8 @@ mod tests {
 
     #[test]
     fn build_rows_produces_correct_line_count() {
-        // 1 padding + ceil(13/2) + 1 separator = 1 + 7 + 1 = 9
+        // 1 padding + ceil(15/2) + 1 separator = 1 + 8 + 1 = 10
         let rows = build_rows();
-        assert_eq!(rows.len(), 9);
+        assert_eq!(rows.len(), 10);
     }
 }

@@ -2585,3 +2585,105 @@ fn left_on_collection_entry_obj_field_with_open_collection_detects_collapse() {
         "inner array must be in collection_chunks for Left to dispatch CollapseCollection"
     );
 }
+
+#[test]
+fn scroll_view_down_shifts_offset_without_moving_cursor() {
+    let frames = (0..5).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    state.move_down(); // frame 1
+    state.move_down(); // frame 2
+    state.set_visible_height(3);
+    state.set_list_state_offset_for_test(0);
+    state.scroll_view_down();
+    // Offset moved from 0 to 1.
+    // Snap check: selected(2) is NOT less than new_offset(1) → no snap.
+    assert_eq!(state.list_state_offset_for_test(), 1);
+    // Cursor must not have moved — still on frame 2.
+    assert_eq!(state.selected_frame_id(), Some(2));
+}
+
+#[test]
+fn scroll_view_up_shifts_offset_without_moving_cursor() {
+    let frames = (0..5).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    state.move_down(); // cursor frame 1
+    state.set_visible_height(3);
+    state.set_list_state_offset_for_test(1);
+    state.scroll_view_up();
+    // Offset back to 0.
+    // Snap check: selected(1) < 0+3=3 → NOT below viewport top → no snap.
+    assert_eq!(state.list_state_offset_for_test(), 0);
+    // Cursor must not have moved — still on frame 1.
+    assert_eq!(state.selected_frame_id(), Some(1));
+}
+
+#[test]
+fn scroll_view_down_snaps_back_when_cursor_would_leave_viewport() {
+    let frames = (0..5).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    // Cursor at frame 0 (flat index 0), visible_height=3, offset=0.
+    state.set_visible_height(3);
+    state.scroll_view_down();
+    // new_offset = 1. selected_idx(0) < new_offset(1) → snap → offset = 0.
+    assert_eq!(state.list_state_offset_for_test(), 0);
+    // Cursor must not have moved — still on frame 0.
+    assert_eq!(state.selected_frame_id(), Some(0));
+}
+
+#[test]
+fn scroll_view_up_snaps_when_cursor_at_bottom_of_viewport() {
+    let frames = (0..5).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    state.move_down(); // 1
+    state.move_down(); // 2
+    state.move_down(); // 3
+    state.move_down(); // 4
+    state.set_visible_height(2);
+    // Set offset to 3: viewport = [3, 5), cursor(4) is at the bottom edge.
+    state.set_list_state_offset_for_test(3);
+    state.scroll_view_up();
+    // new_offset = 2, viewport = [2, 4).
+    // selected(4) >= new_offset(2) + height(2) = 4 → snap fires → offset = 4+1-2 = 3.
+    assert_eq!(state.list_state_offset_for_test(), 3);
+    // Cursor must not have moved — still on frame 4.
+    assert_eq!(state.selected_frame_id(), Some(4));
+}
+
+#[test]
+fn scroll_view_no_op_when_no_frames() {
+    let mut state = StackState::new(vec![]);
+    state.set_visible_height(5);
+    // Should not panic.
+    state.scroll_view_up();
+    state.scroll_view_down();
+    assert_eq!(state.list_state_offset_for_test(), 0);
+}
+
+#[test]
+fn scroll_view_no_op_when_visible_height_zero() {
+    let frames = (0..5).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    state.move_down();
+    state.move_down(); // cursor frame 2
+    // Explicitly set visible_height to 0 to simulate pre-render state.
+    state.set_visible_height(0);
+    state.set_list_state_offset_for_test(0);
+    // Both directions must be no-ops — no panic, no offset or cursor change.
+    state.scroll_view_up();
+    state.scroll_view_down();
+    assert_eq!(state.list_state_offset_for_test(), 0);
+    assert_eq!(state.selected_frame_id(), Some(2));
+}
+
+#[test]
+fn scroll_view_down_no_op_when_list_fits_in_viewport() {
+    let frames = (0..3).map(make_frame).collect();
+    let mut state = StackState::new(frames);
+    state.move_down(); // cursor frame 1
+    // visible_height > item_count: all 3 items visible, max_offset = 0.
+    state.set_visible_height(10);
+    state.scroll_view_down();
+    // max_offset = 3.saturating_sub(10) = 0. new_offset = (0+1).min(0) = 0. No change.
+    assert_eq!(state.list_state_offset_for_test(), 0);
+    assert_eq!(state.selected_frame_id(), Some(1));
+}

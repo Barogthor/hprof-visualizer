@@ -35,6 +35,10 @@ pub enum InputEvent {
     PageUp,
     /// Scroll down by one screen height.
     PageDown,
+    /// Scroll the visible window up one line without moving the cursor (stack view only).
+    CameraScrollUp,
+    /// Scroll the visible window down one line without moving the cursor (stack view only).
+    CameraScrollDown,
     /// Pin/unpin the item at the current cursor position in the stack panel.
     ToggleFavorite,
     /// Move focus to/from the favorites panel.
@@ -53,6 +57,8 @@ pub fn from_key(key: KeyEvent) -> Option<InputEvent> {
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), KeyModifiers::NONE) => Some(InputEvent::Quit),
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(InputEvent::Quit),
+        (KeyCode::Up, KeyModifiers::CONTROL) => Some(InputEvent::CameraScrollUp),
+        (KeyCode::Down, KeyModifiers::CONTROL) => Some(InputEvent::CameraScrollDown),
         (KeyCode::Up, _) => Some(InputEvent::Up),
         (KeyCode::Down, _) => Some(InputEvent::Down),
         (KeyCode::Right, _) => Some(InputEvent::Right),
@@ -228,6 +234,38 @@ mod tests {
         assert_eq!(
             from_key(key(KeyCode::Char('s'), KeyModifiers::NONE)),
             Some(InputEvent::SearchChar('s'))
+        );
+    }
+
+    #[test]
+    fn from_key_maps_ctrl_up_to_camera_scroll_up() {
+        assert_eq!(
+            from_key(key(KeyCode::Up, KeyModifiers::CONTROL)),
+            Some(InputEvent::CameraScrollUp)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_ctrl_down_to_camera_scroll_down() {
+        assert_eq!(
+            from_key(key(KeyCode::Down, KeyModifiers::CONTROL)),
+            Some(InputEvent::CameraScrollDown)
+        );
+    }
+
+    #[test]
+    fn from_key_plain_up_still_maps_to_up() {
+        assert_eq!(
+            from_key(key(KeyCode::Up, KeyModifiers::NONE)),
+            Some(InputEvent::Up)
+        );
+    }
+
+    #[test]
+    fn ctrl_up_does_not_map_to_up() {
+        assert_ne!(
+            from_key(key(KeyCode::Up, KeyModifiers::CONTROL)),
+            Some(InputEvent::Up)
         );
     }
 

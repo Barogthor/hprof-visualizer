@@ -755,6 +755,73 @@ impl StackState {
         self.nav.move_page_up(&flat);
     }
 
+    /// Scrolls the visible window up by one line without moving the selection cursor.
+    ///
+    /// If the cursor would go off the bottom of the viewport after scrolling, the camera
+    /// snaps so the cursor is at the last visible row.
+    pub fn scroll_view_up(&mut self) {
+        let visible_height = self.nav.visible_height();
+        if visible_height == 0 {
+            return;
+        }
+        let flat = self.flat_items();
+        let item_count = flat.len();
+        let cursor = self.nav.cursor().clone();
+        let Some(selected_idx) = flat.iter().position(|c| c == &cursor) else {
+            return;
+        };
+        let max_offset = item_count.saturating_sub(visible_height);
+        let current_offset = self.nav.list_state().offset().min(max_offset);
+        let new_offset = current_offset.saturating_sub(1);
+        *self.nav.list_state_mut().offset_mut() = new_offset;
+        // Snap back: cursor below viewport after scrolling up.
+        // Safety: underflow impossible — snap only fires when
+        //   selected_idx >= new_offset + visible_height
+        //   which implies selected_idx + 1 >= visible_height + 1 > visible_height,
+        //   so selected_idx + 1 - visible_height >= 1 (no usize underflow).
+        if selected_idx >= new_offset + visible_height {
+            *self.nav.list_state_mut().offset_mut() =
+                selected_idx + 1 - visible_height;
+        }
+    }
+
+    /// Scrolls the visible window down by one line without moving the selection cursor.
+    ///
+    /// If the cursor would go off the top of the viewport after scrolling, the camera
+    /// snaps so the cursor is at the first visible row.
+    pub fn scroll_view_down(&mut self) {
+        let visible_height = self.nav.visible_height();
+        if visible_height == 0 {
+            return;
+        }
+        let flat = self.flat_items();
+        let item_count = flat.len();
+        if item_count == 0 {
+            return;
+        }
+        let cursor = self.nav.cursor().clone();
+        let Some(selected_idx) = flat.iter().position(|c| c == &cursor) else {
+            return;
+        };
+        let max_offset = item_count.saturating_sub(visible_height);
+        let new_offset = (self.nav.list_state().offset() + 1).min(max_offset);
+        *self.nav.list_state_mut().offset_mut() = new_offset;
+        // Snap back: cursor above viewport after scrolling down.
+        if selected_idx < new_offset {
+            *self.nav.list_state_mut().offset_mut() = selected_idx;
+        }
+    }
+
+    #[cfg(test)]
+    pub fn list_state_offset_for_test(&self) -> usize {
+        self.nav.list_state().offset()
+    }
+
+    #[cfg(test)]
+    pub fn set_list_state_offset_for_test(&mut self, offset: usize) {
+        *self.nav.list_state_mut().offset_mut() = offset;
+    }
+
     /// Returns the flattened cursor index (position in the rendered list).
     fn flat_index(&self) -> Option<usize> {
         let flat = self.flat_items();

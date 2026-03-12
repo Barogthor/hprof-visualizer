@@ -24,9 +24,19 @@ impl<Id: PartialEq + Clone> CursorState<Id> {
         &self.cursor
     }
 
+    /// Returns shared access to ratatui list state.
+    pub fn list_state(&self) -> &ListState {
+        &self.list_state
+    }
+
     /// Returns mutable access to ratatui list state for rendering.
     pub fn list_state_mut(&mut self) -> &mut ListState {
         &mut self.list_state
+    }
+
+    /// Returns the visible height used by page and camera navigation.
+    pub fn visible_height(&self) -> usize {
+        self.visible_height
     }
 
     /// Sets the visible list height used by page navigation.
