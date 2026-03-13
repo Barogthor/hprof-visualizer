@@ -22,13 +22,14 @@ use ratatui::{
 };
 
 use crate::{
-    favorites::{PinKey, PinnedItem, PinnedSnapshot, snapshot_from_cursor},
+    favorites::{PinnedItem, PinnedSnapshot, snapshot_from_cursor},
     input::{self, InputEvent},
     views::{
         favorites_panel::{FavoritesPanel, FavoritesPanelState},
         help_bar::{self, HelpBar, HelpContext},
         stack_view::{
-            ChunkState, CollectionChunks, ExpansionPhase, StackCursor, StackState, StackView,
+            ChunkState, CollectionChunks, ExpansionPhase, FrameId, NavigationPath,
+            NavigationPathBuilder, PathSegment, RenderCursor, StackState, StackView, ThreadId,
             compute_chunk_ranges,
         },
         status_bar::StatusBar,
@@ -36,6 +37,9 @@ use crate::{
     },
     warnings::WarningLog,
 };
+
+#[cfg(test)]
+use crate::views::stack_view::{CollectionId, EntryIdx, FieldIdx, VarIdx};
 
 /// Delay before showing the loading spinner for expansions/page loads.
 /// Operations completing before this threshold show no spinner.
@@ -72,6 +76,17 @@ pub enum Focus {
 pub enum AppAction {
     Continue,
     Quit,
+}
+
+/// Outcome of a [`App::navigate_to_path`] walk.
+#[derive(Debug)]
+#[allow(dead_code)]
+enum WalkOutcome {
+    /// All segments resolved; cursor placed at the given path.
+    Success(NavigationPath),
+    /// A `CollectionEntry` chunk was not yet loaded; cursor placed on last
+    /// materialised ancestor. Retry after the awaited chunk loads.
+    PartialAt(NavigationPath),
 }
 
 /// Top-level TUI application state.
@@ -114,6 +129,11 @@ pub struct App<E: NavigationEngine> {
     show_help: bool,
     /// Whether object IDs are displayed in stack frame rows.
     show_object_ids: bool,
+    /// Pending navigation target: full path and the awaited `CollectionId`.
+    ///
+    /// Set on `WalkOutcome::PartialAt` (unloaded chunk). Retried in `poll_pages`
+    /// when the exact `collection_id` loads.
+    pending_navigation: Option<(NavigationPath, u64)>,
 }
 
 impl<E: NavigationEngine> App<E> {
@@ -152,6 +172,7 @@ impl<E: NavigationEngine> App<E> {
             last_area_width: 0,
             show_help: false,
             show_object_ids: false,
+            pending_navigation: None,
         }
     }
 
@@ -211,27 +232,6 @@ impl<E: NavigationEngine> App<E> {
                     }
                 })
         })
-    }
-
-    fn ensure_object_path_expanded(&mut self, root_object_id: u64, field_path: &[usize]) -> bool {
-        let mut current_object_id = root_object_id;
-        for (depth, field_idx) in field_path.iter().enumerate() {
-            let is_expanded = self.stack_state.as_ref().is_some_and(|stack_state| {
-                stack_state.expansion_state(current_object_id) == ExpansionPhase::Expanded
-            });
-            if !is_expanded && !self.expand_object_sync(current_object_id) {
-                return false;
-            }
-
-            if depth + 1 < field_path.len() {
-                let Some(next_object_id) = self.child_object_id_at(current_object_id, *field_idx)
-                else {
-                    return false;
-                };
-                current_object_id = next_object_id;
-            }
-        }
-        true
     }
 
     fn ensure_collection_entry_loaded(&mut self, collection_id: u64, entry_index: usize) -> bool {
@@ -326,556 +326,164 @@ impl<E: NavigationEngine> App<E> {
         })
     }
 
-    fn remap_cursor_frame(cursor: &StackCursor, frame_idx: usize) -> StackCursor {
-        match cursor {
-            StackCursor::NoFrames => StackCursor::NoFrames,
-            StackCursor::OnFrame(_) => StackCursor::OnFrame(frame_idx),
-            StackCursor::OnVar { var_idx, .. } => StackCursor::OnVar {
-                frame_idx,
-                var_idx: *var_idx,
-            },
-            StackCursor::OnObjectField {
-                var_idx,
-                field_path,
-                ..
-            } => StackCursor::OnObjectField {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-            },
-            StackCursor::OnObjectLoadingNode {
-                var_idx,
-                field_path,
-                ..
-            } => StackCursor::OnObjectLoadingNode {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-            },
-            StackCursor::OnCyclicNode {
-                var_idx,
-                field_path,
-                ..
-            } => StackCursor::OnCyclicNode {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-            },
-            StackCursor::OnStaticSectionHeader {
-                var_idx,
-                field_path,
-                ..
-            } => StackCursor::OnStaticSectionHeader {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-            },
-            StackCursor::OnStaticField {
-                var_idx,
-                field_path,
-                static_idx,
-                ..
-            } => StackCursor::OnStaticField {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-                static_idx: *static_idx,
-            },
-            StackCursor::OnStaticOverflowRow {
-                var_idx,
-                field_path,
-                ..
-            } => StackCursor::OnStaticOverflowRow {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-            },
-            StackCursor::OnStaticObjectField {
-                var_idx,
-                field_path,
-                static_idx,
-                obj_field_path,
-                ..
-            } => StackCursor::OnStaticObjectField {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-                static_idx: *static_idx,
-                obj_field_path: obj_field_path.clone(),
-            },
-            StackCursor::OnCollectionEntry {
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                ..
-            } => StackCursor::OnCollectionEntry {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-                collection_id: *collection_id,
-                entry_index: *entry_index,
-            },
-            StackCursor::OnCollectionEntryObjField {
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                obj_field_path,
-                ..
-            } => StackCursor::OnCollectionEntryObjField {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-                collection_id: *collection_id,
-                entry_index: *entry_index,
-                obj_field_path: obj_field_path.clone(),
-            },
-            StackCursor::OnCollectionEntryStaticSectionHeader {
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                obj_field_path,
-                ..
-            } => StackCursor::OnCollectionEntryStaticSectionHeader {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-                collection_id: *collection_id,
-                entry_index: *entry_index,
-                obj_field_path: obj_field_path.clone(),
-            },
-            StackCursor::OnCollectionEntryStaticField {
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                obj_field_path,
-                static_idx,
-                ..
-            } => StackCursor::OnCollectionEntryStaticField {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-                collection_id: *collection_id,
-                entry_index: *entry_index,
-                obj_field_path: obj_field_path.clone(),
-                static_idx: *static_idx,
-            },
-            StackCursor::OnCollectionEntryStaticOverflowRow {
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                obj_field_path,
-                ..
-            } => StackCursor::OnCollectionEntryStaticOverflowRow {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-                collection_id: *collection_id,
-                entry_index: *entry_index,
-                obj_field_path: obj_field_path.clone(),
-            },
-            StackCursor::OnCollectionEntryStaticObjectField {
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                obj_field_path,
-                static_idx,
-                static_obj_field_path,
-                ..
-            } => StackCursor::OnCollectionEntryStaticObjectField {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-                collection_id: *collection_id,
-                entry_index: *entry_index,
-                obj_field_path: obj_field_path.clone(),
-                static_idx: *static_idx,
-                static_obj_field_path: static_obj_field_path.clone(),
-            },
-            StackCursor::OnChunkSection {
-                var_idx,
-                field_path,
-                collection_id,
-                chunk_offset,
-                ..
-            } => StackCursor::OnChunkSection {
-                frame_idx,
-                var_idx: *var_idx,
-                field_path: field_path.clone(),
-                collection_id: *collection_id,
-                chunk_offset: *chunk_offset,
-            },
-        }
-    }
-
-    fn ensure_cursor_materialized(
-        &mut self,
-        frame_id: u64,
-        frame_idx: usize,
-        cursor: &StackCursor,
-    ) {
-        match cursor {
-            StackCursor::OnVar { var_idx, .. } => {
-                let _ = self.root_object_id_for_var(frame_id, *var_idx);
-            }
-            StackCursor::OnObjectField {
-                var_idx,
-                field_path,
-                ..
-            } => {
-                if let Some(root_object_id) = self.root_object_id_for_var(frame_id, *var_idx) {
-                    let _ = self.ensure_object_path_expanded(root_object_id, field_path);
-                }
-            }
-            StackCursor::OnCollectionEntry {
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                ..
-            } => {
-                if let Some(root_object_id) = self.root_object_id_for_var(frame_id, *var_idx) {
-                    let _ = self.ensure_object_path_expanded(root_object_id, field_path);
-                }
-                let _ = self.ensure_collection_entry_loaded(*collection_id, *entry_index);
-            }
-            StackCursor::OnCollectionEntryObjField {
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                obj_field_path,
-                ..
-            } => {
-                let entry_cursor = StackCursor::OnCollectionEntry {
-                    frame_idx,
-                    var_idx: *var_idx,
-                    field_path: field_path.clone(),
-                    collection_id: *collection_id,
-                    entry_index: *entry_index,
-                };
-                self.ensure_cursor_materialized(frame_id, frame_idx, &entry_cursor);
-                if let Some(entry_object_id) =
-                    self.collection_entry_object_id(*collection_id, *entry_index)
-                {
-                    let _ = self.ensure_object_path_expanded(entry_object_id, obj_field_path);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn find_collection_entry_cursor(
-        &self,
-        frame_idx: usize,
-        collection_id: u64,
-        entry_index: usize,
-    ) -> Option<StackCursor> {
-        let stack_state = self.stack_state.as_ref()?;
-        stack_state.flat_items().into_iter().find(|cursor| {
-            matches!(
-                cursor,
-                StackCursor::OnCollectionEntry {
-                    frame_idx: fi,
-                    collection_id: cid,
-                    entry_index: ei,
-                    ..
-                } if *fi == frame_idx && *cid == collection_id && *ei == entry_index
-            )
-        })
-    }
-
-    fn find_collection_entry_obj_field_cursor(
-        &self,
-        frame_idx: usize,
-        collection_id: u64,
-        entry_index: usize,
-        obj_field_path: &[usize],
-    ) -> Option<StackCursor> {
-        let stack_state = self.stack_state.as_ref()?;
-        stack_state.flat_items().into_iter().find(|cursor| {
-            matches!(
-                cursor,
-                StackCursor::OnCollectionEntryObjField {
-                    frame_idx: fi,
-                    collection_id: cid,
-                    entry_index: ei,
-                    obj_field_path: path,
-                    ..
-                } if *fi == frame_idx
-                    && *cid == collection_id
-                    && *ei == entry_index
-                    && path.as_slice() == obj_field_path
-            )
-        })
-    }
-
-    fn navigate_stack_cursor_to_pin_key(&mut self, pin_key: &PinKey) {
-        let frame_id = match pin_key {
-            PinKey::Frame { frame_id, .. }
-            | PinKey::Var { frame_id, .. }
-            | PinKey::Field { frame_id, .. }
-            | PinKey::CollectionEntry { frame_id, .. }
-            | PinKey::CollectionEntryField { frame_id, .. } => *frame_id,
+    /// Navigates to `path` within the thread identified by `thread_id`.
+    ///
+    /// Walks path segments sequentially, materialising each level.
+    /// Returns [`WalkOutcome::Success`] with the full path when all segments
+    /// are resolved, or [`WalkOutcome::PartialAt`] with the last successfully
+    /// reached path when a `CollectionEntry` chunk is not yet loaded.
+    fn navigate_to_path(&mut self, thread_id: ThreadId, path: &NavigationPath) -> WalkOutcome
+    where
+        E: Send + Sync + 'static,
+    {
+        // Thread selection: open the stack for the target thread if needed.
+        let target_serial = self
+            .engine
+            .list_threads()
+            .into_iter()
+            .find(|t| t.thread_serial == thread_id.0)
+            .map(|t| t.thread_serial);
+        let Some(serial) = target_serial else {
+            return WalkOutcome::PartialAt(NavigationPathBuilder::frame_only(FrameId(0)));
         };
+        let current_serial = self.thread_list.selected_serial();
+        if current_serial != Some(serial) || self.stack_state.is_none() {
+            self.open_stack_for_selected_thread(serial);
+        }
 
-        let Some(frame_idx) = self.stack_state.as_ref().and_then(|stack_state| {
-            stack_state
-                .frames()
-                .iter()
-                .position(|frame| frame.frame_id == frame_id)
-        }) else {
-            return;
-        };
+        let segs = path.segments();
+        if segs.is_empty() {
+            return WalkOutcome::PartialAt(NavigationPathBuilder::frame_only(FrameId(0)));
+        }
 
-        let needs_expand = self
-            .stack_state
-            .as_ref()
-            .is_some_and(|stack_state| !stack_state.is_expanded(frame_id));
-        if needs_expand {
-            let vars = self.engine.get_local_variables(frame_id);
-            if let Some(stack_state) = &mut self.stack_state {
-                stack_state.toggle_expand(frame_id, vars);
+        // Walk segments, building the materialised path as we go.
+        let mut materialised: Vec<PathSegment> = Vec::with_capacity(segs.len());
+        let mut current_object_id: Option<u64> = None;
+
+        for seg in segs {
+            match seg {
+                PathSegment::Frame(fid) => {
+                    // Find the frame, expand it if needed.
+                    let frame_exists = self
+                        .stack_state
+                        .as_ref()
+                        .is_some_and(|s| s.frames().iter().any(|f| f.frame_id == fid.0));
+                    if !frame_exists {
+                        if materialised.is_empty() {
+                            return WalkOutcome::PartialAt(NavigationPathBuilder::frame_only(
+                                FrameId(0),
+                            ));
+                        }
+                        break;
+                    }
+                    let needs_expand = self
+                        .stack_state
+                        .as_ref()
+                        .is_some_and(|s| !s.is_expanded(fid.0));
+                    if needs_expand {
+                        let vars = self.engine.get_local_variables(fid.0);
+                        if let Some(s) = &mut self.stack_state {
+                            s.toggle_expand(fid.0, vars);
+                        }
+                    }
+                    materialised.push(seg.clone());
+                    current_object_id = None;
+                }
+                PathSegment::Var(vi) => {
+                    let frame_id = match materialised.first() {
+                        Some(PathSegment::Frame(fid)) => fid.0,
+                        _ => break,
+                    };
+                    let oid = self.root_object_id_for_var(frame_id, vi.0);
+                    materialised.push(seg.clone());
+                    current_object_id = oid;
+                }
+                PathSegment::Field(fi) => {
+                    let Some(oid) = current_object_id else {
+                        break;
+                    };
+                    let expanded = self
+                        .stack_state
+                        .as_ref()
+                        .is_some_and(|s| s.expansion_state(oid) == ExpansionPhase::Expanded);
+                    if !expanded && !self.expand_object_sync(oid) {
+                        break;
+                    }
+                    materialised.push(seg.clone());
+                    current_object_id = self.child_object_id_at(oid, fi.0);
+                }
+                PathSegment::StaticField(si) => {
+                    let Some(oid) = current_object_id else {
+                        break;
+                    };
+                    let statics_loaded = self
+                        .stack_state
+                        .as_ref()
+                        .is_some_and(|s| s.object_static_fields().contains_key(&oid));
+                    if !statics_loaded {
+                        break;
+                    }
+                    materialised.push(seg.clone());
+                    current_object_id = self.stack_state.as_ref().and_then(|s| {
+                        let fields = s.object_static_fields().get(&oid)?;
+                        let field = fields.get(si.0)?;
+                        if let hprof_engine::FieldValue::ObjectRef { id, .. } = field.value {
+                            Some(id)
+                        } else {
+                            None
+                        }
+                    });
+                }
+                PathSegment::CollectionEntry(cid, ei) => {
+                    // Mark collection as Expanded so flat_items() renders entries.
+                    let collection_path = NavigationPath::from_segments(materialised.clone());
+                    if let Some(s) = &mut self.stack_state {
+                        s.expansion
+                            .expansion_phases
+                            .insert(collection_path, ExpansionPhase::Expanded);
+                    }
+                    let loaded = self.ensure_collection_entry_loaded(cid.0, ei.0);
+                    materialised.push(seg.clone());
+                    if !loaded {
+                        let partial = NavigationPath::from_segments(materialised.clone());
+                        // Store awaited collection for retry in poll_pages.
+                        let parent_mat = NavigationPath::from_segments({
+                            let mut v = materialised.clone();
+                            v.pop();
+                            v
+                        });
+                        self.pending_navigation = Some((path.clone(), cid.0));
+                        if let Some(s) = &mut self.stack_state {
+                            let flat = s.flat_items();
+                            let restore = if flat.contains(&RenderCursor::At(parent_mat.clone())) {
+                                RenderCursor::At(parent_mat)
+                            } else {
+                                flat.into_iter()
+                                    .find(|c| matches!(c, RenderCursor::At(_)))
+                                    .unwrap_or(RenderCursor::NoFrames)
+                            };
+                            s.set_cursor(restore);
+                        }
+                        return WalkOutcome::PartialAt(partial);
+                    }
+                    current_object_id = self.collection_entry_object_id(cid.0, ei.0);
+                }
             }
         }
 
-        match pin_key {
-            PinKey::Frame { .. } => {
-                if let Some(stack_state) = &mut self.stack_state {
-                    stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
-                }
-            }
-            PinKey::Var { var_idx, .. } => {
-                let cursor = StackCursor::OnVar {
-                    frame_idx,
-                    var_idx: *var_idx,
-                };
-                if let Some(stack_state) = &mut self.stack_state {
-                    if stack_state.flat_items().contains(&cursor) {
-                        stack_state.set_cursor(cursor);
-                    } else {
-                        stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
-                    }
-                }
-            }
-            PinKey::Field {
-                var_idx,
-                field_path,
-                ..
-            } => {
-                let Some(root_object_id) = self.root_object_id_for_var(frame_id, *var_idx) else {
-                    return;
-                };
-                let _ = self.ensure_object_path_expanded(root_object_id, field_path);
-
-                let field_cursor = StackCursor::OnObjectField {
-                    frame_idx,
-                    var_idx: *var_idx,
-                    field_path: field_path.clone(),
-                };
-                let var_cursor = StackCursor::OnVar {
-                    frame_idx,
-                    var_idx: *var_idx,
-                };
-
-                if let Some(stack_state) = &mut self.stack_state {
-                    if stack_state.flat_items().contains(&field_cursor) {
-                        stack_state.set_cursor(field_cursor);
-                    } else if stack_state.flat_items().contains(&var_cursor) {
-                        stack_state.set_cursor(var_cursor);
-                    } else {
-                        stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
-                    }
-                }
-            }
-            PinKey::CollectionEntry {
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                collection_restore_cursor,
-                ..
-            } => {
-                let remapped_restore_cursor = collection_restore_cursor
-                    .as_ref()
-                    .map(|cursor| Self::remap_cursor_frame(cursor, frame_idx));
-
-                if let Some(restore_cursor) = &remapped_restore_cursor {
-                    self.ensure_cursor_materialized(frame_id, frame_idx, restore_cursor);
-                    if let Some(stack_state) = &mut self.stack_state {
-                        stack_state
-                            .expansion
-                            .collection_restore_cursors
-                            .insert(*collection_id, restore_cursor.clone());
-                    }
-                }
-
-                if remapped_restore_cursor.is_none()
-                    && let Some(root_object_id) = self.root_object_id_for_var(frame_id, *var_idx)
-                {
-                    let _ = self.ensure_object_path_expanded(root_object_id, field_path);
-                }
-                let _ = self.ensure_collection_entry_loaded(*collection_id, *entry_index);
-
-                let entry_cursor = StackCursor::OnCollectionEntry {
-                    frame_idx,
-                    var_idx: *var_idx,
-                    field_path: field_path.clone(),
-                    collection_id: *collection_id,
-                    entry_index: *entry_index,
-                };
-                let semantic_entry_cursor =
-                    self.find_collection_entry_cursor(frame_idx, *collection_id, *entry_index);
-                let parent_cursor = if field_path.is_empty() {
-                    StackCursor::OnVar {
-                        frame_idx,
-                        var_idx: *var_idx,
-                    }
-                } else {
-                    StackCursor::OnObjectField {
-                        frame_idx,
-                        var_idx: *var_idx,
-                        field_path: field_path.clone(),
-                    }
-                };
-                let var_cursor = StackCursor::OnVar {
-                    frame_idx,
-                    var_idx: *var_idx,
-                };
-
-                if let Some(stack_state) = &mut self.stack_state {
-                    if stack_state.flat_items().contains(&entry_cursor) {
-                        stack_state.set_cursor(entry_cursor);
-                    } else if let Some(candidate) = semantic_entry_cursor {
-                        stack_state.set_cursor(candidate);
-                    } else if let Some(candidate) = remapped_restore_cursor {
-                        if stack_state.flat_items().contains(&candidate) {
-                            stack_state.set_cursor(candidate);
-                        } else if stack_state.flat_items().contains(&parent_cursor) {
-                            stack_state.set_cursor(parent_cursor);
-                        } else if stack_state.flat_items().contains(&var_cursor) {
-                            stack_state.set_cursor(var_cursor);
-                        } else {
-                            stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
-                        }
-                    } else if stack_state.flat_items().contains(&parent_cursor) {
-                        stack_state.set_cursor(parent_cursor);
-                    } else if stack_state.flat_items().contains(&var_cursor) {
-                        stack_state.set_cursor(var_cursor);
-                    } else {
-                        stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
-                    }
-                }
-            }
-            PinKey::CollectionEntryField {
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                obj_field_path,
-                collection_restore_cursor,
-                ..
-            } => {
-                let remapped_restore_cursor = collection_restore_cursor
-                    .as_ref()
-                    .map(|cursor| Self::remap_cursor_frame(cursor, frame_idx));
-
-                if let Some(restore_cursor) = &remapped_restore_cursor {
-                    self.ensure_cursor_materialized(frame_id, frame_idx, restore_cursor);
-                    if let Some(stack_state) = &mut self.stack_state {
-                        stack_state
-                            .expansion
-                            .collection_restore_cursors
-                            .insert(*collection_id, restore_cursor.clone());
-                    }
-                }
-
-                if remapped_restore_cursor.is_none()
-                    && let Some(root_object_id) = self.root_object_id_for_var(frame_id, *var_idx)
-                {
-                    let _ = self.ensure_object_path_expanded(root_object_id, field_path);
-                }
-                if self.ensure_collection_entry_loaded(*collection_id, *entry_index)
-                    && let Some(entry_object_id) =
-                        self.collection_entry_object_id(*collection_id, *entry_index)
-                {
-                    let _ = self.ensure_object_path_expanded(entry_object_id, obj_field_path);
-                }
-
-                let entry_field_cursor = StackCursor::OnCollectionEntryObjField {
-                    frame_idx,
-                    var_idx: *var_idx,
-                    field_path: field_path.clone(),
-                    collection_id: *collection_id,
-                    entry_index: *entry_index,
-                    obj_field_path: obj_field_path.clone(),
-                };
-                let semantic_entry_field_cursor = self.find_collection_entry_obj_field_cursor(
-                    frame_idx,
-                    *collection_id,
-                    *entry_index,
-                    obj_field_path,
-                );
-                let entry_cursor = StackCursor::OnCollectionEntry {
-                    frame_idx,
-                    var_idx: *var_idx,
-                    field_path: field_path.clone(),
-                    collection_id: *collection_id,
-                    entry_index: *entry_index,
-                };
-                let semantic_entry_cursor =
-                    self.find_collection_entry_cursor(frame_idx, *collection_id, *entry_index);
-                let parent_cursor = if field_path.is_empty() {
-                    StackCursor::OnVar {
-                        frame_idx,
-                        var_idx: *var_idx,
-                    }
-                } else {
-                    StackCursor::OnObjectField {
-                        frame_idx,
-                        var_idx: *var_idx,
-                        field_path: field_path.clone(),
-                    }
-                };
-                let var_cursor = StackCursor::OnVar {
-                    frame_idx,
-                    var_idx: *var_idx,
-                };
-
-                if let Some(stack_state) = &mut self.stack_state {
-                    if stack_state.flat_items().contains(&entry_field_cursor) {
-                        stack_state.set_cursor(entry_field_cursor);
-                    } else if let Some(candidate) = semantic_entry_field_cursor {
-                        stack_state.set_cursor(candidate);
-                    } else if stack_state.flat_items().contains(&entry_cursor) {
-                        stack_state.set_cursor(entry_cursor);
-                    } else if let Some(candidate) = semantic_entry_cursor {
-                        stack_state.set_cursor(candidate);
-                    } else if let Some(candidate) = remapped_restore_cursor {
-                        if stack_state.flat_items().contains(&candidate) {
-                            stack_state.set_cursor(candidate);
-                        } else if stack_state.flat_items().contains(&parent_cursor) {
-                            stack_state.set_cursor(parent_cursor);
-                        } else if stack_state.flat_items().contains(&var_cursor) {
-                            stack_state.set_cursor(var_cursor);
-                        } else {
-                            stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
-                        }
-                    } else if stack_state.flat_items().contains(&parent_cursor) {
-                        stack_state.set_cursor(parent_cursor);
-                    } else if stack_state.flat_items().contains(&var_cursor) {
-                        stack_state.set_cursor(var_cursor);
-                    } else {
-                        stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
-                    }
-                }
+        let final_path = NavigationPath::from_segments(materialised);
+        let target = RenderCursor::At(final_path.clone());
+        if let Some(s) = &mut self.stack_state {
+            let flat = s.flat_items();
+            if flat.contains(&target) {
+                s.set_cursor(target);
+            } else if let Some(fallback) =
+                flat.into_iter().find(|c| matches!(c, RenderCursor::At(_)))
+            {
+                s.set_cursor(fallback);
             }
         }
+        WalkOutcome::Success(final_path)
     }
 
     fn cycle_focus(&mut self) {
@@ -1064,33 +672,23 @@ impl<E: NavigationEngine> App<E> {
                     return AppAction::Continue;
                 };
                 let pin_key = item.key.clone();
+                let thread_id = pin_key.thread_id;
+                let nav_path = pin_key.nav_path.clone();
 
-                let thread_name = match &pin_key {
-                    PinKey::Frame { thread_name, .. }
-                    | PinKey::Var { thread_name, .. }
-                    | PinKey::Field { thread_name, .. }
-                    | PinKey::CollectionEntry { thread_name, .. }
-                    | PinKey::CollectionEntryField { thread_name, .. } => thread_name.clone(),
-                };
-
-                let matches: Vec<_> = self
+                let thread_name = pin_key.thread_name.clone();
+                let thread_exists = self
                     .engine
                     .list_threads()
                     .into_iter()
-                    .filter(|t| t.name == thread_name)
-                    .collect();
-                let Some(target) = matches.first() else {
+                    .any(|t| t.thread_serial == thread_id.0);
+                if !thread_exists {
                     self.ui_status = Some(format!("Thread '{thread_name}' no longer found"));
                     return AppAction::Continue;
-                };
-                if matches.len() > 1 {
-                    self.ui_status = Some(format!(
-                        "Multiple threads named '{thread_name}' — navigated to first match"
-                    ));
                 }
 
-                self.open_stack_for_selected_thread(target.thread_serial);
-                self.navigate_stack_cursor_to_pin_key(&pin_key);
+                self.pending_navigation = None;
+                self.navigate_to_path(thread_id, &nav_path);
+                self.focus = Focus::StackFrames;
             }
             InputEvent::FocusFavorites | InputEvent::Escape => {
                 self.focus = self.prev_focus;
@@ -1264,7 +862,6 @@ impl<E: NavigationEngine> App<E> {
                     self.pending_pages.retain(|&(id, _), _| id != cid);
                     if let Some(s) = &mut self.stack_state {
                         s.expansion.collection_chunks.remove(&cid);
-                        s.expansion.collection_restore_cursors.remove(&cid);
                         s.set_cursor(restore_cursor);
                     }
                     return AppAction::Continue;
@@ -1334,54 +931,90 @@ impl<E: NavigationEngine> App<E> {
                 enum RightCmd {
                     ExpandFrame(u64),
                     StartObj(u64),
-                    StartCollection(u64, u64, StackCursor),
+                    StartCollection(u64, u64),
                     StartEntryObj(u64),
                     LoadChunk(u64, usize, usize),
                 }
                 let cmd = self.stack_state.as_ref().and_then(|s| {
                     Some(match s.cursor().clone() {
-                        StackCursor::OnFrame(_) => {
-                            let fid = s.selected_frame_id()?;
-                            if s.is_expanded(fid) {
-                                return None;
-                            }
-                            RightCmd::ExpandFrame(fid)
-                        }
-                        StackCursor::OnVar { .. } => {
-                            let oid = s.selected_object_id()?;
-                            if let Some(ec) = s.selected_var_entry_count() {
-                                if s.expansion.collection_chunks.contains_key(&oid) {
+                        RenderCursor::At(ref path) => {
+                            let segs = path.segments();
+                            if segs.len() == 1 {
+                                // Frame row
+                                let fid = s.selected_frame_id()?;
+                                if s.is_expanded(fid) {
                                     return None;
                                 }
-                                return Some(RightCmd::StartCollection(
-                                    oid,
-                                    ec,
-                                    s.cursor().clone(),
-                                ));
-                            }
-                            match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed => RightCmd::StartObj(oid),
-                                _ => return None,
-                            }
-                        }
-                        StackCursor::OnObjectField { .. } => {
-                            if let Some((cid, ec)) = s.selected_field_collection_info() {
-                                if s.expansion.collection_chunks.contains_key(&cid) {
-                                    return None;
+                                RightCmd::ExpandFrame(fid)
+                            } else if segs.len() == 2 {
+                                // Var row
+                                let oid = s.selected_object_id()?;
+                                if let Some(ec) = s.selected_var_entry_count() {
+                                    if s.expansion.collection_chunks.contains_key(&oid) {
+                                        return None;
+                                    }
+                                    return Some(RightCmd::StartCollection(oid, ec));
                                 }
-                                return Some(RightCmd::StartCollection(
-                                    cid,
-                                    ec,
-                                    s.cursor().clone(),
-                                ));
-                            }
-                            let nested_id = s.selected_field_ref_id()?;
-                            match s.expansion_state(nested_id) {
-                                ExpansionPhase::Collapsed => RightCmd::StartObj(nested_id),
-                                _ => return None,
+                                match s.expansion_state(oid) {
+                                    ExpansionPhase::Collapsed => RightCmd::StartObj(oid),
+                                    _ => return None,
+                                }
+                            } else {
+                                let last = segs.last()?;
+                                match last {
+                                    PathSegment::Field(_) => {
+                                        if let Some((cid, ec)) = s.selected_field_collection_info()
+                                        {
+                                            if s.expansion.collection_chunks.contains_key(&cid) {
+                                                return None;
+                                            }
+                                            return Some(RightCmd::StartCollection(cid, ec));
+                                        }
+                                        let nested_id = s.selected_field_ref_id()?;
+                                        match s.expansion_state(nested_id) {
+                                            ExpansionPhase::Collapsed => {
+                                                RightCmd::StartObj(nested_id)
+                                            }
+                                            _ => return None,
+                                        }
+                                    }
+                                    PathSegment::CollectionEntry(_, _) => {
+                                        let oid = s.selected_collection_entry_ref_id()?;
+                                        if let Some(ec) = s.selected_collection_entry_count() {
+                                            if s.expansion.collection_chunks.contains_key(&oid) {
+                                                return None;
+                                            }
+                                            return Some(RightCmd::StartCollection(oid, ec));
+                                        }
+                                        match s.expansion_state(oid) {
+                                            ExpansionPhase::Collapsed => {
+                                                RightCmd::StartEntryObj(oid)
+                                            }
+                                            _ => return None,
+                                        }
+                                    }
+                                    PathSegment::StaticField(_) => {
+                                        if let Some((cid, ec)) =
+                                            s.selected_static_field_collection_info()
+                                        {
+                                            if s.expansion.collection_chunks.contains_key(&cid) {
+                                                return None;
+                                            }
+                                            return Some(RightCmd::StartCollection(cid, ec));
+                                        }
+                                        let nested_id = s.selected_static_field_ref_id()?;
+                                        match s.expansion_state(nested_id) {
+                                            ExpansionPhase::Collapsed => {
+                                                RightCmd::StartObj(nested_id)
+                                            }
+                                            _ => return None,
+                                        }
+                                    }
+                                    _ => return None,
+                                }
                             }
                         }
-                        StackCursor::OnChunkSection { .. } => {
+                        RenderCursor::ChunkSection(_, _) => {
                             if let Some((cid, co, cl)) = s.selected_chunk_info() {
                                 match s.chunk_state(cid, co) {
                                     Some(ChunkState::Collapsed) => RightCmd::LoadChunk(cid, co, cl),
@@ -1391,122 +1024,7 @@ impl<E: NavigationEngine> App<E> {
                                 return None;
                             }
                         }
-                        StackCursor::OnCollectionEntry { .. } => {
-                            let oid = s.selected_collection_entry_ref_id()?;
-                            if let Some(ec) = s.selected_collection_entry_count() {
-                                if s.expansion.collection_chunks.contains_key(&oid) {
-                                    return None;
-                                }
-                                return Some(RightCmd::StartCollection(
-                                    oid,
-                                    ec,
-                                    s.cursor().clone(),
-                                ));
-                            }
-                            match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed => RightCmd::StartEntryObj(oid),
-                                _ => return None,
-                            }
-                        }
-                        StackCursor::OnCollectionEntryObjField { .. } => {
-                            if let Some((oid, ec)) =
-                                s.selected_collection_entry_obj_field_collection_info()
-                            {
-                                if s.expansion.collection_chunks.contains_key(&oid) {
-                                    return None;
-                                }
-                                return Some(RightCmd::StartCollection(
-                                    oid,
-                                    ec,
-                                    s.cursor().clone(),
-                                ));
-                            }
-                            let oid = s.selected_collection_entry_obj_field_ref_id()?;
-                            match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed => RightCmd::StartEntryObj(oid),
-                                _ => return None,
-                            }
-                        }
-                        StackCursor::OnStaticSectionHeader { .. } => return None,
-                        StackCursor::OnStaticField { .. } => {
-                            if let Some((cid, ec)) = s.selected_static_field_collection_info() {
-                                if s.expansion.collection_chunks.contains_key(&cid) {
-                                    return None;
-                                }
-                                return Some(RightCmd::StartCollection(
-                                    cid,
-                                    ec,
-                                    s.cursor().clone(),
-                                ));
-                            }
-                            let nested_id = s.selected_static_field_ref_id()?;
-                            match s.expansion_state(nested_id) {
-                                ExpansionPhase::Collapsed => RightCmd::StartObj(nested_id),
-                                _ => return None,
-                            }
-                        }
-                        StackCursor::OnStaticOverflowRow { .. }
-                        | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
-                        | StackCursor::OnCollectionEntryStaticOverflowRow { .. } => return None,
-                        StackCursor::OnStaticObjectField { .. } => {
-                            if let Some((cid, ec)) = s.selected_static_obj_field_collection_info() {
-                                if s.expansion.collection_chunks.contains_key(&cid) {
-                                    return None;
-                                }
-                                return Some(RightCmd::StartCollection(
-                                    cid,
-                                    ec,
-                                    s.cursor().clone(),
-                                ));
-                            }
-                            let nested_id = s.selected_static_obj_field_ref_id()?;
-                            match s.expansion_state(nested_id) {
-                                ExpansionPhase::Collapsed => RightCmd::StartObj(nested_id),
-                                _ => return None,
-                            }
-                        }
-                        StackCursor::OnCollectionEntryStaticField { .. } => {
-                            if let Some((cid, ec)) =
-                                s.selected_collection_entry_static_field_collection_info()
-                            {
-                                if s.expansion.collection_chunks.contains_key(&cid) {
-                                    return None;
-                                }
-                                return Some(RightCmd::StartCollection(
-                                    cid,
-                                    ec,
-                                    s.cursor().clone(),
-                                ));
-                            }
-                            let nested_id = s.selected_collection_entry_static_field_ref_id()?;
-                            match s.expansion_state(nested_id) {
-                                ExpansionPhase::Collapsed => RightCmd::StartEntryObj(nested_id),
-                                _ => return None,
-                            }
-                        }
-                        StackCursor::OnCollectionEntryStaticObjectField { .. } => {
-                            if let Some((cid, ec)) =
-                                s.selected_collection_entry_static_obj_field_collection_info()
-                            {
-                                if s.expansion.collection_chunks.contains_key(&cid) {
-                                    return None;
-                                }
-                                return Some(RightCmd::StartCollection(
-                                    cid,
-                                    ec,
-                                    s.cursor().clone(),
-                                ));
-                            }
-                            let nested_id =
-                                s.selected_collection_entry_static_obj_field_ref_id()?;
-                            match s.expansion_state(nested_id) {
-                                ExpansionPhase::Collapsed => RightCmd::StartEntryObj(nested_id),
-                                _ => return None,
-                            }
-                        }
-                        StackCursor::OnCyclicNode { .. }
-                        | StackCursor::OnObjectLoadingNode { .. }
-                        | StackCursor::NoFrames => return None,
+                        _ => return None,
                     })
                 });
                 match cmd {
@@ -1519,7 +1037,7 @@ impl<E: NavigationEngine> App<E> {
                     Some(RightCmd::StartObj(oid)) => {
                         self.start_object_expansion(oid);
                     }
-                    Some(RightCmd::StartCollection(cid, ec, restore_cursor)) => {
+                    Some(RightCmd::StartCollection(cid, ec)) => {
                         let limit = (ec as usize).min(100);
                         let chunks = CollectionChunks {
                             total_count: ec,
@@ -1531,9 +1049,12 @@ impl<E: NavigationEngine> App<E> {
                         };
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.insert(cid, chunks);
-                            s.expansion
-                                .collection_restore_cursors
-                                .insert(cid, restore_cursor);
+                            // Mark expansion phase so flat_items() renders entries.
+                            if let RenderCursor::At(path) = s.cursor().clone() {
+                                s.expansion
+                                    .expansion_phases
+                                    .insert(path, ExpansionPhase::Expanded);
+                            }
                         }
                         self.start_collection_page_load(cid, 0, limit);
                     }
@@ -1553,134 +1074,85 @@ impl<E: NavigationEngine> App<E> {
                     CollapseNestedObj(u64),
                     CollapseCollection(u64),
                     CollapseEntryObj(u64),
-                    NavigateToParent(StackCursor),
+                    NavigateToParent(RenderCursor),
                 }
                 let cmd = self.stack_state.as_ref().and_then(|s| {
                     Some(match s.cursor().clone() {
-                        StackCursor::OnFrame(_) => {
-                            let fid = s.selected_frame_id()?;
-                            if s.is_expanded(fid) {
-                                LeftCmd::CollapseFrame(fid)
+                        RenderCursor::At(ref path) => {
+                            let segs = path.segments();
+                            if segs.len() == 1 {
+                                // Frame row
+                                let fid = s.selected_frame_id()?;
+                                if s.is_expanded(fid) {
+                                    LeftCmd::CollapseFrame(fid)
+                                } else {
+                                    return None;
+                                }
+                            } else if segs.len() == 2 {
+                                // Var row
+                                let Some(oid) = s.selected_object_id() else {
+                                    return Some(LeftCmd::NavigateToParent(s.parent_cursor()?));
+                                };
+                                if s.expansion.collection_chunks.contains_key(&oid) {
+                                    return Some(LeftCmd::CollapseCollection(oid));
+                                }
+                                match s.expansion_state(oid) {
+                                    ExpansionPhase::Expanded => LeftCmd::CollapseObj(oid),
+                                    _ => LeftCmd::NavigateToParent(s.parent_cursor()?),
+                                }
                             } else {
-                                return None;
+                                let last = segs.last()?;
+                                match last {
+                                    PathSegment::Field(_) => {
+                                        if let Some((cid, _)) = s.selected_field_collection_info()
+                                            && s.expansion.collection_chunks.contains_key(&cid)
+                                        {
+                                            return Some(LeftCmd::CollapseCollection(cid));
+                                        }
+                                        if let Some(nested_id) = s.selected_field_ref_id()
+                                            && s.expansion_state(nested_id)
+                                                == ExpansionPhase::Expanded
+                                        {
+                                            return Some(LeftCmd::CollapseNestedObj(nested_id));
+                                        }
+                                        LeftCmd::NavigateToParent(s.parent_cursor()?)
+                                    }
+                                    PathSegment::CollectionEntry(_, _) => {
+                                        if let Some(oid) = s.selected_collection_entry_ref_id()
+                                            && s.expansion_state(oid) == ExpansionPhase::Expanded
+                                        {
+                                            return Some(LeftCmd::CollapseEntryObj(oid));
+                                        }
+                                        LeftCmd::NavigateToParent(s.parent_cursor()?)
+                                    }
+                                    PathSegment::StaticField(_) => {
+                                        if let Some((cid, _)) =
+                                            s.selected_static_field_collection_info()
+                                            && s.expansion.collection_chunks.contains_key(&cid)
+                                        {
+                                            return Some(LeftCmd::CollapseCollection(cid));
+                                        }
+                                        if let Some(nested_id) = s.selected_static_field_ref_id()
+                                            && s.expansion_state(nested_id)
+                                                == ExpansionPhase::Expanded
+                                        {
+                                            return Some(LeftCmd::CollapseNestedObj(nested_id));
+                                        }
+                                        LeftCmd::NavigateToParent(s.parent_cursor()?)
+                                    }
+                                    _ => LeftCmd::NavigateToParent(s.parent_cursor()?),
+                                }
                             }
                         }
-                        StackCursor::OnVar { .. } => {
-                            let Some(oid) = s.selected_object_id() else {
-                                return Some(LeftCmd::NavigateToParent(s.parent_cursor()?));
-                            };
-                            if s.expansion.collection_chunks.contains_key(&oid) {
-                                return Some(LeftCmd::CollapseCollection(oid));
-                            }
-                            match s.expansion_state(oid) {
-                                ExpansionPhase::Expanded => LeftCmd::CollapseObj(oid),
-                                _ => LeftCmd::NavigateToParent(s.parent_cursor()?),
-                            }
-                        }
-                        StackCursor::OnObjectField { .. } => {
-                            if let Some((cid, _)) = s.selected_field_collection_info()
-                                && s.expansion.collection_chunks.contains_key(&cid)
-                            {
-                                return Some(LeftCmd::CollapseCollection(cid));
-                            }
-                            if let Some(nested_id) = s.selected_field_ref_id()
-                                && s.expansion_state(nested_id) == ExpansionPhase::Expanded
-                            {
-                                return Some(LeftCmd::CollapseNestedObj(nested_id));
-                            }
+                        RenderCursor::ChunkSection(_, _)
+                        | RenderCursor::LoadingNode(_)
+                        | RenderCursor::CyclicNode(_)
+                        | RenderCursor::SectionHeader(_)
+                        | RenderCursor::OverflowRow(_)
+                        | RenderCursor::FailedNode(_) => {
                             LeftCmd::NavigateToParent(s.parent_cursor()?)
                         }
-                        StackCursor::OnCollectionEntry { .. } => {
-                            if let Some(oid) = s.selected_collection_entry_ref_id()
-                                && s.expansion_state(oid) == ExpansionPhase::Expanded
-                            {
-                                return Some(LeftCmd::CollapseEntryObj(oid));
-                            }
-                            let parent = s.parent_cursor()?;
-                            LeftCmd::NavigateToParent(parent)
-                        }
-                        StackCursor::OnCollectionEntryObjField { .. } => {
-                            if let Some((cid, _)) =
-                                s.selected_collection_entry_obj_field_collection_info()
-                                && s.expansion.collection_chunks.contains_key(&cid)
-                            {
-                                return Some(LeftCmd::CollapseCollection(cid));
-                            }
-                            if let Some(oid) = s.selected_collection_entry_obj_field_ref_id()
-                                && s.expansion_state(oid) == ExpansionPhase::Expanded
-                            {
-                                return Some(LeftCmd::CollapseEntryObj(oid));
-                            }
-                            LeftCmd::NavigateToParent(s.parent_cursor()?)
-                        }
-                        StackCursor::OnStaticSectionHeader { .. }
-                        | StackCursor::OnStaticOverflowRow { .. }
-                        | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
-                        | StackCursor::OnCollectionEntryStaticOverflowRow { .. } => {
-                            LeftCmd::NavigateToParent(s.parent_cursor()?)
-                        }
-                        StackCursor::OnStaticField { .. } => {
-                            if let Some((cid, _)) = s.selected_static_field_collection_info()
-                                && s.expansion.collection_chunks.contains_key(&cid)
-                            {
-                                return Some(LeftCmd::CollapseCollection(cid));
-                            }
-                            if let Some(nested_id) = s.selected_static_field_ref_id()
-                                && s.expansion_state(nested_id) == ExpansionPhase::Expanded
-                            {
-                                return Some(LeftCmd::CollapseNestedObj(nested_id));
-                            }
-                            LeftCmd::NavigateToParent(s.parent_cursor()?)
-                        }
-                        StackCursor::OnStaticObjectField { .. } => {
-                            if let Some((cid, _)) = s.selected_static_obj_field_collection_info()
-                                && s.expansion.collection_chunks.contains_key(&cid)
-                            {
-                                return Some(LeftCmd::CollapseCollection(cid));
-                            }
-                            if let Some(nested_id) = s.selected_static_obj_field_ref_id()
-                                && s.expansion_state(nested_id) == ExpansionPhase::Expanded
-                            {
-                                return Some(LeftCmd::CollapseNestedObj(nested_id));
-                            }
-                            LeftCmd::NavigateToParent(s.parent_cursor()?)
-                        }
-                        StackCursor::OnCollectionEntryStaticField { .. } => {
-                            if let Some((cid, _)) =
-                                s.selected_collection_entry_static_field_collection_info()
-                                && s.expansion.collection_chunks.contains_key(&cid)
-                            {
-                                return Some(LeftCmd::CollapseCollection(cid));
-                            }
-                            if let Some(oid) = s.selected_collection_entry_static_field_ref_id()
-                                && s.expansion_state(oid) == ExpansionPhase::Expanded
-                            {
-                                return Some(LeftCmd::CollapseEntryObj(oid));
-                            }
-                            LeftCmd::NavigateToParent(s.parent_cursor()?)
-                        }
-                        StackCursor::OnCollectionEntryStaticObjectField { .. } => {
-                            if let Some((cid, _)) =
-                                s.selected_collection_entry_static_obj_field_collection_info()
-                                && s.expansion.collection_chunks.contains_key(&cid)
-                            {
-                                return Some(LeftCmd::CollapseCollection(cid));
-                            }
-                            if let Some(oid) = s.selected_collection_entry_static_obj_field_ref_id()
-                                && s.expansion_state(oid) == ExpansionPhase::Expanded
-                            {
-                                return Some(LeftCmd::CollapseEntryObj(oid));
-                            }
-                            LeftCmd::NavigateToParent(s.parent_cursor()?)
-                        }
-                        StackCursor::OnChunkSection { .. } => {
-                            LeftCmd::NavigateToParent(s.parent_cursor()?)
-                        }
-                        StackCursor::OnObjectLoadingNode { .. }
-                        | StackCursor::OnCyclicNode { .. } => {
-                            LeftCmd::NavigateToParent(s.parent_cursor()?)
-                        }
-                        StackCursor::NoFrames => return None,
+                        RenderCursor::NoFrames => return None,
                     })
                 });
                 match cmd {
@@ -1704,7 +1176,6 @@ impl<E: NavigationEngine> App<E> {
                     Some(LeftCmd::CollapseCollection(cid)) => {
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.remove(&cid);
-                            s.expansion.collection_restore_cursors.remove(&cid);
                         }
                         self.pending_pages.retain(|&(id, _), _| id != cid);
                     }
@@ -1731,7 +1202,7 @@ impl<E: NavigationEngine> App<E> {
                     CollapseObj(u64),
                     StartNestedObj(u64),
                     CollapseNestedObj(u64),
-                    StartCollection(u64, u64, StackCursor),
+                    StartCollection(u64, u64),
                     CollapseCollection(u64),
                     LoadChunk(u64, usize, usize),
                     ToggleChunk(u64, usize),
@@ -1740,62 +1211,101 @@ impl<E: NavigationEngine> App<E> {
                 }
                 let cmd = self.stack_state.as_ref().and_then(|s| {
                     Some(match s.cursor().clone() {
-                        StackCursor::OnFrame(_) => {
-                            let fid = s.selected_frame_id()?;
-                            if s.is_expanded(fid) {
-                                Cmd::CollapseFrame(fid)
+                        RenderCursor::At(ref path) => {
+                            let segs = path.segments();
+                            if segs.len() == 1 {
+                                // Frame row
+                                let fid = s.selected_frame_id()?;
+                                if s.is_expanded(fid) {
+                                    Cmd::CollapseFrame(fid)
+                                } else {
+                                    Cmd::ExpandFrame(fid)
+                                }
+                            } else if segs.len() == 2 {
+                                // Var row
+                                let oid = s.selected_object_id()?;
+                                dbg_log!(
+                                    "Var Enter: oid=0x{:X} phase={:?}",
+                                    oid,
+                                    s.expansion_state(oid)
+                                );
+                                if let Some(ec) = s.selected_var_entry_count() {
+                                    if s.expansion.collection_chunks.contains_key(&oid) {
+                                        return Some(Cmd::CollapseCollection(oid));
+                                    }
+                                    return Some(Cmd::StartCollection(oid, ec));
+                                }
+                                match s.expansion_state(oid) {
+                                    ExpansionPhase::Collapsed => Cmd::StartObj(oid),
+                                    ExpansionPhase::Failed => return None,
+                                    ExpansionPhase::Expanded => Cmd::CollapseObj(oid),
+                                    ExpansionPhase::Loading => return None,
+                                }
                             } else {
-                                Cmd::ExpandFrame(fid)
+                                let last = segs.last()?;
+                                match last {
+                                    PathSegment::Field(_) => {
+                                        let coll_info = s.selected_field_collection_info();
+                                        dbg_log!("Field Enter: coll_info={:?}", coll_info);
+                                        if let Some((cid, ec)) = coll_info {
+                                            if s.expansion.collection_chunks.contains_key(&cid) {
+                                                return Some(Cmd::CollapseCollection(cid));
+                                            }
+                                            return Some(Cmd::StartCollection(cid, ec));
+                                        }
+                                        let nested_id = s.selected_field_ref_id()?;
+                                        match s.expansion_state(nested_id) {
+                                            ExpansionPhase::Collapsed => {
+                                                Cmd::StartNestedObj(nested_id)
+                                            }
+                                            ExpansionPhase::Failed => return None,
+                                            ExpansionPhase::Expanded => {
+                                                Cmd::CollapseNestedObj(nested_id)
+                                            }
+                                            ExpansionPhase::Loading => return None,
+                                        }
+                                    }
+                                    PathSegment::CollectionEntry(_, _) => {
+                                        let oid = s.selected_collection_entry_ref_id()?;
+                                        if let Some(ec) = s.selected_collection_entry_count() {
+                                            if s.expansion.collection_chunks.contains_key(&oid) {
+                                                return Some(Cmd::CollapseCollection(oid));
+                                            }
+                                            return Some(Cmd::StartCollection(oid, ec));
+                                        }
+                                        match s.expansion_state(oid) {
+                                            ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
+                                            ExpansionPhase::Failed => return None,
+                                            ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
+                                            ExpansionPhase::Loading => return None,
+                                        }
+                                    }
+                                    PathSegment::StaticField(_) => {
+                                        if let Some((cid, ec)) =
+                                            s.selected_static_field_collection_info()
+                                        {
+                                            if s.expansion.collection_chunks.contains_key(&cid) {
+                                                return Some(Cmd::CollapseCollection(cid));
+                                            }
+                                            return Some(Cmd::StartCollection(cid, ec));
+                                        }
+                                        let nested_id = s.selected_static_field_ref_id()?;
+                                        match s.expansion_state(nested_id) {
+                                            ExpansionPhase::Collapsed => {
+                                                Cmd::StartNestedObj(nested_id)
+                                            }
+                                            ExpansionPhase::Failed => return None,
+                                            ExpansionPhase::Expanded => {
+                                                Cmd::CollapseNestedObj(nested_id)
+                                            }
+                                            ExpansionPhase::Loading => return None,
+                                        }
+                                    }
+                                    _ => return None,
+                                }
                             }
                         }
-                        StackCursor::OnVar { .. } => {
-                            let oid = s.selected_object_id()?;
-                            dbg_log!(
-                                "OnVar Enter: oid=0x{:X} phase={:?}",
-                                oid,
-                                s.expansion_state(oid)
-                            );
-                            if let Some(ec) = s.selected_var_entry_count() {
-                                if s.expansion.collection_chunks.contains_key(&oid) {
-                                    return Some(Cmd::CollapseCollection(oid));
-                                }
-                                return Some(Cmd::StartCollection(oid, ec, s.cursor().clone()));
-                            }
-                            match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed => Cmd::StartObj(oid),
-                                ExpansionPhase::Failed => return None,
-                                ExpansionPhase::Expanded => Cmd::CollapseObj(oid),
-                                ExpansionPhase::Loading => {
-                                    return None;
-                                }
-                            }
-                        }
-                        StackCursor::OnObjectField { .. } => {
-                            // Check for collection field.
-                            let coll_info = s.selected_field_collection_info();
-                            dbg_log!("OnObjectField Enter: coll_info={:?}", coll_info);
-                            if let Some((cid, ec)) = coll_info {
-                                if s.expansion.collection_chunks.contains_key(&cid) {
-                                    return Some(Cmd::CollapseCollection(cid));
-                                }
-                                return Some(Cmd::StartCollection(cid, ec, s.cursor().clone()));
-                            }
-                            let nested_id = s.selected_field_ref_id()?;
-                            dbg_log!(
-                                "OnObjectField Enter: nested_id=0x{:X} phase={:?}",
-                                nested_id,
-                                s.expansion_state(nested_id)
-                            );
-                            match s.expansion_state(nested_id) {
-                                ExpansionPhase::Collapsed => Cmd::StartNestedObj(nested_id),
-                                ExpansionPhase::Failed => return None,
-                                ExpansionPhase::Expanded => Cmd::CollapseNestedObj(nested_id),
-                                ExpansionPhase::Loading => {
-                                    return None;
-                                }
-                            }
-                        }
-                        StackCursor::OnChunkSection { .. } => {
+                        RenderCursor::ChunkSection(_, _) => {
                             if let Some((cid, co, cl)) = s.selected_chunk_info() {
                                 let cs = s.chunk_state(cid, co);
                                 match cs {
@@ -1807,109 +1317,12 @@ impl<E: NavigationEngine> App<E> {
                                 return None;
                             }
                         }
-                        StackCursor::OnCollectionEntry { .. } => {
-                            let oid = s.selected_collection_entry_ref_id()?;
-                            if let Some(ec) = s.selected_collection_entry_count() {
-                                if s.expansion.collection_chunks.contains_key(&oid) {
-                                    return Some(Cmd::CollapseCollection(oid));
-                                }
-                                return Some(Cmd::StartCollection(oid, ec, s.cursor().clone()));
-                            }
-                            match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
-                                ExpansionPhase::Failed => return None,
-                                ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
-                                ExpansionPhase::Loading => return None,
-                            }
-                        }
-                        StackCursor::OnCollectionEntryObjField { .. } => {
-                            if let Some((oid, ec)) =
-                                s.selected_collection_entry_obj_field_collection_info()
-                            {
-                                if s.expansion.collection_chunks.contains_key(&oid) {
-                                    return Some(Cmd::CollapseCollection(oid));
-                                }
-                                return Some(Cmd::StartCollection(oid, ec, s.cursor().clone()));
-                            }
-                            let oid = s.selected_collection_entry_obj_field_ref_id()?;
-                            match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
-                                ExpansionPhase::Failed => return None,
-                                ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
-                                ExpansionPhase::Loading => return None,
-                            }
-                        }
-                        StackCursor::OnStaticSectionHeader { .. }
-                        | StackCursor::OnStaticOverflowRow { .. }
-                        | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
-                        | StackCursor::OnCollectionEntryStaticOverflowRow { .. } => return None,
-                        StackCursor::OnStaticField { .. } => {
-                            if let Some((cid, ec)) = s.selected_static_field_collection_info() {
-                                if s.expansion.collection_chunks.contains_key(&cid) {
-                                    return Some(Cmd::CollapseCollection(cid));
-                                }
-                                return Some(Cmd::StartCollection(cid, ec, s.cursor().clone()));
-                            }
-                            let nested_id = s.selected_static_field_ref_id()?;
-                            match s.expansion_state(nested_id) {
-                                ExpansionPhase::Collapsed => Cmd::StartNestedObj(nested_id),
-                                ExpansionPhase::Failed => return None,
-                                ExpansionPhase::Expanded => Cmd::CollapseNestedObj(nested_id),
-                                ExpansionPhase::Loading => return None,
-                            }
-                        }
-                        StackCursor::OnStaticObjectField { .. } => {
-                            if let Some((cid, ec)) = s.selected_static_obj_field_collection_info() {
-                                if s.expansion.collection_chunks.contains_key(&cid) {
-                                    return Some(Cmd::CollapseCollection(cid));
-                                }
-                                return Some(Cmd::StartCollection(cid, ec, s.cursor().clone()));
-                            }
-                            let nested_id = s.selected_static_obj_field_ref_id()?;
-                            match s.expansion_state(nested_id) {
-                                ExpansionPhase::Collapsed => Cmd::StartNestedObj(nested_id),
-                                ExpansionPhase::Failed => return None,
-                                ExpansionPhase::Expanded => Cmd::CollapseNestedObj(nested_id),
-                                ExpansionPhase::Loading => return None,
-                            }
-                        }
-                        StackCursor::OnCollectionEntryStaticField { .. } => {
-                            if let Some((oid, ec)) =
-                                s.selected_collection_entry_static_field_collection_info()
-                            {
-                                if s.expansion.collection_chunks.contains_key(&oid) {
-                                    return Some(Cmd::CollapseCollection(oid));
-                                }
-                                return Some(Cmd::StartCollection(oid, ec, s.cursor().clone()));
-                            }
-                            let oid = s.selected_collection_entry_static_field_ref_id()?;
-                            match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
-                                ExpansionPhase::Failed => return None,
-                                ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
-                                ExpansionPhase::Loading => return None,
-                            }
-                        }
-                        StackCursor::OnCollectionEntryStaticObjectField { .. } => {
-                            if let Some((oid, ec)) =
-                                s.selected_collection_entry_static_obj_field_collection_info()
-                            {
-                                if s.expansion.collection_chunks.contains_key(&oid) {
-                                    return Some(Cmd::CollapseCollection(oid));
-                                }
-                                return Some(Cmd::StartCollection(oid, ec, s.cursor().clone()));
-                            }
-                            let oid = s.selected_collection_entry_static_obj_field_ref_id()?;
-                            match s.expansion_state(oid) {
-                                ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
-                                ExpansionPhase::Failed => return None,
-                                ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
-                                ExpansionPhase::Loading => return None,
-                            }
-                        }
-                        StackCursor::OnCyclicNode { .. }
-                        | StackCursor::OnObjectLoadingNode { .. }
-                        | StackCursor::NoFrames => return None,
+                        RenderCursor::SectionHeader(_)
+                        | RenderCursor::OverflowRow(_)
+                        | RenderCursor::CyclicNode(_)
+                        | RenderCursor::LoadingNode(_)
+                        | RenderCursor::FailedNode(_)
+                        | RenderCursor::NoFrames => return None,
                     })
                 });
                 match cmd {
@@ -1938,7 +1351,7 @@ impl<E: NavigationEngine> App<E> {
                             s.collapse_object(oid);
                         }
                     }
-                    Some(Cmd::StartCollection(cid, ec, restore_cursor)) => {
+                    Some(Cmd::StartCollection(cid, ec)) => {
                         dbg_log!("StartCollection cid=0x{:X} ec={}", cid, ec);
                         let limit = (ec as usize).min(100);
                         let chunks = CollectionChunks {
@@ -1951,9 +1364,12 @@ impl<E: NavigationEngine> App<E> {
                         };
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.insert(cid, chunks);
-                            s.expansion
-                                .collection_restore_cursors
-                                .insert(cid, restore_cursor);
+                            // Mark expansion phase so flat_items() renders entries.
+                            if let RenderCursor::At(path) = s.cursor().clone() {
+                                s.expansion
+                                    .expansion_phases
+                                    .insert(path, ExpansionPhase::Expanded);
+                            }
                         }
                         self.start_collection_page_load(cid, 0, limit);
                     }
@@ -1977,10 +1393,7 @@ impl<E: NavigationEngine> App<E> {
                     Some(Cmd::CollapseCollection(cid)) => {
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.remove(&cid);
-                            s.expansion.collection_restore_cursors.remove(&cid);
                         }
-                        // Remove pending page loads for
-                        // this collection.
                         self.pending_pages.retain(|&(id, _), _| id != cid);
                     }
                     None => {}
@@ -1989,7 +1402,10 @@ impl<E: NavigationEngine> App<E> {
             InputEvent::ToggleFavorite => {
                 if let Some(state) = &self.stack_state {
                     let thread_name = self.active_thread_name();
-                    if let Some(item) = snapshot_from_cursor(state.cursor(), state, &thread_name) {
+                    let thread_id = ThreadId(self.thread_list.selected_serial().unwrap_or(0));
+                    if let Some(item) =
+                        snapshot_from_cursor(state.cursor(), state, &thread_name, thread_id)
+                    {
                         self.toggle_pin(item);
                     }
                 }
@@ -2076,7 +1492,10 @@ impl<E: NavigationEngine> App<E> {
     /// Returns object IDs that need fallback expansion
     /// (unsupported collection types where `get_page`
     /// returned `None`).
-    pub fn poll_pages(&mut self) -> Vec<u64> {
+    pub fn poll_pages(&mut self) -> Vec<u64>
+    where
+        E: Send + Sync + 'static,
+    {
         let mut done = Vec::new();
         let mut fallback = Vec::new();
         for (&(cid, offset), pp) in self.pending_pages.iter_mut() {
@@ -2104,7 +1523,6 @@ impl<E: NavigationEngine> App<E> {
                     dbg_log!("poll_pages: 0x{:X}+{} → None (fallback)", cid, offset);
                     if let Some(s) = &mut self.stack_state {
                         s.expansion.collection_chunks.remove(&cid);
-                        s.expansion.collection_restore_cursors.remove(&cid);
                         if offset == 0 {
                             s.collapse_object(cid);
                         }
@@ -2129,7 +1547,6 @@ impl<E: NavigationEngine> App<E> {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
                         s.expansion.collection_chunks.remove(&cid);
-                        s.expansion.collection_restore_cursors.remove(&cid);
                         if offset == 0 {
                             s.collapse_object(cid);
                         }
@@ -2140,6 +1557,26 @@ impl<E: NavigationEngine> App<E> {
         }
         for key in done {
             self.pending_pages.remove(&key);
+        }
+
+        // Retry pending_navigation if the loaded collection matches the awaited one.
+        if let Some((nav_path, awaited_cid)) = self.pending_navigation.clone() {
+            let just_loaded = self.pending_pages.keys().any(|&(id, _)| id == awaited_cid);
+            if !just_loaded {
+                let chunk_loaded = self
+                    .stack_state
+                    .as_ref()
+                    .is_some_and(|s| s.expansion.collection_chunks.contains_key(&awaited_cid));
+                if chunk_loaded {
+                    self.pending_navigation = None;
+                    let thread_id = self
+                        .thread_list
+                        .selected_serial()
+                        .map(ThreadId)
+                        .unwrap_or(ThreadId(0));
+                    self.navigate_to_path(thread_id, &nav_path);
+                }
+            }
         }
 
         let mut pinned_done = Vec::new();

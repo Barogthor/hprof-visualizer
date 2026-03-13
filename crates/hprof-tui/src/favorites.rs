@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 use hprof_engine::{FieldInfo, FieldValue, VariableInfo, VariableValue};
 
 use crate::views::stack_view::{
-    ChunkState, CollectionChunks, StackCursor, StackState, format_frame_label,
+    ChunkState, CollectionChunks, NavigationPath, PathSegment, RenderCursor, StackState, ThreadId,
+    format_frame_label,
 };
 
 /// Maximum number of object IDs captured in a single snapshot (across all
@@ -28,44 +29,21 @@ type SubtreeSnapshot = (
 /// Structural position identifier used for toggle detection.
 ///
 /// Two pins are the same if and only if their `PinKey` compares equal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PinKey {
-    /// A whole stack frame.
-    Frame { frame_id: u64, thread_name: String },
-    /// A single variable inside a frame.
-    Var {
-        frame_id: u64,
-        thread_name: String,
-        var_idx: usize,
-    },
-    /// A field deep inside an object tree.
-    Field {
-        frame_id: u64,
-        thread_name: String,
-        var_idx: usize,
-        field_path: Vec<usize>,
-    },
-    /// One entry inside a collection/array.
-    CollectionEntry {
-        frame_id: u64,
-        thread_name: String,
-        var_idx: usize,
-        field_path: Vec<usize>,
-        collection_id: u64,
-        entry_index: usize,
-        collection_restore_cursor: Option<StackCursor>,
-    },
-    /// One field inside an object expanded from a collection entry.
-    CollectionEntryField {
-        frame_id: u64,
-        thread_name: String,
-        var_idx: usize,
-        field_path: Vec<usize>,
-        collection_id: u64,
-        entry_index: usize,
-        obj_field_path: Vec<usize>,
-        collection_restore_cursor: Option<StackCursor>,
-    },
+/// Equality uses `thread_id + nav_path` (not `thread_name`).
+#[derive(Debug, Clone, Eq)]
+pub struct PinKey {
+    /// Thread that owns this pin (for thread selection during `g` navigation).
+    pub thread_id: ThreadId,
+    /// Display name of the owning thread.
+    pub thread_name: String,
+    /// Semantic position within the thread's stack.
+    pub nav_path: NavigationPath,
+}
+
+impl PartialEq for PinKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.thread_id == other.thread_id && self.nav_path == other.nav_path
+    }
 }
 
 /// Frozen content captured at pin time.
@@ -195,91 +173,218 @@ impl DescendantsCollector<'_> {
 
 /// Builds a [`PinnedItem`] from the current cursor position, or `None` if the
 /// cursor position cannot be pinned (e.g. loading/cyclic pseudo-nodes).
+///
+/// Only `RenderCursor::At(path)` produces a pin; all other variants return `None`.
 pub fn snapshot_from_cursor(
-    cursor: &StackCursor,
+    cursor: &RenderCursor,
     state: &StackState,
     thread_name: &str,
+    thread_id: ThreadId,
 ) -> Option<PinnedItem> {
-    PinnedItemFactory::new(state, thread_name).build_from_cursor(cursor)
+    let RenderCursor::At(path) = cursor else {
+        return None;
+    };
+    PinnedItemFactory::new(state, thread_name, thread_id).build_from_path(path)
 }
 
 struct FrameCtx {
-    frame_id: u64,
     frame_label: String,
 }
 
 struct PinnedItemFactory<'a> {
     state: &'a StackState,
     thread_name: &'a str,
+    thread_id: ThreadId,
 }
 
 impl<'a> PinnedItemFactory<'a> {
-    fn new(state: &'a StackState, thread_name: &'a str) -> Self {
-        Self { state, thread_name }
+    fn new(state: &'a StackState, thread_name: &'a str, thread_id: ThreadId) -> Self {
+        Self {
+            state,
+            thread_name,
+            thread_id,
+        }
     }
 
-    fn build_from_cursor(&self, cursor: &StackCursor) -> Option<PinnedItem> {
-        match cursor {
-            StackCursor::OnFrame(frame_idx) => self.snapshot_on_frame(*frame_idx),
-            StackCursor::OnVar { frame_idx, var_idx } => self.snapshot_on_var(*frame_idx, *var_idx),
-            StackCursor::OnObjectField {
-                frame_idx,
-                var_idx,
-                field_path,
-            } => self.snapshot_on_object_field(*frame_idx, *var_idx, field_path),
-            StackCursor::OnCollectionEntry {
-                frame_idx,
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-            } => self.snapshot_on_collection_entry(
-                *frame_idx,
-                *var_idx,
-                field_path,
-                *collection_id,
-                *entry_index,
-            ),
-            StackCursor::OnCollectionEntryObjField {
-                frame_idx,
-                var_idx,
-                field_path,
-                collection_id,
-                entry_index,
-                obj_field_path,
-            } => self.snapshot_on_collection_entry_field(
-                *frame_idx,
-                *var_idx,
-                field_path,
-                *collection_id,
-                *entry_index,
-                obj_field_path,
-            ),
+    fn build_from_path(&self, path: &NavigationPath) -> Option<PinnedItem> {
+        let segs = path.segments();
+        let frame_id = match segs.first()? {
+            PathSegment::Frame(fid) => fid.0,
+            _ => return None,
+        };
 
-            // Not pinnable.
-            StackCursor::NoFrames
-            | StackCursor::OnObjectLoadingNode { .. }
-            | StackCursor::OnCyclicNode { .. }
-            | StackCursor::OnStaticSectionHeader { .. }
-            | StackCursor::OnStaticField { .. }
-            | StackCursor::OnStaticOverflowRow { .. }
-            | StackCursor::OnStaticObjectField { .. }
-            | StackCursor::OnCollectionEntryStaticSectionHeader { .. }
-            | StackCursor::OnCollectionEntryStaticField { .. }
-            | StackCursor::OnCollectionEntryStaticOverflowRow { .. }
-            | StackCursor::OnCollectionEntryStaticObjectField { .. }
-            | StackCursor::OnChunkSection { .. } => None,
+        let ctx = self.frame_context(frame_id)?;
+        let item_label = build_label_from_path(self.state, path);
+
+        let snapshot = self.snapshot_for_path(path, frame_id)?;
+
+        Some(self.make_pinned_item(ctx.frame_label, item_label, snapshot, path.clone()))
+    }
+
+    /// Builds the snapshot for the position described by `path`.
+    fn snapshot_for_path(&self, path: &NavigationPath, frame_id: u64) -> Option<PinnedSnapshot> {
+        let segs = path.segments();
+
+        if segs.len() == 1 {
+            // Frame-only pin.
+            return Some(self.snapshot_on_frame(frame_id));
+        }
+
+        let var_idx = match &segs[1] {
+            PathSegment::Var(vi) => vi.0,
+            _ => return None,
+        };
+
+        if segs.len() == 2 {
+            // Var-level pin.
+            let var = self.state.vars().get(&frame_id)?.get(var_idx)?;
+            return Some(self.snapshot_for_variable_value(&var.value));
+        }
+
+        // Deeper path — walk to the leaf segment.
+        let leaf = segs.last()?;
+        match leaf {
+            PathSegment::Field(fi) => {
+                let parent_id = self.resolve_parent_object(path)?;
+                let fields = self.state.object_fields().get(&parent_id)?;
+                let field = fields.get(fi.0)?;
+                Some(self.snapshot_for_field_value(&field.value))
+            }
+            PathSegment::StaticField(si) => {
+                let owner_id = self.resolve_static_field_owner(path)?;
+                let static_fields = self.state.object_static_fields().get(&owner_id)?;
+                let field = static_fields.get(si.0)?;
+                Some(self.snapshot_for_field_value(&field.value))
+            }
+            PathSegment::CollectionEntry(cid, ei) => {
+                let cc = self.state.collection_chunks_map().get(&cid.0)?;
+                let entry = cc.find_entry(ei.0)?;
+                Some(self.snapshot_for_field_value(&entry.value))
+            }
+            _ => None,
+        }
+    }
+
+    fn snapshot_on_frame(&self, frame_id: u64) -> PinnedSnapshot {
+        let vars = self
+            .state
+            .vars()
+            .get(&frame_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut reachable = HashSet::new();
+        let mut all_fields: SnapshotObjectFields = HashMap::new();
+        let mut all_static_fields: SnapshotStaticFields = HashMap::new();
+        let mut all_chunks: SnapshotCollectionChunks = HashMap::new();
+        let mut any_truncated = false;
+
+        for var in &vars {
+            if reachable.len() >= SNAPSHOT_OBJECT_LIMIT {
+                any_truncated = true;
+                break;
+            }
+            if let VariableValue::ObjectRef { id, .. } = var.value {
+                let (fields, static_fields, chunks, trunc) =
+                    self.subtree_snapshot(id, &mut reachable);
+                all_fields.extend(fields);
+                all_static_fields.extend(static_fields);
+                all_chunks.extend(chunks);
+                if trunc {
+                    any_truncated = true;
+                }
+            }
+        }
+
+        PinnedSnapshot::Frame {
+            variables: vars,
+            object_fields: all_fields,
+            object_static_fields: all_static_fields,
+            collection_chunks: all_chunks,
+            truncated: any_truncated,
+        }
+    }
+
+    /// Resolves the `object_id` of the parent object at the second-to-last segment.
+    fn resolve_parent_object(&self, path: &NavigationPath) -> Option<u64> {
+        let segs = path.segments();
+        let frame_id = match segs.first()? {
+            PathSegment::Frame(fid) => fid.0,
+            _ => return None,
+        };
+        let var_idx = match segs.get(1)? {
+            PathSegment::Var(vi) => vi.0,
+            _ => return None,
+        };
+        let var = self.state.vars().get(&frame_id)?.get(var_idx)?;
+        let root_id = match var.value {
+            VariableValue::ObjectRef { id, .. } => id,
+            _ => return None,
+        };
+        // Walk all segments except the last.
+        let mut current = root_id;
+        for seg in &segs[2..segs.len().saturating_sub(1)] {
+            current = self.advance_object_id(current, seg)?;
+        }
+        Some(current)
+    }
+
+    /// Resolves the owner object_id for a `StaticField` leaf in `path`.
+    fn resolve_static_field_owner(&self, path: &NavigationPath) -> Option<u64> {
+        let segs = path.segments();
+        let static_pos = segs
+            .iter()
+            .rposition(|s| matches!(s, PathSegment::StaticField(_)))?;
+        let frame_id = match segs.first()? {
+            PathSegment::Frame(fid) => fid.0,
+            _ => return None,
+        };
+        let var_idx = match segs.get(1)? {
+            PathSegment::Var(vi) => vi.0,
+            _ => return None,
+        };
+        let var = self.state.vars().get(&frame_id)?.get(var_idx)?;
+        let root_id = match var.value {
+            VariableValue::ObjectRef { id, .. } => id,
+            _ => return None,
+        };
+        let mut current = root_id;
+        for seg in &segs[2..static_pos] {
+            current = self.advance_object_id(current, seg)?;
+        }
+        Some(current)
+    }
+
+    fn advance_object_id(&self, current: u64, seg: &PathSegment) -> Option<u64> {
+        match seg {
+            PathSegment::Field(fi) => {
+                let fields = self.state.object_fields().get(&current)?;
+                match fields.get(fi.0)?.value {
+                    FieldValue::ObjectRef { id, .. } => Some(id),
+                    _ => None,
+                }
+            }
+            PathSegment::CollectionEntry(cid, ei) => {
+                let cc = self.state.collection_chunks_map().get(&cid.0)?;
+                let entry = cc.find_entry(ei.0)?;
+                match &entry.value {
+                    FieldValue::ObjectRef { id, .. } => Some(*id),
+                    _ => None,
+                }
+            }
+            PathSegment::StaticField(si) => {
+                let static_fields = self.state.object_static_fields().get(&current)?;
+                match static_fields.get(si.0)?.value {
+                    FieldValue::ObjectRef { id, .. } => Some(id),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 
     /// Walks the reachable object graph from `root_id`, cloning fields and
     /// collection chunks into fresh maps.
-    ///
-    /// `reachable` is shared across all vars of a frame so the global
-    /// `SNAPSHOT_OBJECT_LIMIT` applies across the entire frame snapshot.
-    ///
-    /// Returns
-    /// `(object_fields, object_static_fields, collection_chunks, truncated)`.
     fn subtree_snapshot(&self, root_id: u64, reachable: &mut HashSet<u64>) -> SubtreeSnapshot {
         let mut desc_order: Vec<u64> = Vec::new();
         let truncated = self.collect_descendants_limited(
@@ -342,207 +447,15 @@ impl<'a> PinnedItemFactory<'a> {
         }
     }
 
-    fn snapshot_on_frame(&self, frame_idx: usize) -> Option<PinnedItem> {
-        let ctx = self.frame_context(frame_idx)?;
-        let vars = self
+    fn frame_context(&self, frame_id: u64) -> Option<FrameCtx> {
+        let frame = self
             .state
-            .vars()
-            .get(&ctx.frame_id)
-            .cloned()
-            .unwrap_or_default();
-
-        let mut reachable = HashSet::new();
-        let mut all_fields: SnapshotObjectFields = HashMap::new();
-        let mut all_static_fields: SnapshotStaticFields = HashMap::new();
-        let mut all_chunks: SnapshotCollectionChunks = HashMap::new();
-        let mut any_truncated = false;
-
-        for var in &vars {
-            if reachable.len() >= SNAPSHOT_OBJECT_LIMIT {
-                any_truncated = true;
-                break;
-            }
-            if let VariableValue::ObjectRef { id, .. } = var.value {
-                let (fields, static_fields, chunks, trunc) =
-                    self.subtree_snapshot(id, &mut reachable);
-                all_fields.extend(fields);
-                all_static_fields.extend(static_fields);
-                all_chunks.extend(chunks);
-                if trunc {
-                    any_truncated = true;
-                }
-            }
-        }
-
-        Some(self.make_pinned_item(
-            ctx.frame_label.clone(),
-            ctx.frame_label,
-            PinnedSnapshot::Frame {
-                variables: vars,
-                object_fields: all_fields,
-                object_static_fields: all_static_fields,
-                collection_chunks: all_chunks,
-                truncated: any_truncated,
-            },
-            PinKey::Frame {
-                frame_id: ctx.frame_id,
-                thread_name: self.thread_name.to_string(),
-            },
-        ))
-    }
-
-    fn snapshot_on_var(&self, frame_idx: usize, var_idx: usize) -> Option<PinnedItem> {
-        let ctx = self.frame_context(frame_idx)?;
-        let var = self.state.vars().get(&ctx.frame_id)?.get(var_idx)?;
-        let item_label = format!("var[{var_idx}]");
-        let snapshot = self.snapshot_for_variable_value(&var.value);
-
-        Some(self.make_pinned_item(
-            ctx.frame_label,
-            item_label,
-            snapshot,
-            PinKey::Var {
-                frame_id: ctx.frame_id,
-                thread_name: self.thread_name.to_string(),
-                var_idx,
-            },
-        ))
-    }
-
-    fn snapshot_on_object_field(
-        &self,
-        frame_idx: usize,
-        var_idx: usize,
-        field_path: &[usize],
-    ) -> Option<PinnedItem> {
-        let ctx = self.frame_context(frame_idx)?;
-        let var = self.state.vars().get(&ctx.frame_id)?.get(var_idx)?;
-        let VariableValue::ObjectRef { id: root_id, .. } = var.value else {
-            return None;
-        };
-
-        let leaf_field = self.resolve_leaf_object_field(root_id, field_path)?;
-        let item_label = build_field_path_label(self.state, root_id, var_idx, field_path);
-        let snapshot = self.snapshot_for_field_value(&leaf_field.value);
-
-        Some(self.make_pinned_item(
-            ctx.frame_label,
-            item_label,
-            snapshot,
-            PinKey::Field {
-                frame_id: ctx.frame_id,
-                thread_name: self.thread_name.to_string(),
-                var_idx,
-                field_path: field_path.to_vec(),
-            },
-        ))
-    }
-
-    fn snapshot_on_collection_entry(
-        &self,
-        frame_idx: usize,
-        var_idx: usize,
-        field_path: &[usize],
-        collection_id: u64,
-        entry_index: usize,
-    ) -> Option<PinnedItem> {
-        let ctx = self.frame_context(frame_idx)?;
-        let cc = self.state.collection_chunks_map().get(&collection_id)?;
-        let entry = cc.find_entry(entry_index)?;
-        let item_label = build_collection_entry_label(
-            self.state,
-            ctx.frame_id,
-            var_idx,
-            field_path,
-            entry_index,
-        );
-        let snapshot = self.snapshot_for_field_value(&entry.value);
-
-        Some(self.make_pinned_item(
-            ctx.frame_label,
-            item_label,
-            snapshot,
-            PinKey::CollectionEntry {
-                frame_id: ctx.frame_id,
-                thread_name: self.thread_name.to_string(),
-                var_idx,
-                field_path: field_path.to_vec(),
-                collection_id,
-                entry_index,
-                collection_restore_cursor: self.state.collection_restore_cursor(collection_id),
-            },
-        ))
-    }
-
-    fn snapshot_on_collection_entry_field(
-        &self,
-        frame_idx: usize,
-        var_idx: usize,
-        field_path: &[usize],
-        collection_id: u64,
-        entry_index: usize,
-        obj_field_path: &[usize],
-    ) -> Option<PinnedItem> {
-        if obj_field_path.is_empty() {
-            return None;
-        }
-
-        let ctx = self.frame_context(frame_idx)?;
-        let cc = self.state.collection_chunks_map().get(&collection_id)?;
-        let entry = cc.find_entry(entry_index)?;
-        let FieldValue::ObjectRef { id: root_id, .. } = &entry.value else {
-            return None;
-        };
-
-        let leaf_field = self.resolve_leaf_object_field(*root_id, obj_field_path)?;
-        let item_label = build_collection_entry_obj_field_label(
-            self.state,
-            ctx.frame_id,
-            var_idx,
-            field_path,
-            entry_index,
-            *root_id,
-            obj_field_path,
-        );
-        let snapshot = self.snapshot_for_field_value(&leaf_field.value);
-
-        Some(self.make_pinned_item(
-            ctx.frame_label,
-            item_label,
-            snapshot,
-            PinKey::CollectionEntryField {
-                frame_id: ctx.frame_id,
-                thread_name: self.thread_name.to_string(),
-                var_idx,
-                field_path: field_path.to_vec(),
-                collection_id,
-                entry_index,
-                obj_field_path: obj_field_path.to_vec(),
-                collection_restore_cursor: self.state.collection_restore_cursor(collection_id),
-            },
-        ))
-    }
-
-    fn frame_context(&self, frame_idx: usize) -> Option<FrameCtx> {
-        let frame = self.state.frames().get(frame_idx)?;
+            .frames()
+            .iter()
+            .find(|f| f.frame_id == frame_id)?;
         Some(FrameCtx {
-            frame_id: frame.frame_id,
             frame_label: format_frame_label(frame),
         })
-    }
-
-    fn resolve_leaf_object_field(&self, root_id: u64, path: &[usize]) -> Option<&FieldInfo> {
-        let mut current_id = root_id;
-        for &field_idx in &path[..path.len().saturating_sub(1)] {
-            let fields = self.state.object_fields().get(&current_id)?;
-            match fields.get(field_idx)?.value {
-                FieldValue::ObjectRef { id, .. } => current_id = id,
-                _ => return None,
-            }
-        }
-        let leaf_field_idx = *path.last()?;
-        let leaf_fields = self.state.object_fields().get(&current_id)?;
-        leaf_fields.get(leaf_field_idx)
     }
 
     fn object_has_snapshot_data(&self, object_id: u64) -> bool {
@@ -601,7 +514,7 @@ impl<'a> PinnedItemFactory<'a> {
         frame_label: String,
         item_label: String,
         snapshot: PinnedSnapshot,
-        key: PinKey,
+        nav_path: NavigationPath,
     ) -> PinnedItem {
         PinnedItem {
             thread_name: self.thread_name.to_string(),
@@ -609,105 +522,123 @@ impl<'a> PinnedItemFactory<'a> {
             item_label,
             snapshot,
             local_collapsed: HashSet::new(),
-            key,
+            key: PinKey {
+                thread_id: self.thread_id,
+                thread_name: self.thread_name.to_string(),
+                nav_path,
+            },
         }
     }
 }
 
-/// Builds a human-readable label for a field path, e.g. `"var[0].cache.size"`.
-fn build_field_path_label(
-    state: &StackState,
-    root_id: u64,
-    var_idx: usize,
-    field_path: &[usize],
-) -> String {
-    let mut parts = vec![format!("var[{var_idx}]")];
-    let mut current_id = root_id;
-    for &idx in field_path {
-        let name = state
-            .object_fields()
-            .get(&current_id)
-            .and_then(|fields| fields.get(idx))
-            .map(|f| f.name.clone())
-            .unwrap_or_else(|| format!("field[{idx}]"));
-
-        // Advance current_id for next level.
-        if let Some(next_id) = state
-            .object_fields()
-            .get(&current_id)
-            .and_then(|fields| fields.get(idx))
-            .and_then(|f| {
-                if let FieldValue::ObjectRef { id, .. } = f.value {
-                    Some(id)
-                } else {
-                    None
-                }
-            })
-        {
-            current_id = next_id;
-        }
-        parts.push(name);
-    }
-    parts.join(".")
-}
-
-fn build_collection_entry_label(
-    state: &StackState,
-    frame_id: u64,
-    var_idx: usize,
-    field_path: &[usize],
-    entry_index: usize,
-) -> String {
-    let base = if field_path.is_empty() {
-        format!("var[{var_idx}]")
-    } else {
-        let root_id = state
-            .vars()
-            .get(&frame_id)
-            .and_then(|vars| vars.get(var_idx))
-            .and_then(|var| {
-                if let VariableValue::ObjectRef { id, .. } = var.value {
-                    Some(id)
-                } else {
-                    None
-                }
-            });
-        if let Some(root_id) = root_id {
-            build_field_path_label(state, root_id, var_idx, field_path)
-        } else {
-            format!("var[{var_idx}]")
-        }
+/// Builds a human-readable label for a `NavigationPath`, e.g. `"var[0].cache.size"`.
+///
+/// Walks segments left-to-right:
+/// - `Var(idx)` → `"var[{idx}]"`
+/// - `Field(idx)` → field name from `object_fields`, or `"field[{idx}]"` fallback
+/// - `StaticField(idx)` → static field name from `object_static_fields`, or `"static[{idx}]"`
+/// - `CollectionEntry(_, entry_idx)` → `"[{entry_idx}]"` appended as a suffix
+fn build_label_from_path(state: &StackState, path: &NavigationPath) -> String {
+    let segs = path.segments();
+    let frame_id = match segs.first() {
+        Some(PathSegment::Frame(fid)) => fid.0,
+        _ => return String::new(),
     };
-    format!("{base}[{entry_index}]")
-}
-
-fn build_collection_entry_obj_field_label(
-    state: &StackState,
-    frame_id: u64,
-    var_idx: usize,
-    field_path: &[usize],
-    entry_index: usize,
-    root_id: u64,
-    obj_field_path: &[usize],
-) -> String {
-    let mut label = build_collection_entry_label(state, frame_id, var_idx, field_path, entry_index);
-    let mut current_id = root_id;
-    for &idx in obj_field_path {
-        let field_name = state
-            .object_fields()
-            .get(&current_id)
-            .and_then(|fields| fields.get(idx))
-            .map(|f| {
-                if let FieldValue::ObjectRef { id, .. } = f.value {
-                    current_id = id;
-                }
-                f.name.clone()
-            })
-            .unwrap_or_else(|| format!("#{idx}"));
-        label.push('.');
-        label.push_str(&field_name);
+    if segs.len() < 2 {
+        // Frame-only path: label is the frame label.
+        if let Some(frame) = state.frames().iter().find(|f| f.frame_id == frame_id) {
+            return format_frame_label(frame);
+        }
+        return String::new();
     }
-    label
+
+    let var_idx = match &segs[1] {
+        PathSegment::Var(vi) => vi.0,
+        _ => return String::new(),
+    };
+
+    let mut parts: Vec<String> = vec![format!("var[{var_idx}]")];
+    let mut current_id: Option<u64> = state
+        .vars()
+        .get(&frame_id)
+        .and_then(|vars| vars.get(var_idx))
+        .and_then(|var| {
+            if let VariableValue::ObjectRef { id, .. } = var.value {
+                Some(id)
+            } else {
+                None
+            }
+        });
+
+    for seg in &segs[2..] {
+        match seg {
+            PathSegment::Field(fi) => {
+                let (name, next_id) = if let Some(cid) = current_id {
+                    let fields = state.object_fields().get(&cid);
+                    let field = fields.and_then(|f| f.get(fi.0));
+                    let name = field
+                        .map(|f| f.name.clone())
+                        .unwrap_or_else(|| format!("field[{}]", fi.0));
+                    let next = field.and_then(|f| {
+                        if let FieldValue::ObjectRef { id, .. } = f.value {
+                            Some(id)
+                        } else {
+                            None
+                        }
+                    });
+                    (name, next)
+                } else {
+                    (format!("field[{}]", fi.0), None)
+                };
+                parts.push(name);
+                current_id = next_id;
+            }
+            PathSegment::StaticField(si) => {
+                let (name, next_id) = if let Some(cid) = current_id {
+                    let static_fields = state.object_static_fields().get(&cid);
+                    let field = static_fields.and_then(|f| f.get(si.0));
+                    let name = field
+                        .map(|f| f.name.clone())
+                        .unwrap_or_else(|| format!("static[{}]", si.0));
+                    let next = field.and_then(|f| {
+                        if let FieldValue::ObjectRef { id, .. } = f.value {
+                            Some(id)
+                        } else {
+                            None
+                        }
+                    });
+                    (name, next)
+                } else {
+                    (format!("static[{}]", si.0), None)
+                };
+                parts.push(name);
+                current_id = next_id;
+            }
+            PathSegment::CollectionEntry(cid, ei) => {
+                // Append as bracketed suffix on the last part.
+                if let Some(last) = parts.last_mut() {
+                    last.push_str(&format!("[{}]", ei.0));
+                } else {
+                    parts.push(format!("[{}]", ei.0));
+                }
+                // Advance current_id to the entry's object if available.
+                current_id = state
+                    .collection_chunks_map()
+                    .get(&cid.0)
+                    .and_then(|cc| cc.find_entry(ei.0))
+                    .and_then(|e| {
+                        if let FieldValue::ObjectRef { id, .. } = &e.value {
+                            Some(*id)
+                        } else {
+                            None
+                        }
+                    });
+            }
+            _ => {}
+        }
+    }
+
+    parts.join(".")
 }
 
 fn format_primitive_field_value(v: &FieldValue) -> String {
@@ -727,13 +658,10 @@ fn format_primitive_field_value(v: &FieldValue) -> String {
 
 #[cfg(test)]
 mod tests {
-    use hprof_engine::{
-        CollectionPage, EntryInfo, FieldInfo, FieldValue, FrameInfo, LineNumber, VariableInfo,
-        VariableValue,
-    };
+    use hprof_engine::{FieldInfo, FieldValue, FrameInfo, LineNumber, VariableInfo, VariableValue};
 
     use super::*;
-    use crate::views::stack_view::StackState;
+    use crate::views::stack_view::{FieldIdx, FrameId, NavigationPathBuilder, StackState, VarIdx};
 
     fn make_frame(frame_id: u64) -> FrameInfo {
         FrameInfo {
@@ -752,32 +680,50 @@ mod tests {
         state
     }
 
-    #[test]
-    fn pin_key_same_frame_id_different_thread_name_are_not_equal() {
-        let k1 = PinKey::Frame {
-            frame_id: 42,
-            thread_name: "Thread-1".to_string(),
-        };
-        let k2 = PinKey::Frame {
-            frame_id: 42,
-            thread_name: "Thread-2".to_string(),
-        };
-        assert_ne!(k1, k2);
+    fn make_cursor_at(frame_id: u64) -> RenderCursor {
+        RenderCursor::At(NavigationPathBuilder::frame_only(FrameId(frame_id)))
+    }
+
+    fn make_cursor_var(frame_id: u64, var_idx: usize) -> RenderCursor {
+        RenderCursor::At(NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx)).build())
+    }
+
+    fn thread_id() -> ThreadId {
+        ThreadId(1)
     }
 
     #[test]
-    fn pin_key_same_values_are_equal() {
-        let k1 = PinKey::Var {
-            frame_id: 10,
-            thread_name: "main".to_string(),
-            var_idx: 2,
+    fn pin_key_same_thread_and_path_are_equal() {
+        let path1 = NavigationPathBuilder::frame_only(FrameId(42));
+        let path2 = NavigationPathBuilder::frame_only(FrameId(42));
+        let k1 = PinKey {
+            thread_id: ThreadId(1),
+            thread_name: "Thread-1".to_string(),
+            nav_path: path1,
         };
-        let k2 = PinKey::Var {
-            frame_id: 10,
-            thread_name: "main".to_string(),
-            var_idx: 2,
+        let k2 = PinKey {
+            thread_id: ThreadId(1),
+            thread_name: "Thread-1-renamed".to_string(), // different name, same id
+            nav_path: path2,
         };
         assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn pin_key_different_thread_id_not_equal() {
+        let path1 = NavigationPathBuilder::frame_only(FrameId(42));
+        let path2 = NavigationPathBuilder::frame_only(FrameId(42));
+        let k1 = PinKey {
+            thread_id: ThreadId(1),
+            thread_name: "main".to_string(),
+            nav_path: path1,
+        };
+        let k2 = PinKey {
+            thread_id: ThreadId(2),
+            thread_name: "main".to_string(),
+            nav_path: path2,
+        };
+        assert_ne!(k1, k2);
     }
 
     #[test]
@@ -789,11 +735,11 @@ mod tests {
                 value: VariableValue::Null,
             }],
         );
-        let cursor = StackCursor::OnFrame(0);
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+        let cursor = make_cursor_at(1);
+        let item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
         assert!(matches!(item.snapshot, PinnedSnapshot::Frame { .. }));
         assert_eq!(item.thread_name, "main");
-        assert!(matches!(item.key, PinKey::Frame { frame_id: 1, .. }));
+        assert_eq!(item.key.thread_id, thread_id());
     }
 
     #[test]
@@ -805,11 +751,8 @@ mod tests {
                 value: VariableValue::Null,
             }],
         );
-        let cursor = StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0,
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+        let cursor = make_cursor_var(1, 0);
+        let item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
         assert!(
             matches!(&item.snapshot, PinnedSnapshot::Primitive { value_label } if value_label == "null")
         );
@@ -828,11 +771,8 @@ mod tests {
                 },
             }],
         );
-        let cursor = StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0,
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+        let cursor = make_cursor_var(1, 0);
+        let item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
         assert!(matches!(
             &item.snapshot,
             PinnedSnapshot::UnexpandedRef { object_id: 99, .. }
@@ -859,11 +799,8 @@ mod tests {
                 value: FieldValue::Int(1),
             }],
         );
-        let cursor = StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0,
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+        let cursor = make_cursor_var(1, 0);
+        let item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
         assert!(matches!(
             &item.snapshot,
             PinnedSnapshot::Subtree { root_id: 42, .. }
@@ -890,24 +827,14 @@ mod tests {
                 value: FieldValue::Int(5),
             }],
         );
-        let cursor = StackCursor::OnObjectField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![0],
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+        let path = NavigationPathBuilder::new(FrameId(1), VarIdx(0))
+            .field(FieldIdx(0))
+            .build();
+        let cursor = RenderCursor::At(path);
+        let item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
         assert!(
             matches!(&item.snapshot, PinnedSnapshot::Primitive { value_label } if value_label == "5")
         );
-        assert!(matches!(
-            &item.key,
-            PinKey::Field {
-                var_idx: 0,
-                field_path,
-                ..
-            }
-            if field_path == &[0usize]
-        ));
         assert!(
             item.item_label.contains("count"),
             "expected field name in label, got: {}",
@@ -918,23 +845,19 @@ mod tests {
     #[test]
     fn snapshot_on_cyclic_node_returns_none() {
         let state = StackState::new(vec![make_frame(1)]);
-        let cursor = StackCursor::OnCyclicNode {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![0],
-        };
-        assert!(snapshot_from_cursor(&cursor, &state, "main").is_none());
+        let path = NavigationPathBuilder::new(FrameId(1), VarIdx(0))
+            .field(FieldIdx(0))
+            .build();
+        let cursor = RenderCursor::CyclicNode(path);
+        assert!(snapshot_from_cursor(&cursor, &state, "main", thread_id()).is_none());
     }
 
     #[test]
     fn snapshot_on_loading_node_returns_none() {
         let state = StackState::new(vec![make_frame(1)]);
-        let cursor = StackCursor::OnObjectLoadingNode {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![],
-        };
-        assert!(snapshot_from_cursor(&cursor, &state, "main").is_none());
+        let path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+        let cursor = RenderCursor::LoadingNode(path);
+        assert!(snapshot_from_cursor(&cursor, &state, "main", thread_id()).is_none());
     }
 
     #[test]
@@ -967,8 +890,8 @@ mod tests {
                 }],
             );
         }
-        let cursor = StackCursor::OnFrame(0);
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+        let cursor = make_cursor_at(1);
+        let item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
         match &item.snapshot {
             PinnedSnapshot::Frame {
                 object_fields,
@@ -1027,11 +950,8 @@ mod tests {
             },
         );
 
-        let cursor = StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0,
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
+        let cursor = make_cursor_var(1, 0);
+        let item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
 
         match item.snapshot {
             PinnedSnapshot::Subtree {
@@ -1044,380 +964,6 @@ mod tests {
                     matches!(state, Some(ChunkState::Collapsed)),
                     "loading chunk must be frozen to collapsed"
                 );
-            }
-            _ => panic!("expected subtree snapshot"),
-        }
-    }
-
-    #[test]
-    fn snapshot_on_var_with_collection_chunks_only_produces_subtree() {
-        use crate::views::stack_view::CollectionChunks;
-
-        let mut state = make_state_with_frame(
-            1,
-            vec![VariableInfo {
-                index: 0,
-                value: VariableValue::ObjectRef {
-                    id: 20,
-                    class_name: "ArrayList".to_string(),
-                    entry_count: Some(120),
-                },
-            }],
-        );
-        state.expansion.collection_chunks.insert(
-            20,
-            CollectionChunks {
-                total_count: 120,
-                eager_page: Some(CollectionPage {
-                    entries: vec![EntryInfo {
-                        index: 0,
-                        key: None,
-                        value: FieldValue::Int(7),
-                    }],
-                    total_count: 120,
-                    offset: 0,
-                    has_more: true,
-                }),
-                chunk_pages: HashMap::new(),
-            },
-        );
-
-        let cursor = StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0,
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
-
-        match item.snapshot {
-            PinnedSnapshot::Subtree {
-                root_id,
-                object_fields,
-                collection_chunks,
-                ..
-            } => {
-                assert_eq!(root_id, 20);
-                assert!(
-                    object_fields.is_empty(),
-                    "collection-only snapshot should not fabricate object fields"
-                );
-                assert!(
-                    collection_chunks.contains_key(&20),
-                    "collection chunks should be captured when available"
-                );
-            }
-            _ => panic!("expected subtree snapshot for collection-only root"),
-        }
-    }
-
-    #[test]
-    fn snapshot_on_var_collection_entry_expanded_object_is_captured() {
-        use crate::views::stack_view::CollectionChunks;
-
-        let mut state = make_state_with_frame(
-            1,
-            vec![VariableInfo {
-                index: 0,
-                value: VariableValue::ObjectRef {
-                    id: 20,
-                    class_name: "ArrayList".to_string(),
-                    entry_count: Some(2),
-                },
-            }],
-        );
-        state.expansion.collection_chunks.insert(
-            20,
-            CollectionChunks {
-                total_count: 2,
-                eager_page: Some(CollectionPage {
-                    entries: vec![EntryInfo {
-                        index: 0,
-                        key: None,
-                        value: FieldValue::ObjectRef {
-                            id: 30,
-                            class_name: "Node".to_string(),
-                            entry_count: None,
-                            inline_value: None,
-                        },
-                    }],
-                    total_count: 2,
-                    offset: 0,
-                    has_more: false,
-                }),
-                chunk_pages: HashMap::new(),
-            },
-        );
-        state.set_expansion_done(
-            30,
-            vec![FieldInfo {
-                name: "value".to_string(),
-                value: FieldValue::Int(7),
-            }],
-        );
-
-        let cursor = StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0,
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
-
-        match item.snapshot {
-            PinnedSnapshot::Subtree { object_fields, .. } => {
-                assert!(
-                    object_fields.contains_key(&30),
-                    "expanded collection entry object must be captured into snapshot"
-                );
-            }
-            _ => panic!("expected subtree snapshot"),
-        }
-    }
-
-    #[test]
-    fn snapshot_on_collection_entry_primitive_produces_primitive_and_key() {
-        use crate::views::stack_view::CollectionChunks;
-
-        let mut state = make_state_with_frame(
-            1,
-            vec![VariableInfo {
-                index: 0,
-                value: VariableValue::ObjectRef {
-                    id: 20,
-                    class_name: "ArrayList".to_string(),
-                    entry_count: Some(2),
-                },
-            }],
-        );
-        state.expansion.collection_chunks.insert(
-            20,
-            CollectionChunks {
-                total_count: 2,
-                eager_page: Some(CollectionPage {
-                    entries: vec![EntryInfo {
-                        index: 0,
-                        key: None,
-                        value: FieldValue::Int(7),
-                    }],
-                    total_count: 2,
-                    offset: 0,
-                    has_more: false,
-                }),
-                chunk_pages: HashMap::new(),
-            },
-        );
-
-        let cursor = StackCursor::OnCollectionEntry {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![],
-            collection_id: 20,
-            entry_index: 0,
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
-
-        assert!(
-            matches!(&item.snapshot, PinnedSnapshot::Primitive { value_label } if value_label == "7")
-        );
-        assert!(matches!(
-            item.key,
-            PinKey::CollectionEntry {
-                var_idx: 0,
-                collection_id: 20,
-                entry_index: 0,
-                collection_restore_cursor: _,
-                ..
-            }
-        ));
-        assert!(item.item_label.contains("var[0][0]"));
-    }
-
-    #[test]
-    fn snapshot_on_collection_entry_objectref_produces_subtree() {
-        use crate::views::stack_view::CollectionChunks;
-
-        let mut state = make_state_with_frame(
-            1,
-            vec![VariableInfo {
-                index: 0,
-                value: VariableValue::ObjectRef {
-                    id: 20,
-                    class_name: "ArrayList".to_string(),
-                    entry_count: Some(2),
-                },
-            }],
-        );
-        state.expansion.collection_chunks.insert(
-            20,
-            CollectionChunks {
-                total_count: 2,
-                eager_page: Some(CollectionPage {
-                    entries: vec![EntryInfo {
-                        index: 0,
-                        key: None,
-                        value: FieldValue::ObjectRef {
-                            id: 30,
-                            class_name: "Node".to_string(),
-                            entry_count: None,
-                            inline_value: None,
-                        },
-                    }],
-                    total_count: 2,
-                    offset: 0,
-                    has_more: false,
-                }),
-                chunk_pages: HashMap::new(),
-            },
-        );
-        state.set_expansion_done(
-            30,
-            vec![FieldInfo {
-                name: "value".to_string(),
-                value: FieldValue::Int(9),
-            }],
-        );
-
-        let cursor = StackCursor::OnCollectionEntry {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![],
-            collection_id: 20,
-            entry_index: 0,
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
-
-        assert!(matches!(
-            item.snapshot,
-            PinnedSnapshot::Subtree { root_id: 30, .. }
-        ));
-    }
-
-    #[test]
-    fn snapshot_on_collection_entry_obj_field_produces_field_pin() {
-        use crate::views::stack_view::CollectionChunks;
-
-        let mut state = make_state_with_frame(
-            1,
-            vec![VariableInfo {
-                index: 0,
-                value: VariableValue::ObjectRef {
-                    id: 20,
-                    class_name: "ArrayList".to_string(),
-                    entry_count: Some(2),
-                },
-            }],
-        );
-        state.expansion.collection_chunks.insert(
-            20,
-            CollectionChunks {
-                total_count: 2,
-                eager_page: Some(CollectionPage {
-                    entries: vec![EntryInfo {
-                        index: 0,
-                        key: None,
-                        value: FieldValue::ObjectRef {
-                            id: 30,
-                            class_name: "Node".to_string(),
-                            entry_count: None,
-                            inline_value: None,
-                        },
-                    }],
-                    total_count: 2,
-                    offset: 0,
-                    has_more: false,
-                }),
-                chunk_pages: HashMap::new(),
-            },
-        );
-        state.set_expansion_done(
-            30,
-            vec![FieldInfo {
-                name: "value".to_string(),
-                value: FieldValue::Int(11),
-            }],
-        );
-
-        let cursor = StackCursor::OnCollectionEntryObjField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![],
-            collection_id: 20,
-            entry_index: 0,
-            obj_field_path: vec![0],
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
-
-        assert!(
-            matches!(&item.snapshot, PinnedSnapshot::Primitive { value_label } if value_label == "11")
-        );
-        assert!(matches!(
-            item.key,
-            PinKey::CollectionEntryField {
-                collection_id: 20,
-                entry_index: 0,
-                collection_restore_cursor: _,
-                ..
-            }
-        ));
-        assert!(item.item_label.contains("value"));
-    }
-
-    #[test]
-    fn snapshot_on_collection_entry_obj_field_empty_path_returns_none() {
-        let state = StackState::new(vec![make_frame(1)]);
-        let cursor = StackCursor::OnCollectionEntryObjField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![],
-            collection_id: 1,
-            entry_index: 0,
-            obj_field_path: vec![],
-        };
-
-        assert!(snapshot_from_cursor(&cursor, &state, "main").is_none());
-    }
-
-    #[test]
-    fn snapshot_captures_static_fields_for_expanded_object() {
-        let mut state = make_state_with_frame(
-            1,
-            vec![VariableInfo {
-                index: 0,
-                value: VariableValue::ObjectRef {
-                    id: 42,
-                    class_name: "Node".to_string(),
-                    entry_count: None,
-                },
-            }],
-        );
-        state.set_expansion_done(
-            42,
-            vec![FieldInfo {
-                name: "value".to_string(),
-                value: FieldValue::Int(1),
-            }],
-        );
-        state.set_static_fields(
-            42,
-            vec![FieldInfo {
-                name: "SOME_STATIC".to_string(),
-                value: FieldValue::Int(99),
-            }],
-        );
-
-        let cursor = StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0,
-        };
-        let item = snapshot_from_cursor(&cursor, &state, "main").unwrap();
-
-        match item.snapshot {
-            PinnedSnapshot::Subtree {
-                object_static_fields,
-                ..
-            } => {
-                let Some(fields) = object_static_fields.get(&42) else {
-                    panic!("expected static fields for object 42 in snapshot");
-                };
-                assert_eq!(fields.len(), 1);
-                assert_eq!(fields[0].name, "SOME_STATIC");
             }
             _ => panic!("expected subtree snapshot"),
         }

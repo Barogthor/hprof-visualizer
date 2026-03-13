@@ -32,11 +32,234 @@ fn make_var(index: usize, object_id: u64) -> VariableInfo {
     }
 }
 
+fn make_var_object_ref(index: usize, object_id: u64) -> VariableInfo {
+    VariableInfo {
+        index,
+        value: VariableValue::ObjectRef {
+            id: object_id,
+            class_name: "Object".to_string(),
+            entry_count: None,
+        },
+    }
+}
+
+// --- Helper constructors for RenderCursor ---
+
+fn rc_frame(frame_id: u64) -> RenderCursor {
+    RenderCursor::At(NavigationPathBuilder::frame_only(FrameId(frame_id)))
+}
+
+fn rc_var(frame_id: u64, var_idx: usize) -> RenderCursor {
+    RenderCursor::At(NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx)).build())
+}
+
+fn rc_field(frame_id: u64, var_idx: usize, field_path: &[usize]) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::At(b.build())
+}
+
+fn rc_static_field(
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    static_idx: usize,
+) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::At(b.static_field(StaticFieldIdx(static_idx)).build())
+}
+
+fn rc_loading(frame_id: u64, var_idx: usize, field_path: &[usize]) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::LoadingNode(b.build())
+}
+
+fn rc_cyclic(frame_id: u64, var_idx: usize, field_path: &[usize]) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::CyclicNode(b.build())
+}
+
+#[allow(dead_code)]
+fn rc_section_header(frame_id: u64, var_idx: usize, field_path: &[usize]) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::SectionHeader(b.build())
+}
+
+#[allow(dead_code)]
+fn rc_overflow(frame_id: u64, var_idx: usize, field_path: &[usize]) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::OverflowRow(b.build())
+}
+
+fn rc_coll_entry(
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    coll_id: u64,
+    entry_idx: usize,
+) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::At(
+        b.collection_entry(CollectionId(coll_id), EntryIdx(entry_idx))
+            .build(),
+    )
+}
+
+fn rc_coll_entry_field(
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    coll_id: u64,
+    entry_idx: usize,
+    obj_field_path: &[usize],
+) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    b = b.collection_entry(CollectionId(coll_id), EntryIdx(entry_idx));
+    for &fi in obj_field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::At(b.build())
+}
+
+#[allow(dead_code)]
+fn rc_chunk_section(
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    coll_id: u64,
+    chunk_offset: usize,
+) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    let path = b
+        .collection_entry(CollectionId(coll_id), EntryIdx(chunk_offset))
+        .build();
+    RenderCursor::ChunkSection(path, ChunkOffset(chunk_offset))
+}
+
+#[allow(dead_code)]
+fn rc_static_obj_field(
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    static_idx: usize,
+    obj_field_path: &[usize],
+) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    b = b.static_field(StaticFieldIdx(static_idx));
+    for &fi in obj_field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::At(b.build())
+}
+
+#[allow(dead_code)]
+fn rc_coll_entry_static_field(
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    coll_id: u64,
+    entry_idx: usize,
+    obj_field_path: &[usize],
+    static_idx: usize,
+) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    b = b.collection_entry(CollectionId(coll_id), EntryIdx(entry_idx));
+    for &fi in obj_field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::At(b.static_field(StaticFieldIdx(static_idx)).build())
+}
+
+#[allow(dead_code, clippy::too_many_arguments)]
+fn rc_coll_entry_static_obj_field(
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    coll_id: u64,
+    entry_idx: usize,
+    obj_field_path: &[usize],
+    static_idx: usize,
+    static_obj_path: &[usize],
+) -> RenderCursor {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    b = b.collection_entry(CollectionId(coll_id), EntryIdx(entry_idx));
+    for &fi in obj_field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    b = b.static_field(StaticFieldIdx(static_idx));
+    for &fi in static_obj_path {
+        b = b.field(FieldIdx(fi));
+    }
+    RenderCursor::At(b.build())
+}
+
+fn path_field(frame_id: u64, var_idx: usize, field_path: &[usize]) -> NavigationPath {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    b.build()
+}
+
+fn path_coll_entry(
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    coll_id: u64,
+    entry_idx: usize,
+) -> NavigationPath {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    b.collection_entry(CollectionId(coll_id), EntryIdx(entry_idx))
+        .build()
+}
+
+// ---------------------------------------------------------------------------
+// Basic navigation tests
+// ---------------------------------------------------------------------------
+
 #[test]
 fn new_with_three_frames_selects_frame_0() {
     let frames = vec![make_frame(1), make_frame(2), make_frame(3)];
     let state = StackState::new(frames);
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
+    assert_eq!(state.cursor(), &rc_frame(1));
 }
 
 #[test]
@@ -44,7 +267,7 @@ fn move_down_on_three_frames_with_no_expanded_moves_to_frame_1() {
     let frames = vec![make_frame(1), make_frame(2), make_frame(3)];
     let mut state = StackState::new(frames);
     state.move_down();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
+    assert_eq!(state.cursor(), &rc_frame(2));
 }
 
 #[test]
@@ -52,7 +275,7 @@ fn move_up_at_frame_0_does_nothing() {
     let frames = vec![make_frame(1), make_frame(2), make_frame(3)];
     let mut state = StackState::new(frames);
     state.move_up();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
+    assert_eq!(state.cursor(), &rc_frame(1));
 }
 
 #[test]
@@ -61,15 +284,8 @@ fn toggle_expand_with_vars_then_move_down_moves_to_var_0() {
     let mut state = StackState::new(frames);
     let vars = vec![make_var(0, 1), make_var(1, 2)];
     state.toggle_expand(10, vars);
-    // cursor is still OnFrame(0), move_down should go to OnVar{frame_idx:0, var_idx:0}
     state.move_down();
-    assert_eq!(
-        state.cursor(),
-        &StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0
-        }
-    );
+    assert_eq!(state.cursor(), &rc_var(10, 0));
 }
 
 #[test]
@@ -78,10 +294,9 @@ fn move_down_past_last_var_of_expanded_frame_moves_to_next_frame() {
     let mut state = StackState::new(frames);
     let vars = vec![make_var(0, 1)];
     state.toggle_expand(10, vars);
-    // flat: [Frame(0), Var{0,0}, Frame(1)]
-    state.move_down(); // → Var{0,0}
-    state.move_down(); // → Frame(1)
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
+    state.move_down(); // → Var{10,0}
+    state.move_down(); // → Frame(20)
+    assert_eq!(state.cursor(), &rc_frame(20));
 }
 
 #[test]
@@ -99,24 +314,14 @@ fn toggle_expand_collapse_from_var_cursor_resets_to_frame_and_navigation_works()
     let frames = vec![make_frame(10), make_frame(20)];
     let mut state = StackState::new(frames);
     state.toggle_expand(10, vec![make_var(0, 1)]);
-    state.move_down(); // → OnVar{frame_idx:0, var_idx:0}
-    assert_eq!(
-        state.cursor(),
-        &StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0
-        }
-    );
-    // Collapse while cursor is on a var
+    state.move_down(); // → rc_var(10,0)
+    assert_eq!(state.cursor(), &rc_var(10, 0));
     state.toggle_expand(10, vec![]);
-    // Cursor must reset to the frame row
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
-    // Navigation must work: can move to the next frame
+    assert_eq!(state.cursor(), &rc_frame(10));
     state.move_down();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
-    // And back
+    assert_eq!(state.cursor(), &rc_frame(20));
     state.move_up();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
+    assert_eq!(state.cursor(), &rc_frame(10));
 }
 
 #[test]
@@ -160,17 +365,6 @@ fn new_with_empty_frames_returns_none_for_selected_frame_id() {
 
 // --- Task 10: Object expansion phase tests ---
 
-fn make_var_object_ref(index: usize, object_id: u64) -> VariableInfo {
-    VariableInfo {
-        index,
-        value: VariableValue::ObjectRef {
-            id: object_id,
-            class_name: "Object".to_string(),
-            entry_count: None,
-        },
-    }
-}
-
 #[test]
 fn set_expansion_loading_changes_phase_to_loading() {
     let mut state = StackState::new(vec![make_frame(1)]);
@@ -194,39 +388,29 @@ fn set_expansion_failed_changes_phase_to_failed() {
 
 #[test]
 fn set_expansion_failed_recovers_cursor_from_loading_node_top_level() {
-    // Cursor was on OnObjectLoadingNode (var-level loading spinner)
-    // when failure arrives — cursor must snap back to OnVar so
-    // navigation is not stuck.
     let frames = vec![make_frame(10), make_frame(20)];
     let mut state = StackState::new(frames);
     let vars = vec![make_var_object_ref(0, 99)];
     state.toggle_expand(10, vars);
     state.set_expansion_loading(99);
-    // Simulate user pressing Down onto the loading spinner row.
-    state.move_down(); // OnFrame(0) → OnVar{0,0}
-    state.move_down(); // OnVar{0,0} → OnObjectLoadingNode{0,0,[]}
+    state.move_down(); // → rc_var(10,0)
+    state.move_down(); // → LoadingNode
     assert!(
-        matches!(state.cursor(), StackCursor::OnObjectLoadingNode { .. }),
+        matches!(state.cursor(), RenderCursor::LoadingNode(_)),
         "precondition: cursor is on loading node"
     );
     state.set_expansion_failed(99, "err".to_string());
-    // Cursor must be recovered to OnVar, not orphaned.
     assert_eq!(
         state.cursor(),
-        &StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0
-        },
-        "cursor must snap to parent OnVar after failure"
+        &rc_var(10, 0),
+        "cursor must snap to parent after failure"
     );
-    // Navigation must resume: Down from OnVar{0,0} must reach OnFrame(1).
     state.move_down();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
+    assert_eq!(state.cursor(), &rc_frame(20));
 }
 
 #[test]
 fn set_expansion_failed_recovers_cursor_from_loading_node_nested_field() {
-    // Same as above but for a nested field object (field_path non-empty).
     use hprof_engine::{FieldInfo, FieldValue};
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
@@ -242,26 +426,19 @@ fn set_expansion_failed_recovers_cursor_from_loading_node_nested_field() {
         },
     }];
     state.set_expansion_done(100, fields);
-    // Expand the nested field object.
     state.set_expansion_loading(200);
-    // Navigate: Frame → Var → ObjectField{[0]} → OnObjectLoadingNode{[0]}
-    state.move_down(); // → OnVar{0,0}
-    state.move_down(); // → OnObjectField{0,0,[0]}
-    state.move_down(); // → OnObjectLoadingNode{0,0,[0]}
+    state.move_down(); // → rc_var(10,0)
+    state.move_down(); // → rc_field(10,0,[0])
+    state.move_down(); // → LoadingNode
     assert!(
-        matches!(state.cursor(), StackCursor::OnObjectLoadingNode { .. }),
+        matches!(state.cursor(), RenderCursor::LoadingNode(_)),
         "precondition: cursor is on nested loading node"
     );
     state.set_expansion_failed(200, "boom".to_string());
-    // Cursor must recover to the parent OnObjectField.
     assert_eq!(
         state.cursor(),
-        &StackCursor::OnObjectField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![0],
-        },
-        "cursor must snap to parent OnObjectField after nested failure"
+        &rc_field(10, 0, &[0]),
+        "cursor must snap to parent field after nested failure"
     );
 }
 
@@ -281,11 +458,7 @@ fn flat_items_loading_object_includes_loading_node() {
     state.toggle_expand(10, vars);
     state.set_expansion_loading(99);
     let flat = state.flat_items();
-    assert!(flat.contains(&StackCursor::OnObjectLoadingNode {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-    }));
+    assert!(flat.contains(&rc_loading(10, 0, &[])));
 }
 
 #[test]
@@ -307,16 +480,8 @@ fn flat_items_expanded_with_two_fields_includes_two_object_field_nodes() {
     ];
     state.set_expansion_done(99, fields);
     let flat = state.flat_items();
-    assert!(flat.contains(&StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0],
-    }));
-    assert!(flat.contains(&StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![1],
-    }));
+    assert!(flat.contains(&rc_field(10, 0, &[0])));
+    assert!(flat.contains(&rc_field(10, 0, &[1])));
 }
 
 #[test]
@@ -331,24 +496,10 @@ fn move_down_from_on_var_expanded_moves_to_first_object_field() {
         value: FieldValue::Int(7),
     }];
     state.set_expansion_done(99, fields);
-    // cursor is OnFrame(0), move down → OnVar{0,0}, move down → OnObjectField{0,0,[0]}
     state.move_down();
-    assert_eq!(
-        state.cursor(),
-        &StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0
-        }
-    );
+    assert_eq!(state.cursor(), &rc_var(10, 0));
     state.move_down();
-    assert_eq!(
-        state.cursor(),
-        &StackCursor::OnObjectField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![0],
-        }
-    );
+    assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
 }
 
 #[test]
@@ -363,11 +514,10 @@ fn move_down_past_last_object_field_moves_to_next_frame() {
         value: FieldValue::Int(7),
     }];
     state.set_expansion_done(99, fields);
-    // flat: [Frame(0), Var{0,0}, Field{0,0,0}, Frame(1)]
     state.move_down(); // Frame → Var
     state.move_down(); // Var → Field
-    state.move_down(); // Field → Frame(1)
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
+    state.move_down(); // Field → Frame(20)
+    assert_eq!(state.cursor(), &rc_frame(20));
 }
 
 #[test]
@@ -377,9 +527,8 @@ fn selected_loading_object_id_on_loading_node_returns_object_id() {
     let vars = vec![make_var_object_ref(0, 42)];
     state.toggle_expand(10, vars);
     state.set_expansion_loading(42);
-    // move to the loading node
-    state.move_down(); // → OnVar{0,0}
-    state.move_down(); // → OnObjectLoadingNode{0,0,field_path:[]}
+    state.move_down(); // → rc_var(10,0)
+    state.move_down(); // → LoadingNode
     assert_eq!(state.selected_loading_object_id(), Some(42));
 }
 
@@ -392,7 +541,6 @@ fn flat_items_depth2_expansion_emits_correct_cursor_sequence() {
     let mut state = StackState::new(frames);
     let vars = vec![make_var_object_ref(0, 100)];
     state.toggle_expand(10, vars);
-    // Root object 100 has one ObjectRef field pointing to object 200.
     let fields_100 = vec![FieldInfo {
         name: "child".to_string(),
         value: FieldValue::ObjectRef {
@@ -403,25 +551,14 @@ fn flat_items_depth2_expansion_emits_correct_cursor_sequence() {
         },
     }];
     state.set_expansion_done(100, fields_100);
-    // Object 200 has one Int field.
     let fields_200 = vec![FieldInfo {
         name: "val".to_string(),
         value: FieldValue::Int(7),
     }];
     state.set_expansion_done(200, fields_200);
-
     let flat = state.flat_items();
-    // Expected: Frame(0), Var{0,0}, Field{0,0,[0]}, Field{0,0,[0,0]}
-    assert!(flat.contains(&StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0],
-    }));
-    assert!(flat.contains(&StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0, 0],
-    }));
+    assert!(flat.contains(&rc_field(10, 0, &[0])));
+    assert!(flat.contains(&rc_field(10, 0, &[0, 0])));
 }
 
 #[test]
@@ -441,12 +578,7 @@ fn selected_field_ref_id_returns_object_ref_id_for_nested_field() {
         },
     }];
     state.set_expansion_done(100, fields);
-    // Navigate to the field at path [0]
-    state.set_cursor(StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0],
-    });
+    state.set_cursor(rc_field(10, 0, &[0]));
     assert_eq!(state.selected_field_ref_id(), Some(200));
 }
 
@@ -462,11 +594,7 @@ fn selected_field_ref_id_returns_none_for_non_object_ref_field() {
         value: FieldValue::Int(42),
     }];
     state.set_expansion_done(100, fields);
-    state.set_cursor(StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0],
-    });
+    state.set_cursor(rc_field(10, 0, &[0]));
     assert_eq!(state.selected_field_ref_id(), None);
 }
 
@@ -477,7 +605,6 @@ fn collapse_object_recursive_removes_nested_expanded_child() {
     use hprof_engine::{FieldInfo, FieldValue};
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
-    // Expand root 100 → child 200
     let fields_100 = vec![FieldInfo {
         name: "child".to_string(),
         value: FieldValue::ObjectRef {
@@ -493,12 +620,9 @@ fn collapse_object_recursive_removes_nested_expanded_child() {
         value: FieldValue::Int(1),
     }];
     state.set_expansion_done(200, fields_200);
-
     assert_eq!(state.expansion_state(100), ExpansionPhase::Expanded);
     assert_eq!(state.expansion_state(200), ExpansionPhase::Expanded);
-
     state.collapse_object_recursive(100);
-
     assert_eq!(state.expansion_state(100), ExpansionPhase::Collapsed);
     assert_eq!(state.expansion_state(200), ExpansionPhase::Collapsed);
 }
@@ -508,7 +632,6 @@ fn collapse_object_recursive_cycle_guard_does_not_infinite_loop() {
     use hprof_engine::{FieldInfo, FieldValue};
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
-    // Artificial cycle: 100 → 200 → 100 (corrupted heap)
     let fields_100 = vec![FieldInfo {
         name: "c".to_string(),
         value: FieldValue::ObjectRef {
@@ -529,7 +652,6 @@ fn collapse_object_recursive_cycle_guard_does_not_infinite_loop() {
         },
     }];
     state.set_expansion_done(200, fields_200);
-    // Must terminate without stack overflow
     state.collapse_object_recursive(100);
     assert_eq!(state.expansion_state(100), ExpansionPhase::Collapsed);
     assert_eq!(state.expansion_state(200), ExpansionPhase::Collapsed);
@@ -544,16 +666,13 @@ fn toggle_expand_collapse_frame_clears_nested_object_phases() {
     let mut state = StackState::new(frames);
     let vars = vec![make_var_object_ref(0, 100)];
     state.toggle_expand(10, vars);
-    // Expand object 100 (nested)
     let fields_100 = vec![FieldInfo {
         name: "x".to_string(),
         value: FieldValue::Int(1),
     }];
     state.set_expansion_done(100, fields_100);
     assert_eq!(state.expansion_state(100), ExpansionPhase::Expanded);
-    // Collapse the frame
     state.toggle_expand(10, vec![]);
-    // object_phases must be cleaned up
     assert!(state.expansion.object_phases.is_empty());
 }
 
@@ -585,10 +704,8 @@ fn build_items_depth1_field_has_correct_indent() {
     }];
     state.set_expansion_done(99, fields);
     let items = state.build_items();
-    // items[0] = frame, items[1] = var, items[2] = field
     assert_eq!(items.len(), 3);
     let text = item_text(items[2].clone());
-    // 4-space indent + 2-char toggle prefix ("  " for primitives)
     assert!(
         text.starts_with("      ") && !text.starts_with("        "),
         "depth-1 field must have 4+2 indent, got: {text:?}"
@@ -618,16 +735,13 @@ fn build_items_depth2_field_has_correct_indent() {
     }];
     state.set_expansion_done(200, fields_200);
     let items = state.build_items();
-    // items[0]=frame, [1]=var, [2]=depth-1 field, [3]=depth-2 field
     assert_eq!(items.len(), 4);
     let depth1 = item_text(items[2].clone());
-    // 4-space indent + 2-char toggle ("- " for expanded ObjectRef)
     assert!(
         depth1.starts_with("    - "),
         "depth-1 ObjectRef field must have toggle prefix, got: {depth1:?}"
     );
     let depth2 = item_text(items[3].clone());
-    // 6-space indent + 2-char toggle ("  " for primitive)
     assert!(
         depth2.starts_with("        ") && !depth2.starts_with("          "),
         "depth-2 field must have 6+2 indent, got: {depth2:?}"
@@ -642,7 +756,6 @@ fn build_items_failed_expansion_shows_error_inline_on_var_row() {
     state.toggle_expand(10, vars);
     state.set_expansion_failed(99, "object not found".to_string());
     let items = state.build_items();
-    // items[0]=frame, [1]=var with inline error — no orphan child row (AC4)
     assert_eq!(
         items.len(),
         2,
@@ -682,18 +795,18 @@ fn flat_items_self_ref_emits_cyclic_node() {
     let flat = state.flat_items();
     let cyclic_count = flat
         .iter()
-        .filter(|c| matches!(c, StackCursor::OnCyclicNode { .. }))
+        .filter(|c| matches!(c, RenderCursor::CyclicNode(_)))
         .count();
     assert_eq!(cyclic_count, 1);
     let deep_fields = flat
         .iter()
         .filter(|c| {
-            matches!(
-                c,
-                StackCursor::OnObjectField {
-                    field_path, ..
-                } if field_path.len() > 1
-            )
+            if let RenderCursor::At(p) = c {
+                let segs = p.segments();
+                segs.len() > 3 && segs[2..].iter().all(|s| matches!(s, PathSegment::Field(_)))
+            } else {
+                false
+            }
         })
         .count();
     assert_eq!(deep_fields, 0, "no recursive fields beyond depth 1");
@@ -730,7 +843,7 @@ fn flat_items_multi_self_ref_emits_two_cyclic_nodes() {
     let flat = state.flat_items();
     let cyclic_count = flat
         .iter()
-        .filter(|c| matches!(c, StackCursor::OnCyclicNode { .. }))
+        .filter(|c| matches!(c, RenderCursor::CyclicNode(_)))
         .count();
     assert_eq!(cyclic_count, 2);
 }
@@ -776,7 +889,6 @@ fn flat_items_indirect_cycle_emits_cyclic_node() {
     let mut state = StackState::new(frames);
     let vars = vec![make_var_object_ref(0, 100)];
     state.toggle_expand(10, vars);
-    // A(100) → B(200)
     let fields_a = vec![FieldInfo {
         name: "child".to_string(),
         value: FieldValue::ObjectRef {
@@ -787,7 +899,6 @@ fn flat_items_indirect_cycle_emits_cyclic_node() {
         },
     }];
     state.set_expansion_done(100, fields_a);
-    // B(200) → A(100) (back-reference)
     let fields_b = vec![FieldInfo {
         name: "parent".to_string(),
         value: FieldValue::ObjectRef {
@@ -801,15 +912,16 @@ fn flat_items_indirect_cycle_emits_cyclic_node() {
     let flat = state.flat_items();
     let cyclic_count = flat
         .iter()
-        .filter(|c| matches!(c, StackCursor::OnCyclicNode { .. }))
+        .filter(|c| matches!(c, RenderCursor::CyclicNode(_)))
         .count();
     assert_eq!(cyclic_count, 1, "B's back-ref to A should be cyclic");
-    // Should not recurse 16 levels deep
     let max_depth = flat
         .iter()
         .filter_map(|c| match c {
-            StackCursor::OnObjectField { field_path, .. } => Some(field_path.len()),
-            StackCursor::OnCyclicNode { field_path, .. } => Some(field_path.len()),
+            RenderCursor::At(p) | RenderCursor::CyclicNode(p) => {
+                let field_segs = p.segments().iter().skip(2).count();
+                Some(field_segs)
+            }
             _ => None,
         })
         .max()
@@ -886,40 +998,17 @@ fn move_down_up_across_cyclic_node() {
         },
     ];
     state.set_expansion_done(100, fields);
-    // flat: Frame(0), Var{0,0}, Field[0](Int),
-    //       CyclicNode[1](self-ref), Field[2](Int)
     state.move_down(); // Frame → Var
     state.move_down(); // Var → Field[0]
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnObjectField { field_path, .. }
-        if *field_path == vec![0]
-    ));
+    assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
     state.move_down(); // Field[0] → CyclicNode[1]
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnCyclicNode { field_path, .. }
-        if *field_path == vec![1]
-    ));
+    assert_eq!(state.cursor(), &rc_cyclic(10, 0, &[1]));
     state.move_down(); // CyclicNode[1] → Field[2]
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnObjectField { field_path, .. }
-        if *field_path == vec![2]
-    ));
-    // Now go back up
+    assert_eq!(state.cursor(), &rc_field(10, 0, &[2]));
     state.move_up(); // Field[2] → CyclicNode[1]
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnCyclicNode { field_path, .. }
-        if *field_path == vec![1]
-    ));
+    assert_eq!(state.cursor(), &rc_cyclic(10, 0, &[1]));
     state.move_up(); // CyclicNode[1] → Field[0]
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnObjectField { field_path, .. }
-        if *field_path == vec![0]
-    ));
+    assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
 }
 
 fn setup_collection_entry_self_ref_state() -> StackState {
@@ -938,6 +1027,11 @@ fn setup_collection_entry_self_ref_state() -> StackState {
             },
         }],
     );
+    // collection 200 is at field[0] of var[0] (frame 10); set expansion_phases so it renders
+    state
+        .expansion
+        .expansion_phases
+        .insert(path_field(10, 0, &[0]), ExpansionPhase::Expanded);
     state.expansion.collection_chunks.insert(
         200,
         CollectionChunks {
@@ -979,36 +1073,26 @@ fn setup_collection_entry_self_ref_state() -> StackState {
 fn flat_items_collection_entry_self_ref_emits_terminal_obj_field_row() {
     let state = setup_collection_entry_self_ref_state();
     let flat = state.flat_items();
+    // collection_id=200, entry_index=0, then field[0] is the self-ref
     let marker_rows = flat
         .iter()
         .filter(|c| {
-            matches!(
-                c,
-                StackCursor::OnCollectionEntryObjField {
-                    collection_id,
-                    entry_index,
-                    obj_field_path,
-                    ..
-                } if *collection_id == 200 && *entry_index == 0 && *obj_field_path == vec![0]
-            )
+            if let RenderCursor::At(p) = c {
+                let segs = p.segments();
+                segs.iter().any(|s| {
+                    matches!(
+                        s,
+                        PathSegment::CollectionEntry(CollectionId(200), EntryIdx(0))
+                    )
+                }) && segs
+                    .last()
+                    .is_some_and(|s| matches!(s, PathSegment::Field(_)))
+            } else {
+                false
+            }
         })
         .count();
     assert_eq!(marker_rows, 1, "cyclic entry field must emit one row");
-
-    let max_depth = flat
-        .iter()
-        .filter_map(|c| match c {
-            StackCursor::OnCollectionEntryObjField {
-                collection_id,
-                entry_index,
-                obj_field_path,
-                ..
-            } if *collection_id == 200 && *entry_index == 0 => Some(obj_field_path.len()),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0);
-    assert_eq!(max_depth, 1, "cyclic entry field must not recurse");
     assert_eq!(state.flat_items().len(), state.build_items().len());
 }
 
@@ -1034,14 +1118,8 @@ fn build_items_collection_entry_self_ref_renders_marker() {
 #[test]
 fn selected_collection_entry_obj_field_ref_id_is_none_for_cyclic_row() {
     let mut state = setup_collection_entry_self_ref_state();
-    state.set_cursor(StackCursor::OnCollectionEntryObjField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0],
-        collection_id: 200,
-        entry_index: 0,
-        obj_field_path: vec![0],
-    });
+    // collection 200 at field[0] of var[0], entry[0], then obj_field[0]
+    state.set_cursor(rc_coll_entry_field(10, 0, &[0], 200, 0, &[0]));
     assert_eq!(state.selected_collection_entry_obj_field_ref_id(), None);
     assert_eq!(
         state.selected_collection_entry_obj_field_collection_info(),
@@ -1056,7 +1134,6 @@ fn flat_items_acyclic_tree_no_cyclic_nodes() {
     let mut state = StackState::new(frames);
     let vars = vec![make_var_object_ref(0, 100)];
     state.toggle_expand(10, vars);
-    // A(100) → B(200) → C(300), no cycles
     let fields_a = vec![FieldInfo {
         name: "b".to_string(),
         value: FieldValue::ObjectRef {
@@ -1085,25 +1162,12 @@ fn flat_items_acyclic_tree_no_cyclic_nodes() {
     let flat = state.flat_items();
     let cyclic_count = flat
         .iter()
-        .filter(|c| matches!(c, StackCursor::OnCyclicNode { .. }))
+        .filter(|c| matches!(c, RenderCursor::CyclicNode(_)))
         .count();
     assert_eq!(cyclic_count, 0, "acyclic tree must have zero cyclic nodes");
-    // Should have fields at depths 1, 2, 3
-    assert!(flat.contains(&StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0],
-    }));
-    assert!(flat.contains(&StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0, 0],
-    }));
-    assert!(flat.contains(&StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0, 0, 0],
-    }));
+    assert!(flat.contains(&rc_field(10, 0, &[0])));
+    assert!(flat.contains(&rc_field(10, 0, &[0, 0])));
+    assert!(flat.contains(&rc_field(10, 0, &[0, 0, 0])));
 }
 
 #[test]
@@ -1113,7 +1177,6 @@ fn flat_items_diamond_shared_object_no_false_positive() {
     let mut state = StackState::new(frames);
     let vars = vec![make_var_object_ref(0, 100)];
     state.toggle_expand(10, vars);
-    // A(100) has two fields both pointing to C(300)
     let fields_a = vec![
         FieldInfo {
             name: "left".to_string(),
@@ -1141,26 +1204,16 @@ fn flat_items_diamond_shared_object_no_false_positive() {
     }];
     state.set_expansion_done(300, fields_c);
     let flat = state.flat_items();
-    // C is shared but NOT an ancestor — no cyclic nodes
     let cyclic_count = flat
         .iter()
-        .filter(|c| matches!(c, StackCursor::OnCyclicNode { .. }))
+        .filter(|c| matches!(c, RenderCursor::CyclicNode(_)))
         .count();
     assert_eq!(
         cyclic_count, 0,
         "diamond/shared object must not be a false positive"
     );
-    // C's field should appear under both left and right
-    assert!(flat.contains(&StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0, 0],
-    }));
-    assert!(flat.contains(&StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![1, 0],
-    }));
+    assert!(flat.contains(&rc_field(10, 0, &[0, 0])));
+    assert!(flat.contains(&rc_field(10, 0, &[1, 0])));
 }
 
 #[test]
@@ -1170,7 +1223,6 @@ fn collapse_cyclic_child_resyncs_cursor_to_var() {
     let mut state = StackState::new(frames);
     let vars = vec![make_var_object_ref(0, 1000)];
     state.toggle_expand(10, vars);
-    // Thread(1000) → parkBlocker field → Coroutine(2000)
     let thread_fields = vec![FieldInfo {
         name: "parkBlocker".to_string(),
         value: FieldValue::ObjectRef {
@@ -1181,7 +1233,6 @@ fn collapse_cyclic_child_resyncs_cursor_to_var() {
         },
     }];
     state.set_expansion_done(1000, thread_fields);
-    // Coroutine(2000) → blockedThread → Thread(1000) (cycle)
     let coroutine_fields = vec![FieldInfo {
         name: "blockedThread".to_string(),
         value: FieldValue::ObjectRef {
@@ -1192,47 +1243,23 @@ fn collapse_cyclic_child_resyncs_cursor_to_var() {
         },
     }];
     state.set_expansion_done(2000, coroutine_fields);
-
-    // Navigate to parkBlocker field (path [0])
-    state.set_cursor(StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0],
-    });
-
-    // Collapse the nested Coroutine object.
-    // collect_descendants(2000) follows back-ref to 1000,
-    // collapsing BOTH objects. Cursor becomes orphaned.
+    state.set_cursor(rc_field(10, 0, &[0]));
     state.collapse_object_recursive(2000);
-
-    // Cursor must have been resynced — not stuck
     let flat = state.flat_items();
     assert!(
         flat.contains(state.cursor()),
         "cursor must be in flat_items after collapse, got: {:?}",
         state.cursor(),
     );
-    // Should have fallen back to OnVar
     assert!(
-        matches!(
-            state.cursor(),
-            StackCursor::OnVar {
-                frame_idx: 0,
-                var_idx: 0,
-            }
-        ),
+        matches!(state.cursor(), RenderCursor::At(p) if p.segments().len() == 2),
         "cursor should fall back to OnVar, got: {:?}",
         state.cursor(),
     );
-
-    // Navigation must work again
     state.move_down();
     assert_ne!(
         state.cursor(),
-        &StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0,
-        },
+        &rc_var(10, 0),
         "move_down must move away from OnVar"
     );
 }
@@ -1244,7 +1271,6 @@ fn collapse_nested_non_recursive_preserves_parent() {
     let mut state = StackState::new(frames);
     let vars = vec![make_var_object_ref(0, 1000)];
     state.toggle_expand(10, vars);
-    // Thread(1000) → parkBlocker → Coroutine(2000)
     let thread_fields = vec![FieldInfo {
         name: "parkBlocker".to_string(),
         value: FieldValue::ObjectRef {
@@ -1255,7 +1281,6 @@ fn collapse_nested_non_recursive_preserves_parent() {
         },
     }];
     state.set_expansion_done(1000, thread_fields);
-    // Coroutine(2000) → blockedThread → Thread(1000)
     let coroutine_fields = vec![FieldInfo {
         name: "blockedThread".to_string(),
         value: FieldValue::ObjectRef {
@@ -1266,35 +1291,17 @@ fn collapse_nested_non_recursive_preserves_parent() {
         },
     }];
     state.set_expansion_done(2000, coroutine_fields);
-
-    // Cursor on parkBlocker field
-    state.set_cursor(StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![0],
-    });
-
-    // Non-recursive collapse (CollapseNestedObj path):
-    // only collapses 2000, NOT 1000.
+    state.set_cursor(rc_field(10, 0, &[0]));
     state.collapse_object(2000);
-
-    // Thread(1000) must still be expanded
     assert_eq!(
         state.expansion_state(1000),
         ExpansionPhase::Expanded,
-        "parent object must remain expanded"
+        "parent must remain expanded"
     );
-    // Coroutine(2000) must be collapsed
-    assert_eq!(state.expansion_state(2000), ExpansionPhase::Collapsed,);
-    // Cursor stays on the parkBlocker field
+    assert_eq!(state.expansion_state(2000), ExpansionPhase::Collapsed);
     let flat = state.flat_items();
     assert!(flat.contains(state.cursor()), "cursor must still be valid");
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnObjectField {
-            field_path, ..
-        } if *field_path == vec![0]
-    ));
+    assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
 }
 
 #[test]
@@ -1335,7 +1342,6 @@ fn chunk_ranges_total_1000() {
 #[test]
 fn chunk_ranges_total_3000() {
     let ranges = compute_chunk_ranges(3000);
-    // 9 sections of 100 (100..999) + 2 of 1000
     assert_eq!(ranges.len(), 11);
     assert_eq!(ranges[0], (100, 100));
     assert_eq!(ranges[8], (900, 100));
@@ -1351,33 +1357,32 @@ fn chunk_ranges_total_2348() {
     assert_eq!(ranges[10], (2000, 348));
 }
 
+// --- Page navigation tests (frames 1..=30, index N → frame_id N+1) ---
+
 #[test]
 fn page_down_jumps_by_visible_height() {
-    // 30 frames, cursor at frame 5, height 20 → frame 25
     let frames: Vec<_> = (1..=30).map(make_frame).collect();
     let mut state = StackState::new(frames);
     state.set_visible_height(20);
-    // Move cursor to frame 5
     for _ in 0..5 {
         state.move_down();
     }
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(5));
+    assert_eq!(state.cursor(), &rc_frame(6));
     state.move_page_down();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(25));
+    assert_eq!(state.cursor(), &rc_frame(26));
 }
 
 #[test]
 fn page_up_jumps_by_visible_height() {
-    // 30 frames, cursor at frame 25, height 20 → frame 5
     let frames: Vec<_> = (1..=30).map(make_frame).collect();
     let mut state = StackState::new(frames);
     state.set_visible_height(20);
     for _ in 0..25 {
         state.move_down();
     }
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(25));
+    assert_eq!(state.cursor(), &rc_frame(26));
     state.move_page_up();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(5));
+    assert_eq!(state.cursor(), &rc_frame(6));
 }
 
 #[test]
@@ -1386,7 +1391,7 @@ fn page_down_clamps_to_last_item() {
     let mut state = StackState::new(frames);
     state.set_visible_height(20);
     state.move_page_down();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(9));
+    assert_eq!(state.cursor(), &rc_frame(10));
 }
 
 #[test]
@@ -1398,7 +1403,7 @@ fn page_up_clamps_to_first_item() {
         state.move_down();
     }
     state.move_page_up();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
+    assert_eq!(state.cursor(), &rc_frame(1));
 }
 
 #[test]
@@ -1462,7 +1467,6 @@ fn rendered_fg_at(item: ListItem<'static>, col: u16) -> ratatui::style::Color {
     buf.cell((col, 0)).map(|c| c.fg).unwrap_or(Color::Reset)
 }
 
-/// AC1 / AC3: Enter on Failed var is a no-op — cursor stays on OnVar, no child cursor.
 #[test]
 fn enter_on_failed_var_is_noop() {
     let frames = vec![make_frame(10)];
@@ -1472,32 +1476,23 @@ fn enter_on_failed_var_is_noop() {
     state.set_expansion_failed(42, "object absent".to_string());
     assert_eq!(state.expansion_state(42), ExpansionPhase::Failed);
     let flat = state.flat_items();
-    // Cursor can land on the Failed var (AC3).
     assert!(
-        flat.contains(&StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0
-        }),
+        flat.contains(&rc_var(10, 0)),
         "Failed var must stay in flat_items: {flat:?}"
     );
-    // No child cursor emitted for the Failed object (AC4).
     assert!(
         !flat
             .iter()
-            .any(|c| matches!(c, StackCursor::OnObjectLoadingNode { .. })),
+            .any(|c| matches!(c, RenderCursor::LoadingNode(_))),
         "no loading node must appear for a Failed object"
     );
 }
 
-/// AC1 / AC3: Enter on Failed collection entry is a no-op.
-///
-/// Sets up: var → Expanded object → field (collection) → entry (ObjectRef Failed).
 #[test]
 fn enter_on_failed_collection_entry_is_noop() {
     use hprof_engine::{CollectionPage, EntryInfo, FieldInfo, FieldValue};
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
-    // Var → obj 99 (Expanded, has a collection field id=200)
     let vars = vec![make_var_object_ref(0, 99)];
     state.toggle_expand(10, vars);
     state.set_expansion_done(
@@ -1512,7 +1507,6 @@ fn enter_on_failed_collection_entry_is_noop() {
             },
         }],
     );
-    // Expand collection 200 with one entry whose value ObjectRef id=300 is Failed.
     let entry_obj_id = 300u64;
     let eager_page = CollectionPage {
         entries: vec![EntryInfo {
@@ -1529,6 +1523,10 @@ fn enter_on_failed_collection_entry_is_noop() {
         offset: 0,
         has_more: false,
     };
+    state
+        .expansion
+        .expansion_phases
+        .insert(path_field(10, 0, &[0]), ExpansionPhase::Expanded);
     state.expansion.collection_chunks.insert(
         200,
         CollectionChunks {
@@ -1538,20 +1536,23 @@ fn enter_on_failed_collection_entry_is_noop() {
         },
     );
     state.set_expansion_failed(entry_obj_id, "not found".to_string());
-    // expansion_state must stay Failed.
     assert_eq!(state.expansion_state(entry_obj_id), ExpansionPhase::Failed);
     let flat = state.flat_items();
-    // OnCollectionEntry cursor must be present (AC3).
     assert!(
-        flat.iter()
-            .any(|c| matches!(c, StackCursor::OnCollectionEntry { entry_index: 0, .. })),
+        flat.iter().any(|c| {
+            if let RenderCursor::At(p) = c {
+                matches!(
+                    p.segments().last(),
+                    Some(PathSegment::CollectionEntry(_, EntryIdx(0)))
+                )
+            } else {
+                false
+            }
+        }),
         "collection entry must remain in flat_items: {flat:?}"
     );
 }
 
-/// Navigation: a Failed collection entry object must not emit a phantom
-/// cursor — flat_items and build_items must stay equal length and
-/// move_down from the entry row must reach the next frame, not stall.
 #[test]
 fn failed_collection_entry_obj_no_phantom_cursor() {
     use hprof_engine::{CollectionPage, EntryInfo, FieldInfo, FieldValue};
@@ -1586,6 +1587,10 @@ fn failed_collection_entry_obj_no_phantom_cursor() {
         offset: 0,
         has_more: false,
     };
+    state
+        .expansion
+        .expansion_phases
+        .insert(path_field(10, 0, &[0]), ExpansionPhase::Expanded);
     state.expansion.collection_chunks.insert(
         200,
         CollectionChunks {
@@ -1595,36 +1600,24 @@ fn failed_collection_entry_obj_no_phantom_cursor() {
         },
     );
     state.set_expansion_failed(300, "not found".to_string());
-
-    // AC5: no phantom cursor — lengths must be equal.
     assert_eq!(
         state.flat_items().len(),
         state.build_items().len(),
-        "phantom OnCollectionEntryObjField must not be emitted for Failed"
+        "phantom cursor must not be emitted for Failed"
     );
-
-    // Navigate to the collection entry row, then Down must reach Frame(1).
-    // flat: [Frame(0), Var{0,0}, ObjField{[0]}, CollEntry{0}, Frame(1)]
-    state.move_down(); // → Var{0,0}
-    state.move_down(); // → ObjField{[0]}
-    state.move_down(); // → CollEntry{entry_index=0}
+    state.move_down(); // → Var
+    state.move_down(); // → ObjField[0]
+    state.move_down(); // → CollEntry{0}
     assert!(
-        matches!(
-            state.cursor(),
-            StackCursor::OnCollectionEntry { entry_index: 0, .. }
-        ),
-        "expected OnCollectionEntry, got {:?}",
+        matches!(state.cursor(), RenderCursor::At(p)
+            if matches!(p.segments().last(), Some(PathSegment::CollectionEntry(_, EntryIdx(0))))),
+        "expected CollectionEntry, got {:?}",
         state.cursor()
     );
-    state.move_down(); // must skip phantom and reach Frame(1)
-    assert_eq!(
-        state.cursor(),
-        &StackCursor::OnFrame(1),
-        "move_down from Failed collection entry must reach next frame"
-    );
+    state.move_down(); // must reach Frame(20)
+    assert_eq!(state.cursor(), &rc_frame(20));
 }
 
-/// AC2 / AC4 / AC5: Failed var label uses stored error, no extra child row.
 #[test]
 fn failed_var_label_uses_stored_error_message() {
     let frames = vec![make_frame(10)];
@@ -1633,7 +1626,6 @@ fn failed_var_label_uses_stored_error_message() {
     state.toggle_expand(10, vars);
     state.set_expansion_failed(99, "boom".to_string());
     let items = state.build_items();
-    // items[0] = frame, items[1] = var — no orphan child row (AC4).
     assert_eq!(
         items.len(),
         state.flat_items().len(),
@@ -1650,7 +1642,6 @@ fn failed_var_label_uses_stored_error_message() {
     );
 }
 
-/// AC2: Failed var row uses THEME.error_indicator (Red fg).
 #[test]
 fn failed_var_style_is_error_indicator() {
     use ratatui::style::Color;
@@ -1660,18 +1651,13 @@ fn failed_var_style_is_error_indicator() {
     state.toggle_expand(10, vars);
     state.set_expansion_failed(99, "err".to_string());
     let items = state.build_items();
-    // items[1] is the var row.
-    // Layout: 2-space indent + 2-char toggle "! " + value text starting at col 4.
     let fg = rendered_fg_at(items[1].clone(), 4);
     assert_eq!(fg, Color::Red, "Failed var value must have Red fg");
 }
 
-/// AC5: flat_items().len() == build_items().len() across multiple configurations.
 #[test]
 fn flat_items_build_items_equal_length_invariant() {
     use hprof_engine::{FieldInfo, FieldValue};
-
-    // (b) one frame collapsed
     {
         let state = StackState::new(vec![make_frame(1)]);
         assert_eq!(
@@ -1680,7 +1666,6 @@ fn flat_items_build_items_equal_length_invariant() {
             "(b) collapsed"
         );
     }
-    // (c) one frame expanded, var Failed
     {
         let frames = vec![make_frame(10)];
         let mut state = StackState::new(frames);
@@ -1693,7 +1678,6 @@ fn flat_items_build_items_equal_length_invariant() {
             "(c) var Failed"
         );
     }
-    // (d) one frame expanded, var Expanded with fields
     {
         let frames = vec![make_frame(10)];
         let mut state = StackState::new(frames);
@@ -1709,10 +1693,9 @@ fn flat_items_build_items_equal_length_invariant() {
         assert_eq!(
             state.flat_items().len(),
             state.build_items().len(),
-            "(d) expanded with fields"
+            "(d) expanded"
         );
     }
-    // (f) two frames — one collapsed, one expanded with a Failed nested field
     {
         let frames = vec![make_frame(10), make_frame(20)];
         let mut state = StackState::new(frames);
@@ -1735,7 +1718,7 @@ fn flat_items_build_items_equal_length_invariant() {
         assert_eq!(
             state.flat_items().len(),
             state.build_items().len(),
-            "(f) nested Failed field"
+            "(f) nested Failed"
         );
     }
 }
@@ -1755,10 +1738,7 @@ fn selected_var_entry_count_returns_some_when_on_var_with_entry_count() {
         },
     }];
     state.toggle_expand(10, vars);
-    state.set_cursor(StackCursor::OnVar {
-        frame_idx: 0,
-        var_idx: 0,
-    });
+    state.set_cursor(rc_var(10, 0));
     assert_eq!(state.selected_var_entry_count(), Some(42));
 }
 
@@ -1775,10 +1755,7 @@ fn selected_var_entry_count_returns_none_when_on_var_without_entry_count() {
         },
     }];
     state.toggle_expand(10, vars);
-    state.set_cursor(StackCursor::OnVar {
-        frame_idx: 0,
-        var_idx: 0,
-    });
+    state.set_cursor(rc_var(10, 0));
     assert_eq!(state.selected_var_entry_count(), None);
 }
 
@@ -1786,7 +1763,6 @@ fn selected_var_entry_count_returns_none_when_on_var_without_entry_count() {
 fn selected_var_entry_count_returns_none_when_cursor_not_on_var() {
     let frames = vec![make_frame(10)];
     let state = StackState::new(frames);
-    // cursor is OnFrame(0)
     assert_eq!(state.selected_var_entry_count(), None);
 }
 
@@ -1803,10 +1779,7 @@ fn object_array_var_has_correct_entry_count_and_object_id() {
         },
     }];
     state.toggle_expand(10, vars);
-    state.set_cursor(StackCursor::OnVar {
-        frame_idx: 0,
-        var_idx: 0,
-    });
+    state.set_cursor(rc_var(10, 0));
     assert_eq!(state.selected_var_entry_count(), Some(3));
     assert_eq!(state.selected_object_id(), Some(0xA00));
 }
@@ -1841,13 +1814,8 @@ fn selected_collection_entry_count_returns_some_for_nested_array_entry() {
             chunk_pages: std::collections::HashMap::new(),
         },
     );
-    state.set_cursor(StackCursor::OnCollectionEntry {
-        collection_id: coll_id,
-        entry_index: 0,
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-    });
+    // cursor: var[0] of frame 10, no field path, collection entry 0
+    state.set_cursor(rc_coll_entry(10, 0, &[], coll_id, 0));
     assert_eq!(state.selected_collection_entry_count(), Some(3));
 }
 
@@ -1879,13 +1847,7 @@ fn selected_collection_entry_count_returns_none_when_entry_not_collection() {
             chunk_pages: std::collections::HashMap::new(),
         },
     );
-    state.set_cursor(StackCursor::OnCollectionEntry {
-        collection_id: coll_id,
-        entry_index: 0,
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-    });
+    state.set_cursor(rc_coll_entry(10, 0, &[], coll_id, 0));
     assert_eq!(state.selected_collection_entry_count(), None);
 }
 
@@ -1936,15 +1898,7 @@ fn selected_collection_entry_obj_field_collection_info_returns_some_for_array_fi
             },
         }],
     );
-    state.set_cursor(StackCursor::OnCollectionEntryObjField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-        collection_id: coll_id,
-        entry_index: 0,
-        obj_field_path: vec![0],
-    });
-
+    state.set_cursor(rc_coll_entry_field(10, 0, &[], coll_id, 0, &[0]));
     assert_eq!(
         state.selected_collection_entry_obj_field_collection_info(),
         Some((0x888, 3))
@@ -1991,15 +1945,7 @@ fn selected_collection_entry_obj_field_collection_info_returns_none_without_entr
             },
         }],
     );
-    state.set_cursor(StackCursor::OnCollectionEntryObjField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-        collection_id: coll_id,
-        entry_index: 0,
-        obj_field_path: vec![0],
-    });
-
+    state.set_cursor(rc_coll_entry_field(10, 0, &[], coll_id, 0, &[0]));
     assert_eq!(
         state.selected_collection_entry_obj_field_collection_info(),
         None
@@ -2010,7 +1956,6 @@ fn selected_collection_entry_obj_field_collection_info_returns_none_without_entr
 fn flat_items_include_nested_collection_entries_for_multidimensional_arrays() {
     let outer_id = 0xD100u64;
     let inner_id = 0xD101u64;
-
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
     state.toggle_expand(
@@ -2024,7 +1969,11 @@ fn flat_items_include_nested_collection_entries_for_multidimensional_arrays() {
             },
         }],
     );
-
+    // outer_id is the var itself (collection var), so expansion_phases key = var path
+    state.expansion.expansion_phases.insert(
+        NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build(),
+        ExpansionPhase::Expanded,
+    );
     state.expansion.collection_chunks.insert(
         outer_id,
         CollectionChunks {
@@ -2047,7 +1996,11 @@ fn flat_items_include_nested_collection_entries_for_multidimensional_arrays() {
             chunk_pages: std::collections::HashMap::new(),
         },
     );
-
+    // inner_id is at entry[0] of outer_id
+    state.expansion.expansion_phases.insert(
+        path_coll_entry(10, 0, &[], outer_id, 0),
+        ExpansionPhase::Expanded,
+    );
     state.expansion.collection_chunks.insert(
         inner_id,
         CollectionChunks {
@@ -2072,31 +2025,32 @@ fn flat_items_include_nested_collection_entries_for_multidimensional_arrays() {
             chunk_pages: std::collections::HashMap::new(),
         },
     );
-
     let flat = state.flat_items();
     assert!(
         flat.iter().any(|c| {
-            matches!(
-                c,
-                StackCursor::OnCollectionEntry {
-                    collection_id,
-                    entry_index: 0,
-                    ..
-                } if *collection_id == outer_id
-            )
+            if let RenderCursor::At(p) = c {
+                matches!(
+                    p.segments().last(),
+                    Some(PathSegment::CollectionEntry(CollectionId(oid), EntryIdx(0)))
+                    if *oid == outer_id
+                )
+            } else {
+                false
+            }
         }),
         "outer collection entry must be emitted"
     );
     assert!(
         flat.iter().any(|c| {
-            matches!(
-                c,
-                StackCursor::OnCollectionEntry {
-                    collection_id,
-                    entry_index: 0,
-                    ..
-                } if *collection_id == inner_id
-            )
+            if let RenderCursor::At(p) = c {
+                matches!(
+                    p.segments().last(),
+                    Some(PathSegment::CollectionEntry(CollectionId(iid), EntryIdx(0)))
+                    if *iid == inner_id
+                )
+            } else {
+                false
+            }
         }),
         "nested collection entry must be emitted"
     );
@@ -2108,7 +2062,7 @@ fn flat_items_include_nested_collection_entries_for_multidimensional_arrays() {
 fn parent_cursor_on_frame_returns_none() {
     let frames = vec![make_frame(1)];
     let mut state = StackState::new(frames);
-    state.set_cursor(StackCursor::OnFrame(0));
+    state.set_cursor(rc_frame(1));
     assert_eq!(state.parent_cursor(), None);
 }
 
@@ -2117,114 +2071,51 @@ fn parent_cursor_on_var_returns_on_frame() {
     let frames = vec![make_frame(10), make_frame(20)];
     let mut state = StackState::new(frames);
     state.toggle_expand(10, vec![make_var_object_ref(0, 1)]);
-    state.set_cursor(StackCursor::OnVar {
-        frame_idx: 1,
-        var_idx: 0,
-    });
-    assert_eq!(state.parent_cursor(), Some(StackCursor::OnFrame(1)));
+    // set cursor on var[0] of frame 20 (frame_idx=1 in old notation)
+    state.set_cursor(rc_var(20, 0));
+    assert_eq!(state.parent_cursor(), Some(rc_frame(20)));
 }
 
 #[test]
 fn parent_cursor_on_object_field_depth1_returns_on_var() {
     let frames = vec![make_frame(1)];
     let mut state = StackState::new(frames);
-    state.set_cursor(StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 2,
-        field_path: vec![3],
-    });
-    assert_eq!(
-        state.parent_cursor(),
-        Some(StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 2
-        })
-    );
+    state.set_cursor(rc_field(1, 2, &[3]));
+    assert_eq!(state.parent_cursor(), Some(rc_var(1, 2)));
 }
 
 #[test]
 fn parent_cursor_on_object_field_depth2_returns_shallower_field() {
     let frames = vec![make_frame(1)];
     let mut state = StackState::new(frames);
-    state.set_cursor(StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![1, 4],
-    });
-    assert_eq!(
-        state.parent_cursor(),
-        Some(StackCursor::OnObjectField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![1]
-        })
-    );
+    state.set_cursor(rc_field(1, 0, &[1, 4]));
+    assert_eq!(state.parent_cursor(), Some(rc_field(1, 0, &[1])));
 }
 
 #[test]
 fn parent_cursor_on_collection_entry_with_field_path_returns_object_field() {
     let frames = vec![make_frame(1)];
     let mut state = StackState::new(frames);
-    state.set_cursor(StackCursor::OnCollectionEntry {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![2],
-        collection_id: 0xA,
-        entry_index: 0,
-    });
-    assert_eq!(
-        state.parent_cursor(),
-        Some(StackCursor::OnObjectField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![2],
-        })
-    );
+    state.set_cursor(rc_coll_entry(1, 0, &[2], 0xA, 0));
+    assert_eq!(state.parent_cursor(), Some(rc_field(1, 0, &[2])));
 }
 
 #[test]
 fn parent_cursor_on_collection_entry_with_empty_field_path_returns_on_var() {
     let frames = vec![make_frame(1)];
     let mut state = StackState::new(frames);
-    state.set_cursor(StackCursor::OnCollectionEntry {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-        collection_id: 0xA,
-        entry_index: 0,
-    });
-    // Critical: validates that the story 9.2 open-collection-from-OnVar case is handled
-    // correctly, unlike cursor_collection_id() which wrongly returns OnObjectField{[]}.
-    assert_eq!(
-        state.parent_cursor(),
-        Some(StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0
-        })
-    );
+    state.set_cursor(rc_coll_entry(1, 0, &[], 0xA, 0));
+    assert_eq!(state.parent_cursor(), Some(rc_var(1, 0)));
 }
 
 #[test]
 fn parent_cursor_on_collection_entry_obj_field_returns_collection_entry() {
     let frames = vec![make_frame(1)];
     let mut state = StackState::new(frames);
-    state.set_cursor(StackCursor::OnCollectionEntryObjField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-        collection_id: 0xA,
-        entry_index: 3,
-        obj_field_path: vec![1],
-    });
+    state.set_cursor(rc_coll_entry_field(1, 0, &[], 0xA, 3, &[1]));
     assert_eq!(
         state.parent_cursor(),
-        Some(StackCursor::OnCollectionEntry {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![],
-            collection_id: 0xA,
-            entry_index: 3,
-        })
+        Some(rc_coll_entry(1, 0, &[], 0xA, 3))
     );
 }
 
@@ -2232,96 +2123,58 @@ fn parent_cursor_on_collection_entry_obj_field_returns_collection_entry() {
 fn parent_cursor_on_collection_entry_obj_field_depth2_returns_shallow_obj_field() {
     let frames = vec![make_frame(1)];
     let mut state = StackState::new(frames);
-    state.set_cursor(StackCursor::OnCollectionEntryObjField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-        collection_id: 0xA,
-        entry_index: 3,
-        obj_field_path: vec![1, 3],
-    });
+    state.set_cursor(rc_coll_entry_field(1, 0, &[], 0xA, 3, &[1, 3]));
     assert_eq!(
         state.parent_cursor(),
-        Some(StackCursor::OnCollectionEntryObjField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![],
-            collection_id: 0xA,
-            entry_index: 3,
-            obj_field_path: vec![1],
-        })
+        Some(rc_coll_entry_field(1, 0, &[], 0xA, 3, &[1]))
     );
 }
 
 #[test]
 fn left_on_non_expanded_var_navigates_to_frame() {
-    // Pure StackState test: parent_cursor() on OnVar returns OnFrame.
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
     state.toggle_expand(10, vec![make_var_object_ref(0, 99)]);
-    state.set_cursor(StackCursor::OnVar {
-        frame_idx: 0,
-        var_idx: 0,
-    });
-    assert_eq!(state.parent_cursor(), Some(StackCursor::OnFrame(0)));
+    state.set_cursor(rc_var(10, 0));
+    assert_eq!(state.parent_cursor(), Some(rc_frame(10)));
 }
 
 #[test]
 fn left_on_non_expanded_frame_is_noop() {
-    // AC4: cursor OnFrame with no expansion → parent_cursor() returns None.
     let frames = vec![make_frame(10)];
     let state = StackState::new(frames);
-    // Frame is NOT expanded (is_expanded returns false).
     assert!(!state.is_expanded(10));
-    // parent_cursor() returns None — Left handler uses this to detect no-op.
     assert_eq!(state.parent_cursor(), None);
-    // Cursor is still OnFrame(0) — no side effect.
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(0));
+    assert_eq!(state.cursor(), &rc_frame(10));
 }
 
 #[test]
 fn left_on_expanded_var_collapses_not_navigates() {
-    // Priority invariant: collapse > navigate when var is Expanded.
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
     state.toggle_expand(10, vec![make_var_object_ref(0, 99)]);
     state.set_expansion_done(99, vec![]);
-    state.set_cursor(StackCursor::OnVar {
-        frame_idx: 0,
-        var_idx: 0,
-    });
-
-    // Precondition: object is Expanded.
+    state.set_cursor(rc_var(10, 0));
     assert_eq!(state.expansion_state(99), ExpansionPhase::Expanded);
-    // Parent IS computable — the invariant is that Left handler checks Expanded FIRST.
-    assert_eq!(state.parent_cursor(), Some(StackCursor::OnFrame(0)));
-    // The Left handler sees Expanded and dispatches CollapseObj — NOT NavigateToParent.
-    // We verify the expansion phase check here (the dispatch decision itself lives in App).
+    assert_eq!(state.parent_cursor(), Some(rc_frame(10)));
     assert_eq!(state.expansion_state(99), ExpansionPhase::Expanded);
 }
 
 #[test]
 fn left_on_primitive_var_navigates_to_frame() {
-    // Gap 1 fix: VariableValue::Null (non-ObjectRef) → selected_object_id() == None
-    // → Left handler must fall through to NavigateToParent, not silently no-op.
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
-    // make_var(0, 0) creates VariableValue::Null (the non-ObjectRef case).
     state.toggle_expand(10, vec![make_var(0, 0)]);
-    state.set_cursor(StackCursor::OnVar {
-        frame_idx: 0,
-        var_idx: 0,
-    });
+    state.set_cursor(rc_var(10, 0));
     assert!(
         state.selected_object_id().is_none(),
         "Null var must have no object_id"
     );
-    assert_eq!(state.parent_cursor(), Some(StackCursor::OnFrame(0)));
+    assert_eq!(state.parent_cursor(), Some(rc_frame(10)));
 }
 
 #[test]
 fn right_on_collection_var_dispatches_start_collection() {
-    // Gap 2 fix: selected_var_entry_count() returns Some(n) for collection vars.
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
     let collection_var = VariableInfo {
@@ -2333,54 +2186,25 @@ fn right_on_collection_var_dispatches_start_collection() {
         },
     };
     state.toggle_expand(10, vec![collection_var]);
-    state.set_cursor(StackCursor::OnVar {
-        frame_idx: 0,
-        var_idx: 0,
-    });
-
-    // Precondition: entry_count is detected.
+    state.set_cursor(rc_var(10, 0));
     assert_eq!(state.selected_var_entry_count(), Some(5));
-    // Collection is NOT yet expanded.
     assert!(!state.expansion.collection_chunks.contains_key(&0xAB));
-    // The Right handler will dispatch StartCollection (not StartObj) for this var.
 }
 
 #[test]
 fn cursor_collection_id_on_entry_with_field_path_returns_object_field_restore() {
-    // Verifies that cursor_collection_id() for OnCollectionEntry with a
-    // non-empty field_path correctly computes OnObjectField as restore cursor.
-    // This is used by the Left handler to collapse the collection and
-    // navigate back to the array field row (not its parent).
     let frames = vec![make_frame(1)];
     let mut state = StackState::new(frames);
-    state.set_cursor(StackCursor::OnCollectionEntry {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![2],
-        collection_id: 0xA,
-        entry_index: 0,
-    });
+    state.set_cursor(rc_coll_entry(1, 0, &[2], 0xA, 0));
     let (cid, restore) = state.cursor_collection_id().expect("should return Some");
     assert_eq!(cid, 0xA);
-    assert_eq!(
-        restore,
-        StackCursor::OnObjectField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![2],
-        }
-    );
+    assert_eq!(restore, rc_field(1, 0, &[2]));
 }
 
 #[test]
 fn left_from_collection_entry_inside_object_field_navigates_to_field_row() {
-    // Scenario: object var → expanded → field[2] = array → array expanded → entry[0]
-    // Left from entry[0] should navigate to OnObjectField { field_path: [2] }
-    // (the array field row), NOT to OnVar (the object row).
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
-
-    // var 0 = object id 100 (NOT a collection)
     let obj_var = VariableInfo {
         index: 0,
         value: VariableValue::ObjectRef {
@@ -2390,8 +2214,6 @@ fn left_from_collection_entry_inside_object_field_navigates_to_field_row() {
         },
     };
     state.toggle_expand(10, vec![obj_var]);
-
-    // Expand object 100 with 3 fields: int, string, array(id=200)
     state.set_expansion_done(
         100,
         vec![
@@ -2419,8 +2241,10 @@ fn left_from_collection_entry_inside_object_field_navigates_to_field_row() {
             },
         ],
     );
-
-    // Expand the array collection (id=200)
+    state
+        .expansion
+        .expansion_phases
+        .insert(path_field(10, 0, &[2]), ExpansionPhase::Expanded);
     state.expansion.collection_chunks.insert(
         200,
         CollectionChunks {
@@ -2443,94 +2267,42 @@ fn left_from_collection_entry_inside_object_field_navigates_to_field_row() {
             chunk_pages: std::collections::HashMap::new(),
         },
     );
-
-    // Navigate to the collection entry
-    state.set_cursor(StackCursor::OnCollectionEntry {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![2],
-        collection_id: 200,
-        entry_index: 0,
-    });
-
-    // Verify flat_items contains the array field row
+    state.set_cursor(rc_coll_entry(10, 0, &[2], 200, 0));
     let flat = state.flat_items();
-    let array_field_cursor = StackCursor::OnObjectField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![2],
-    };
+    let array_field_cursor = rc_field(10, 0, &[2]);
     assert!(
         flat.contains(&array_field_cursor),
-        "flat_items must contain OnObjectField{{fp:[2]}}; got: {flat:?}"
+        "flat_items must contain field[2]; got: {flat:?}"
     );
-
-    // parent_cursor() must return the array field row
     assert_eq!(
         state.parent_cursor(),
         Some(array_field_cursor.clone()),
-        "parent_cursor() from OnCollectionEntry{{fp:[2]}} must be OnObjectField{{fp:[2]}}"
+        "parent_cursor() from CollEntry(fp:[2]) must be field[2]"
     );
-
-    // set_cursor to the parent must land on the array field row
     state.set_cursor(array_field_cursor.clone());
-    assert_eq!(
-        state.cursor(),
-        &array_field_cursor,
-        "cursor must be OnObjectField{{fp:[2]}} after set_cursor"
-    );
+    assert_eq!(state.cursor(), &array_field_cursor);
 }
 
 #[test]
-fn parent_cursor_on_collection_entry_uses_restore_cursor_for_nested_collection() {
-    // When a collection (inner array) is opened from OnCollectionEntryObjField,
-    // collection_restore_cursors[inner_cid] = OnCollectionEntryObjField.
-    // parent_cursor() must return that restore cursor instead of OnObjectField.
+fn parent_cursor_on_collection_entry_uses_path_parent_for_nested_collection() {
+    // In the new model, parent_cursor() simply calls path.parent(). When cursor is
+    // CollEntry(frame=1, var=0, coll=0xBB, entry=0) with no field prefix,
+    // the parent is Var(frame=1, var=0).
     let frames = vec![make_frame(1)];
     let mut state = StackState::new(frames);
-
-    let restore = StackCursor::OnCollectionEntryObjField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-        collection_id: 0xAA,
-        entry_index: 2,
-        obj_field_path: vec![2],
-    };
-    state
-        .expansion
-        .collection_restore_cursors
-        .insert(0xBB, restore.clone());
-
-    state.set_cursor(StackCursor::OnCollectionEntry {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-        collection_id: 0xBB,
-        entry_index: 0,
-    });
-
-    assert_eq!(
-        state.parent_cursor(),
-        Some(restore),
-        "parent_cursor must return the restore cursor when nested inside a collection entry obj"
-    );
+    state.set_cursor(rc_coll_entry(1, 0, &[], 0xBB, 0));
+    assert_eq!(state.parent_cursor(), Some(rc_var(1, 0)));
 }
 
 #[test]
 fn left_on_collection_entry_obj_field_with_open_collection_detects_collapse() {
-    // Scenario: outer list (cid=0xAA) expanded, entry 0 = custom type (id=200),
-    // custom type field[2] = inner array (id=300, ec=5) expanded (cid=300 in chunks).
-    // Cursor = OnCollectionEntryObjField { collection_id: 0xAA, entry_index: 0,
-    //   obj_field_path: [2] }
-    // The Left handler checks selected_collection_entry_obj_field_collection_info()
-    // → (300, 5), then collection_chunks.contains_key(&300) → true.
-    // This verifies the dispatch condition for CollapseCollection.
     let frames = vec![make_frame(10)];
     let mut state = StackState::new(frames);
     state.toggle_expand(10, vec![make_var_object_ref(0, 0xAB)]);
-
-    // Outer collection (id=0xAA): entry 0 = custom type (id=200)
+    state.expansion.expansion_phases.insert(
+        NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build(),
+        ExpansionPhase::Expanded,
+    );
     state.expansion.collection_chunks.insert(
         0xAA,
         CollectionChunks {
@@ -2553,8 +2325,6 @@ fn left_on_collection_entry_obj_field_with_open_collection_detects_collapse() {
             chunk_pages: std::collections::HashMap::new(),
         },
     );
-
-    // Expand custom type (id=200) with field[2] = inner array (id=300, ec=5)
     state.set_expansion_done(
         200,
         vec![
@@ -2577,8 +2347,6 @@ fn left_on_collection_entry_obj_field_with_open_collection_detects_collapse() {
             },
         ],
     );
-
-    // Inner array (id=300) expanded
     state.expansion.collection_chunks.insert(
         300,
         CollectionChunks {
@@ -2587,31 +2355,17 @@ fn left_on_collection_entry_obj_field_with_open_collection_detects_collapse() {
             chunk_pages: std::collections::HashMap::new(),
         },
     );
-
-    // Cursor on the inner array field row within the custom type entry
-    state.set_cursor(StackCursor::OnCollectionEntryObjField {
-        frame_idx: 0,
-        var_idx: 0,
-        field_path: vec![],
-        collection_id: 0xAA,
-        entry_index: 0,
-        obj_field_path: vec![2],
-    });
-
-    // selected_collection_entry_obj_field_collection_info must detect inner array
+    state.set_cursor(rc_coll_entry_field(10, 0, &[], 0xAA, 0, &[2]));
     let coll_info = state.selected_collection_entry_obj_field_collection_info();
     assert_eq!(
         coll_info,
         Some((300, 5)),
         "must detect inner array collection info"
     );
-
-    // collection_chunks must contain the inner array → Left dispatches CollapseCollection
-    assert!(
-        state.expansion.collection_chunks.contains_key(&300),
-        "inner array must be in collection_chunks for Left to dispatch CollapseCollection"
-    );
+    assert!(state.expansion.collection_chunks.contains_key(&300));
 }
+
+// --- Scroll view tests ---
 
 #[test]
 fn scroll_view_down_shifts_offset_without_moving_cursor() {
@@ -2622,10 +2376,7 @@ fn scroll_view_down_shifts_offset_without_moving_cursor() {
     state.set_visible_height(3);
     state.set_list_state_offset_for_test(0);
     state.scroll_view_down();
-    // Offset moved from 0 to 1.
-    // Snap check: selected(2) is NOT less than new_offset(1) → no snap.
     assert_eq!(state.list_state_offset_for_test(), 1);
-    // Cursor must not have moved — still on frame 2.
     assert_eq!(state.selected_frame_id(), Some(2));
 }
 
@@ -2633,14 +2384,11 @@ fn scroll_view_down_shifts_offset_without_moving_cursor() {
 fn scroll_view_up_shifts_offset_without_moving_cursor() {
     let frames = (0..5).map(make_frame).collect();
     let mut state = StackState::new(frames);
-    state.move_down(); // cursor frame 1
+    state.move_down(); // frame 1
     state.set_visible_height(3);
     state.set_list_state_offset_for_test(1);
     state.scroll_view_up();
-    // Offset back to 0.
-    // Snap check: selected(1) < 0+3=3 → NOT below viewport top → no snap.
     assert_eq!(state.list_state_offset_for_test(), 0);
-    // Cursor must not have moved — still on frame 1.
     assert_eq!(state.selected_frame_id(), Some(1));
 }
 
@@ -2648,12 +2396,9 @@ fn scroll_view_up_shifts_offset_without_moving_cursor() {
 fn scroll_view_down_snaps_back_when_cursor_would_leave_viewport() {
     let frames = (0..5).map(make_frame).collect();
     let mut state = StackState::new(frames);
-    // Cursor at frame 0 (flat index 0), visible_height=3, offset=0.
     state.set_visible_height(3);
     state.scroll_view_down();
-    // new_offset = 1. selected_idx(0) < new_offset(1) → snap → offset = 0.
     assert_eq!(state.list_state_offset_for_test(), 0);
-    // Cursor must not have moved — still on frame 0.
     assert_eq!(state.selected_frame_id(), Some(0));
 }
 
@@ -2661,18 +2406,14 @@ fn scroll_view_down_snaps_back_when_cursor_would_leave_viewport() {
 fn scroll_view_up_snaps_when_cursor_at_bottom_of_viewport() {
     let frames = (0..5).map(make_frame).collect();
     let mut state = StackState::new(frames);
-    state.move_down(); // 1
-    state.move_down(); // 2
-    state.move_down(); // 3
-    state.move_down(); // 4
+    state.move_down();
+    state.move_down();
+    state.move_down();
+    state.move_down();
     state.set_visible_height(2);
-    // Set offset to 3: viewport = [3, 5), cursor(4) is at the bottom edge.
     state.set_list_state_offset_for_test(3);
     state.scroll_view_up();
-    // new_offset = 2, viewport = [2, 4).
-    // selected(4) >= new_offset(2) + height(2) = 4 → snap fires → offset = 4+1-2 = 3.
     assert_eq!(state.list_state_offset_for_test(), 3);
-    // Cursor must not have moved — still on frame 4.
     assert_eq!(state.selected_frame_id(), Some(4));
 }
 
@@ -2680,7 +2421,6 @@ fn scroll_view_up_snaps_when_cursor_at_bottom_of_viewport() {
 fn scroll_view_no_op_when_no_frames() {
     let mut state = StackState::new(vec![]);
     state.set_visible_height(5);
-    // Should not panic.
     state.scroll_view_up();
     state.scroll_view_down();
     assert_eq!(state.list_state_offset_for_test(), 0);
@@ -2691,11 +2431,9 @@ fn scroll_view_no_op_when_visible_height_zero() {
     let frames = (0..5).map(make_frame).collect();
     let mut state = StackState::new(frames);
     state.move_down();
-    state.move_down(); // cursor frame 2
-    // Explicitly set visible_height to 0 to simulate pre-render state.
+    state.move_down();
     state.set_visible_height(0);
     state.set_list_state_offset_for_test(0);
-    // Both directions must be no-ops — no panic, no offset or cursor change.
     state.scroll_view_up();
     state.scroll_view_down();
     assert_eq!(state.list_state_offset_for_test(), 0);
@@ -2706,11 +2444,9 @@ fn scroll_view_no_op_when_visible_height_zero() {
 fn scroll_view_down_no_op_when_list_fits_in_viewport() {
     let frames = (0..3).map(make_frame).collect();
     let mut state = StackState::new(frames);
-    state.move_down(); // cursor frame 1
-    // visible_height > item_count: all 3 items visible, max_offset = 0.
+    state.move_down();
     state.set_visible_height(10);
     state.scroll_view_down();
-    // max_offset = 3.saturating_sub(10) = 0. new_offset = (0+1).min(0) = 0. No change.
     assert_eq!(state.list_state_offset_for_test(), 0);
     assert_eq!(state.selected_frame_id(), Some(1));
 }
@@ -2719,15 +2455,12 @@ fn scroll_view_down_no_op_when_list_fits_in_viewport() {
 fn scroll_view_down_clamps_stale_offset_before_increment() {
     let frames = (0..5).map(make_frame).collect();
     let mut state = StackState::new(frames);
-    state.move_down(); // frame 1
-    state.move_down(); // frame 2
+    state.move_down();
+    state.move_down();
     state.set_visible_height(3);
     state.set_list_state_offset_for_test(usize::MAX);
     state.scroll_view_down();
-
-    // max_offset = 5 - 3 = 2. stale offset is clamped before increment.
     assert_eq!(state.list_state_offset_for_test(), 2);
-    // Cursor must not move.
     assert_eq!(state.selected_frame_id(), Some(2));
 }
 
@@ -2740,10 +2473,7 @@ fn center_view_on_selection_places_cursor_near_middle() {
     }
     state.set_visible_height(5);
     state.set_list_state_offset_for_test(0);
-
     state.center_view_on_selection();
-
-    // selected(7), visible_height(5) => center row index = 2, offset = 7 - 2 = 5.
     assert_eq!(state.list_state_offset_for_test(), 5);
     assert_eq!(state.selected_frame_id(), Some(7));
 }
@@ -2752,12 +2482,10 @@ fn center_view_on_selection_places_cursor_near_middle() {
 fn center_view_on_selection_clamps_at_top() {
     let frames = (0..10).map(make_frame).collect();
     let mut state = StackState::new(frames);
-    state.move_down(); // frame 1
+    state.move_down();
     state.set_visible_height(5);
     state.set_list_state_offset_for_test(4);
-
     state.center_view_on_selection();
-
     assert_eq!(state.list_state_offset_for_test(), 0);
     assert_eq!(state.selected_frame_id(), Some(1));
 }
@@ -2771,10 +2499,7 @@ fn center_view_on_selection_clamps_at_bottom() {
     }
     state.set_visible_height(5);
     state.set_list_state_offset_for_test(0);
-
     state.center_view_on_selection();
-
-    // max_offset = 10 - 5 = 5, centered target = 9 - 2 = 7 -> clamp to 5.
     assert_eq!(state.list_state_offset_for_test(), 5);
     assert_eq!(state.selected_frame_id(), Some(9));
 }
@@ -2787,9 +2512,7 @@ fn center_view_on_selection_no_op_when_visible_height_zero() {
     state.move_down();
     state.set_visible_height(0);
     state.set_list_state_offset_for_test(1);
-
     state.center_view_on_selection();
-
     assert_eq!(state.list_state_offset_for_test(), 1);
     assert_eq!(state.selected_frame_id(), Some(2));
 }
@@ -2803,9 +2526,7 @@ fn scroll_view_page_down_shifts_offset_without_moving_cursor() {
     }
     state.set_visible_height(4);
     state.set_list_state_offset_for_test(0);
-
     state.scroll_view_page_down();
-
     assert_eq!(state.list_state_offset_for_test(), 4);
     assert_eq!(state.selected_frame_id(), Some(7));
 }
@@ -2819,9 +2540,7 @@ fn scroll_view_page_up_shifts_offset_without_moving_cursor() {
     }
     state.set_visible_height(4);
     state.set_list_state_offset_for_test(8);
-
     state.scroll_view_page_up();
-
     assert_eq!(state.list_state_offset_for_test(), 4);
     assert_eq!(state.selected_frame_id(), Some(7));
 }
@@ -2832,9 +2551,7 @@ fn scroll_view_page_down_snaps_back_when_cursor_would_leave_viewport() {
     let mut state = StackState::new(frames);
     state.set_visible_height(4);
     state.set_list_state_offset_for_test(0);
-
     state.scroll_view_page_down();
-
     assert_eq!(state.list_state_offset_for_test(), 0);
     assert_eq!(state.selected_frame_id(), Some(0));
 }
@@ -2848,13 +2565,12 @@ fn scroll_view_page_up_snaps_when_cursor_at_bottom_edge() {
     }
     state.set_visible_height(4);
     state.set_list_state_offset_for_test(8);
-
     state.scroll_view_page_up();
-
-    // page up: 8 -> 4, cursor(11) would be outside [4, 8) so it snaps back to offset 8.
     assert_eq!(state.list_state_offset_for_test(), 8);
     assert_eq!(state.selected_frame_id(), Some(11));
 }
+
+// --- Static field rendering tests ---
 
 #[test]
 fn render_static_section_for_collection_entry_object() {
@@ -2873,6 +2589,10 @@ fn render_static_section_for_collection_entry_object() {
             },
         }],
     );
+    state
+        .expansion
+        .expansion_phases
+        .insert(path_field(10, 0, &[0]), ExpansionPhase::Expanded);
     state.expansion.collection_chunks.insert(
         0xC00,
         CollectionChunks {
@@ -2909,21 +2629,16 @@ fn render_static_section_for_collection_entry_object() {
             value: FieldValue::Int(1),
         }],
     );
-
     let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
     assert!(
         rendered.iter().any(|l| l.contains("[static]")),
-        "static header must be rendered for collection entry object: {rendered:?}"
+        "static header must be rendered: {rendered:?}"
     );
     assert!(
         rendered.iter().any(|l| l.contains("STATIC_ONE: 1")),
-        "static field row must be rendered for collection entry object: {rendered:?}"
+        "static field row must be rendered: {rendered:?}"
     );
-    assert_eq!(
-        state.flat_items().len(),
-        state.build_items().len(),
-        "flat/build item lengths must remain aligned with collection static rows"
-    );
+    assert_eq!(state.flat_items().len(), state.build_items().len());
 }
 
 #[test]
@@ -2943,6 +2658,10 @@ fn render_collection_entry_static_helper_rows_not_navigable() {
             },
         }],
     );
+    state
+        .expansion
+        .expansion_phases
+        .insert(path_field(10, 0, &[0]), ExpansionPhase::Expanded);
     state.expansion.collection_chunks.insert(
         0xC10,
         CollectionChunks {
@@ -2980,44 +2699,52 @@ fn render_collection_entry_static_helper_rows_not_navigable() {
         .collect();
     state.set_static_fields(0x710, static_fields);
 
-    state.move_down(); // Frame(0) -> Var
-    state.move_down(); // Var -> items field
+    state.move_down(); // Frame(10) -> Var
+    state.move_down(); // Var -> items field[0]
     state.move_down(); // items field -> entry[0]
-    state.move_down(); // entry[0] -> entry obj field [0]
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnCollectionEntryObjField {
-            obj_field_path,
-            ..
-        } if *obj_field_path == vec![0]
-    ));
+    state.move_down(); // entry[0] -> entry obj field[0]
+    // Should be on coll_entry_field: field[0] within entry[0] of coll 0xC10
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if p.segments().iter().any(|s| matches!(s, PathSegment::CollectionEntry(CollectionId(0xC10), EntryIdx(0))))
+            && matches!(p.segments().last(), Some(PathSegment::Field(FieldIdx(0))))),
+        "cursor must be on entry obj field[0], got: {:?}",
+        state.cursor()
+    );
 
-    // Skip non-interactive [static] header.
+    // Skip non-interactive [static] header
     state.move_down();
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnCollectionEntryStaticField { static_idx: 0, .. }
-    ));
+    // Should be on static field 0
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if p.segments().last().is_some_and(|s| matches!(s, PathSegment::StaticField(StaticFieldIdx(0))))),
+        "cursor must be on static field 0, got: {:?}",
+        state.cursor()
+    );
 
-    // Reach last rendered static field (idx 19).
+    // Reach last rendered static field (idx 19)
     for _ in 0..19 {
         state.move_down();
     }
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnCollectionEntryStaticField { static_idx: 19, .. }
-    ));
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if p.segments().last().is_some_and(|s| matches!(s, PathSegment::StaticField(StaticFieldIdx(19))))),
+        "cursor must be on static field 19, got: {:?}",
+        state.cursor()
+    );
 
-    // Skip non-interactive overflow row.
+    // Skip non-interactive overflow row
     state.move_down();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
+    assert_eq!(state.cursor(), &rc_frame(20));
 
-    // Moving up must also skip overflow and land back on static idx 19.
+    // Moving up must also skip overflow and land back on static idx 19
     state.move_up();
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnCollectionEntryStaticField { static_idx: 19, .. }
-    ));
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if p.segments().last().is_some_and(|s| matches!(s, PathSegment::StaticField(StaticFieldIdx(19))))),
+        "cursor must be on static field 19 after move_up, got: {:?}",
+        state.cursor()
+    );
 }
 
 #[test]
@@ -3040,26 +2767,22 @@ fn render_static_section_separator_not_navigable() {
         }],
     );
 
-    state.move_down(); // Frame(0) -> Var
-    state.move_down(); // Var -> instance field
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnObjectField { field_path, .. } if *field_path == vec![0]
-    ));
+    state.move_down(); // Frame(10) -> Var
+    state.move_down(); // Var -> instance field[0]
+    assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
 
-    // Must skip non-interactive [static] header.
+    // Must skip non-interactive [static] header
     state.move_down();
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnStaticField { static_idx: 0, .. }
-    ));
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if matches!(p.segments().last(), Some(PathSegment::StaticField(StaticFieldIdx(0))))),
+        "cursor must be on static field 0, got: {:?}",
+        state.cursor()
+    );
 
-    // Must also skip header when moving back up.
+    // Must also skip header when moving back up
     state.move_up();
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnObjectField { field_path, .. } if *field_path == vec![0]
-    ));
+    assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
 }
 
 #[test]
@@ -3074,7 +2797,6 @@ fn render_static_overflow_row_not_navigable() {
             value: FieldValue::Int(1),
         }],
     );
-
     let static_fields: Vec<FieldInfo> = (0..21)
         .map(|idx| FieldInfo {
             name: format!("STATIC_{idx}"),
@@ -3083,27 +2805,31 @@ fn render_static_overflow_row_not_navigable() {
         .collect();
     state.set_static_fields(0xB00, static_fields);
 
-    state.move_down(); // Frame(0) -> Var
+    state.move_down(); // Frame(10) -> Var
     state.move_down(); // Var -> instance field
     state.move_down(); // instance field -> static[0], skipping [static]
     for _ in 0..19 {
         state.move_down();
     }
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnStaticField { static_idx: 19, .. }
-    ));
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if matches!(p.segments().last(), Some(PathSegment::StaticField(StaticFieldIdx(19))))),
+        "cursor must be on static field 19, got: {:?}",
+        state.cursor()
+    );
 
-    // Must skip non-interactive overflow row to next interactive row.
+    // Must skip non-interactive overflow row to next interactive row
     state.move_down();
-    assert_eq!(state.cursor(), &StackCursor::OnFrame(1));
+    assert_eq!(state.cursor(), &rc_frame(20));
 
-    // And skip overflow row when navigating upward.
+    // And skip overflow row when navigating upward
     state.move_up();
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnStaticField { static_idx: 19, .. }
-    ));
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if matches!(p.segments().last(), Some(PathSegment::StaticField(StaticFieldIdx(19))))),
+        "cursor must be on static field 19 after move_up, got: {:?}",
+        state.cursor()
+    );
 }
 
 #[test]
@@ -3138,40 +2864,34 @@ fn static_object_field_rows_are_emitted_and_navigable() {
         }],
     );
 
-    state.move_down(); // Frame(0) -> Var
+    state.move_down(); // Frame(10) -> Var
     state.move_down(); // Var -> instance field
-    state.move_down(); // instance field -> static field
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnStaticField { static_idx: 0, .. }
-    ));
+    state.move_down(); // instance field -> static field (skip [static] header)
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if matches!(p.segments().last(), Some(PathSegment::StaticField(StaticFieldIdx(0))))),
+        "cursor must be on static field 0, got: {:?}",
+        state.cursor()
+    );
 
     state.move_down(); // static field -> static object child field
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnStaticObjectField { obj_field_path, .. } if *obj_field_path == vec![0]
-    ));
-
-    assert_eq!(
-        state.parent_cursor(),
-        Some(StackCursor::OnStaticField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![],
-            static_idx: 0,
-        })
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if matches!(p.segments().last(), Some(PathSegment::Field(FieldIdx(0))))
+            && p.segments().iter().any(|s| matches!(s, PathSegment::StaticField(_)))),
+        "cursor must be on static obj field[0], got: {:?}",
+        state.cursor()
     );
+
+    // parent_cursor of static obj field[0] = static field[0]
+    assert_eq!(state.parent_cursor(), Some(rc_static_field(10, 0, &[], 0)));
 
     let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
     assert!(
         rendered.iter().any(|l| l.contains("leaf: 7")),
         "expanded static object children must be rendered: {rendered:?}"
     );
-    assert_eq!(
-        state.flat_items().len(),
-        state.build_items().len(),
-        "flat/build item lengths must stay aligned for static object children"
-    );
+    assert_eq!(state.flat_items().len(), state.build_items().len());
 }
 
 #[test]
@@ -3191,6 +2911,10 @@ fn collection_entry_static_object_field_rows_are_emitted() {
             },
         }],
     );
+    state
+        .expansion
+        .expansion_phases
+        .insert(path_field(10, 0, &[0]), ExpansionPhase::Expanded);
     state.expansion.collection_chunks.insert(
         0xD00,
         CollectionChunks {
@@ -3240,31 +2964,134 @@ fn collection_entry_static_object_field_rows_are_emitted() {
         }],
     );
 
-    state.move_down(); // Frame(0) -> Var
-    state.move_down(); // Var -> items field
+    state.move_down(); // Frame(10) -> Var
+    state.move_down(); // Var -> items field[0]
     state.move_down(); // items field -> entry[0]
-    state.move_down(); // entry[0] -> entry obj field [0]
-    state.move_down(); // -> static field
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnCollectionEntryStaticField { static_idx: 0, .. }
-    ));
+    state.move_down(); // entry[0] -> entry obj field[0]
+    state.move_down(); // -> static field (skipping [static] header)
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if p.segments().last().is_some_and(|s| matches!(s, PathSegment::StaticField(StaticFieldIdx(0))))),
+        "cursor must be on static field 0, got: {:?}",
+        state.cursor()
+    );
 
     state.move_down(); // -> static child field
-    assert!(matches!(
-        state.cursor(),
-        StackCursor::OnCollectionEntryStaticObjectField { static_obj_field_path, .. }
-            if *static_obj_field_path == vec![0]
-    ));
+    assert!(
+        matches!(state.cursor(), RenderCursor::At(p)
+            if matches!(p.segments().last(), Some(PathSegment::Field(FieldIdx(0))))
+            && p.segments().iter().any(|s| matches!(s, PathSegment::StaticField(_)))),
+        "cursor must be on static obj child field[0], got: {:?}",
+        state.cursor()
+    );
 
     let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
     assert!(
         rendered.iter().any(|l| l.contains("x: 3")),
         "expanded collection-entry static object children must be rendered: {rendered:?}"
     );
+    assert_eq!(state.flat_items().len(), state.build_items().len());
+}
+
+// === NavigationPath unit tests (Task 4) ===
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+fn nav_hash(path: &NavigationPath) -> u64 {
+    let mut h = DefaultHasher::new();
+    path.hash(&mut h);
+    h.finish()
+}
+
+#[test]
+fn nav_path_two_builders_same_logical_path_are_eq_and_same_hash() {
+    let fid = FrameId(10);
+    let vid = VarIdx(2);
+    let fi = FieldIdx(3);
+    let path_a = NavigationPathBuilder::new(fid, vid).field(fi).build();
+    let path_b = NavigationPathBuilder::new(fid, vid).field(fi).build();
+    assert_eq!(path_a, path_b);
+    assert_eq!(nav_hash(&path_a), nav_hash(&path_b));
+}
+
+#[test]
+#[should_panic]
+fn nav_path_build_panics_when_frame_at_position_2() {
+    let bad = NavigationPath::from_raw(vec![
+        PathSegment::Frame(FrameId(1)),
+        PathSegment::Var(VarIdx(0)),
+        PathSegment::Frame(FrameId(2)),
+    ]);
+    let _b = NavigationPathBuilder::extend(bad).build();
+}
+
+#[test]
+#[should_panic]
+fn nav_path_build_panics_when_var_at_position_2() {
+    let bad = NavigationPath::from_raw(vec![
+        PathSegment::Frame(FrameId(1)),
+        PathSegment::Var(VarIdx(0)),
+        PathSegment::Var(VarIdx(1)),
+    ]);
+    let _b = NavigationPathBuilder::extend(bad).build();
+}
+
+#[test]
+fn nav_path_parent_returns_none_on_frame_only() {
+    let path = NavigationPathBuilder::frame_only(FrameId(42));
+    assert_eq!(path.parent(), None);
+}
+
+#[test]
+fn nav_path_parent_returns_frame_only_on_depth_2() {
+    let path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+    let parent = path.parent().expect("depth-2 must have parent");
+    assert_eq!(parent, NavigationPathBuilder::frame_only(FrameId(1)));
+}
+
+#[test]
+fn nav_path_parent_truncates_at_depth_3_plus() {
+    let path = NavigationPathBuilder::new(FrameId(1), VarIdx(0))
+        .field(FieldIdx(2))
+        .build();
+    let parent = path.parent().expect("depth-3 must have parent");
+    let expected = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+    assert_eq!(parent, expected);
+}
+
+#[test]
+fn nav_path_frame_only_builds_valid_depth1_path() {
+    let path = NavigationPathBuilder::frame_only(FrameId(7));
+    assert_eq!(path.segments().len(), 1);
+    assert!(matches!(path.segments()[0], PathSegment::Frame(FrameId(7))));
+}
+
+// --- Task 18: instance-scoped expansion ---
+
+#[test]
+fn expansion_at_path_a_does_not_affect_path_b() {
+    use hprof_engine::{FieldInfo, FieldValue};
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    let vars = vec![
+        make_var_object_ref(0, 100),
+        make_var_object_ref(1, 100), // same object_id
+    ];
+    state.toggle_expand(10, vars);
+
+    let path_a = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+    let path_b = NavigationPathBuilder::new(FrameId(10), VarIdx(1)).build();
+
+    let fields = vec![FieldInfo {
+        name: "x".to_string(),
+        value: FieldValue::Int(1),
+    }];
+    state.set_expansion_done_at_path(&path_a, 100, fields);
+
     assert_eq!(
-        state.flat_items().len(),
-        state.build_items().len(),
-        "flat/build item lengths must stay aligned for collection-entry static object children"
+        state.expansion_state_for_path(&path_b),
+        ExpansionPhase::Collapsed,
+        "expansion at path A must not affect path B"
     );
 }

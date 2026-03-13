@@ -7,6 +7,132 @@ use std::collections::HashSet;
 
 use super::*;
 
+fn cursor_ends_with_collection_entry(cursor: &RenderCursor) -> bool {
+    matches!(cursor, RenderCursor::At(p)
+        if matches!(p.segments().last(), Some(PathSegment::CollectionEntry(..))))
+}
+
+fn cursor_ends_with_field(cursor: &RenderCursor) -> bool {
+    matches!(cursor, RenderCursor::At(p)
+        if matches!(p.segments().last(), Some(PathSegment::Field(..))))
+}
+
+fn cursor_ends_with_static_field(cursor: &RenderCursor) -> bool {
+    matches!(cursor, RenderCursor::At(p)
+        if matches!(p.segments().last(), Some(PathSegment::StaticField(..))))
+}
+
+fn cursor_is_chunk_section(cursor: &RenderCursor) -> bool {
+    matches!(cursor, RenderCursor::ChunkSection(..))
+}
+
+fn cursor_chunk_section_offset(cursor: &RenderCursor) -> Option<usize> {
+    if let RenderCursor::ChunkSection(_, off) = cursor {
+        Some(off.0)
+    } else {
+        None
+    }
+}
+
+fn cursor_is_collection_entry_field(cursor: &RenderCursor) -> bool {
+    if let RenderCursor::At(p) = cursor {
+        let segs = p.segments();
+        let last_is_field = matches!(segs.last(), Some(PathSegment::Field(..)));
+        let has_coll_entry = segs
+            .iter()
+            .any(|s| matches!(s, PathSegment::CollectionEntry(..)));
+        return last_is_field && has_coll_entry;
+    }
+    false
+}
+
+fn cursor_collection_entry_ids(cursor: &RenderCursor) -> Option<(u64, usize)> {
+    if let RenderCursor::At(p) = cursor
+        && let Some(PathSegment::CollectionEntry(cid, eidx)) = p.segments().last()
+    {
+        return Some((cid.0, eidx.0));
+    }
+    None
+}
+
+fn make_pin_key_var(
+    thread_id: u32,
+    thread_name: &str,
+    frame_id: u64,
+    var_idx: usize,
+) -> crate::favorites::PinKey {
+    crate::favorites::PinKey {
+        thread_id: ThreadId(thread_id),
+        thread_name: thread_name.to_string(),
+        nav_path: NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx)).build(),
+    }
+}
+
+fn make_pin_key_field(
+    thread_id: u32,
+    thread_name: &str,
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+) -> crate::favorites::PinKey {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    crate::favorites::PinKey {
+        thread_id: ThreadId(thread_id),
+        thread_name: thread_name.to_string(),
+        nav_path: b.build(),
+    }
+}
+
+fn make_pin_key_coll_entry(
+    thread_id: u32,
+    thread_name: &str,
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    collection_id: u64,
+    entry_index: usize,
+) -> crate::favorites::PinKey {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    let b = b.collection_entry(CollectionId(collection_id), EntryIdx(entry_index));
+    crate::favorites::PinKey {
+        thread_id: ThreadId(thread_id),
+        thread_name: thread_name.to_string(),
+        nav_path: b.build(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_pin_key_coll_entry_field(
+    thread_id: u32,
+    thread_name: &str,
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    collection_id: u64,
+    entry_index: usize,
+    obj_field_path: &[usize],
+) -> crate::favorites::PinKey {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    let mut b = b.collection_entry(CollectionId(collection_id), EntryIdx(entry_index));
+    for &fi in obj_field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    crate::favorites::PinKey {
+        thread_id: ThreadId(thread_id),
+        thread_name: thread_name.to_string(),
+        nav_path: b.build(),
+    }
+}
+
 struct StubEngine {
     threads: Vec<ThreadInfo>,
     frames: Vec<FrameInfo>,
@@ -242,6 +368,14 @@ fn make_obj_var(index: usize, object_id: u64) -> VariableInfo {
 }
 
 fn make_favorite_item(thread_name: &str, frame_id: u64) -> crate::favorites::PinnedItem {
+    make_favorite_item_with_tid(1, thread_name, frame_id)
+}
+
+fn make_favorite_item_with_tid(
+    thread_id: u32,
+    thread_name: &str,
+    frame_id: u64,
+) -> crate::favorites::PinnedItem {
     crate::favorites::PinnedItem {
         thread_name: thread_name.to_string(),
         frame_label: "Thread.run()".to_string(),
@@ -250,11 +384,7 @@ fn make_favorite_item(thread_name: &str, frame_id: u64) -> crate::favorites::Pin
             value_label: "42".to_string(),
         },
         local_collapsed: HashSet::new(),
-        key: crate::favorites::PinKey::Var {
-            frame_id,
-            thread_name: thread_name.to_string(),
-            var_idx: 0,
-        },
+        key: make_pin_key_var(thread_id, thread_name, frame_id, 0),
     }
 }
 
@@ -272,12 +402,7 @@ fn make_field_favorite_item(
             value_label: "42".to_string(),
         },
         local_collapsed: HashSet::new(),
-        key: crate::favorites::PinKey::Field {
-            frame_id,
-            thread_name: thread_name.to_string(),
-            var_idx,
-            field_path,
-        },
+        key: make_pin_key_field(1, thread_name, frame_id, var_idx, &field_path),
     }
 }
 
@@ -719,10 +844,11 @@ fn enter_on_static_object_field_starts_and_collapses_expansion() {
     // OnObjectField([0]) then OnStaticField([0]).
     app.handle_input(InputEvent::Down);
     app.handle_input(InputEvent::Down);
-    assert!(matches!(
-        app.stack_state.as_ref().unwrap().cursor(),
-        StackCursor::OnStaticField { static_idx: 0, .. }
-    ));
+    assert!(
+        cursor_ends_with_static_field(app.stack_state.as_ref().unwrap().cursor()),
+        "expected static field cursor, got {:?}",
+        app.stack_state.as_ref().unwrap().cursor()
+    );
 
     app.handle_input(InputEvent::Enter); // expand static object ref 777
     assert!(
@@ -950,13 +1076,12 @@ fn chunk_section_enter_loads_correct_range() {
     }
     let ss = app.stack_state.as_ref().unwrap();
     // Should be on first chunk section [100..199].
-    assert!(matches!(
-        ss.cursor(),
-        StackCursor::OnChunkSection {
-            chunk_offset: 100,
-            ..
-        }
-    ));
+    assert_eq!(
+        cursor_chunk_section_offset(ss.cursor()),
+        Some(100),
+        "expected chunk section at offset 100, got {:?}",
+        ss.cursor()
+    );
     // Enter on chunk → LoadChunk(888, 100, 100).
     app.handle_input(InputEvent::Enter);
     assert!(
@@ -1049,7 +1174,11 @@ fn escape_collapses_collection() {
     // Move into collection entries.
     app.handle_input(InputEvent::Down);
     let ss = app.stack_state.as_ref().unwrap();
-    assert!(matches!(ss.cursor(), StackCursor::OnCollectionEntry { .. }));
+    assert!(
+        cursor_ends_with_collection_entry(ss.cursor()),
+        "expected collection entry cursor, got {:?}",
+        ss.cursor()
+    );
     // Escape → collapse collection.
     app.handle_input(InputEvent::Escape);
     let ss = app.stack_state.as_ref().unwrap();
@@ -1058,7 +1187,11 @@ fn escape_collapses_collection() {
         "collection should be removed"
     );
     // Cursor returns to the collection field.
-    assert!(matches!(ss.cursor(), StackCursor::OnObjectField { .. }));
+    assert!(
+        cursor_ends_with_field(ss.cursor()),
+        "expected object field cursor, got {:?}",
+        ss.cursor()
+    );
     // Focus stays in StackFrames.
     assert_eq!(app.focus, Focus::StackFrames);
 }
@@ -1084,7 +1217,7 @@ fn escape_from_collection_opened_on_var_restores_on_var_cursor() {
     app.handle_input(InputEvent::Down); // -> first collection entry
     let ss = app.stack_state.as_ref().unwrap();
     assert!(
-        matches!(ss.cursor(), StackCursor::OnCollectionEntry { .. }),
+        cursor_ends_with_collection_entry(ss.cursor()),
         "expected collection entry cursor before escape, got {:?}",
         ss.cursor()
     );
@@ -1097,11 +1230,8 @@ fn escape_from_collection_opened_on_var_restores_on_var_cursor() {
     );
     assert_eq!(
         ss.cursor(),
-        &StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0
-        },
-        "escape from var-opened collection must restore OnVar"
+        &RenderCursor::At(NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build()),
+        "escape from var-opened collection must restore var cursor"
     );
 }
 
@@ -1156,7 +1286,7 @@ fn escape_from_chunk_section_collapses_collection() {
     }
     let ss = app.stack_state.as_ref().unwrap();
     assert!(
-        matches!(ss.cursor(), StackCursor::OnChunkSection { .. }),
+        cursor_is_chunk_section(ss.cursor()),
         "should be on chunk section, got {:?}",
         ss.cursor()
     );
@@ -1167,7 +1297,11 @@ fn escape_from_chunk_section_collapses_collection() {
         !ss.expansion.collection_chunks.contains_key(&888),
         "collection should be removed after escape from chunk section"
     );
-    assert!(matches!(ss.cursor(), StackCursor::OnObjectField { .. }));
+    assert!(
+        cursor_ends_with_field(ss.cursor()),
+        "expected object field cursor, got {:?}",
+        ss.cursor()
+    );
 }
 
 #[test]
@@ -1410,10 +1544,7 @@ fn collection_entry_objectref_shows_plus_prefix() {
     app.handle_input(InputEvent::Down);
     let ss = app.stack_state.as_ref().unwrap();
     assert!(
-        matches!(
-            ss.cursor(),
-            StackCursor::OnCollectionEntry { entry_index: 0, .. }
-        ),
+        matches!(cursor_collection_entry_ids(ss.cursor()), Some((_, 0))),
         "should be on entry 0, got {:?}",
         ss.cursor()
     );
@@ -1445,11 +1576,8 @@ fn collection_entry_objectref_expanded_fields_appear_in_tree() {
     app.handle_input(InputEvent::Down);
     let ss = app.stack_state.as_ref().unwrap();
     assert!(
-        matches!(
-            ss.cursor(),
-            StackCursor::OnCollectionEntryObjField { entry_index: 0, .. }
-        ),
-        "after expanding entry 0, down should reach OnCollectionEntryObjField, \
+        cursor_is_collection_entry_field(ss.cursor()),
+        "after expanding entry 0, down should reach collection entry obj field, \
              got {:?}",
         ss.cursor()
     );
@@ -1470,8 +1598,8 @@ fn collection_entry_object_field_collection_opens_without_failed_resolve() {
     {
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            matches!(ss.cursor(), StackCursor::OnCollectionEntryObjField { .. }),
-            "expected OnCollectionEntryObjField before opening nested collection, got {:?}",
+            cursor_is_collection_entry_field(ss.cursor()),
+            "expected collection entry obj field before opening nested collection, got {:?}",
             ss.cursor()
         );
     }
@@ -1491,15 +1619,8 @@ fn collection_entry_object_field_collection_opens_without_failed_resolve() {
     {
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            matches!(
-                ss.cursor(),
-                StackCursor::OnCollectionEntry {
-                    collection_id: 888,
-                    entry_index: 0,
-                    ..
-                }
-            ),
-            "expected first nested collection entry, got {:?}",
+            matches!(cursor_collection_entry_ids(ss.cursor()), Some((888, 0))),
+            "expected first nested collection entry (cid=888, idx=0), got {:?}",
             ss.cursor()
         );
     }
@@ -1512,8 +1633,8 @@ fn collection_entry_object_field_collection_opens_without_failed_resolve() {
             "nested collection should be collapsed on escape"
         );
         assert!(
-            matches!(ss.cursor(), StackCursor::OnCollectionEntryObjField { .. }),
-            "escape from nested collection should restore OnCollectionEntryObjField, got {:?}",
+            cursor_is_collection_entry_field(ss.cursor()),
+            "escape from nested collection should restore collection entry obj field, got {:?}",
             ss.cursor()
         );
     }
@@ -1530,15 +1651,8 @@ fn nested_collection_entry_object_array_opens_and_renders_children() {
     {
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            matches!(
-                ss.cursor(),
-                StackCursor::OnCollectionEntry {
-                    collection_id: 890,
-                    entry_index: 0,
-                    ..
-                }
-            ),
-            "expected entry 0 on outer collection, got {:?}",
+            matches!(cursor_collection_entry_ids(ss.cursor()), Some((890, 0))),
+            "expected entry 0 on outer collection (cid=890), got {:?}",
             ss.cursor()
         );
     }
@@ -1558,15 +1672,8 @@ fn nested_collection_entry_object_array_opens_and_renders_children() {
     {
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            matches!(
-                ss.cursor(),
-                StackCursor::OnCollectionEntry {
-                    collection_id: 888,
-                    entry_index: 0,
-                    ..
-                }
-            ),
-            "expected first nested collection entry, got {:?}",
+            matches!(cursor_collection_entry_ids(ss.cursor()), Some((888, 0))),
+            "expected first nested collection entry (cid=888, idx=0), got {:?}",
             ss.cursor()
         );
     }
@@ -1579,14 +1686,7 @@ fn nested_collection_entry_object_array_opens_and_renders_children() {
             "nested collection should be collapsed on escape"
         );
         assert!(
-            matches!(
-                ss.cursor(),
-                StackCursor::OnCollectionEntry {
-                    collection_id: 890,
-                    entry_index: 0,
-                    ..
-                }
-            ),
+            matches!(cursor_collection_entry_ids(ss.cursor()), Some((890, 0))),
             "escape from nested collection should restore outer collection entry, got {:?}",
             ss.cursor()
         );
@@ -1650,7 +1750,7 @@ fn left_on_primitive_collection_entry_navigates_to_parent_var() {
     {
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            matches!(ss.cursor(), StackCursor::OnCollectionEntry { .. }),
+            cursor_ends_with_collection_entry(ss.cursor()),
             "expected collection entry before Left, got {:?}",
             ss.cursor()
         );
@@ -1660,10 +1760,7 @@ fn left_on_primitive_collection_entry_navigates_to_parent_var() {
     let ss = app.stack_state.as_ref().unwrap();
     assert_eq!(
         ss.cursor(),
-        &StackCursor::OnVar {
-            frame_idx: 0,
-            var_idx: 0
-        },
+        &RenderCursor::At(NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build()),
         "Left on primitive collection entry must navigate to parent var"
     );
 }
@@ -1683,7 +1780,7 @@ fn left_on_primitive_collection_entry_object_field_navigates_to_parent_entry() {
     {
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
-            matches!(ss.cursor(), StackCursor::OnCollectionEntryObjField { .. }),
+            cursor_is_collection_entry_field(ss.cursor()),
             "expected entry object field before Left, got {:?}",
             ss.cursor()
         );
@@ -1692,14 +1789,7 @@ fn left_on_primitive_collection_entry_object_field_navigates_to_parent_entry() {
     app.handle_input(InputEvent::Left);
     let ss = app.stack_state.as_ref().unwrap();
     assert!(
-        matches!(
-            ss.cursor(),
-            StackCursor::OnCollectionEntry {
-                collection_id: 889,
-                entry_index: 0,
-                ..
-            }
-        ),
+        matches!(cursor_collection_entry_ids(ss.cursor()), Some((889, 0))),
         "Left on primitive entry object field must navigate to parent entry, got {:?}",
         ss.cursor()
     );
@@ -1717,11 +1807,20 @@ fn page_up_down_scrolls_tree_by_visible_height() {
     for _ in 0..5 {
         state.move_down();
     }
-    assert_eq!(*state.cursor(), StackCursor::OnFrame(5));
+    assert_eq!(
+        *state.cursor(),
+        RenderCursor::At(NavigationPathBuilder::frame_only(FrameId(6)))
+    );
     state.move_page_down();
-    assert_eq!(*state.cursor(), StackCursor::OnFrame(15));
+    assert_eq!(
+        *state.cursor(),
+        RenderCursor::At(NavigationPathBuilder::frame_only(FrameId(16)))
+    );
     state.move_page_up();
-    assert_eq!(*state.cursor(), StackCursor::OnFrame(5));
+    assert_eq!(
+        *state.cursor(),
+        RenderCursor::At(NavigationPathBuilder::frame_only(FrameId(6)))
+    );
 }
 
 #[test]
@@ -1996,7 +2095,7 @@ fn loading_indicator_shown_if_not_yet_complete_after_1_second() {
 
 #[test]
 fn hidden_favorites_panel_forces_focus_back_to_previous_panel() {
-    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+    use crate::favorites::{PinnedItem, PinnedSnapshot};
     use ratatui::{Terminal, backend::TestBackend};
 
     let engine = StubEngine::with_threads(&["main"]);
@@ -2009,11 +2108,7 @@ fn hidden_favorites_panel_forces_focus_back_to_previous_panel() {
             value_label: "42".to_string(),
         },
         local_collapsed: HashSet::new(),
-        key: PinKey::Var {
-            frame_id: 1,
-            thread_name: "main".to_string(),
-            var_idx: 0,
-        },
+        key: make_pin_key_var(1, "main", 1, 0),
     });
     app.sync_favorites_selection();
     app.prev_focus = Focus::StackFrames;
@@ -2142,7 +2237,7 @@ fn tab_from_thread_list_with_search_active_moves_to_stack_frames() {
 
 #[test]
 fn tab_from_favorites_cycles_to_thread_list() {
-    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+    use crate::favorites::{PinnedItem, PinnedSnapshot};
 
     let engine = StubEngine::with_threads(&["main"]);
     let mut app = App::new(engine, "test.hprof".to_string());
@@ -2154,11 +2249,7 @@ fn tab_from_favorites_cycles_to_thread_list() {
             value_label: "42".to_string(),
         },
         local_collapsed: HashSet::new(),
-        key: PinKey::Var {
-            frame_id: 1,
-            thread_name: "main".to_string(),
-            var_idx: 0,
-        },
+        key: make_pin_key_var(1, "main", 1, 0),
     });
     app.last_area_width = MIN_WIDTH_FAVORITES_PANEL;
     app.focus = Focus::Favorites;
@@ -2184,7 +2275,9 @@ fn favorites_navigate_to_source_empty_list_no_panic() {
 fn favorites_navigate_to_source_zero_match_emits_warning() {
     let engine = StubEngine::with_threads(&["main"]);
     let mut app = App::new(engine, "test.hprof".to_string());
-    app.pinned.push(make_favorite_item("worker", 10));
+    // thread_id=2 — does not exist in this engine (only thread serial=1)
+    app.pinned
+        .push(make_favorite_item_with_tid(2, "worker", 10));
     app.sync_favorites_selection();
     app.focus = Focus::Favorites;
 
@@ -2205,7 +2298,9 @@ fn favorites_navigate_to_source_selects_correct_thread() {
         &[(1, vec![make_frame(11)]), (2, vec![make_frame(22)])],
     );
     let mut app = App::new(engine, "test.hprof".to_string());
-    app.pinned.push(make_favorite_item("worker", 22));
+    // "worker" is thread serial=2 in this engine
+    app.pinned
+        .push(make_favorite_item_with_tid(2, "worker", 22));
     app.sync_favorites_selection();
     app.focus = Focus::Favorites;
 
@@ -2236,17 +2331,17 @@ fn favorites_navigate_to_source_positions_on_field_when_possible() {
     assert_eq!(app.focus, Focus::StackFrames);
     assert_eq!(
         app.stack_state.as_ref().unwrap().cursor(),
-        &StackCursor::OnObjectField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![1],
-        }
+        &RenderCursor::At(
+            NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .field(FieldIdx(1))
+                .build()
+        )
     );
 }
 
 #[test]
 fn favorites_navigate_to_source_positions_on_collection_entry() {
-    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+    use crate::favorites::{PinnedItem, PinnedSnapshot};
 
     let frames = vec![make_frame(10)];
     let vars = vec![make_obj_var(0, 42)];
@@ -2273,15 +2368,7 @@ fn favorites_navigate_to_source_positions_on_collection_entry() {
             value_label: "dummy".to_string(),
         },
         local_collapsed: HashSet::new(),
-        key: PinKey::CollectionEntry {
-            frame_id: 10,
-            thread_name: "main".to_string(),
-            var_idx: 0,
-            field_path: vec![0],
-            collection_id: 889,
-            entry_index: 1,
-            collection_restore_cursor: None,
-        },
+        key: make_pin_key_coll_entry(1, "main", 10, 0, &[0], 889, 1),
     });
     app.sync_favorites_selection();
     app.focus = Focus::Favorites;
@@ -2291,19 +2378,18 @@ fn favorites_navigate_to_source_positions_on_collection_entry() {
     assert_eq!(app.focus, Focus::StackFrames);
     assert_eq!(
         app.stack_state.as_ref().unwrap().cursor(),
-        &StackCursor::OnCollectionEntry {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![0],
-            collection_id: 889,
-            entry_index: 1,
-        }
+        &RenderCursor::At(
+            NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .field(FieldIdx(0))
+                .collection_entry(CollectionId(889), EntryIdx(1))
+                .build()
+        )
     );
 }
 
 #[test]
 fn favorites_navigate_to_source_positions_on_collection_entry_obj_field() {
-    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+    use crate::favorites::{PinnedItem, PinnedSnapshot};
 
     let frames = vec![make_frame(10)];
     let vars = vec![make_obj_var(0, 42)];
@@ -2330,16 +2416,7 @@ fn favorites_navigate_to_source_positions_on_collection_entry_obj_field() {
             value_label: "dummy".to_string(),
         },
         local_collapsed: HashSet::new(),
-        key: PinKey::CollectionEntryField {
-            frame_id: 10,
-            thread_name: "main".to_string(),
-            var_idx: 0,
-            field_path: vec![0],
-            collection_id: 889,
-            entry_index: 1,
-            obj_field_path: vec![1],
-            collection_restore_cursor: None,
-        },
+        key: make_pin_key_coll_entry_field(1, "main", 10, 0, &[0], 889, 1, &[1]),
     });
     app.sync_favorites_selection();
     app.focus = Focus::Favorites;
@@ -2349,20 +2426,19 @@ fn favorites_navigate_to_source_positions_on_collection_entry_obj_field() {
     assert_eq!(app.focus, Focus::StackFrames);
     assert_eq!(
         app.stack_state.as_ref().unwrap().cursor(),
-        &StackCursor::OnCollectionEntryObjField {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![0],
-            collection_id: 889,
-            entry_index: 1,
-            obj_field_path: vec![1],
-        }
+        &RenderCursor::At(
+            NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .field(FieldIdx(0))
+                .collection_entry(CollectionId(889), EntryIdx(1))
+                .field(FieldIdx(1))
+                .build()
+        )
     );
 }
 
 #[test]
 fn favorites_navigate_to_source_collection_entry_with_stale_path_uses_semantic_match() {
-    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+    use crate::favorites::{PinnedItem, PinnedSnapshot};
 
     let frames = vec![make_frame(10)];
     let vars = vec![VariableInfo {
@@ -2383,18 +2459,8 @@ fn favorites_navigate_to_source_collection_entry_with_stale_path_uses_semantic_m
             value_label: "dummy".to_string(),
         },
         local_collapsed: HashSet::new(),
-        key: PinKey::CollectionEntry {
-            frame_id: 10,
-            thread_name: "main".to_string(),
-            var_idx: 0,
-            field_path: vec![99],
-            collection_id: 889,
-            entry_index: 1,
-            collection_restore_cursor: Some(StackCursor::OnVar {
-                frame_idx: 0,
-                var_idx: 0,
-            }),
-        },
+        // Var at index 0 is directly the collection (no field hops).
+        key: make_pin_key_coll_entry(1, "main", 10, 0, &[], 889, 1),
     });
     app.sync_favorites_selection();
     app.focus = Focus::Favorites;
@@ -2404,19 +2470,17 @@ fn favorites_navigate_to_source_collection_entry_with_stale_path_uses_semantic_m
     assert_eq!(app.focus, Focus::StackFrames);
     assert_eq!(
         app.stack_state.as_ref().unwrap().cursor(),
-        &StackCursor::OnCollectionEntry {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![],
-            collection_id: 889,
-            entry_index: 1,
-        }
+        &RenderCursor::At(
+            NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .collection_entry(CollectionId(889), EntryIdx(1))
+                .build()
+        )
     );
 }
 
 #[test]
 fn favorites_navigate_to_source_nested_collection_entry_uses_restore_cursor_chain() {
-    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+    use crate::favorites::{PinnedItem, PinnedSnapshot};
 
     let frames = vec![make_frame(10)];
     let vars = vec![VariableInfo {
@@ -2450,21 +2514,15 @@ fn favorites_navigate_to_source_nested_collection_entry_uses_restore_cursor_chai
             value_label: "dummy".to_string(),
         },
         local_collapsed: HashSet::new(),
-        key: PinKey::CollectionEntry {
-            frame_id: 10,
+        // var[0][1].inner (field 0 of entry 1's object) is collection 890, entry 0.
+        key: crate::favorites::PinKey {
+            thread_id: ThreadId(1),
             thread_name: "main".to_string(),
-            var_idx: 0,
-            field_path: vec![777],
-            collection_id: 890,
-            entry_index: 0,
-            collection_restore_cursor: Some(StackCursor::OnCollectionEntryObjField {
-                frame_idx: 0,
-                var_idx: 0,
-                field_path: vec![],
-                collection_id: 889,
-                entry_index: 1,
-                obj_field_path: vec![0],
-            }),
+            nav_path: NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .collection_entry(CollectionId(889), EntryIdx(1))
+                .field(FieldIdx(0))
+                .collection_entry(CollectionId(890), EntryIdx(0))
+                .build(),
         },
     });
     app.sync_favorites_selection();
@@ -2475,23 +2533,26 @@ fn favorites_navigate_to_source_nested_collection_entry_uses_restore_cursor_chai
     assert_eq!(app.focus, Focus::StackFrames);
     assert_eq!(
         app.stack_state.as_ref().unwrap().cursor(),
-        &StackCursor::OnCollectionEntry {
-            frame_idx: 0,
-            var_idx: 0,
-            field_path: vec![],
-            collection_id: 890,
-            entry_index: 0,
-        }
+        &RenderCursor::At(
+            NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .collection_entry(CollectionId(889), EntryIdx(1))
+                .field(FieldIdx(0))
+                .collection_entry(CollectionId(890), EntryIdx(0))
+                .build()
+        )
     );
 }
 
 #[test]
-fn favorites_navigate_to_source_warns_on_duplicate_thread_name() {
+fn favorites_navigate_to_source_navigates_by_thread_id_when_names_duplicate() {
+    // Two threads with the same name "dup"; navigation uses thread_id (serial),
+    // not thread_name, so there is no ambiguity.
     let engine = StubEngine::with_thread_specific_frames(
         &["dup", "dup"],
         &[(1, vec![make_frame(11)]), (2, vec![make_frame(22)])],
     );
     let mut app = App::new(engine, "test.hprof".to_string());
+    // thread_id=1 → "dup" serial=1, frame_id=11
     app.pinned.push(make_favorite_item("dup", 11));
     app.sync_favorites_selection();
     app.focus = Focus::Favorites;
@@ -2499,9 +2560,14 @@ fn favorites_navigate_to_source_warns_on_duplicate_thread_name() {
     app.handle_input(InputEvent::NavigateToSource);
 
     assert_eq!(app.focus, Focus::StackFrames);
+    assert!(
+        app.ui_status.is_none(),
+        "no warning expected for thread_id-based navigation"
+    );
     assert_eq!(
-        app.ui_status.as_deref(),
-        Some("Multiple threads named 'dup' — navigated to first match")
+        app.stack_state.as_ref().unwrap().selected_frame_id(),
+        Some(11),
+        "should navigate to frame_id=11 (thread serial=1)"
     );
 }
 
@@ -2551,7 +2617,7 @@ fn favorites_f_last_item_empty_panel_focus() {
 
 #[test]
 fn snapshot_chunk_page_limit_respected() {
-    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+    use crate::favorites::{PinnedItem, PinnedSnapshot};
     use crate::views::stack_view::{ChunkState, CollectionChunks};
 
     let engine = StubEngine::with_threads(&["main"]);
@@ -2595,11 +2661,7 @@ fn snapshot_chunk_page_limit_respected() {
             truncated: false,
         },
         local_collapsed: HashSet::new(),
-        key: PinKey::Var {
-            frame_id: 1,
-            thread_name: "main".to_string(),
-            var_idx: 0,
-        },
+        key: make_pin_key_var(1, "main", 1, 0),
     });
 
     let new_offset = 9_999usize;

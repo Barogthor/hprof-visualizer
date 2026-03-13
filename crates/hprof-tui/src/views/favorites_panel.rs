@@ -975,6 +975,7 @@ mod tests {
 
     use super::*;
     use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+    use crate::views::stack_view::{FrameId, NavigationPathBuilder, ThreadId, VarIdx};
 
     fn render_panel(panel: FavoritesPanel<'_>, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
@@ -1010,9 +1011,10 @@ mod tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
-            key: PinKey::Frame {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
+                nav_path: NavigationPathBuilder::frame_only(FrameId(1)),
             },
         }
     }
@@ -1026,10 +1028,10 @@ mod tests {
                 value_label: "42".to_string(),
             },
             local_collapsed: HashSet::new(),
-            key: PinKey::Var {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
-                var_idx: 0,
+                nav_path: NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build(),
             },
         }
     }
@@ -1074,9 +1076,10 @@ mod tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
-            key: PinKey::Frame {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
+                nav_path: NavigationPathBuilder::frame_only(FrameId(1)),
             },
         }
     }
@@ -1349,10 +1352,10 @@ mod tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
-            key: PinKey::Var {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
-                var_idx: 0,
+                nav_path: NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build(),
             },
         };
 
@@ -1450,9 +1453,10 @@ mod tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
-            key: PinKey::Frame {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
+                nav_path: NavigationPathBuilder::frame_only(FrameId(1)),
             },
         }];
         let text = render_panel(
@@ -1492,9 +1496,10 @@ mod tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
-            key: PinKey::Frame {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
+                nav_path: NavigationPathBuilder::frame_only(FrameId(1)),
             },
         };
 
@@ -1539,10 +1544,10 @@ mod tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
-            key: PinKey::Var {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
-                var_idx: 0,
+                nav_path: NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build(),
             },
         };
 
@@ -1635,9 +1640,10 @@ mod tests {
                 truncated: false,
             },
             local_collapsed,
-            key: PinKey::Frame {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
+                nav_path: NavigationPathBuilder::frame_only(FrameId(1)),
             },
         }];
 
@@ -1721,10 +1727,10 @@ mod tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
-            key: PinKey::Var {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
-                var_idx: 0,
+                nav_path: NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build(),
             },
         };
 
@@ -1749,10 +1755,10 @@ mod tests {
                 object_id: 1,
             },
             local_collapsed: HashSet::new(),
-            key: PinKey::Var {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
-                var_idx: 0,
+                nav_path: NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build(),
             },
         };
         let (unexpanded_rows, _, _) = collect_row_metadata(&unexpanded);
@@ -1797,10 +1803,10 @@ mod tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
-            key: PinKey::Var {
-                frame_id: 1,
+            key: PinKey {
+                thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
-                var_idx: 0,
+                nav_path: NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build(),
             },
         }];
         let text = render_panel(

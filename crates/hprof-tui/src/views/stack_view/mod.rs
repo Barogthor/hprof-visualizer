@@ -10,7 +10,11 @@ mod types;
 mod widget;
 
 pub use state::StackState;
-pub use types::{ChunkState, CollectionChunks, ExpansionPhase, StackCursor};
+pub use types::{
+    ChunkOffset, ChunkState, CollectionChunks, CollectionId, EntryIdx, ExpansionPhase, FieldIdx,
+    FrameId, NavigationPath, NavigationPathBuilder, PathSegment, RenderCursor, StaticFieldIdx,
+    ThreadId, VarIdx,
+};
 pub use widget::StackView;
 
 pub(crate) use format::{
