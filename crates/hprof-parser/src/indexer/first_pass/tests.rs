@@ -363,601 +363,617 @@ fn segment_completed_events(obs: &hprof_api::TestObserver) -> Vec<(usize, usize)
         .collect()
 }
 
-#[test]
-fn progress_observer_called_once_with_zero_for_empty_data() {
-    let mut obs = NullProgressObserver;
-    let mut notifier = ProgressNotifier::new(&mut obs);
-    let _result = run_first_pass(&[], 8, 0, &mut notifier);
-}
+/// Progress observer callbacks during scanning.
+mod progress_tests {
+    use super::*;
 
-#[cfg(feature = "test-utils")]
-#[test]
-fn progress_observer_called_for_single_record() {
-    let payload = make_string_payload(1, "hello", 8);
-    let data = make_record(0x01, &payload);
-    let mut obs = hprof_api::TestObserver::default();
-    let mut notifier = ProgressNotifier::new(&mut obs);
-    run_first_pass(&data, 8, 0, &mut notifier);
-    let calls = bytes_scanned_positions(&obs);
-    assert!(!calls.is_empty(), "observer must be called at least once");
-    assert_eq!(
-        *calls.last().unwrap(),
-        data.len() as u64,
-        "final call must report full data length"
-    );
-}
-
-#[cfg(feature = "test-utils")]
-#[test]
-fn scan_phase_reports_monotonic_bytes() {
-    const FIVE_MIB: usize = 5 * 1024 * 1024;
-    let mut data: Vec<u8> = Vec::with_capacity(FIVE_MIB + 16);
-    while data.len() < FIVE_MIB {
-        data.write_u8(0xFF).unwrap();
-        data.write_u32::<BigEndian>(0).unwrap();
-        data.write_u32::<BigEndian>(0).unwrap();
+    #[test]
+    fn progress_observer_called_once_with_zero_for_empty_data() {
+        let mut obs = NullProgressObserver;
+        let mut notifier = ProgressNotifier::new(&mut obs);
+        let _result = run_first_pass(&[], 8, 0, &mut notifier);
     }
-    let mut obs = hprof_api::TestObserver::default();
-    let mut notifier = ProgressNotifier::new(&mut obs);
-    run_first_pass(&data, 8, 0, &mut notifier);
-    let values = bytes_scanned_positions(&obs);
-    assert!(
-        values.len() > 1,
-        "large data must trigger more than one call"
-    );
-    for w in values.windows(2) {
-        assert!(w[1] > w[0], "values must be strictly increasing");
-    }
-}
 
-#[cfg(feature = "test-utils")]
-#[test]
-fn progress_observer_reports_partial_position_for_truncated_data() {
-    const DECLARED_PAYLOAD: u32 = 1000;
-    let mut data: Vec<u8> = Vec::new();
-    data.write_u8(0x01).unwrap();
-    data.write_u32::<BigEndian>(0).unwrap();
-    data.write_u32::<BigEndian>(DECLARED_PAYLOAD).unwrap();
-    data.extend_from_slice(&[0u8; 50]);
-    let mut obs = hprof_api::TestObserver::default();
-    let mut notifier = ProgressNotifier::new(&mut obs);
-    run_first_pass(&data, 8, 0, &mut notifier);
-    let calls = bytes_scanned_positions(&obs);
-    let reported = *calls.last().expect("observer must be called at least once");
-    let declared_end = 9u64 + DECLARED_PAYLOAD as u64;
-    assert!(
-        reported < declared_end,
-        "cursor ({reported}) must be before \
-         declared end ({declared_end})"
-    );
-    assert!(
-        reported <= data.len() as u64,
-        "cursor ({reported}) must not exceed \
-         actual data length ({})",
-        data.len()
-    );
-}
-
-#[test]
-fn heap_dump_0x0c_record_produces_segment_filter() {
-    let obj_id: u64 = 0x1234;
-    let data = make_record(0x0C, &make_instance_sub(obj_id, 100));
-    let result = run_fp(&data, 8);
-    assert_eq!(
-        result.segment_filters.len(),
-        1,
-        "expected one filter from 0x0C record"
-    );
-    assert!(result.segment_filters[0].contains(obj_id));
-}
-
-#[test]
-fn truncated_heap_dump_segment_mid_sub_record_partial_filter_built() {
-    let obj_id1: u64 = 0xAAAA_BBBB;
-    let mut payload = make_instance_sub(obj_id1, 100);
-    payload.write_u8(0x21).unwrap();
-    payload.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
-    let data = make_record(0x1C, &payload);
-    let result = run_fp(&data, 8);
-    assert_eq!(result.segment_filters.len(), 1);
-    assert!(result.segment_filters[0].contains(obj_id1));
-}
-
-#[test]
-fn gc_root_before_instance_dump_cursor_advances_correctly() {
-    let gc_root_id: u64 = 0x5555;
-    let obj_id: u64 = 0x6666;
-    let mut payload = Vec::new();
-    payload.write_u8(0x01).unwrap();
-    payload.write_u64::<BigEndian>(gc_root_id).unwrap();
-    payload.extend_from_slice(&make_instance_sub(obj_id, 200));
-    let data = make_record(0x1C, &payload);
-    let result = run_fp(&data, 8);
-    assert_eq!(result.segment_filters.len(), 1);
-    assert!(result.segment_filters[0].contains(obj_id));
-}
-
-#[test]
-fn truncated_gc_root_java_frame_sub_record_adds_warning() {
-    let mut payload = Vec::new();
-    payload.write_u8(0x03).unwrap();
-    payload.write_u64::<BigEndian>(0xABCD).unwrap();
-    payload.extend_from_slice(&[0x00, 0x01]);
-    let data = make_record(0x1C, &payload);
-
-    let result = run_fp(&data, 8);
-    assert!(
-        result
-            .warnings
-            .iter()
-            .any(|w| w.contains("GC_ROOT_JAVA_FRAME")),
-        "expected GC_ROOT_JAVA_FRAME warning, \
-         got {:?}",
-        result.warnings
-    );
-}
-
-#[test]
-fn class_dump_before_instance_dump_cursor_advances_correctly() {
-    let class_id: u64 = 0x1111;
-    let obj_id: u64 = 0x2222;
-    let mut payload = Vec::new();
-    payload.write_u8(0x20).unwrap();
-    payload.write_u64::<BigEndian>(class_id).unwrap();
-    payload.write_u32::<BigEndian>(0).unwrap();
-    for _ in 0..6u8 {
-        payload.write_u64::<BigEndian>(0).unwrap();
-    }
-    payload.write_u32::<BigEndian>(16).unwrap();
-    payload.write_u16::<BigEndian>(0).unwrap();
-    payload.write_u16::<BigEndian>(0).unwrap();
-    payload.write_u16::<BigEndian>(0).unwrap();
-    payload.extend_from_slice(&make_instance_sub(obj_id, class_id));
-    let data = make_record(0x1C, &payload);
-    let result = run_fp(&data, 8);
-    assert_eq!(result.segment_filters.len(), 1);
-    assert!(result.segment_filters[0].contains(obj_id));
-}
-
-// --- Tolerant behaviour tests ---
-
-#[test]
-fn eof_mid_header_produces_warning_and_no_records() {
-    let data = &[0x01u8];
-    let result = run_fp(data, 8);
-    assert!(
-        !result.warnings.is_empty(),
-        "expected EOF mid-header warning"
-    );
-    assert_eq!(result.records_indexed, 0);
-    assert_eq!(result.records_attempted, 0);
-}
-
-#[test]
-fn payload_end_exceeds_data_produces_warning_and_stops() {
-    let str_payload = make_string_payload(1, "ok", 8);
-    let mut data = make_record(0x01, &str_payload);
-    data.push(0x01);
-    data.write_u32::<BigEndian>(0).unwrap();
-    data.write_u32::<BigEndian>(1000).unwrap();
-    let result = run_fp(&data, 8);
-    assert!(
-        !result.warnings.is_empty(),
-        "expected out-of-bounds warning"
-    );
-    assert_eq!(result.records_indexed, 1);
-}
-
-#[test]
-fn corrupted_payload_within_window_produces_warning_and_continues() {
-    let mut st_payload = Vec::new();
-    st_payload.write_u32::<BigEndian>(3).unwrap();
-    st_payload.write_u32::<BigEndian>(1).unwrap();
-    st_payload.write_u32::<BigEndian>(1).unwrap();
-    let mut data = make_record(0x05, &st_payload);
-    let str_payload = make_string_payload(7, "next", 8);
-    data.extend(make_record(0x01, &str_payload));
-    let result = run_fp(&data, 8);
-    assert!(!result.warnings.is_empty(), "expected parse warning");
-    assert_eq!(
-        result.records_indexed, 1,
-        "next string record must be indexed"
-    );
-    assert!(result.index.strings.contains_key(&7));
-}
-
-#[test]
-fn two_records_first_corrupt_second_valid_gives_one_indexed() {
-    let mut st_payload = Vec::new();
-    st_payload.write_u32::<BigEndian>(3).unwrap();
-    st_payload.write_u32::<BigEndian>(1).unwrap();
-    st_payload.write_u32::<BigEndian>(1).unwrap();
-    let mut data = make_record(0x05, &st_payload);
-    let str_payload = make_string_payload(42, "good", 8);
-    data.extend(make_record(0x01, &str_payload));
-    let result = run_fp(&data, 8);
-    assert_eq!(result.records_indexed, 1);
-    assert_eq!(result.warnings.len(), 1);
-}
-
-#[test]
-fn valid_single_record_no_warnings() {
-    let payload = make_string_payload(7, "main", 8);
-    let data = make_record(0x01, &payload);
-    let result = run_fp(&data, 8);
-    assert!(result.warnings.is_empty());
-    assert_eq!(result.records_attempted, 1);
-    assert_eq!(result.records_indexed, 1);
-}
-
-#[test]
-fn empty_data_no_warnings_no_records() {
-    let result = run_fp(&[], 8);
-    assert!(result.warnings.is_empty());
-    assert_eq!(result.records_indexed, 0);
-    assert_eq!(result.records_attempted, 0);
-}
-
-// --- Updated tests (previously checked for Err) ---
-
-#[test]
-fn too_short_declared_length_stops_with_warning() {
-    let payload = make_load_class_payload(1, 100, 0, 200, 8);
-    let data = make_record_with_declared_length(0x02, 4, &payload);
-    let result = run_fp(&data, 8);
-    assert!(
-        !result.warnings.is_empty(),
-        "expected a warning for short declared length"
-    );
-}
-
-#[test]
-fn extra_payload_bytes_produces_warning_and_continues() {
-    let mut payload = make_stack_trace_payload(3, 1, &[10], 8);
-    payload.extend_from_slice(&[0xEE; 8]);
-    let mut data = make_record(0x05, &payload);
-    let str_payload = make_string_payload(99, "after", 8);
-    data.extend(make_record(0x01, &str_payload));
-    let result = run_fp(&data, 8);
-    assert!(
-        !result.warnings.is_empty(),
-        "expected size-mismatch warning"
-    );
-    assert!(
-        result.index.stack_traces.contains_key(&3),
-        "stack trace with extra bytes must still \
-         be indexed"
-    );
-    assert!(
-        result.index.strings.contains_key(&99),
-        "subsequent record must be indexed"
-    );
-}
-
-#[test]
-fn start_thread_with_extra_bytes_is_indexed_with_warning() {
-    let mut payload = make_start_thread_payload(7, 0xBEEF, 5, 42, 0, 0, 8);
-    payload.extend_from_slice(&[0xFF; 4]);
-    let data = make_record(0x06, &payload);
-
-    let result = run_fp(&data, 8);
-    assert!(
-        !result.warnings.is_empty(),
-        "expected warning for extra bytes"
-    );
-    assert!(
-        result.index.threads.contains_key(&7),
-        "thread with extra bytes must still be indexed"
-    );
-    assert_eq!(result.records_indexed, 1);
-}
-
-#[test]
-fn stack_trace_without_start_thread_synthesises_thread_entry() {
-    let payload = make_stack_trace_payload(5, 3, &[10], 8);
-    let data = make_record(0x05, &payload);
-    let result = run_fp(&data, 8);
-    assert!(
-        result.index.threads.contains_key(&3),
-        "synthetic thread must be created from \
-         STACK_TRACE thread_serial"
-    );
-    let t = &result.index.threads[&3];
-    assert_eq!(t.thread_serial, 3);
-    assert_eq!(t.stack_trace_serial, 5);
-    assert_eq!(t.name_string_id, 0, "synthetic thread has no name string");
-}
-
-#[test]
-fn stack_trace_thread_serial_zero_does_not_synthesise_thread() {
-    let payload = make_stack_trace_payload(1, 0, &[], 8);
-    let data = make_record(0x05, &payload);
-    let result = run_fp(&data, 8);
-    assert!(
-        !result.index.threads.contains_key(&0),
-        "thread_serial=0 must not be synthesised"
-    );
-}
-
-#[test]
-fn start_thread_record_takes_priority_over_synthetic_thread() {
-    let str_payload = make_string_payload(10, "main", 8);
-    let thread_payload = make_start_thread_payload(1, 100, 7, 10, 0, 0, 8);
-    let trace_payload = make_stack_trace_payload(7, 1, &[50], 8);
-    let mut data = make_record(0x01, &str_payload);
-    data.extend(make_record(0x06, &thread_payload));
-    data.extend(make_record(0x05, &trace_payload));
-    let result = run_fp(&data, 8);
-    assert_eq!(result.index.threads.len(), 1);
-    let t = &result.index.threads[&1];
-    assert_eq!(
-        t.name_string_id, 10,
-        "real START_THREAD must not be overwritten"
-    );
-}
-
-#[test]
-fn string_declared_length_smaller_than_id_size_stops_with_warning() {
-    let payload = 1u64.to_be_bytes();
-    let data = make_record_with_declared_length(0x01, 4, &payload);
-    let result = run_fp(&data, 8);
-    assert!(!result.warnings.is_empty(), "expected truncation warning");
-}
-
-// --- Happy-path tests ---
-
-#[test]
-fn empty_data_returns_empty_index() {
-    let result = run_fp(&[], 8);
-    assert!(result.index.strings.is_empty());
-    assert!(result.index.classes.is_empty());
-    assert!(result.index.threads.is_empty());
-    assert!(result.index.stack_frames.is_empty());
-    assert!(result.index.stack_traces.is_empty());
-}
-
-#[test]
-fn single_string_record_indexed() {
-    let payload = make_string_payload(7, "main", 8);
-    let data = make_record(0x01, &payload);
-    let result = run_fp(&data, 8);
-    assert_eq!(result.index.strings.len(), 1);
-    assert_eq!(resolve(&result.index.strings[&7], &data), "main");
-}
-
-#[test]
-fn single_load_class_indexed() {
-    let payload = make_load_class_payload(1, 100, 0, 200, 8);
-    let data = make_record(0x02, &payload);
-    let result = run_fp(&data, 8);
-    assert_eq!(result.index.classes.len(), 1);
-    assert_eq!(result.index.classes[&1].class_object_id, 100);
-}
-
-#[test]
-fn load_class_populates_class_names_by_id_with_dot_notation() {
-    let str_payload = make_string_payload(5, "java/util/HashMap", 8);
-    let cls_payload = make_load_class_payload(1, 100, 0, 5, 8);
-    let mut data = Vec::new();
-    data.extend(make_record(0x01, &str_payload));
-    data.extend(make_record(0x02, &cls_payload));
-    let result = run_fp(&data, 8);
-    assert_eq!(
-        result.index.class_names_by_id.get(&100),
-        Some(&"java.util.HashMap".to_string())
-    );
-}
-
-#[test]
-fn load_class_with_unknown_string_id_inserts_empty_name() {
-    let payload = make_load_class_payload(1, 42, 0, 99, 8);
-    let data = make_record(0x02, &payload);
-    let result = run_fp(&data, 8);
-    assert_eq!(
-        result.index.class_names_by_id.get(&42),
-        Some(&String::new())
-    );
-}
-
-#[test]
-fn single_start_thread_indexed() {
-    let payload = make_start_thread_payload(2, 300, 0, 1, 2, 3, 8);
-    let data = make_record(0x06, &payload);
-    let result = run_fp(&data, 8);
-    assert_eq!(result.index.threads.len(), 1);
-    assert_eq!(result.index.threads[&2].object_id, 300);
-}
-
-#[test]
-fn single_stack_frame_indexed() {
-    let payload = make_stack_frame_payload(10, 1, 2, 3, 5, 42, 8);
-    let data = make_record(0x04, &payload);
-    let result = run_fp(&data, 8);
-    assert_eq!(result.index.stack_frames.len(), 1);
-    assert_eq!(result.index.stack_frames[&10].line_number, 42);
-}
-
-#[test]
-fn single_stack_trace_indexed() {
-    let payload = make_stack_trace_payload(3, 1, &[10, 20], 8);
-    let data = make_record(0x05, &payload);
-    let result = run_fp(&data, 8);
-    assert_eq!(result.index.stack_traces.len(), 1);
-    assert_eq!(result.index.stack_traces[&3].frame_ids, vec![10u64, 20u64]);
-}
-
-#[test]
-fn unknown_tag_skipped_index_empty() {
-    let data = make_record(0xFF, &[0u8; 4]);
-    let result = run_fp(&data, 8);
-    assert!(result.index.strings.is_empty());
-    assert!(result.index.classes.is_empty());
-    assert!(result.index.threads.is_empty());
-    assert!(result.index.stack_frames.is_empty());
-    assert!(result.index.stack_traces.is_empty());
-}
-
-#[test]
-fn three_string_records_all_indexed() {
-    let mut data = Vec::new();
-    for (id, s) in [(1u64, "a"), (2, "b"), (3, "c")] {
-        let payload = make_string_payload(id, s, 8);
-        data.extend(make_record(0x01, &payload));
-    }
-    let result = run_fp(&data, 8);
-    assert_eq!(result.index.strings.len(), 3);
-    assert_eq!(resolve(&result.index.strings[&1], &data), "a");
-    assert_eq!(resolve(&result.index.strings[&2], &data), "b");
-    assert_eq!(resolve(&result.index.strings[&3], &data), "c");
-}
-
-#[test]
-fn id_size_4_string_and_class_both_indexed() {
-    let mut data = Vec::new();
-    let str_payload = make_string_payload(5, "foo", 4);
-    data.extend(make_record(0x01, &str_payload));
-    let cls_payload = make_load_class_payload(1, 50, 0, 5, 4);
-    data.extend(make_record(0x02, &cls_payload));
-    let result = run_fp(&data, 4);
-    assert_eq!(result.index.strings.len(), 1);
-    assert_eq!(resolve(&result.index.strings[&5], &data), "foo");
-    assert_eq!(result.index.classes.len(), 1);
-    assert_eq!(result.index.classes[&1].class_object_id, 50);
-}
-
-// --- ZGC/Shenandoah regression test (AC4) ---
-
-#[test]
-fn zgc_high_bit_ids_indexed_through_first_pass() {
-    let base: u64 = 0xFFFF_0000_0000_0000;
-    let count = 50u64;
-    let class_id: u64 = base | 0xFFFF;
-    let mut heap_payload = Vec::new();
-    for i in 0..count {
-        heap_payload.extend_from_slice(&make_instance_sub(base | i, class_id));
-    }
-    let data = make_record(0x1C, &heap_payload);
-    let result = run_fp(&data, 8);
-    assert_eq!(
-        result.segment_filters.len(),
-        1,
-        "one segment filter expected"
-    );
-    for i in 0..count {
-        assert!(
-            result.segment_filters[0].contains(base | i),
-            "ZGC-style ID {:#X} not found in filter",
-            base | i
-        );
-    }
-}
-
-// --- Sorted Vec binary search correctness ---
-
-#[test]
-fn lookup_offset_finds_all_inserted_entries() {
-    use super::ObjectOffset;
-    let mut vec: Vec<ObjectOffset> = (0..1000)
-        .map(|i| ObjectOffset {
-            object_id: i * 7 + 3,
-            offset: i * 100,
-        })
-        .collect();
-    vec.sort_unstable_by_key(|o| o.object_id);
-    for i in 0..1000u64 {
-        let id = i * 7 + 3;
+    #[cfg(feature = "test-utils")]
+    #[test]
+    fn progress_observer_called_for_single_record() {
+        let payload = make_string_payload(1, "hello", 8);
+        let data = make_record(0x01, &payload);
+        let mut obs = hprof_api::TestObserver::default();
+        let mut notifier = ProgressNotifier::new(&mut obs);
+        run_first_pass(&data, 8, 0, &mut notifier);
+        let calls = bytes_scanned_positions(&obs);
+        assert!(!calls.is_empty(), "observer must be called at least once");
         assert_eq!(
-            lookup_offset(&vec, id),
-            Some(i * 100),
-            "lookup failed for id {id}"
+            *calls.last().unwrap(),
+            data.len() as u64,
+            "final call must report full data length"
+        );
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[test]
+    fn scan_phase_reports_monotonic_bytes() {
+        const FIVE_MIB: usize = 5 * 1024 * 1024;
+        let mut data: Vec<u8> = Vec::with_capacity(FIVE_MIB + 16);
+        while data.len() < FIVE_MIB {
+            data.write_u8(0xFF).unwrap();
+            data.write_u32::<BigEndian>(0).unwrap();
+            data.write_u32::<BigEndian>(0).unwrap();
+        }
+        let mut obs = hprof_api::TestObserver::default();
+        let mut notifier = ProgressNotifier::new(&mut obs);
+        run_first_pass(&data, 8, 0, &mut notifier);
+        let values = bytes_scanned_positions(&obs);
+        assert!(
+            values.len() > 1,
+            "large data must trigger more than one call"
+        );
+        for w in values.windows(2) {
+            assert!(w[1] > w[0], "values must be strictly increasing");
+        }
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[test]
+    fn progress_observer_reports_partial_position_for_truncated_data() {
+        const DECLARED_PAYLOAD: u32 = 1000;
+        let mut data: Vec<u8> = Vec::new();
+        data.write_u8(0x01).unwrap();
+        data.write_u32::<BigEndian>(0).unwrap();
+        data.write_u32::<BigEndian>(DECLARED_PAYLOAD).unwrap();
+        data.extend_from_slice(&[0u8; 50]);
+        let mut obs = hprof_api::TestObserver::default();
+        let mut notifier = ProgressNotifier::new(&mut obs);
+        run_first_pass(&data, 8, 0, &mut notifier);
+        let calls = bytes_scanned_positions(&obs);
+        let reported = *calls.last().expect("observer must be called at least once");
+        let declared_end = 9u64 + DECLARED_PAYLOAD as u64;
+        assert!(
+            reported < declared_end,
+            "cursor ({reported}) must be before \
+             declared end ({declared_end})"
+        );
+        assert!(
+            reported <= data.len() as u64,
+            "cursor ({reported}) must not exceed \
+             actual data length ({})",
+            data.len()
         );
     }
 }
 
-#[test]
-fn lookup_offset_returns_none_for_missing_id() {
-    use super::ObjectOffset;
-    let vec: Vec<ObjectOffset> = vec![
-        ObjectOffset {
-            object_id: 10,
-            offset: 100,
-        },
-        ObjectOffset {
-            object_id: 20,
-            offset: 200,
-        },
-        ObjectOffset {
-            object_id: 30,
-            offset: 300,
-        },
-    ];
-    assert_eq!(lookup_offset(&vec, 15), None);
-    assert_eq!(lookup_offset(&vec, 0), None);
-    assert_eq!(lookup_offset(&vec, 999), None);
+/// Heap segment parsing: GC roots, class dumps, and instance layout.
+mod heap_parsing_tests {
+    use super::*;
+
+    #[test]
+    fn heap_dump_0x0c_record_produces_segment_filter() {
+        let obj_id: u64 = 0x1234;
+        let data = make_record(0x0C, &make_instance_sub(obj_id, 100));
+        let result = run_fp(&data, 8);
+        assert_eq!(
+            result.segment_filters.len(),
+            1,
+            "expected one filter from 0x0C record"
+        );
+        assert!(result.segment_filters[0].contains(obj_id));
+    }
+
+    #[test]
+    fn truncated_heap_dump_segment_mid_sub_record_partial_filter_built() {
+        let obj_id1: u64 = 0xAAAA_BBBB;
+        let mut payload = make_instance_sub(obj_id1, 100);
+        payload.write_u8(0x21).unwrap();
+        payload.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        let data = make_record(0x1C, &payload);
+        let result = run_fp(&data, 8);
+        assert_eq!(result.segment_filters.len(), 1);
+        assert!(result.segment_filters[0].contains(obj_id1));
+    }
+
+    #[test]
+    fn gc_root_before_instance_dump_cursor_advances_correctly() {
+        let gc_root_id: u64 = 0x5555;
+        let obj_id: u64 = 0x6666;
+        let mut payload = Vec::new();
+        payload.write_u8(0x01).unwrap();
+        payload.write_u64::<BigEndian>(gc_root_id).unwrap();
+        payload.extend_from_slice(&make_instance_sub(obj_id, 200));
+        let data = make_record(0x1C, &payload);
+        let result = run_fp(&data, 8);
+        assert_eq!(result.segment_filters.len(), 1);
+        assert!(result.segment_filters[0].contains(obj_id));
+    }
+
+    #[test]
+    fn truncated_gc_root_java_frame_sub_record_adds_warning() {
+        let mut payload = Vec::new();
+        payload.write_u8(0x03).unwrap();
+        payload.write_u64::<BigEndian>(0xABCD).unwrap();
+        payload.extend_from_slice(&[0x00, 0x01]);
+        let data = make_record(0x1C, &payload);
+
+        let result = run_fp(&data, 8);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("GC_ROOT_JAVA_FRAME")),
+            "expected GC_ROOT_JAVA_FRAME warning, \
+             got {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn class_dump_before_instance_dump_cursor_advances_correctly() {
+        let class_id: u64 = 0x1111;
+        let obj_id: u64 = 0x2222;
+        let mut payload = Vec::new();
+        payload.write_u8(0x20).unwrap();
+        payload.write_u64::<BigEndian>(class_id).unwrap();
+        payload.write_u32::<BigEndian>(0).unwrap();
+        for _ in 0..6u8 {
+            payload.write_u64::<BigEndian>(0).unwrap();
+        }
+        payload.write_u32::<BigEndian>(16).unwrap();
+        payload.write_u16::<BigEndian>(0).unwrap();
+        payload.write_u16::<BigEndian>(0).unwrap();
+        payload.write_u16::<BigEndian>(0).unwrap();
+        payload.extend_from_slice(&make_instance_sub(obj_id, class_id));
+        let data = make_record(0x1C, &payload);
+        let result = run_fp(&data, 8);
+        assert_eq!(result.segment_filters.len(), 1);
+        assert!(result.segment_filters[0].contains(obj_id));
+    }
 }
 
-#[test]
-fn lookup_offset_empty_vec_returns_none() {
-    use super::ObjectOffset;
-    let vec: Vec<ObjectOffset> = Vec::new();
-    assert_eq!(lookup_offset(&vec, 42), None);
+/// Tolerant behaviour on malformed, truncated, or oversized records.
+mod error_handling_tests {
+    use super::*;
+
+    #[test]
+    fn eof_mid_header_produces_warning_and_no_records() {
+        let data = &[0x01u8];
+        let result = run_fp(data, 8);
+        assert!(
+            !result.warnings.is_empty(),
+            "expected EOF mid-header warning"
+        );
+        assert_eq!(result.records_indexed, 0);
+        assert_eq!(result.records_attempted, 0);
+    }
+
+    #[test]
+    fn payload_end_exceeds_data_produces_warning_and_stops() {
+        let str_payload = make_string_payload(1, "ok", 8);
+        let mut data = make_record(0x01, &str_payload);
+        data.push(0x01);
+        data.write_u32::<BigEndian>(0).unwrap();
+        data.write_u32::<BigEndian>(1000).unwrap();
+        let result = run_fp(&data, 8);
+        assert!(
+            !result.warnings.is_empty(),
+            "expected out-of-bounds warning"
+        );
+        assert_eq!(result.records_indexed, 1);
+    }
+
+    #[test]
+    fn corrupted_payload_within_window_produces_warning_and_continues() {
+        let mut st_payload = Vec::new();
+        st_payload.write_u32::<BigEndian>(3).unwrap();
+        st_payload.write_u32::<BigEndian>(1).unwrap();
+        st_payload.write_u32::<BigEndian>(1).unwrap();
+        let mut data = make_record(0x05, &st_payload);
+        let str_payload = make_string_payload(7, "next", 8);
+        data.extend(make_record(0x01, &str_payload));
+        let result = run_fp(&data, 8);
+        assert!(!result.warnings.is_empty(), "expected parse warning");
+        assert_eq!(
+            result.records_indexed, 1,
+            "next string record must be indexed"
+        );
+        assert!(result.index.strings.contains_key(&7));
+    }
+
+    #[test]
+    fn two_records_first_corrupt_second_valid_gives_one_indexed() {
+        let mut st_payload = Vec::new();
+        st_payload.write_u32::<BigEndian>(3).unwrap();
+        st_payload.write_u32::<BigEndian>(1).unwrap();
+        st_payload.write_u32::<BigEndian>(1).unwrap();
+        let mut data = make_record(0x05, &st_payload);
+        let str_payload = make_string_payload(42, "good", 8);
+        data.extend(make_record(0x01, &str_payload));
+        let result = run_fp(&data, 8);
+        assert_eq!(result.records_indexed, 1);
+        assert_eq!(result.warnings.len(), 1);
+    }
+
+    #[test]
+    fn valid_single_record_no_warnings() {
+        let payload = make_string_payload(7, "main", 8);
+        let data = make_record(0x01, &payload);
+        let result = run_fp(&data, 8);
+        assert!(result.warnings.is_empty());
+        assert_eq!(result.records_attempted, 1);
+        assert_eq!(result.records_indexed, 1);
+    }
+
+    #[test]
+    fn empty_data_no_warnings_no_records() {
+        let result = run_fp(&[], 8);
+        assert!(result.warnings.is_empty());
+        assert_eq!(result.records_indexed, 0);
+        assert_eq!(result.records_attempted, 0);
+    }
+
+    #[test]
+    fn too_short_declared_length_stops_with_warning() {
+        let payload = make_load_class_payload(1, 100, 0, 200, 8);
+        let data = make_record_with_declared_length(0x02, 4, &payload);
+        let result = run_fp(&data, 8);
+        assert!(
+            !result.warnings.is_empty(),
+            "expected a warning for short declared length"
+        );
+    }
+
+    #[test]
+    fn extra_payload_bytes_produces_warning_and_continues() {
+        let mut payload = make_stack_trace_payload(3, 1, &[10], 8);
+        payload.extend_from_slice(&[0xEE; 8]);
+        let mut data = make_record(0x05, &payload);
+        let str_payload = make_string_payload(99, "after", 8);
+        data.extend(make_record(0x01, &str_payload));
+        let result = run_fp(&data, 8);
+        assert!(
+            !result.warnings.is_empty(),
+            "expected size-mismatch warning"
+        );
+        assert!(
+            result.index.stack_traces.contains_key(&3),
+            "stack trace with extra bytes must still \
+             be indexed"
+        );
+        assert!(
+            result.index.strings.contains_key(&99),
+            "subsequent record must be indexed"
+        );
+    }
+
+    #[test]
+    fn start_thread_with_extra_bytes_is_indexed_with_warning() {
+        let mut payload = make_start_thread_payload(7, 0xBEEF, 5, 42, 0, 0, 8);
+        payload.extend_from_slice(&[0xFF; 4]);
+        let data = make_record(0x06, &payload);
+
+        let result = run_fp(&data, 8);
+        assert!(
+            !result.warnings.is_empty(),
+            "expected warning for extra bytes"
+        );
+        assert!(
+            result.index.threads.contains_key(&7),
+            "thread with extra bytes must still be indexed"
+        );
+        assert_eq!(result.records_indexed, 1);
+    }
+
+    #[test]
+    fn string_declared_length_smaller_than_id_size_stops_with_warning() {
+        let payload = 1u64.to_be_bytes();
+        let data = make_record_with_declared_length(0x01, 4, &payload);
+        let result = run_fp(&data, 8);
+        assert!(!result.warnings.is_empty(), "expected truncation warning");
+    }
 }
 
-#[test]
-fn scan_records_parse_failure_emits_warning() {
-    // STRING record (tag=0x01) with header_length=1 but
-    // id_size=4 — parser can't read the 4-byte string ID.
-    let mut data = Vec::new();
-    data.push(0x01u8); // STRING_IN_UTF8 tag
-    data.extend_from_slice(&0u32.to_be_bytes()); // timestamp
-    data.extend_from_slice(&1u32.to_be_bytes()); // length = 1
-    data.push(0xFFu8); // 1-byte payload, insufficient for 4-byte ID
+/// Happy-path indexing of string, class, thread, frame, and stack-trace records.
+mod record_parsing_tests {
+    use super::*;
 
-    let result = run_fp(&data, 4);
-    assert!(
-        result.warnings.iter().any(|w| w.contains("at offset")),
-        "expected parse-failure warning, got: {:?}",
-        result.warnings
-    );
+    #[test]
+    fn empty_data_returns_empty_index() {
+        let result = run_fp(&[], 8);
+        assert!(result.index.strings.is_empty());
+        assert!(result.index.classes.is_empty());
+        assert!(result.index.threads.is_empty());
+        assert!(result.index.stack_frames.is_empty());
+        assert!(result.index.stack_traces.is_empty());
+    }
+
+    #[test]
+    fn single_string_record_indexed() {
+        let payload = make_string_payload(7, "main", 8);
+        let data = make_record(0x01, &payload);
+        let result = run_fp(&data, 8);
+        assert_eq!(result.index.strings.len(), 1);
+        assert_eq!(resolve(&result.index.strings[&7], &data), "main");
+    }
+
+    #[test]
+    fn single_load_class_indexed() {
+        let payload = make_load_class_payload(1, 100, 0, 200, 8);
+        let data = make_record(0x02, &payload);
+        let result = run_fp(&data, 8);
+        assert_eq!(result.index.classes.len(), 1);
+        assert_eq!(result.index.classes[&1].class_object_id, 100);
+    }
+
+    #[test]
+    fn load_class_populates_class_names_by_id_with_dot_notation() {
+        let str_payload = make_string_payload(5, "java/util/HashMap", 8);
+        let cls_payload = make_load_class_payload(1, 100, 0, 5, 8);
+        let mut data = Vec::new();
+        data.extend(make_record(0x01, &str_payload));
+        data.extend(make_record(0x02, &cls_payload));
+        let result = run_fp(&data, 8);
+        assert_eq!(
+            result.index.class_names_by_id.get(&100),
+            Some(&"java.util.HashMap".to_string())
+        );
+    }
+
+    #[test]
+    fn load_class_with_unknown_string_id_inserts_empty_name() {
+        let payload = make_load_class_payload(1, 42, 0, 99, 8);
+        let data = make_record(0x02, &payload);
+        let result = run_fp(&data, 8);
+        assert_eq!(
+            result.index.class_names_by_id.get(&42),
+            Some(&String::new())
+        );
+    }
+
+    #[test]
+    fn single_start_thread_indexed() {
+        let payload = make_start_thread_payload(2, 300, 0, 1, 2, 3, 8);
+        let data = make_record(0x06, &payload);
+        let result = run_fp(&data, 8);
+        assert_eq!(result.index.threads.len(), 1);
+        assert_eq!(result.index.threads[&2].object_id, 300);
+    }
+
+    #[test]
+    fn single_stack_frame_indexed() {
+        let payload = make_stack_frame_payload(10, 1, 2, 3, 5, 42, 8);
+        let data = make_record(0x04, &payload);
+        let result = run_fp(&data, 8);
+        assert_eq!(result.index.stack_frames.len(), 1);
+        assert_eq!(result.index.stack_frames[&10].line_number, 42);
+    }
+
+    #[test]
+    fn single_stack_trace_indexed() {
+        let payload = make_stack_trace_payload(3, 1, &[10, 20], 8);
+        let data = make_record(0x05, &payload);
+        let result = run_fp(&data, 8);
+        assert_eq!(result.index.stack_traces.len(), 1);
+        assert_eq!(result.index.stack_traces[&3].frame_ids, vec![10u64, 20u64]);
+    }
+
+    #[test]
+    fn unknown_tag_skipped_index_empty() {
+        let data = make_record(0xFF, &[0u8; 4]);
+        let result = run_fp(&data, 8);
+        assert!(result.index.strings.is_empty());
+        assert!(result.index.classes.is_empty());
+        assert!(result.index.threads.is_empty());
+        assert!(result.index.stack_frames.is_empty());
+        assert!(result.index.stack_traces.is_empty());
+    }
+
+    #[test]
+    fn three_string_records_all_indexed() {
+        let mut data = Vec::new();
+        for (id, s) in [(1u64, "a"), (2, "b"), (3, "c")] {
+            let payload = make_string_payload(id, s, 8);
+            data.extend(make_record(0x01, &payload));
+        }
+        let result = run_fp(&data, 8);
+        assert_eq!(result.index.strings.len(), 3);
+        assert_eq!(resolve(&result.index.strings[&1], &data), "a");
+        assert_eq!(resolve(&result.index.strings[&2], &data), "b");
+        assert_eq!(resolve(&result.index.strings[&3], &data), "c");
+    }
+
+    #[test]
+    fn id_size_4_string_and_class_both_indexed() {
+        let mut data = Vec::new();
+        let str_payload = make_string_payload(5, "foo", 4);
+        data.extend(make_record(0x01, &str_payload));
+        let cls_payload = make_load_class_payload(1, 50, 0, 5, 4);
+        data.extend(make_record(0x02, &cls_payload));
+        let result = run_fp(&data, 4);
+        assert_eq!(result.index.strings.len(), 1);
+        assert_eq!(resolve(&result.index.strings[&5], &data), "foo");
+        assert_eq!(result.index.classes.len(), 1);
+        assert_eq!(result.index.classes[&1].class_object_id, 50);
+    }
+
+    #[test]
+    fn zgc_high_bit_ids_indexed_through_first_pass() {
+        let base: u64 = 0xFFFF_0000_0000_0000;
+        let count = 50u64;
+        let class_id: u64 = base | 0xFFFF;
+        let mut heap_payload = Vec::new();
+        for i in 0..count {
+            heap_payload.extend_from_slice(&make_instance_sub(base | i, class_id));
+        }
+        let data = make_record(0x1C, &heap_payload);
+        let result = run_fp(&data, 8);
+        assert_eq!(
+            result.segment_filters.len(),
+            1,
+            "one segment filter expected"
+        );
+        for i in 0..count {
+            assert!(
+                result.segment_filters[0].contains(base | i),
+                "ZGC-style ID {:#X} not found in filter",
+                base | i
+            );
+        }
+    }
 }
 
-#[test]
-fn scan_records_partial_consumption_emits_warning() {
-    // STACK_FRAME record (tag=0x04) with id_size=4.
-    // parse_stack_frame reads exactly 24 bytes; we set
-    // header_length=28 (4 extra bytes) to trigger the
-    // "parsed OK but consumed X of Y bytes" warning.
-    let id_size = 4u32;
-    let mut payload = Vec::new();
-    payload.extend_from_slice(&1u32.to_be_bytes()); // frame_id
-    payload.extend_from_slice(&2u32.to_be_bytes()); // method_name_string_id
-    payload.extend_from_slice(&3u32.to_be_bytes()); // method_signature_string_id
-    payload.extend_from_slice(&4u32.to_be_bytes()); // source_file_name_id
-    payload.extend_from_slice(&5u32.to_be_bytes()); // class_serial_num
-    payload.extend_from_slice(&0i32.to_be_bytes()); // line_number
-    payload.extend_from_slice(&[0xBE, 0xEF, 0xCA, 0xFE]); // 4 extra bytes
+/// Thread synthesis from STACK_TRACE records and offset lookup correctness.
+mod thread_resolution_tests {
+    use super::*;
 
-    let mut data = Vec::new();
-    data.push(0x04u8); // STACK_FRAME tag
-    data.extend_from_slice(&0u32.to_be_bytes()); // timestamp
-    data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    data.extend_from_slice(&payload);
+    #[test]
+    fn stack_trace_without_start_thread_synthesises_thread_entry() {
+        let payload = make_stack_trace_payload(5, 3, &[10], 8);
+        let data = make_record(0x05, &payload);
+        let result = run_fp(&data, 8);
+        assert!(
+            result.index.threads.contains_key(&3),
+            "synthetic thread must be created from \
+             STACK_TRACE thread_serial"
+        );
+        let t = &result.index.threads[&3];
+        assert_eq!(t.thread_serial, 3);
+        assert_eq!(t.stack_trace_serial, 5);
+        assert_eq!(t.name_string_id, 0, "synthetic thread has no name string");
+    }
 
-    let result = run_fp(&data, id_size);
-    assert!(
-        result
-            .warnings
-            .iter()
-            .any(|w| w.contains("extra bytes ignored")),
-        "expected partial-consumption warning, got: {:?}",
-        result.warnings
-    );
+    #[test]
+    fn stack_trace_thread_serial_zero_does_not_synthesise_thread() {
+        let payload = make_stack_trace_payload(1, 0, &[], 8);
+        let data = make_record(0x05, &payload);
+        let result = run_fp(&data, 8);
+        assert!(
+            !result.index.threads.contains_key(&0),
+            "thread_serial=0 must not be synthesised"
+        );
+    }
+
+    #[test]
+    fn start_thread_record_takes_priority_over_synthetic_thread() {
+        let str_payload = make_string_payload(10, "main", 8);
+        let thread_payload = make_start_thread_payload(1, 100, 7, 10, 0, 0, 8);
+        let trace_payload = make_stack_trace_payload(7, 1, &[50], 8);
+        let mut data = make_record(0x01, &str_payload);
+        data.extend(make_record(0x06, &thread_payload));
+        data.extend(make_record(0x05, &trace_payload));
+        let result = run_fp(&data, 8);
+        assert_eq!(result.index.threads.len(), 1);
+        let t = &result.index.threads[&1];
+        assert_eq!(
+            t.name_string_id, 10,
+            "real START_THREAD must not be overwritten"
+        );
+    }
+
+    #[test]
+    fn lookup_offset_finds_all_inserted_entries() {
+        use super::ObjectOffset;
+        let mut vec: Vec<ObjectOffset> = (0..1000)
+            .map(|i| ObjectOffset {
+                object_id: i * 7 + 3,
+                offset: i * 100,
+            })
+            .collect();
+        vec.sort_unstable_by_key(|o| o.object_id);
+        for i in 0..1000u64 {
+            let id = i * 7 + 3;
+            assert_eq!(
+                lookup_offset(&vec, id),
+                Some(i * 100),
+                "lookup failed for id {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn lookup_offset_returns_none_for_missing_id() {
+        use super::ObjectOffset;
+        let vec: Vec<ObjectOffset> = vec![
+            ObjectOffset {
+                object_id: 10,
+                offset: 100,
+            },
+            ObjectOffset {
+                object_id: 20,
+                offset: 200,
+            },
+            ObjectOffset {
+                object_id: 30,
+                offset: 300,
+            },
+        ];
+        assert_eq!(lookup_offset(&vec, 15), None);
+        assert_eq!(lookup_offset(&vec, 0), None);
+        assert_eq!(lookup_offset(&vec, 999), None);
+    }
+
+    #[test]
+    fn lookup_offset_empty_vec_returns_none() {
+        use super::ObjectOffset;
+        let vec: Vec<ObjectOffset> = Vec::new();
+        assert_eq!(lookup_offset(&vec, 42), None);
+    }
+
+    #[test]
+    fn scan_records_parse_failure_emits_warning() {
+        // STRING record (tag=0x01) with header_length=1 but
+        // id_size=4 — parser can't read the 4-byte string ID.
+        let mut data = Vec::new();
+        data.push(0x01u8); // STRING_IN_UTF8 tag
+        data.extend_from_slice(&0u32.to_be_bytes()); // timestamp
+        data.extend_from_slice(&1u32.to_be_bytes()); // length = 1
+        data.push(0xFFu8); // 1-byte payload, insufficient for 4-byte ID
+
+        let result = run_fp(&data, 4);
+        assert!(
+            result.warnings.iter().any(|w| w.contains("at offset")),
+            "expected parse-failure warning, got: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn scan_records_partial_consumption_emits_warning() {
+        // STACK_FRAME record (tag=0x04) with id_size=4.
+        // parse_stack_frame reads exactly 24 bytes; we set
+        // header_length=28 (4 extra bytes) to trigger the
+        // "parsed OK but consumed X of Y bytes" warning.
+        let id_size = 4u32;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u32.to_be_bytes()); // frame_id
+        payload.extend_from_slice(&2u32.to_be_bytes()); // method_name_string_id
+        payload.extend_from_slice(&3u32.to_be_bytes()); // method_signature_string_id
+        payload.extend_from_slice(&4u32.to_be_bytes()); // source_file_name_id
+        payload.extend_from_slice(&5u32.to_be_bytes()); // class_serial_num
+        payload.extend_from_slice(&0i32.to_be_bytes()); // line_number
+        payload.extend_from_slice(&[0xBE, 0xEF, 0xCA, 0xFE]); // 4 extra bytes
+
+        let mut data = Vec::new();
+        data.push(0x04u8); // STACK_FRAME tag
+        data.extend_from_slice(&0u32.to_be_bytes()); // timestamp
+        data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        data.extend_from_slice(&payload);
+
+        let result = run_fp(&data, id_size);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("extra bytes ignored")),
+            "expected partial-consumption warning, got: {:?}",
+            result.warnings
+        );
+    }
 }
 
 // =====================================================
 // builder_tests — tests using HprofTestBuilder
 // =====================================================
 
+/// End-to-end indexing tests using `HprofTestBuilder`.
 #[cfg(feature = "test-utils")]
 mod builder_tests {
     use super::*;
