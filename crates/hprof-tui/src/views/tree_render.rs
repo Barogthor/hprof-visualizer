@@ -33,12 +33,12 @@ pub(crate) enum TreeRoot<'a> {
 pub(crate) struct RenderOptions {
     /// Whether object IDs should be shown in rendered labels.
     pub show_object_ids: bool,
-    /// Whether rows without captured snapshot descendants should be marked as
-    /// unavailable (`?`) instead of collapsed (`+`).
+    /// Whether rows without captured snapshot descendants should be
+    /// marked as unavailable (`?`) instead of collapsed (`+`).
     pub snapshot_mode: bool,
 }
 
-/// Shared read-only context threaded through all render helper functions.
+/// Shared read-only context threaded through all render helpers.
 struct RenderCtx<'a> {
     object_fields: &'a HashMap<u64, Vec<FieldInfo>>,
     object_static_fields: &'a HashMap<u64, Vec<FieldInfo>>,
@@ -55,9 +55,10 @@ struct RenderCtx<'a> {
 /// `List::highlight_style` + `ListState`.
 ///
 /// - `TreeRoot::Frame` produces the same item order as `flat_items()`'s
-///   variable section, so `ListState` offsets remain correct for `StackView`.
-/// - `TreeRoot::Subtree` starts at indent `"  "` (two spaces) for use in
-///   `FavoritesPanel`.
+///   variable section, so `ListState` offsets remain correct for
+///   `StackView`.
+/// - `TreeRoot::Subtree` starts at indent `"  "` (two spaces) for use
+///   in `FavoritesPanel`.
 pub(crate) fn render_variable_tree(
     root: TreeRoot<'_>,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
@@ -95,12 +96,14 @@ pub(crate) fn render_variable_tree(
                 append_collection_items(root_id, chunks, "  ", 0, &ctx, &mut items);
             } else {
                 let mut visited = HashSet::new();
-                append_fields_expanded(root_id, "  ", 0, &ctx, &mut visited, &mut items);
+                append_fields_expanded(root_id, "  ", 0, &ctx, &mut visited, &mut items, false);
             }
         }
     }
     items
 }
+
+// ── low-level helpers ──────────────────────────────────────────────
 
 fn object_ref_state(
     object_id: u64,
@@ -168,7 +171,8 @@ fn format_failed_label(class_name: &str, err: &str) -> String {
     format!("{short}{FAILED_LABEL_SEP}{err}")
 }
 
-/// Appends a single field row with toggle indicator and dimmed object ID.
+/// Appends a single field row with toggle indicator and dimmed
+/// object ID.
 fn push_field_row(
     items: &mut Vec<ListItem<'static>>,
     indent: &str,
@@ -188,6 +192,76 @@ fn push_field_row(
     row_spans.extend(spans_with_dimmed_object_id(label, row_style));
     items.push(ListItem::new(Line::from(row_spans)));
 }
+
+/// Computes phase / style / toggle for a single `FieldInfo`, pushes
+/// the rendered row, and returns `(child_phase, child_unavailable)`
+/// so the caller can decide whether to recurse.
+///
+/// When `static_ctx` is true (static-field context), the
+/// "unavailable" flag is suppressed — static fields are always fully
+/// present when the class is loaded.
+fn render_single_field(
+    field: &FieldInfo,
+    indent: &str,
+    ctx: &RenderCtx<'_>,
+    items: &mut Vec<ListItem<'static>>,
+    static_ctx: bool,
+) -> (Option<ExpansionPhase>, bool) {
+    let (child_phase, child_unavailable) = if let FieldValue::ObjectRef {
+        id, entry_count, ..
+    } = &field.value
+    {
+        let (phase, unavail) = object_ref_state(*id, *entry_count, ctx);
+        if static_ctx && unavail {
+            (Some(get_phase(*id, ctx.object_phases)), false)
+        } else {
+            (phase, unavail)
+        }
+    } else {
+        (None, false)
+    };
+
+    let row_style = if child_unavailable {
+        THEME.null_value
+    } else if matches!(child_phase, Some(ExpansionPhase::Failed)) {
+        THEME.error_indicator
+    } else {
+        field_value_style(&field.value)
+    };
+
+    let val = if let (FieldValue::ObjectRef { id, class_name, .. }, Some(ExpansionPhase::Failed)) =
+        (&field.value, &child_phase)
+    {
+        let err = ctx
+            .object_errors
+            .get(id)
+            .map(|s| s.as_str())
+            .unwrap_or("Failed to resolve object");
+        format_failed_label(class_name, err)
+    } else {
+        format_field_value_display(&field.value, child_phase.as_ref(), ctx.show_object_ids)
+    };
+
+    let toggle = match (&child_phase, child_unavailable) {
+        (_, true) => "? ",
+        (Some(ExpansionPhase::Expanded), false) | (Some(ExpansionPhase::Loading), false) => "- ",
+        (Some(ExpansionPhase::Failed), false) => "! ",
+        (Some(ExpansionPhase::Collapsed), false) => "+ ",
+        (None, false) => "  ",
+    };
+
+    push_field_row(
+        items,
+        indent,
+        toggle,
+        format!("{}: {val}", field.name),
+        row_style,
+    );
+
+    (child_phase, child_unavailable)
+}
+
+// ── variable / field tree builders ─────────────────────────────────
 
 fn append_var(
     var: &VariableInfo,
@@ -265,13 +339,24 @@ fn append_var(
         return;
     }
     let mut visited = HashSet::new();
-    append_fields_expanded(*id, &format!("{indent}  "), 0, ctx, &mut visited, items);
+    append_fields_expanded(
+        *id,
+        &format!("{indent}  "),
+        0,
+        ctx,
+        &mut visited,
+        items,
+        false,
+    );
 }
 
-/// Appends items for `object_id`'s instance fields, static fields, and nested
-/// objects at the given `indent`.
+/// Appends items for `object_id`'s instance fields and (optionally)
+/// static fields at the given `indent`.
 ///
 /// `depth` is used only for the recursion guard (max 16 levels).
+/// When `static_ctx` is true the `[static]` section is omitted and
+/// the "unavailable" (`?`) toggle is suppressed — static fields are
+/// always fully present when the class is loaded.
 fn append_fields_expanded(
     object_id: u64,
     indent: &str,
@@ -279,6 +364,7 @@ fn append_fields_expanded(
     ctx: &RenderCtx<'_>,
     visited: &mut HashSet<u64>,
     items: &mut Vec<ListItem<'static>>,
+    static_ctx: bool,
 ) {
     if depth >= 16 {
         return;
@@ -326,96 +412,48 @@ fn append_fields_expanded(
                     }
 
                     let (child_phase, child_unavailable) =
+                        render_single_field(field, indent, ctx, items, static_ctx);
+                    if !child_unavailable {
                         if let FieldValue::ObjectRef {
-                            id, entry_count, ..
-                        } = &field.value
-                        {
-                            object_ref_state(*id, *entry_count, ctx)
-                        } else {
-                            (None, false)
-                        };
-                    let row_style = if child_unavailable {
-                        THEME.null_value
-                    } else if matches!(child_phase, Some(ExpansionPhase::Failed)) {
-                        THEME.error_indicator
-                    } else {
-                        field_value_style(&field.value)
-                    };
-                    let val = if let (
-                        FieldValue::ObjectRef { id, class_name, .. },
-                        Some(ExpansionPhase::Failed),
-                    ) = (&field.value, &child_phase)
-                    {
-                        let err = ctx
-                            .object_errors
-                            .get(id)
-                            .map(|s| s.as_str())
-                            .unwrap_or("Failed to resolve object");
-                        format_failed_label(class_name, err)
-                    } else {
-                        format_field_value_display(
-                            &field.value,
-                            child_phase.as_ref(),
-                            ctx.show_object_ids,
-                        )
-                    };
-                    let toggle = match (&child_phase, child_unavailable) {
-                        (_, true) => "? ",
-                        (Some(ExpansionPhase::Expanded), false)
-                        | (Some(ExpansionPhase::Loading), false) => "- ",
-                        (Some(ExpansionPhase::Failed), false) => "! ",
-                        (Some(ExpansionPhase::Collapsed), false) => "+ ",
-                        (None, false) => "  ",
-                    };
-                    push_field_row(
-                        items,
-                        indent,
-                        toggle,
-                        format!("{}: {val}", field.name),
-                        row_style,
-                    );
-
-                    if !child_unavailable
-                        && let FieldValue::ObjectRef {
                             id,
                             entry_count: Some(_),
                             ..
                         } = field.value
-                        && let Some(cc) = ctx.collection_chunks.get(&id)
-                    {
-                        if matches!(
-                            child_phase,
-                            Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
-                        ) {
-                            append_collection_items(
+                            && let Some(cc) = ctx.collection_chunks.get(&id)
+                        {
+                            if matches!(
+                                child_phase,
+                                Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
+                            ) {
+                                append_collection_items(
+                                    id,
+                                    cc,
+                                    &format!("{indent}  "),
+                                    depth,
+                                    ctx,
+                                    items,
+                                );
+                            }
+                        } else if let FieldValue::ObjectRef { id, .. } = field.value {
+                            append_fields_expanded(
                                 id,
-                                cc,
                                 &format!("{indent}  "),
-                                depth,
+                                depth + 1,
                                 ctx,
+                                visited,
                                 items,
+                                static_ctx,
                             );
                         }
-                        continue;
-                    }
-                    if !child_unavailable && let FieldValue::ObjectRef { id, .. } = field.value {
-                        append_fields_expanded(
-                            id,
-                            &format!("{indent}  "),
-                            depth + 1,
-                            ctx,
-                            visited,
-                            items,
-                        );
                     }
                 }
             }
-            append_static_items(object_id, indent, depth, ctx, items);
+            if !static_ctx {
+                append_static_items(object_id, indent, depth, ctx, items);
+            }
             visited.remove(&object_id);
         }
-        ExpansionPhase::Failed => {
-            // Error state is styled on the parent node — no child row emitted here.
-        }
+        ExpansionPhase::Failed => {}
     }
 }
 
@@ -450,60 +488,10 @@ fn append_static_items(
         THEME.null_value,
     ))));
 
+    let field_indent = format!("{indent}  ");
+    let child_indent = format!("{indent}    ");
     for field in static_fields.iter().take(shown) {
-        let child_phase = if let FieldValue::ObjectRef {
-            id, entry_count, ..
-        } = field.value
-        {
-            Some(
-                if entry_count.is_some() && ctx.collection_chunks.contains_key(&id) {
-                    if ctx.snapshot_mode {
-                        get_phase(id, ctx.object_phases)
-                    } else {
-                        ExpansionPhase::Expanded
-                    }
-                } else {
-                    get_phase(id, ctx.object_phases)
-                },
-            )
-        } else {
-            None
-        };
-        // Static fields have no `child_unavailable` branch: snapshot_mode's
-        // "unavailable" logic applies only to instance-field object refs where
-        // the snapshot may be partial. Static fields are fully present when the
-        // class is loaded, so the `?` toggle is never needed here.
-        let row_style = if matches!(child_phase, Some(ExpansionPhase::Failed)) {
-            THEME.error_indicator
-        } else {
-            field_value_style(&field.value)
-        };
-        let val =
-            if let (FieldValue::ObjectRef { id, class_name, .. }, Some(ExpansionPhase::Failed)) =
-                (&field.value, &child_phase)
-            {
-                let err = ctx
-                    .object_errors
-                    .get(id)
-                    .map(|s| s.as_str())
-                    .unwrap_or("Failed to resolve object");
-                format_failed_label(class_name, err)
-            } else {
-                format_field_value_display(&field.value, child_phase.as_ref(), ctx.show_object_ids)
-            };
-        let toggle = match &child_phase {
-            Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
-            Some(ExpansionPhase::Failed) => "! ",
-            Some(ExpansionPhase::Collapsed) => "+ ",
-            None => "  ",
-        };
-        push_field_row(
-            items,
-            &format!("{indent}  "),
-            toggle,
-            format!("{}: {val}", field.name),
-            row_style,
-        );
+        let (child_phase, _) = render_single_field(field, &field_indent, ctx, items, true);
 
         if let FieldValue::ObjectRef {
             id,
@@ -516,20 +504,13 @@ fn append_static_items(
                 child_phase,
                 Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
             ) {
-                append_collection_items(id, cc, &format!("{indent}    "), depth, ctx, items);
+                append_collection_items(id, cc, &child_indent, depth, ctx, items);
             }
             continue;
         }
         if let FieldValue::ObjectRef { id, .. } = field.value {
             let mut visited = HashSet::new();
-            append_static_object_children(
-                id,
-                &format!("{indent}    "),
-                depth,
-                ctx,
-                &mut visited,
-                items,
-            );
+            append_fields_expanded(id, &child_indent, depth, ctx, &mut visited, items, true);
         }
     }
 
@@ -541,149 +522,9 @@ fn append_static_items(
     }
 }
 
-fn append_static_object_children(
-    obj_id: u64,
-    indent: &str,
-    depth: usize,
-    ctx: &RenderCtx<'_>,
-    visited: &mut HashSet<u64>,
-    items: &mut Vec<ListItem<'static>>,
-) {
-    if depth >= 16 {
-        return;
-    }
-    match get_phase(obj_id, ctx.object_phases) {
-        ExpansionPhase::Collapsed => {}
-        ExpansionPhase::Loading => {
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("{indent}~ Loading..."),
-                THEME.loading_indicator,
-            ))));
-        }
-        ExpansionPhase::Failed => {
-            // Error state is styled on the parent static row — no child row emitted here.
-        }
-        ExpansionPhase::Expanded => {
-            let field_list = ctx
-                .object_fields
-                .get(&obj_id)
-                .map(|f| f.as_slice())
-                .unwrap_or(&[]);
-            if field_list.is_empty() {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("{indent}(no fields)"),
-                    THEME.null_value,
-                ))));
-                return;
-            }
+// ── collection tree builders ───────────────────────────────────────
 
-            visited.insert(obj_id);
-            for field in field_list {
-                if let FieldValue::ObjectRef { id, class_name, .. } = &field.value
-                    && visited.contains(id)
-                {
-                    let label = if *id == obj_id { "self-ref" } else { "cyclic" };
-                    let short = class_name.rsplit('.').next().unwrap_or(class_name);
-                    let text = format!(
-                        "{indent}  {}: ↻ {} @ 0x{:X} [{label}]",
-                        field.name, short, id
-                    );
-                    items.push(ListItem::new(Line::from(Span::styled(
-                        text,
-                        THEME.cyclic_ref,
-                    ))));
-                    continue;
-                }
-
-                let child_phase = if let FieldValue::ObjectRef {
-                    id, entry_count, ..
-                } = field.value
-                {
-                    Some(
-                        if entry_count.is_some() && ctx.collection_chunks.contains_key(&id) {
-                            if ctx.snapshot_mode {
-                                get_phase(id, ctx.object_phases)
-                            } else {
-                                ExpansionPhase::Expanded
-                            }
-                        } else {
-                            get_phase(id, ctx.object_phases)
-                        },
-                    )
-                } else {
-                    None
-                };
-                // Static object children also omit `child_unavailable`: as with
-                // `append_static_items`, static context never produces partial snapshots.
-                let row_style = if matches!(child_phase, Some(ExpansionPhase::Failed)) {
-                    THEME.error_indicator
-                } else {
-                    field_value_style(&field.value)
-                };
-                let val = if let (
-                    FieldValue::ObjectRef { id, class_name, .. },
-                    Some(ExpansionPhase::Failed),
-                ) = (&field.value, &child_phase)
-                {
-                    let err = ctx
-                        .object_errors
-                        .get(id)
-                        .map(|s| s.as_str())
-                        .unwrap_or("Failed to resolve object");
-                    format_failed_label(class_name, err)
-                } else {
-                    format_field_value_display(
-                        &field.value,
-                        child_phase.as_ref(),
-                        ctx.show_object_ids,
-                    )
-                };
-                let toggle = match &child_phase {
-                    Some(ExpansionPhase::Expanded) | Some(ExpansionPhase::Loading) => "- ",
-                    Some(ExpansionPhase::Failed) => "! ",
-                    Some(ExpansionPhase::Collapsed) => "+ ",
-                    None => "  ",
-                };
-                push_field_row(
-                    items,
-                    indent,
-                    toggle,
-                    format!("{}: {val}", field.name),
-                    row_style,
-                );
-
-                if let FieldValue::ObjectRef {
-                    id,
-                    entry_count: Some(_),
-                    ..
-                } = field.value
-                    && let Some(cc) = ctx.collection_chunks.get(&id)
-                {
-                    if matches!(
-                        child_phase,
-                        Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
-                    ) {
-                        append_collection_items(id, cc, &format!("{indent}  "), depth, ctx, items);
-                    }
-                    continue;
-                }
-                if let FieldValue::ObjectRef { id, .. } = field.value {
-                    append_static_object_children(
-                        id,
-                        &format!("{indent}  "),
-                        depth + 1,
-                        ctx,
-                        visited,
-                        items,
-                    );
-                }
-            }
-            visited.remove(&obj_id);
-        }
-    }
-}
-
-/// Appends items for collection entries and chunk section placeholders.
+/// Appends items for collection entries and chunk placeholders.
 fn append_collection_items(
     collection_id: u64,
     cc: &CollectionChunks,
@@ -795,7 +636,7 @@ fn append_collection_entry_item(
             .unwrap_or("Failed to resolve object");
         let failed = format_failed_label(class_name, err);
         if let Some(key) = &entry.key {
-            let k = super::stack_view::format_entry_value_text(key, false);
+            let k = format_entry_value_text(key, false);
             format!("{indent}! [{}] {} => {failed}", entry.index, k)
         } else {
             format!("{indent}! [{}] {failed}", entry.index)
@@ -848,7 +689,15 @@ fn append_collection_entry_item(
 
     if !value_unavailable && let FieldValue::ObjectRef { id, .. } = &entry.value {
         let mut visited = HashSet::new();
-        append_fields_expanded(*id, &format!("{indent}  "), depth, ctx, &mut visited, items);
+        append_fields_expanded(
+            *id,
+            &format!("{indent}  "),
+            depth,
+            ctx,
+            &mut visited,
+            items,
+            false,
+        );
     }
 }
 
