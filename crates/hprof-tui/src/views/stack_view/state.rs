@@ -955,11 +955,7 @@ impl StackState {
     }
 
     /// Loads vars for `frame_id` into internal cache and toggles expand/collapse.
-    pub fn toggle_expand(
-        &mut self,
-        frame_id: u64,
-        vars: Vec<VariableInfo>,
-    ) {
+    pub fn toggle_expand(&mut self, frame_id: u64, vars: Vec<VariableInfo>) {
         if self.expanded.contains(&frame_id) {
             self.expanded.remove(&frame_id);
             // Recursively collapse any expanded objects in this frame's
@@ -968,10 +964,7 @@ impl StackState {
                 let object_ids: Vec<u64> = cached_vars
                     .iter()
                     .filter_map(|v| {
-                        if let VariableValue::ObjectRef {
-                            id, ..
-                        } = v.value
-                        {
+                        if let VariableValue::ObjectRef { id, .. } = v.value {
                             Some(id)
                         } else {
                             None
@@ -980,8 +973,7 @@ impl StackState {
                     .collect();
                 for oid in object_ids {
                     let mut to_remove: Vec<u64> = Vec::new();
-                    let mut visited: HashSet<u64> =
-                        HashSet::new();
+                    let mut visited: HashSet<u64> = HashSet::new();
                     collect_descendants(
                         oid,
                         &self.expansion.object_fields,
@@ -997,16 +989,12 @@ impl StackState {
             // Reset cursor to frame row when collapsing from
             // inside.
             if let Some(path) = self.cursor_path()
-                && let Some(PathSegment::Frame(fid)) =
-                    path.segments().first().cloned()
+                && let Some(PathSegment::Frame(fid)) = path.segments().first().cloned()
                 && fid.0 == frame_id
             {
-                let frame_path =
-                    NavigationPathBuilder::frame_only(fid);
-                self.nav.set_cursor_and_sync(
-                    RenderCursor::At(frame_path),
-                    &flat,
-                );
+                let frame_path = NavigationPathBuilder::frame_only(fid);
+                self.nav
+                    .set_cursor_and_sync(RenderCursor::At(frame_path), &flat);
             } else {
                 self.nav.sync(&flat);
             }
@@ -1444,9 +1432,7 @@ impl StackState {
                     visited.insert(obj_id);
                     let field_list = fields.unwrap();
                     for (idx, field) in field_list.iter().enumerate() {
-                        let child_path = NavigationPathBuilder::extend(
-                            static_field_path.clone(),
-                        )
+                        let child_path = NavigationPathBuilder::extend(static_field_path.clone())
                             .field(FieldIdx(idx))
                             .build();
                         if let FieldValue::ObjectRef { id, .. } = field.value
@@ -1462,20 +1448,11 @@ impl StackState {
                             ..
                         } = field.value
                         {
-                            self.emit_collection_children(
-                                &child_path,
-                                CollectionId(id),
-                                out,
-                            );
+                            self.emit_collection_children(&child_path, CollectionId(id), out);
                             continue;
                         }
                         if let FieldValue::ObjectRef { id, .. } = field.value {
-                            self.emit_static_object_children(
-                                &child_path,
-                                id,
-                                visited,
-                                out,
-                            );
+                            self.emit_static_object_children(&child_path, id, visited, out);
                         }
                     }
                     visited.remove(&obj_id);
@@ -1569,9 +1546,7 @@ impl StackState {
 
         if let FieldValue::ObjectRef { id, .. } = &entry.value {
             let mut visited = HashSet::new();
-            self.emit_collection_entry_obj_children(
-                &entry_path, *id, &mut visited, out,
-            );
+            self.emit_collection_entry_obj_children(&entry_path, *id, &mut visited, out);
         }
     }
 
@@ -1600,9 +1575,7 @@ impl StackState {
                     visited.insert(obj_id);
                     let field_list = fields.unwrap();
                     for (idx, field) in field_list.iter().enumerate() {
-                        let child_path = NavigationPathBuilder::extend(
-                            entry_path.clone(),
-                        )
+                        let child_path = NavigationPathBuilder::extend(entry_path.clone())
                             .field(FieldIdx(idx))
                             .build();
                         // Cyclic refs emitted as At (non-recursive)
@@ -1623,27 +1596,16 @@ impl StackState {
                             ..
                         } = field.value
                         {
-                            self.emit_collection_children(
-                                &child_path,
-                                CollectionId(id),
-                                out,
-                            );
+                            self.emit_collection_children(&child_path, CollectionId(id), out);
                             continue;
                         }
                         if let FieldValue::ObjectRef { id, .. } = field.value {
-                            self.emit_collection_entry_obj_children(
-                                &child_path,
-                                id,
-                                visited,
-                                out,
-                            );
+                            self.emit_collection_entry_obj_children(&child_path, id, visited, out);
                         }
                     }
                     visited.remove(&obj_id);
                 }
-                self.emit_collection_entry_static_rows(
-                    entry_path, obj_id, out,
-                );
+                self.emit_collection_entry_static_rows(entry_path, obj_id, out);
             }
         }
     }
@@ -1678,12 +1640,7 @@ impl StackState {
             }
             if let FieldValue::ObjectRef { id, .. } = field.value {
                 let mut visited = HashSet::new();
-                self.emit_coll_entry_static_object_children(
-                    &static_path,
-                    id,
-                    &mut visited,
-                    out,
-                );
+                self.emit_coll_entry_static_object_children(&static_path, id, &mut visited, out);
             }
         }
         if static_fields.len() > STATIC_FIELDS_RENDER_LIMIT {
@@ -1716,9 +1673,7 @@ impl StackState {
                     visited.insert(obj_id);
                     let field_list = fields.unwrap();
                     for (idx, field) in field_list.iter().enumerate() {
-                        let child_path = NavigationPathBuilder::extend(
-                            static_path.clone(),
-                        )
+                        let child_path = NavigationPathBuilder::extend(static_path.clone())
                             .field(FieldIdx(idx))
                             .build();
                         if let FieldValue::ObjectRef { id, .. } = field.value
@@ -1734,11 +1689,7 @@ impl StackState {
                             ..
                         } = field.value
                         {
-                            self.emit_collection_children(
-                                &child_path,
-                                CollectionId(id),
-                                out,
-                            );
+                            self.emit_collection_children(&child_path, CollectionId(id), out);
                             continue;
                         }
                         if let FieldValue::ObjectRef { id, .. } = field.value {

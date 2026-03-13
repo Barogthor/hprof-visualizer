@@ -251,8 +251,6 @@ fn path_coll_entry(
         .build()
 }
 
-
-
 // --- Task 5.5: build_items indentation test ---
 
 fn item_text(item: ListItem<'static>) -> String {
@@ -268,7 +266,6 @@ fn item_text(item: ListItem<'static>) -> String {
         .to_string()
 }
 
-
 // --- Story 9.1: Failed-state tests (AC1–AC5) ---
 
 fn rendered_fg_at(item: ListItem<'static>, col: u16) -> ratatui::style::Color {
@@ -278,7 +275,6 @@ fn rendered_fg_at(item: ListItem<'static>, col: u16) -> ratatui::style::Color {
     Widget::render(List::new(vec![item]), area, &mut buf);
     buf.cell((col, 0)).map(|c| c.fg).unwrap_or(Color::Reset)
 }
-
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -293,7 +289,6 @@ fn nav_hash(path: &NavigationPath) -> u64 {
 mod cursor_tests {
     use super::*;
 
-
     // ---------------------------------------------------------------------------
     // Basic navigation tests
     // ---------------------------------------------------------------------------
@@ -305,7 +300,6 @@ mod cursor_tests {
         assert_eq!(state.cursor(), &rc_frame(1));
     }
 
-
     #[test]
     fn move_down_on_three_frames_with_no_expanded_moves_to_frame_1() {
         let frames = vec![make_frame(1), make_frame(2), make_frame(3)];
@@ -314,7 +308,6 @@ mod cursor_tests {
         assert_eq!(state.cursor(), &rc_frame(2));
     }
 
-
     #[test]
     fn move_up_at_frame_0_does_nothing() {
         let frames = vec![make_frame(1), make_frame(2), make_frame(3)];
@@ -322,7 +315,6 @@ mod cursor_tests {
         state.move_up();
         assert_eq!(state.cursor(), &rc_frame(1));
     }
-
 
     #[test]
     fn toggle_expand_with_vars_then_move_down_moves_to_var_0() {
@@ -333,7 +325,6 @@ mod cursor_tests {
         state.move_down();
         assert_eq!(state.cursor(), &rc_var(10, 0));
     }
-
 
     #[test]
     fn move_down_past_last_var_of_expanded_frame_moves_to_next_frame() {
@@ -346,7 +337,6 @@ mod cursor_tests {
         assert_eq!(state.cursor(), &rc_frame(20));
     }
 
-
     #[test]
     fn toggle_expand_on_already_expanded_frame_collapses_it() {
         let frames = vec![make_frame(10)];
@@ -356,7 +346,6 @@ mod cursor_tests {
         state.toggle_expand(10, vec![]);
         assert!(!state.is_expanded(10));
     }
-
 
     #[test]
     fn toggle_expand_collapse_from_var_cursor_resets_to_frame_and_navigation_works() {
@@ -373,14 +362,12 @@ mod cursor_tests {
         assert_eq!(state.cursor(), &rc_frame(10));
     }
 
-
     #[test]
     fn selected_frame_id_returns_correct_frame_id() {
         let frames = vec![make_frame(42), make_frame(99)];
         let state = StackState::new(frames);
         assert_eq!(state.selected_frame_id(), Some(42));
     }
-
 
     #[test]
     fn format_frame_label_keeps_line_metadata_when_source_file_missing() {
@@ -395,7 +382,6 @@ mod cursor_tests {
         assert_eq!(format_frame_label(&frame), "Thread.run() (native)");
     }
 
-
     #[test]
     fn format_frame_label_with_source_file_and_line_number() {
         let frame = FrameInfo {
@@ -409,7 +395,6 @@ mod cursor_tests {
         assert_eq!(format_frame_label(&frame), "Thread.run() [Thread.java:42]");
     }
 
-
     #[test]
     fn new_with_empty_frames_returns_none_for_selected_frame_id() {
         let state = StackState::new(vec![]);
@@ -421,7 +406,6 @@ mod cursor_tests {
 mod expansion_lifecycle_tests {
     use super::*;
 
-
     // --- Task 10: Object expansion phase tests ---
 
     #[test]
@@ -431,7 +415,6 @@ mod expansion_lifecycle_tests {
         assert_eq!(state.expansion_state(42), ExpansionPhase::Loading);
     }
 
-
     #[test]
     fn set_expansion_done_changes_phase_to_expanded() {
         let mut state = StackState::new(vec![make_frame(1)]);
@@ -439,14 +422,12 @@ mod expansion_lifecycle_tests {
         assert_eq!(state.expansion_state(42), ExpansionPhase::Expanded);
     }
 
-
     #[test]
     fn set_expansion_failed_changes_phase_to_failed() {
         let mut state = StackState::new(vec![make_frame(1)]);
         state.set_expansion_failed(42, "err".to_string());
         assert_eq!(state.expansion_state(42), ExpansionPhase::Failed);
     }
-
 
     #[test]
     fn set_expansion_failed_recovers_cursor_from_loading_node_top_level() {
@@ -470,7 +451,6 @@ mod expansion_lifecycle_tests {
         state.move_down();
         assert_eq!(state.cursor(), &rc_frame(20));
     }
-
 
     #[test]
     fn set_expansion_failed_recovers_cursor_from_loading_node_nested_field() {
@@ -505,7 +485,6 @@ mod expansion_lifecycle_tests {
         );
     }
 
-
     #[test]
     fn cancel_expansion_on_loading_reverts_to_collapsed() {
         let mut state = StackState::new(vec![make_frame(1)]);
@@ -519,7 +498,6 @@ mod expansion_lifecycle_tests {
 mod flat_items_tests {
     use super::*;
 
-
     #[test]
     fn flat_items_loading_object_includes_loading_node() {
         let frames = vec![make_frame(10)];
@@ -530,7 +508,6 @@ mod flat_items_tests {
         let flat = state.flat_items();
         assert!(flat.contains(&rc_loading(10, 0, &[])));
     }
-
 
     #[test]
     fn flat_items_expanded_with_two_fields_includes_two_object_field_nodes() {
@@ -555,7 +532,6 @@ mod flat_items_tests {
         assert!(flat.contains(&rc_field(10, 0, &[1])));
     }
 
-
     #[test]
     fn move_down_from_on_var_expanded_moves_to_first_object_field() {
         use hprof_engine::{FieldInfo, FieldValue};
@@ -573,7 +549,6 @@ mod flat_items_tests {
         state.move_down();
         assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
     }
-
 
     #[test]
     fn move_down_past_last_object_field_moves_to_next_frame() {
@@ -593,7 +568,6 @@ mod flat_items_tests {
         assert_eq!(state.cursor(), &rc_frame(20));
     }
 
-
     #[test]
     fn selected_loading_object_id_on_loading_node_returns_object_id() {
         let frames = vec![make_frame(10)];
@@ -605,7 +579,6 @@ mod flat_items_tests {
         state.move_down(); // → LoadingNode
         assert_eq!(state.selected_loading_object_id(), Some(42));
     }
-
 
     // --- Task 4.5 / 5.5: depth-2 navigation and indentation tests ---
 
@@ -636,7 +609,6 @@ mod flat_items_tests {
         assert!(flat.contains(&rc_field(10, 0, &[0, 0])));
     }
 
-
     #[test]
     fn selected_field_ref_id_returns_object_ref_id_for_nested_field() {
         use hprof_engine::{FieldInfo, FieldValue};
@@ -658,7 +630,6 @@ mod flat_items_tests {
         assert_eq!(state.selected_field_ref_id(), Some(200));
     }
 
-
     #[test]
     fn selected_field_ref_id_returns_none_for_non_object_ref_field() {
         use hprof_engine::{FieldInfo, FieldValue};
@@ -674,7 +645,6 @@ mod flat_items_tests {
         state.set_cursor(rc_field(10, 0, &[0]));
         assert_eq!(state.selected_field_ref_id(), None);
     }
-
 
     #[test]
     fn build_items_depth1_field_has_correct_indent() {
@@ -696,7 +666,6 @@ mod flat_items_tests {
             "depth-1 field must have 4+2 indent, got: {text:?}"
         );
     }
-
 
     #[test]
     fn build_items_depth2_field_has_correct_indent() {
@@ -734,7 +703,6 @@ mod flat_items_tests {
         );
     }
 
-
     #[test]
     fn build_items_failed_expansion_shows_error_inline_on_var_row() {
         let frames = vec![make_frame(10)];
@@ -760,7 +728,6 @@ mod flat_items_tests {
         );
     }
 
-
     #[test]
     fn enter_on_failed_var_is_noop() {
         let frames = vec![make_frame(10)];
@@ -781,7 +748,6 @@ mod flat_items_tests {
             "no loading node must appear for a Failed object"
         );
     }
-
 
     #[test]
     fn enter_on_failed_collection_entry_is_noop() {
@@ -848,7 +814,6 @@ mod flat_items_tests {
         );
     }
 
-
     #[test]
     fn failed_collection_entry_obj_no_phantom_cursor() {
         use hprof_engine::{CollectionPage, EntryInfo, FieldInfo, FieldValue};
@@ -914,7 +879,6 @@ mod flat_items_tests {
         assert_eq!(state.cursor(), &rc_frame(20));
     }
 
-
     #[test]
     fn failed_var_label_uses_stored_error_message() {
         let frames = vec![make_frame(10)];
@@ -939,7 +903,6 @@ mod flat_items_tests {
         );
     }
 
-
     #[test]
     fn failed_var_style_is_error_indicator() {
         use ratatui::style::Color;
@@ -952,7 +915,6 @@ mod flat_items_tests {
         let fg = rendered_fg_at(items[1].clone(), 4);
         assert_eq!(fg, Color::Red, "Failed var value must have Red fg");
     }
-
 
     #[test]
     fn flat_items_build_items_equal_length_invariant() {
@@ -1027,7 +989,6 @@ mod flat_items_tests {
 mod cycle_tests {
     use super::*;
 
-
     // --- Cyclic reference detection tests ---
 
     #[test]
@@ -1067,7 +1028,6 @@ mod cycle_tests {
         assert_eq!(deep_fields, 0, "no recursive fields beyond depth 1");
     }
 
-
     #[test]
     fn flat_items_multi_self_ref_emits_two_cyclic_nodes() {
         use hprof_engine::{FieldInfo, FieldValue};
@@ -1104,7 +1064,6 @@ mod cycle_tests {
         assert_eq!(cyclic_count, 2);
     }
 
-
     #[test]
     fn build_items_self_ref_renders_self_ref_marker() {
         use hprof_engine::{FieldInfo, FieldValue};
@@ -1138,7 +1097,6 @@ mod cycle_tests {
             "must NOT show FQCN, got: {text:?}"
         );
     }
-
 
     #[test]
     fn flat_items_indirect_cycle_emits_cyclic_node() {
@@ -1187,7 +1145,6 @@ mod cycle_tests {
         assert!(max_depth <= 3, "no deep recursion, max depth: {max_depth}");
     }
 
-
     #[test]
     fn build_items_indirect_cycle_renders_cyclic_marker() {
         use hprof_engine::{FieldInfo, FieldValue};
@@ -1230,7 +1187,6 @@ mod cycle_tests {
         );
     }
 
-
     #[test]
     fn move_down_up_across_cyclic_node() {
         use hprof_engine::{FieldInfo, FieldValue};
@@ -1270,7 +1226,6 @@ mod cycle_tests {
         state.move_up(); // CyclicNode[1] → Field[0]
         assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
     }
-
 
     #[test]
     fn flat_items_acyclic_tree_no_cyclic_nodes() {
@@ -1314,7 +1269,6 @@ mod cycle_tests {
         assert!(flat.contains(&rc_field(10, 0, &[0, 0])));
         assert!(flat.contains(&rc_field(10, 0, &[0, 0, 0])));
     }
-
 
     #[test]
     fn flat_items_diamond_shared_object_no_false_positive() {
@@ -1362,7 +1316,6 @@ mod cycle_tests {
         assert!(flat.contains(&rc_field(10, 0, &[1, 0])));
     }
 
-
     // --- Task 7.4: recursive collapse tests ---
 
     #[test]
@@ -1391,7 +1344,6 @@ mod cycle_tests {
         assert_eq!(state.expansion_state(100), ExpansionPhase::Collapsed);
         assert_eq!(state.expansion_state(200), ExpansionPhase::Collapsed);
     }
-
 
     #[test]
     fn collapse_object_recursive_cycle_guard_does_not_infinite_loop() {
@@ -1423,7 +1375,6 @@ mod cycle_tests {
         assert_eq!(state.expansion_state(200), ExpansionPhase::Collapsed);
     }
 
-
     // --- Task 8.2: frame collapse clears nested expansion ---
 
     #[test]
@@ -1442,7 +1393,6 @@ mod cycle_tests {
         state.toggle_expand(10, vec![]);
         assert!(state.expansion.object_phases.is_empty());
     }
-
 
     #[test]
     fn collapse_cyclic_child_resyncs_cursor_to_var() {
@@ -1492,7 +1442,6 @@ mod cycle_tests {
         );
     }
 
-
     #[test]
     fn collapse_nested_non_recursive_preserves_parent() {
         use hprof_engine::{FieldInfo, FieldValue};
@@ -1538,13 +1487,11 @@ mod cycle_tests {
 mod chunk_ranges_tests {
     use super::*;
 
-
     #[test]
     fn chunk_ranges_total_50_no_sections() {
         let ranges = compute_chunk_ranges(50);
         assert!(ranges.is_empty());
     }
-
 
     #[test]
     fn chunk_ranges_total_100_no_sections() {
@@ -1552,13 +1499,11 @@ mod chunk_ranges_tests {
         assert!(ranges.is_empty());
     }
 
-
     #[test]
     fn chunk_ranges_total_150() {
         let ranges = compute_chunk_ranges(150);
         assert_eq!(ranges, vec![(100, 50)]);
     }
-
 
     #[test]
     fn chunk_ranges_total_500() {
@@ -1569,7 +1514,6 @@ mod chunk_ranges_tests {
         );
     }
 
-
     #[test]
     fn chunk_ranges_total_1000() {
         let ranges = compute_chunk_ranges(1000);
@@ -1577,7 +1521,6 @@ mod chunk_ranges_tests {
         assert_eq!(ranges[0], (100, 100));
         assert_eq!(ranges[8], (900, 100));
     }
-
 
     #[test]
     fn chunk_ranges_total_3000() {
@@ -1589,7 +1532,6 @@ mod chunk_ranges_tests {
         assert_eq!(ranges[10], (2000, 1000));
     }
 
-
     #[test]
     fn chunk_ranges_total_2348() {
         let ranges = compute_chunk_ranges(2348);
@@ -1597,7 +1539,6 @@ mod chunk_ranges_tests {
         assert_eq!(ranges[9], (1000, 1000));
         assert_eq!(ranges[10], (2000, 348));
     }
-
 
     // --- Page navigation tests (frames 1..=30, index N → frame_id N+1) ---
 
@@ -1614,7 +1555,6 @@ mod chunk_ranges_tests {
         assert_eq!(state.cursor(), &rc_frame(26));
     }
 
-
     #[test]
     fn page_up_jumps_by_visible_height() {
         let frames: Vec<_> = (1..=30).map(make_frame).collect();
@@ -1628,7 +1568,6 @@ mod chunk_ranges_tests {
         assert_eq!(state.cursor(), &rc_frame(6));
     }
 
-
     #[test]
     fn page_down_clamps_to_last_item() {
         let frames: Vec<_> = (1..=10).map(make_frame).collect();
@@ -1637,7 +1576,6 @@ mod chunk_ranges_tests {
         state.move_page_down();
         assert_eq!(state.cursor(), &rc_frame(10));
     }
-
 
     #[test]
     fn page_up_clamps_to_first_item() {
@@ -1656,12 +1594,10 @@ mod chunk_ranges_tests {
 mod value_style_tests {
     use super::*;
 
-
     #[test]
     fn value_style_null_returns_null_value() {
         assert_eq!(field_value_style(&FieldValue::Null), THEME.null_value);
     }
-
 
     #[test]
     fn value_style_int_returns_primitive_value() {
@@ -1671,7 +1607,6 @@ mod value_style_tests {
         );
     }
 
-
     #[test]
     fn value_style_bool_returns_primitive_value() {
         assert_eq!(
@@ -1680,7 +1615,6 @@ mod value_style_tests {
         );
     }
 
-
     #[test]
     fn value_style_char_returns_string_value() {
         assert_eq!(
@@ -1688,7 +1622,6 @@ mod value_style_tests {
             THEME.string_value
         );
     }
-
 
     #[test]
     fn value_style_object_ref_with_inline_value_returns_string_value() {
@@ -1700,7 +1633,6 @@ mod value_style_tests {
         };
         assert_eq!(field_value_style(&v), THEME.string_value);
     }
-
 
     #[test]
     fn value_style_object_ref_without_inline_returns_default() {
@@ -1717,7 +1649,6 @@ mod value_style_tests {
 /// Collection entry navigation, entry counts, and nested array rendering.
 mod collection_tests {
     use super::*;
-
 
     fn setup_collection_entry_self_ref_state() -> StackState {
         let frames = vec![make_frame(10)];
@@ -1777,7 +1708,6 @@ mod collection_tests {
         state
     }
 
-
     #[test]
     fn flat_items_collection_entry_self_ref_emits_terminal_obj_field_row() {
         let state = setup_collection_entry_self_ref_state();
@@ -1805,7 +1735,6 @@ mod collection_tests {
         assert_eq!(state.flat_items().len(), state.build_items().len());
     }
 
-
     #[test]
     fn build_items_collection_entry_self_ref_renders_marker() {
         let state = setup_collection_entry_self_ref_state();
@@ -1825,7 +1754,6 @@ mod collection_tests {
         );
     }
 
-
     #[test]
     fn selected_collection_entry_obj_field_ref_id_is_none_for_cyclic_row() {
         let mut state = setup_collection_entry_self_ref_state();
@@ -1837,7 +1765,6 @@ mod collection_tests {
             None
         );
     }
-
 
     // --- selected_var_entry_count tests ---
 
@@ -1858,7 +1785,6 @@ mod collection_tests {
         assert_eq!(state.selected_var_entry_count(), Some(42));
     }
 
-
     #[test]
     fn selected_var_entry_count_returns_none_when_on_var_without_entry_count() {
         let frames = vec![make_frame(10)];
@@ -1876,14 +1802,12 @@ mod collection_tests {
         assert_eq!(state.selected_var_entry_count(), None);
     }
 
-
     #[test]
     fn selected_var_entry_count_returns_none_when_cursor_not_on_var() {
         let frames = vec![make_frame(10)];
         let state = StackState::new(frames);
         assert_eq!(state.selected_var_entry_count(), None);
     }
-
 
     #[test]
     fn object_array_var_has_correct_entry_count_and_object_id() {
@@ -1902,7 +1826,6 @@ mod collection_tests {
         assert_eq!(state.selected_var_entry_count(), Some(3));
         assert_eq!(state.selected_object_id(), Some(0xA00));
     }
-
 
     // --- selected_collection_entry_count tests ---
 
@@ -1939,7 +1862,6 @@ mod collection_tests {
         assert_eq!(state.selected_collection_entry_count(), Some(3));
     }
 
-
     #[test]
     fn selected_collection_entry_count_returns_none_when_entry_not_collection() {
         let coll_id = 0xC012u64;
@@ -1972,14 +1894,12 @@ mod collection_tests {
         assert_eq!(state.selected_collection_entry_count(), None);
     }
 
-
     #[test]
     fn selected_collection_entry_count_returns_none_when_cursor_not_on_entry() {
         let frames = vec![make_frame(10)];
         let state = StackState::new(frames);
         assert_eq!(state.selected_collection_entry_count(), None);
     }
-
 
     #[test]
     fn selected_collection_entry_obj_field_collection_info_returns_some_for_array_field() {
@@ -2028,7 +1948,6 @@ mod collection_tests {
         );
     }
 
-
     #[test]
     fn selected_collection_entry_obj_field_collection_info_returns_none_without_entry_count() {
         let coll_id = 0xC101u64;
@@ -2075,7 +1994,6 @@ mod collection_tests {
             None
         );
     }
-
 
     #[test]
     fn flat_items_include_nested_collection_entries_for_multidimensional_arrays() {
@@ -2181,7 +2099,6 @@ mod collection_tests {
         );
     }
 
-
     #[test]
     fn right_on_collection_var_dispatches_start_collection() {
         let frames = vec![make_frame(10)];
@@ -2200,7 +2117,6 @@ mod collection_tests {
         assert!(!state.expansion.collection_chunks.contains_key(&0xAB));
     }
 
-
     #[test]
     fn cursor_collection_id_on_entry_with_field_path_returns_object_field_restore() {
         let frames = vec![make_frame(1)];
@@ -2210,7 +2126,6 @@ mod collection_tests {
         assert_eq!(cid, 0xA);
         assert_eq!(restore, rc_field(1, 0, &[2]));
     }
-
 
     #[test]
     fn left_from_collection_entry_inside_object_field_navigates_to_field_row() {
@@ -2294,7 +2209,6 @@ mod collection_tests {
         assert_eq!(state.cursor(), &array_field_cursor);
     }
 
-
     #[test]
     fn parent_cursor_on_collection_entry_uses_path_parent_for_nested_collection() {
         // In the new model, parent_cursor() simply calls path.parent(). When cursor is
@@ -2305,7 +2219,6 @@ mod collection_tests {
         state.set_cursor(rc_coll_entry(1, 0, &[], 0xBB, 0));
         assert_eq!(state.parent_cursor(), Some(rc_var(1, 0)));
     }
-
 
     #[test]
     fn left_on_collection_entry_obj_field_with_open_collection_detects_collapse() {
@@ -2383,7 +2296,6 @@ mod collection_tests {
 mod scroll_tests {
     use super::*;
 
-
     // --- Scroll view tests ---
 
     #[test]
@@ -2399,7 +2311,6 @@ mod scroll_tests {
         assert_eq!(state.selected_frame_id(), Some(2));
     }
 
-
     #[test]
     fn scroll_view_up_shifts_offset_without_moving_cursor() {
         let frames = (0..5).map(make_frame).collect();
@@ -2412,7 +2323,6 @@ mod scroll_tests {
         assert_eq!(state.selected_frame_id(), Some(1));
     }
 
-
     #[test]
     fn scroll_view_down_snaps_back_when_cursor_would_leave_viewport() {
         let frames = (0..5).map(make_frame).collect();
@@ -2422,7 +2332,6 @@ mod scroll_tests {
         assert_eq!(state.list_state_offset_for_test(), 0);
         assert_eq!(state.selected_frame_id(), Some(0));
     }
-
 
     #[test]
     fn scroll_view_up_snaps_when_cursor_at_bottom_of_viewport() {
@@ -2439,7 +2348,6 @@ mod scroll_tests {
         assert_eq!(state.selected_frame_id(), Some(4));
     }
 
-
     #[test]
     fn scroll_view_no_op_when_no_frames() {
         let mut state = StackState::new(vec![]);
@@ -2448,7 +2356,6 @@ mod scroll_tests {
         state.scroll_view_down();
         assert_eq!(state.list_state_offset_for_test(), 0);
     }
-
 
     #[test]
     fn scroll_view_no_op_when_visible_height_zero() {
@@ -2464,7 +2371,6 @@ mod scroll_tests {
         assert_eq!(state.selected_frame_id(), Some(2));
     }
 
-
     #[test]
     fn scroll_view_down_no_op_when_list_fits_in_viewport() {
         let frames = (0..3).map(make_frame).collect();
@@ -2475,7 +2381,6 @@ mod scroll_tests {
         assert_eq!(state.list_state_offset_for_test(), 0);
         assert_eq!(state.selected_frame_id(), Some(1));
     }
-
 
     #[test]
     fn scroll_view_down_clamps_stale_offset_before_increment() {
@@ -2489,7 +2394,6 @@ mod scroll_tests {
         assert_eq!(state.list_state_offset_for_test(), 2);
         assert_eq!(state.selected_frame_id(), Some(2));
     }
-
 
     #[test]
     fn center_view_on_selection_places_cursor_near_middle() {
@@ -2505,7 +2409,6 @@ mod scroll_tests {
         assert_eq!(state.selected_frame_id(), Some(7));
     }
 
-
     #[test]
     fn center_view_on_selection_clamps_at_top() {
         let frames = (0..10).map(make_frame).collect();
@@ -2517,7 +2420,6 @@ mod scroll_tests {
         assert_eq!(state.list_state_offset_for_test(), 0);
         assert_eq!(state.selected_frame_id(), Some(1));
     }
-
 
     #[test]
     fn center_view_on_selection_clamps_at_bottom() {
@@ -2533,7 +2435,6 @@ mod scroll_tests {
         assert_eq!(state.selected_frame_id(), Some(9));
     }
 
-
     #[test]
     fn center_view_on_selection_no_op_when_visible_height_zero() {
         let frames = (0..5).map(make_frame).collect();
@@ -2546,7 +2447,6 @@ mod scroll_tests {
         assert_eq!(state.list_state_offset_for_test(), 1);
         assert_eq!(state.selected_frame_id(), Some(2));
     }
-
 
     #[test]
     fn scroll_view_page_down_shifts_offset_without_moving_cursor() {
@@ -2562,7 +2462,6 @@ mod scroll_tests {
         assert_eq!(state.selected_frame_id(), Some(7));
     }
 
-
     #[test]
     fn scroll_view_page_up_shifts_offset_without_moving_cursor() {
         let frames = (0..12).map(make_frame).collect();
@@ -2577,7 +2476,6 @@ mod scroll_tests {
         assert_eq!(state.selected_frame_id(), Some(7));
     }
 
-
     #[test]
     fn scroll_view_page_down_snaps_back_when_cursor_would_leave_viewport() {
         let frames = (0..12).map(make_frame).collect();
@@ -2588,7 +2486,6 @@ mod scroll_tests {
         assert_eq!(state.list_state_offset_for_test(), 0);
         assert_eq!(state.selected_frame_id(), Some(0));
     }
-
 
     #[test]
     fn scroll_view_page_up_snaps_when_cursor_at_bottom_edge() {
@@ -2608,7 +2505,6 @@ mod scroll_tests {
 /// Static field section rendering: separators, overflow rows, and navigability.
 mod static_fields_rendering_tests {
     use super::*;
-
 
     // --- Static field rendering tests ---
 
@@ -2680,7 +2576,6 @@ mod static_fields_rendering_tests {
         );
         assert_eq!(state.flat_items().len(), state.build_items().len());
     }
-
 
     #[test]
     fn render_collection_entry_static_helper_rows_not_navigable() {
@@ -2788,7 +2683,6 @@ mod static_fields_rendering_tests {
         );
     }
 
-
     #[test]
     fn render_static_section_separator_not_navigable() {
         let frames = vec![make_frame(10), make_frame(20)];
@@ -2826,7 +2720,6 @@ mod static_fields_rendering_tests {
         state.move_up();
         assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
     }
-
 
     #[test]
     fn render_static_overflow_row_not_navigable() {
@@ -2874,7 +2767,6 @@ mod static_fields_rendering_tests {
             state.cursor()
         );
     }
-
 
     #[test]
     fn static_object_field_rows_are_emitted_and_navigable() {
@@ -2937,7 +2829,6 @@ mod static_fields_rendering_tests {
         );
         assert_eq!(state.flat_items().len(), state.build_items().len());
     }
-
 
     #[test]
     fn collection_entry_static_object_field_rows_are_emitted() {
@@ -3043,7 +2934,6 @@ mod static_fields_rendering_tests {
 mod navigation_path_tests {
     use super::*;
 
-
     // --- Story 9.3: parent_cursor() and Left/Right edge cases ---
 
     #[test]
@@ -3053,7 +2943,6 @@ mod navigation_path_tests {
         state.set_cursor(rc_frame(1));
         assert_eq!(state.parent_cursor(), None);
     }
-
 
     #[test]
     fn parent_cursor_on_var_returns_on_frame() {
@@ -3065,7 +2954,6 @@ mod navigation_path_tests {
         assert_eq!(state.parent_cursor(), Some(rc_frame(20)));
     }
 
-
     #[test]
     fn parent_cursor_on_object_field_depth1_returns_on_var() {
         let frames = vec![make_frame(1)];
@@ -3073,7 +2961,6 @@ mod navigation_path_tests {
         state.set_cursor(rc_field(1, 2, &[3]));
         assert_eq!(state.parent_cursor(), Some(rc_var(1, 2)));
     }
-
 
     #[test]
     fn parent_cursor_on_object_field_depth2_returns_shallower_field() {
@@ -3083,7 +2970,6 @@ mod navigation_path_tests {
         assert_eq!(state.parent_cursor(), Some(rc_field(1, 0, &[1])));
     }
 
-
     #[test]
     fn parent_cursor_on_collection_entry_with_field_path_returns_object_field() {
         let frames = vec![make_frame(1)];
@@ -3092,7 +2978,6 @@ mod navigation_path_tests {
         assert_eq!(state.parent_cursor(), Some(rc_field(1, 0, &[2])));
     }
 
-
     #[test]
     fn parent_cursor_on_collection_entry_with_empty_field_path_returns_on_var() {
         let frames = vec![make_frame(1)];
@@ -3100,7 +2985,6 @@ mod navigation_path_tests {
         state.set_cursor(rc_coll_entry(1, 0, &[], 0xA, 0));
         assert_eq!(state.parent_cursor(), Some(rc_var(1, 0)));
     }
-
 
     #[test]
     fn parent_cursor_on_collection_entry_obj_field_returns_collection_entry() {
@@ -3113,7 +2997,6 @@ mod navigation_path_tests {
         );
     }
 
-
     #[test]
     fn parent_cursor_on_collection_entry_obj_field_depth2_returns_shallow_obj_field() {
         let frames = vec![make_frame(1)];
@@ -3125,7 +3008,6 @@ mod navigation_path_tests {
         );
     }
 
-
     #[test]
     fn left_on_non_expanded_var_navigates_to_frame() {
         let frames = vec![make_frame(10)];
@@ -3135,7 +3017,6 @@ mod navigation_path_tests {
         assert_eq!(state.parent_cursor(), Some(rc_frame(10)));
     }
 
-
     #[test]
     fn left_on_non_expanded_frame_is_noop() {
         let frames = vec![make_frame(10)];
@@ -3144,7 +3025,6 @@ mod navigation_path_tests {
         assert_eq!(state.parent_cursor(), None);
         assert_eq!(state.cursor(), &rc_frame(10));
     }
-
 
     #[test]
     fn left_on_expanded_var_collapses_not_navigates() {
@@ -3157,7 +3037,6 @@ mod navigation_path_tests {
         assert_eq!(state.parent_cursor(), Some(rc_frame(10)));
         assert_eq!(state.expansion_state(99), ExpansionPhase::Expanded);
     }
-
 
     #[test]
     fn left_on_primitive_var_navigates_to_frame() {
@@ -3172,7 +3051,6 @@ mod navigation_path_tests {
         assert_eq!(state.parent_cursor(), Some(rc_frame(10)));
     }
 
-
     #[test]
     fn nav_path_two_builders_same_logical_path_are_eq_and_same_hash() {
         let fid = FrameId(10);
@@ -3183,7 +3061,6 @@ mod navigation_path_tests {
         assert_eq!(path_a, path_b);
         assert_eq!(nav_hash(&path_a), nav_hash(&path_b));
     }
-
 
     #[test]
     #[should_panic]
@@ -3196,7 +3073,6 @@ mod navigation_path_tests {
         let _b = NavigationPathBuilder::extend(bad).build();
     }
 
-
     #[test]
     #[should_panic]
     fn nav_path_build_panics_when_var_at_position_2() {
@@ -3208,13 +3084,11 @@ mod navigation_path_tests {
         let _b = NavigationPathBuilder::extend(bad).build();
     }
 
-
     #[test]
     fn nav_path_parent_returns_none_on_frame_only() {
         let path = NavigationPathBuilder::frame_only(FrameId(42));
         assert_eq!(path.parent(), None);
     }
-
 
     #[test]
     fn nav_path_parent_returns_frame_only_on_depth_2() {
@@ -3222,7 +3096,6 @@ mod navigation_path_tests {
         let parent = path.parent().expect("depth-2 must have parent");
         assert_eq!(parent, NavigationPathBuilder::frame_only(FrameId(1)));
     }
-
 
     #[test]
     fn nav_path_parent_truncates_at_depth_3_plus() {
@@ -3234,14 +3107,12 @@ mod navigation_path_tests {
         assert_eq!(parent, expected);
     }
 
-
     #[test]
     fn nav_path_frame_only_builds_valid_depth1_path() {
         let path = NavigationPathBuilder::frame_only(FrameId(7));
         assert_eq!(path.segments().len(), 1);
         assert!(matches!(path.segments()[0], PathSegment::Frame(FrameId(7))));
     }
-
 
     // --- Task 18: instance-scoped expansion ---
 
