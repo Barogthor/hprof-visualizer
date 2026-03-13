@@ -44,25 +44,33 @@ pub fn compute_chunk_ranges(total_count: u64) -> Vec<(usize, usize)> {
     ranges
 }
 
-/// Collects all descendant object IDs reachable from `root_id` in depth-first
-/// post-order. Cycles are broken via `visited`.
+/// Collects all descendant object IDs reachable from `root_id`.
+///
+/// Iterative DFS to avoid call-stack overflow on deep object graphs.
+/// Cycles are broken via `visited`. Order is pre-order (parent before
+/// children), which is fine for the collapse use case.
 pub(crate) fn collect_descendants(
     root_id: u64,
     fields: &HashMap<u64, Vec<FieldInfo>>,
     visited: &mut HashSet<u64>,
     out: &mut Vec<u64>,
 ) {
-    if !visited.insert(root_id) {
-        return;
-    }
-    if let Some(field_list) = fields.get(&root_id) {
-        for f in field_list {
-            if let FieldValue::ObjectRef { id, .. } = f.value {
-                collect_descendants(id, fields, visited, out);
+    let mut stack = vec![root_id];
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        if let Some(field_list) = fields.get(&id) {
+            for f in field_list {
+                if let FieldValue::ObjectRef { id: child_id, .. } = f.value
+                    && !visited.contains(&child_id)
+                {
+                    stack.push(child_id);
+                }
             }
         }
+        out.push(id);
     }
-    out.push(root_id);
 }
 
 /// Formats a collapsed [`FieldValue::ObjectRef`] as `ClassName` or
@@ -227,6 +235,11 @@ pub(crate) fn format_entry_line(
     } else {
         format!("{indent}{toggle}[{}] {}", entry.index, val)
     }
+}
+
+/// Short frame label without source location: `ClassName.method()`.
+pub(crate) fn format_frame_label_short(frame: &FrameInfo) -> String {
+    format!("{}.{}()", frame.class_name, frame.method_name)
 }
 
 pub(crate) fn format_frame_label(frame: &FrameInfo) -> String {

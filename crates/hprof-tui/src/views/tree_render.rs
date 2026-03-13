@@ -92,7 +92,7 @@ pub(crate) fn render_variable_tree(
         }
         TreeRoot::Subtree { root_id } => {
             if let Some(chunks) = ctx.collection_chunks.get(&root_id) {
-                append_collection_items(root_id, chunks, "  ", &ctx, &mut items);
+                append_collection_items(root_id, chunks, "  ", 0, &ctx, &mut items);
             } else {
                 let mut visited = HashSet::new();
                 append_object_children(root_id, "  ", 0, &ctx, &mut visited, &mut items);
@@ -246,7 +246,7 @@ fn append_var(
                 Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
             ) && let Some(cc) = ctx.collection_chunks.get(id)
             {
-                append_collection_items(*id, cc, &format!("{indent}  "), ctx, items);
+                append_collection_items(*id, cc, &format!("{indent}  "), 0, ctx, items);
             }
             return;
         }
@@ -385,7 +385,14 @@ fn append_object_children(
                             child_phase,
                             Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
                         ) {
-                            append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
+                            append_collection_items(
+                                id,
+                                cc,
+                                &format!("{indent}  "),
+                                depth,
+                                ctx,
+                                items,
+                            );
                         }
                         continue;
                     }
@@ -514,7 +521,7 @@ fn append_static_items(
                 child_phase,
                 Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
             ) {
-                append_collection_items(id, cc, &format!("{indent}    "), ctx, items);
+                append_collection_items(id, cc, &format!("{indent}    "), 0, ctx, items);
             }
             continue;
         }
@@ -671,7 +678,14 @@ fn append_static_object_children(
                         child_phase,
                         Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
                     ) {
-                        append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
+                        append_collection_items(
+                            id,
+                            cc,
+                            &format!("{indent}  "),
+                            depth,
+                            ctx,
+                            items,
+                        );
                     }
                     continue;
                 }
@@ -696,6 +710,7 @@ fn append_collection_items(
     collection_id: u64,
     cc: &CollectionChunks,
     indent: &str,
+    depth: usize,
     ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
 ) {
@@ -704,6 +719,7 @@ fn append_collection_items(
         collection_id,
         cc,
         indent,
+        depth,
         ctx,
         items,
         &mut visited_collections,
@@ -714,10 +730,14 @@ fn append_collection_items_inner(
     collection_id: u64,
     cc: &CollectionChunks,
     indent: &str,
+    depth: usize,
     ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
     visited_collections: &mut HashSet<u64>,
 ) {
+    if depth >= 16 {
+        return;
+    }
     if !visited_collections.insert(collection_id) {
         return;
     }
@@ -728,6 +748,7 @@ fn append_collection_items_inner(
                 collection_id,
                 entry,
                 indent,
+                depth,
                 ctx,
                 items,
                 visited_collections,
@@ -757,6 +778,7 @@ fn append_collection_items_inner(
                     collection_id,
                     entry,
                     indent,
+                    depth,
                     ctx,
                     items,
                     visited_collections,
@@ -772,6 +794,7 @@ fn append_collection_entry_item(
     collection_id: u64,
     entry: &EntryInfo,
     indent: &str,
+    depth: usize,
     ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
     visited_collections: &mut HashSet<u64>,
@@ -846,6 +869,7 @@ fn append_collection_entry_item(
                 *id,
                 nested,
                 &format!("{indent}  "),
+                depth,
                 ctx,
                 items,
                 visited_collections,
@@ -856,7 +880,14 @@ fn append_collection_entry_item(
 
     if !value_unavailable && let FieldValue::ObjectRef { id, .. } = &entry.value {
         let mut visited = HashSet::new();
-        append_collection_entry_obj(*id, &format!("{indent}  "), 0, ctx, &mut visited, items);
+        append_collection_entry_obj(
+            *id,
+            &format!("{indent}  "),
+            depth,
+            ctx,
+            &mut visited,
+            items,
+        );
     }
 }
 
@@ -980,13 +1011,18 @@ fn append_collection_entry_obj(
                         } = field.value
                         && let Some(cc) = ctx.collection_chunks.get(&id)
                     {
-                        if depth + 1 < 16
-                            && matches!(
-                                child_phase,
-                                Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
-                            )
-                        {
-                            append_collection_items(id, cc, &format!("{indent}  "), ctx, items);
+                        if matches!(
+                            child_phase,
+                            Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
+                        ) {
+                            append_collection_items(
+                                id,
+                                cc,
+                                &format!("{indent}  "),
+                                depth + 1,
+                                ctx,
+                                items,
+                            );
                         }
                         continue;
                     }

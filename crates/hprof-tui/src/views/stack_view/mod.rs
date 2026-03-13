@@ -19,7 +19,7 @@ pub use widget::StackView;
 
 pub(crate) use format::{
     compute_chunk_ranges, field_value_style, format_entry_value_text, format_field_value_display,
-    format_frame_label, format_object_ref_collapsed,
+    format_frame_label, format_frame_label_short, format_object_ref_collapsed,
 };
 pub(crate) use types::{FAILED_LABEL_SEP, STATIC_FIELDS_RENDER_LIMIT};
 

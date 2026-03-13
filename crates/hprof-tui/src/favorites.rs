@@ -9,7 +9,7 @@ use hprof_engine::{FieldInfo, FieldValue, VariableInfo, VariableValue};
 
 use crate::views::stack_view::{
     ChunkState, CollectionChunks, NavigationPath, PathSegment, RenderCursor, StackState, ThreadId,
-    format_frame_label,
+    format_frame_label, format_frame_label_short,
 };
 
 /// Maximum number of object IDs captured in a single snapshot (across all
@@ -454,7 +454,7 @@ impl<'a> PinnedItemFactory<'a> {
             .iter()
             .find(|f| f.frame_id == frame_id)?;
         Some(FrameCtx {
-            frame_label: format_frame_label(frame),
+            frame_label: format_frame_label_short(frame),
         })
     }
 

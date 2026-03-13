@@ -416,6 +416,14 @@ impl<E: NavigationEngine> App<E> {
                     let Some(oid) = current_object_id else {
                         break;
                     };
+                    // Expand the object if needed to load instance + static fields.
+                    let expanded = self
+                        .stack_state
+                        .as_ref()
+                        .is_some_and(|s| s.expansion_state(oid) == ExpansionPhase::Expanded);
+                    if !expanded && !self.expand_object_sync(oid) {
+                        break;
+                    }
                     let statics_loaded = self
                         .stack_state
                         .as_ref()
@@ -1811,13 +1819,17 @@ impl<E: NavigationEngine> App<E> {
                 );
             }
         } else {
+            let state = self
+                .stack_state
+                .as_mut()
+                .unwrap_or(&mut self.preview_stack_state);
             frame.render_stateful_widget(
                 StackView {
-                    focused: stack_focused,
+                    focused: false,
                     show_object_ids: self.show_object_ids,
                 },
                 stack_area,
-                &mut self.preview_stack_state,
+                state,
             );
         }
 
