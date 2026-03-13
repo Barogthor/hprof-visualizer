@@ -1,464 +1,409 @@
-/// Shared helpers: `StubEngine`, cursor predicates, item builders, and poll utilities.
-mod fixtures {
-    use super::super::*;
-    // Re-export items not present in app's namespace so test sub-mods can reach them
-    // via `use super::fixtures::*` without conflicting with `use super::super::*`.
-    pub use hprof_engine::{
-        EntryInfo, FrameInfo, LineNumber, ThreadInfo, ThreadState, VariableInfo,
-    };
-    pub use std::collections::HashSet;
+use hprof_engine::{
+    CollectionPage, EntryInfo, FieldInfo, FieldValue, FrameInfo, LineNumber, NavigationEngine,
+    ThreadInfo, ThreadState, VariableInfo, VariableValue,
+};
+use std::collections::HashMap;
+use std::collections::HashSet;
 
-    pub fn cursor_ends_with_collection_entry(cursor: &RenderCursor) -> bool {
-        matches!(cursor, RenderCursor::At(p)
-            if matches!(p.segments().last(), Some(PathSegment::CollectionEntry(..))))
-    }
+use super::*;
 
-    pub fn cursor_ends_with_field(cursor: &RenderCursor) -> bool {
-        matches!(cursor, RenderCursor::At(p)
-            if matches!(p.segments().last(), Some(PathSegment::Field(..))))
-    }
+fn cursor_ends_with_collection_entry(cursor: &RenderCursor) -> bool {
+    matches!(cursor, RenderCursor::At(p)
+        if matches!(p.segments().last(), Some(PathSegment::CollectionEntry(..))))
+}
 
-    pub fn cursor_ends_with_static_field(cursor: &RenderCursor) -> bool {
-        matches!(cursor, RenderCursor::At(p)
-            if matches!(p.segments().last(), Some(PathSegment::StaticField(..))))
-    }
+fn cursor_ends_with_field(cursor: &RenderCursor) -> bool {
+    matches!(cursor, RenderCursor::At(p)
+        if matches!(p.segments().last(), Some(PathSegment::Field(..))))
+}
 
-    pub fn cursor_is_chunk_section(cursor: &RenderCursor) -> bool {
-        matches!(cursor, RenderCursor::ChunkSection(..))
-    }
+fn cursor_ends_with_static_field(cursor: &RenderCursor) -> bool {
+    matches!(cursor, RenderCursor::At(p)
+        if matches!(p.segments().last(), Some(PathSegment::StaticField(..))))
+}
 
-    pub fn cursor_chunk_section_offset(cursor: &RenderCursor) -> Option<usize> {
-        if let RenderCursor::ChunkSection(_, off) = cursor {
-            Some(off.0)
-        } else {
-            None
-        }
-    }
+fn cursor_is_chunk_section(cursor: &RenderCursor) -> bool {
+    matches!(cursor, RenderCursor::ChunkSection(..))
+}
 
-    pub fn cursor_is_collection_entry_field(cursor: &RenderCursor) -> bool {
-        if let RenderCursor::At(p) = cursor {
-            let segs = p.segments();
-            let last_is_field = matches!(segs.last(), Some(PathSegment::Field(..)));
-            let has_coll_entry = segs
-                .iter()
-                .any(|s| matches!(s, PathSegment::CollectionEntry(..)));
-            return last_is_field && has_coll_entry;
-        }
-        false
-    }
-
-    pub fn cursor_collection_entry_ids(cursor: &RenderCursor) -> Option<(u64, usize)> {
-        if let RenderCursor::At(p) = cursor
-            && let Some(PathSegment::CollectionEntry(cid, eidx)) = p.segments().last()
-        {
-            return Some((cid.0, eidx.0));
-        }
+fn cursor_chunk_section_offset(cursor: &RenderCursor) -> Option<usize> {
+    if let RenderCursor::ChunkSection(_, off) = cursor {
+        Some(off.0)
+    } else {
         None
-    }
-
-    pub fn make_pin_key_var(
-        thread_id: u32,
-        thread_name: &str,
-        frame_id: u64,
-        var_idx: usize,
-    ) -> crate::favorites::PinKey {
-        crate::favorites::PinKey {
-            thread_id: ThreadId(thread_id),
-            thread_name: thread_name.to_string(),
-            nav_path: NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx)).build(),
-        }
-    }
-
-    pub fn make_pin_key_field(
-        thread_id: u32,
-        thread_name: &str,
-        frame_id: u64,
-        var_idx: usize,
-        field_path: &[usize],
-    ) -> crate::favorites::PinKey {
-        let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
-        for &fi in field_path {
-            b = b.field(FieldIdx(fi));
-        }
-        crate::favorites::PinKey {
-            thread_id: ThreadId(thread_id),
-            thread_name: thread_name.to_string(),
-            nav_path: b.build(),
-        }
-    }
-
-    pub fn make_pin_key_coll_entry(
-        thread_id: u32,
-        thread_name: &str,
-        frame_id: u64,
-        var_idx: usize,
-        field_path: &[usize],
-        collection_id: u64,
-        entry_index: usize,
-    ) -> crate::favorites::PinKey {
-        let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
-        for &fi in field_path {
-            b = b.field(FieldIdx(fi));
-        }
-        let b = b.collection_entry(CollectionId(collection_id), EntryIdx(entry_index));
-        crate::favorites::PinKey {
-            thread_id: ThreadId(thread_id),
-            thread_name: thread_name.to_string(),
-            nav_path: b.build(),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn make_pin_key_coll_entry_field(
-        thread_id: u32,
-        thread_name: &str,
-        frame_id: u64,
-        var_idx: usize,
-        field_path: &[usize],
-        collection_id: u64,
-        entry_index: usize,
-        obj_field_path: &[usize],
-    ) -> crate::favorites::PinKey {
-        let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
-        for &fi in field_path {
-            b = b.field(FieldIdx(fi));
-        }
-        let mut b = b.collection_entry(CollectionId(collection_id), EntryIdx(entry_index));
-        for &fi in obj_field_path {
-            b = b.field(FieldIdx(fi));
-        }
-        crate::favorites::PinKey {
-            thread_id: ThreadId(thread_id),
-            thread_name: thread_name.to_string(),
-            nav_path: b.build(),
-        }
-    }
-
-    pub struct StubEngine {
-        pub threads: Vec<ThreadInfo>,
-        pub frames: Vec<FrameInfo>,
-        pub frames_by_thread: HashMap<u32, Vec<FrameInfo>>,
-        pub vars_by_frame: HashMap<u64, Vec<VariableInfo>>,
-        pub expand_results: HashMap<u64, Option<Vec<FieldInfo>>>,
-        pub class_by_object: HashMap<u64, u64>,
-        pub static_by_class: HashMap<u64, Vec<FieldInfo>>,
-    }
-
-    impl StubEngine {
-        pub fn with_threads(names: &[&str]) -> Self {
-            Self {
-                threads: names
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &n)| ThreadInfo {
-                        thread_serial: (i + 1) as u32,
-                        name: n.to_string(),
-                        state: ThreadState::Unknown,
-                    })
-                    .collect(),
-                frames: vec![],
-                frames_by_thread: HashMap::new(),
-                vars_by_frame: HashMap::new(),
-                expand_results: HashMap::new(),
-                class_by_object: HashMap::new(),
-                static_by_class: HashMap::new(),
-            }
-        }
-
-        pub fn with_threads_and_frames(names: &[&str], frames: Vec<FrameInfo>) -> Self {
-            let mut s = Self::with_threads(names);
-            s.frames = frames;
-            s
-        }
-
-        pub fn with_thread_specific_frames(
-            names: &[&str],
-            by_thread: &[(u32, Vec<FrameInfo>)],
-        ) -> Self {
-            let mut s = Self::with_threads(names);
-            s.frames_by_thread = by_thread
-                .iter()
-                .map(|(serial, frames)| (*serial, frames.clone()))
-                .collect();
-            s
-        }
-
-        pub fn with_vars(mut self, frame_id: u64, vars: Vec<VariableInfo>) -> Self {
-            self.vars_by_frame.insert(frame_id, vars);
-            self
-        }
-
-        pub fn with_expand(mut self, oid: u64, fields: Option<Vec<FieldInfo>>) -> Self {
-            self.expand_results.insert(oid, fields);
-            self
-        }
-
-        pub fn with_class_of(mut self, object_id: u64, class_id: u64) -> Self {
-            self.class_by_object.insert(object_id, class_id);
-            self
-        }
-
-        pub fn with_static_fields(mut self, class_id: u64, fields: Vec<FieldInfo>) -> Self {
-            self.static_by_class.insert(class_id, fields);
-            self
-        }
-    }
-
-    impl NavigationEngine for StubEngine {
-        fn warnings(&self) -> &[String] {
-            &[]
-        }
-        fn list_threads(&self) -> Vec<ThreadInfo> {
-            self.threads.clone()
-        }
-        fn select_thread(&self, serial: u32) -> Option<ThreadInfo> {
-            self.threads
-                .iter()
-                .find(|t| t.thread_serial == serial)
-                .cloned()
-        }
-        fn get_stack_frames(&self, thread_serial: u32) -> Vec<FrameInfo> {
-            self.frames_by_thread
-                .get(&thread_serial)
-                .cloned()
-                .unwrap_or_else(|| self.frames.clone())
-        }
-        fn get_local_variables(&self, frame_id: u64) -> Vec<VariableInfo> {
-            self.vars_by_frame
-                .get(&frame_id)
-                .cloned()
-                .unwrap_or_default()
-        }
-        fn expand_object(&self, oid: u64) -> Option<Vec<FieldInfo>> {
-            if let Some(result) = self.expand_results.get(&oid) {
-                return result.clone();
-            }
-            Some(vec![
-                FieldInfo {
-                    name: "x".to_string(),
-                    value: FieldValue::Int(42),
-                },
-                FieldInfo {
-                    name: "child".to_string(),
-                    value: FieldValue::ObjectRef {
-                        id: 999,
-                        class_name: "Child".to_string(),
-                        entry_count: None,
-                        inline_value: None,
-                    },
-                },
-            ])
-        }
-        fn class_of_object(&self, object_id: u64) -> Option<u64> {
-            self.class_by_object.get(&object_id).copied()
-        }
-        fn get_static_fields(&self, class_object_id: u64) -> Vec<FieldInfo> {
-            self.static_by_class
-                .get(&class_object_id)
-                .cloned()
-                .unwrap_or_default()
-        }
-        fn get_page(
-            &self,
-            collection_id: u64,
-            offset: usize,
-            limit: usize,
-        ) -> Option<CollectionPage> {
-            match collection_id {
-                888 => {
-                    let total: u64 = 250;
-                    let end = (offset + limit).min(total as usize);
-                    let entries = (offset..end)
-                        .map(|i| EntryInfo {
-                            index: i,
-                            key: None,
-                            value: FieldValue::Int(i as i32),
-                        })
-                        .collect();
-                    Some(CollectionPage {
-                        entries,
-                        total_count: total,
-                        offset,
-                        has_more: end < total as usize,
-                    })
-                }
-                889 => {
-                    let total: u64 = 3;
-                    let end = (offset + limit).min(total as usize);
-                    let entries = (offset..end)
-                        .map(|i| EntryInfo {
-                            index: i,
-                            key: None,
-                            value: FieldValue::ObjectRef {
-                                id: 700 + i as u64,
-                                class_name: "SomeItem".to_string(),
-                                entry_count: None,
-                                inline_value: None,
-                            },
-                        })
-                        .collect();
-                    Some(CollectionPage {
-                        entries,
-                        total_count: total,
-                        offset,
-                        has_more: end < total as usize,
-                    })
-                }
-                890 => {
-                    let total: u64 = 1;
-                    let end = (offset + limit).min(total as usize);
-                    let entries = (offset..end)
-                        .map(|i| EntryInfo {
-                            index: i,
-                            key: None,
-                            value: FieldValue::ObjectRef {
-                                id: 888,
-                                class_name: "Object[]".to_string(),
-                                entry_count: Some(250),
-                                inline_value: None,
-                            },
-                        })
-                        .collect();
-                    Some(CollectionPage {
-                        entries,
-                        total_count: total,
-                        offset,
-                        has_more: end < total as usize,
-                    })
-                }
-                _ => None,
-            }
-        }
-        fn resolve_string(&self, _: u64) -> Option<String> {
-            Some("value".to_string())
-        }
-        fn memory_used(&self) -> usize {
-            0
-        }
-        fn memory_budget(&self) -> u64 {
-            u64::MAX
-        }
-        fn indexing_ratio(&self) -> f64 {
-            100.0
-        }
-        fn is_fully_indexed(&self) -> bool {
-            true
-        }
-        fn skeleton_bytes(&self) -> usize {
-            0
-        }
-    }
-
-    pub fn make_frame(frame_id: u64) -> FrameInfo {
-        FrameInfo {
-            frame_id,
-            method_name: "run".to_string(),
-            class_name: "Thread".to_string(),
-            source_file: "Thread.java".to_string(),
-            line: LineNumber::Line(1),
-            has_variables: false,
-        }
-    }
-
-    pub fn make_obj_var(index: usize, object_id: u64) -> VariableInfo {
-        VariableInfo {
-            index,
-            value: VariableValue::ObjectRef {
-                id: object_id,
-                class_name: "Object".to_string(),
-                entry_count: None,
-            },
-        }
-    }
-
-    pub fn make_favorite_item(thread_name: &str, frame_id: u64) -> crate::favorites::PinnedItem {
-        make_favorite_item_with_tid(1, thread_name, frame_id)
-    }
-
-    pub fn make_favorite_item_with_tid(
-        thread_id: u32,
-        thread_name: &str,
-        frame_id: u64,
-    ) -> crate::favorites::PinnedItem {
-        crate::favorites::PinnedItem {
-            thread_name: thread_name.to_string(),
-            frame_label: "Thread.run()".to_string(),
-            item_label: "var[0]".to_string(),
-            snapshot: crate::favorites::PinnedSnapshot::Primitive {
-                value_label: "42".to_string(),
-            },
-            local_collapsed: HashSet::new(),
-            key: make_pin_key_var(thread_id, thread_name, frame_id, 0),
-        }
-    }
-
-    pub fn make_field_favorite_item(
-        thread_name: &str,
-        frame_id: u64,
-        var_idx: usize,
-        field_path: Vec<usize>,
-    ) -> crate::favorites::PinnedItem {
-        crate::favorites::PinnedItem {
-            thread_name: thread_name.to_string(),
-            frame_label: "Thread.run()".to_string(),
-            item_label: "var[0].field".to_string(),
-            snapshot: crate::favorites::PinnedSnapshot::Primitive {
-                value_label: "42".to_string(),
-            },
-            local_collapsed: HashSet::new(),
-            key: make_pin_key_field(1, thread_name, frame_id, var_idx, &field_path),
-        }
-    }
-
-    /// Builds an App with a collection-typed var (object 888) with `ec` entries.
-    pub fn make_var_collection_app(ec: u64) -> App<StubEngine> {
-        let frames = vec![{
-            let mut f = make_frame(10);
-            f.has_variables = true;
-            f
-        }];
-        let vars = vec![VariableInfo {
-            index: 0,
-            value: VariableValue::ObjectRef {
-                id: 888,
-                class_name: "Object[]".to_string(),
-                entry_count: Some(ec),
-            },
-        }];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        App::new(engine, "test.hprof".to_string())
-    }
-
-    pub fn nav_to_collection_field(app: &mut App<StubEngine>) {
-        app.handle_input(InputEvent::Enter); // StackFrames
-        app.handle_input(InputEvent::Enter); // expand frame
-        app.handle_input(InputEvent::Down); // → OnVar
-        app.handle_input(InputEvent::Enter); // expand obj 42
-        poll_all_expansions(app);
-        app.handle_input(InputEvent::Down); // → items field
-    }
-
-    pub fn poll_all_pages(app: &mut App<StubEngine>) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !app.pending_pages.is_empty() && std::time::Instant::now() < deadline {
-            let _fallbacks = app.poll_pages();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
-
-    pub fn poll_all_expansions(app: &mut App<StubEngine>) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
-            app.poll_expansions();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
     }
 }
 
-/// Tests for `App::new`: initial state, thread count, and preview stack setup.
-mod initialization {
-    use super::super::*;
-    use super::fixtures::*;
+fn cursor_is_collection_entry_field(cursor: &RenderCursor) -> bool {
+    if let RenderCursor::At(p) = cursor {
+        let segs = p.segments();
+        let last_is_field = matches!(segs.last(), Some(PathSegment::Field(..)));
+        let has_coll_entry = segs
+            .iter()
+            .any(|s| matches!(s, PathSegment::CollectionEntry(..)));
+        return last_is_field && has_coll_entry;
+    }
+    false
+}
+
+fn cursor_collection_entry_ids(cursor: &RenderCursor) -> Option<(u64, usize)> {
+    if let RenderCursor::At(p) = cursor
+        && let Some(PathSegment::CollectionEntry(cid, eidx)) = p.segments().last()
+    {
+        return Some((cid.0, eidx.0));
+    }
+    None
+}
+
+fn make_pin_key_var(
+    thread_id: u32,
+    thread_name: &str,
+    frame_id: u64,
+    var_idx: usize,
+) -> crate::favorites::PinKey {
+    crate::favorites::PinKey {
+        thread_id: ThreadId(thread_id),
+        thread_name: thread_name.to_string(),
+        nav_path: NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx)).build(),
+    }
+}
+
+fn make_pin_key_field(
+    thread_id: u32,
+    thread_name: &str,
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+) -> crate::favorites::PinKey {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    crate::favorites::PinKey {
+        thread_id: ThreadId(thread_id),
+        thread_name: thread_name.to_string(),
+        nav_path: b.build(),
+    }
+}
+
+fn make_pin_key_coll_entry(
+    thread_id: u32,
+    thread_name: &str,
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    collection_id: u64,
+    entry_index: usize,
+) -> crate::favorites::PinKey {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    let b = b.collection_entry(CollectionId(collection_id), EntryIdx(entry_index));
+    crate::favorites::PinKey {
+        thread_id: ThreadId(thread_id),
+        thread_name: thread_name.to_string(),
+        nav_path: b.build(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_pin_key_coll_entry_field(
+    thread_id: u32,
+    thread_name: &str,
+    frame_id: u64,
+    var_idx: usize,
+    field_path: &[usize],
+    collection_id: u64,
+    entry_index: usize,
+    obj_field_path: &[usize],
+) -> crate::favorites::PinKey {
+    let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+    for &fi in field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    let mut b = b.collection_entry(CollectionId(collection_id), EntryIdx(entry_index));
+    for &fi in obj_field_path {
+        b = b.field(FieldIdx(fi));
+    }
+    crate::favorites::PinKey {
+        thread_id: ThreadId(thread_id),
+        thread_name: thread_name.to_string(),
+        nav_path: b.build(),
+    }
+}
+
+struct StubEngine {
+    threads: Vec<ThreadInfo>,
+    frames: Vec<FrameInfo>,
+    frames_by_thread: HashMap<u32, Vec<FrameInfo>>,
+    vars_by_frame: HashMap<u64, Vec<VariableInfo>>,
+    expand_results: HashMap<u64, Option<Vec<FieldInfo>>>,
+    class_by_object: HashMap<u64, u64>,
+    static_by_class: HashMap<u64, Vec<FieldInfo>>,
+}
+
+impl StubEngine {
+    fn with_threads(names: &[&str]) -> Self {
+        Self {
+            threads: names
+                .iter()
+                .enumerate()
+                .map(|(i, &n)| ThreadInfo {
+                    thread_serial: (i + 1) as u32,
+                    name: n.to_string(),
+                    state: ThreadState::Unknown,
+                })
+                .collect(),
+            frames: vec![],
+            frames_by_thread: HashMap::new(),
+            vars_by_frame: HashMap::new(),
+            expand_results: HashMap::new(),
+            class_by_object: HashMap::new(),
+            static_by_class: HashMap::new(),
+        }
+    }
+
+    fn with_threads_and_frames(names: &[&str], frames: Vec<FrameInfo>) -> Self {
+        let mut s = Self::with_threads(names);
+        s.frames = frames;
+        s
+    }
+
+    fn with_thread_specific_frames(names: &[&str], by_thread: &[(u32, Vec<FrameInfo>)]) -> Self {
+        let mut s = Self::with_threads(names);
+        s.frames_by_thread = by_thread
+            .iter()
+            .map(|(serial, frames)| (*serial, frames.clone()))
+            .collect();
+        s
+    }
+
+    fn with_vars(mut self, frame_id: u64, vars: Vec<VariableInfo>) -> Self {
+        self.vars_by_frame.insert(frame_id, vars);
+        self
+    }
+
+    fn with_expand(mut self, oid: u64, fields: Option<Vec<FieldInfo>>) -> Self {
+        self.expand_results.insert(oid, fields);
+        self
+    }
+
+    fn with_class_of(mut self, object_id: u64, class_id: u64) -> Self {
+        self.class_by_object.insert(object_id, class_id);
+        self
+    }
+
+    fn with_static_fields(mut self, class_id: u64, fields: Vec<FieldInfo>) -> Self {
+        self.static_by_class.insert(class_id, fields);
+        self
+    }
+}
+
+impl NavigationEngine for StubEngine {
+    fn warnings(&self) -> &[String] {
+        &[]
+    }
+    fn list_threads(&self) -> Vec<ThreadInfo> {
+        self.threads.clone()
+    }
+    fn select_thread(&self, serial: u32) -> Option<ThreadInfo> {
+        self.threads
+            .iter()
+            .find(|t| t.thread_serial == serial)
+            .cloned()
+    }
+    fn get_stack_frames(&self, thread_serial: u32) -> Vec<FrameInfo> {
+        self.frames_by_thread
+            .get(&thread_serial)
+            .cloned()
+            .unwrap_or_else(|| self.frames.clone())
+    }
+    fn get_local_variables(&self, frame_id: u64) -> Vec<VariableInfo> {
+        self.vars_by_frame
+            .get(&frame_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+    fn expand_object(&self, oid: u64) -> Option<Vec<FieldInfo>> {
+        if let Some(result) = self.expand_results.get(&oid) {
+            return result.clone();
+        }
+        Some(vec![
+            FieldInfo {
+                name: "x".to_string(),
+                value: FieldValue::Int(42),
+            },
+            FieldInfo {
+                name: "child".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 999,
+                    class_name: "Child".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+        ])
+    }
+    fn class_of_object(&self, object_id: u64) -> Option<u64> {
+        self.class_by_object.get(&object_id).copied()
+    }
+    fn get_static_fields(&self, class_object_id: u64) -> Vec<FieldInfo> {
+        self.static_by_class
+            .get(&class_object_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+    fn get_page(&self, collection_id: u64, offset: usize, limit: usize) -> Option<CollectionPage> {
+        match collection_id {
+            888 => {
+                let total: u64 = 250;
+                let end = (offset + limit).min(total as usize);
+                let entries = (offset..end)
+                    .map(|i| EntryInfo {
+                        index: i,
+                        key: None,
+                        value: FieldValue::Int(i as i32),
+                    })
+                    .collect();
+                Some(CollectionPage {
+                    entries,
+                    total_count: total,
+                    offset,
+                    has_more: end < total as usize,
+                })
+            }
+            889 => {
+                let total: u64 = 3;
+                let end = (offset + limit).min(total as usize);
+                let entries = (offset..end)
+                    .map(|i| EntryInfo {
+                        index: i,
+                        key: None,
+                        value: FieldValue::ObjectRef {
+                            id: 700 + i as u64,
+                            class_name: "SomeItem".to_string(),
+                            entry_count: None,
+                            inline_value: None,
+                        },
+                    })
+                    .collect();
+                Some(CollectionPage {
+                    entries,
+                    total_count: total,
+                    offset,
+                    has_more: end < total as usize,
+                })
+            }
+            890 => {
+                let total: u64 = 1;
+                let end = (offset + limit).min(total as usize);
+                let entries = (offset..end)
+                    .map(|i| EntryInfo {
+                        index: i,
+                        key: None,
+                        value: FieldValue::ObjectRef {
+                            id: 888,
+                            class_name: "Object[]".to_string(),
+                            entry_count: Some(250),
+                            inline_value: None,
+                        },
+                    })
+                    .collect();
+                Some(CollectionPage {
+                    entries,
+                    total_count: total,
+                    offset,
+                    has_more: end < total as usize,
+                })
+            }
+            _ => None,
+        }
+    }
+    fn resolve_string(&self, _: u64) -> Option<String> {
+        Some("value".to_string())
+    }
+    fn memory_used(&self) -> usize {
+        0
+    }
+    fn memory_budget(&self) -> u64 {
+        u64::MAX
+    }
+    fn indexing_ratio(&self) -> f64 {
+        100.0
+    }
+    fn is_fully_indexed(&self) -> bool {
+        true
+    }
+    fn skeleton_bytes(&self) -> usize {
+        0
+    }
+}
+
+fn make_frame(frame_id: u64) -> FrameInfo {
+    FrameInfo {
+        frame_id,
+        method_name: "run".to_string(),
+        class_name: "Thread".to_string(),
+        source_file: "Thread.java".to_string(),
+        line: LineNumber::Line(1),
+        has_variables: false,
+    }
+}
+
+fn make_obj_var(index: usize, object_id: u64) -> VariableInfo {
+    VariableInfo {
+        index,
+        value: VariableValue::ObjectRef {
+            id: object_id,
+            class_name: "Object".to_string(),
+            entry_count: None,
+        },
+    }
+}
+
+fn make_favorite_item(thread_name: &str, frame_id: u64) -> crate::favorites::PinnedItem {
+    make_favorite_item_with_tid(1, thread_name, frame_id)
+}
+
+fn make_favorite_item_with_tid(
+    thread_id: u32,
+    thread_name: &str,
+    frame_id: u64,
+) -> crate::favorites::PinnedItem {
+    crate::favorites::PinnedItem {
+        thread_name: thread_name.to_string(),
+        frame_label: "Thread.run()".to_string(),
+        item_label: "var[0]".to_string(),
+        snapshot: crate::favorites::PinnedSnapshot::Primitive {
+            value_label: "42".to_string(),
+        },
+        local_collapsed: HashSet::new(),
+        key: make_pin_key_var(thread_id, thread_name, frame_id, 0),
+    }
+}
+
+fn make_field_favorite_item(
+    thread_name: &str,
+    frame_id: u64,
+    var_idx: usize,
+    field_path: Vec<usize>,
+) -> crate::favorites::PinnedItem {
+    crate::favorites::PinnedItem {
+        thread_name: thread_name.to_string(),
+        frame_label: "Thread.run()".to_string(),
+        item_label: "var[0].field".to_string(),
+        snapshot: crate::favorites::PinnedSnapshot::Primitive {
+            value_label: "42".to_string(),
+        },
+        local_collapsed: HashSet::new(),
+        key: make_pin_key_field(1, thread_name, frame_id, var_idx, &field_path),
+    }
+}
+
+mod construction {
+    //! Tests that `App::new` initialises correctly with zero or several threads.
+    use super::*;
 
     #[test]
     fn app_new_builds_without_panic_with_zero_threads() {
@@ -476,44 +421,12 @@ mod initialization {
         assert_eq!(app.thread_list.selected_serial(), Some(1));
         assert_eq!(app.thread_count, 3);
     }
-
-    #[test]
-    fn app_new_captures_thread_count_without_repeated_list_calls() {
-        let engine = StubEngine::with_threads(&["a", "b", "c"]);
-        let app = App::new(engine, "x.hprof".to_string());
-        assert_eq!(app.thread_count, 3);
-    }
-
-    #[test]
-    fn stack_state_is_none_on_construction() {
-        let engine = StubEngine::with_threads(&["main"]);
-        let app = App::new(engine, "test.hprof".to_string());
-        assert!(app.stack_state.is_none());
-    }
-
-    #[test]
-    fn app_new_initializes_stack_preview_for_selected_thread() {
-        let engine = StubEngine::with_thread_specific_frames(
-            &["main", "worker"],
-            &[(1, vec![make_frame(10)]), (2, vec![make_frame(20)])],
-        );
-        let app = App::new(engine, "test.hprof".to_string());
-        assert_eq!(app.focus, Focus::ThreadList);
-        assert!(app.stack_state.is_none());
-        assert_eq!(app.preview_stack_state.selected_frame_id(), Some(10));
-    }
-
-    #[test]
-    fn variable_value_variants_accessible_via_hprof_engine() {
-        let v = VariableValue::Null;
-        assert_eq!(v, VariableValue::Null);
-    }
 }
 
-/// Tests for thread list navigation: selection, Enter to stack frames, preview updates.
-mod thread_list {
-    use super::super::*;
-    use super::fixtures::*;
+mod thread_navigation {
+    //! Tests for thread-list navigation: movement, enter, back, search filter (activation,
+    //! char input, backspace, Esc single/double, filter persistence).
+    use super::*;
 
     #[test]
     fn handle_input_down_in_thread_list_updates_selection() {
@@ -522,45 +435,6 @@ mod thread_list {
         app.handle_input(InputEvent::Down);
         assert_eq!(app.thread_list.selected_serial(), Some(2));
     }
-
-    #[test]
-    fn handle_input_enter_in_thread_list_loads_frames_and_transitions_to_stack_frames() {
-        let frames = vec![make_frame(10), make_frame(20)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter);
-        assert_eq!(app.focus, Focus::StackFrames);
-        let ss = app.stack_state.as_ref().expect("stack_state must be Some");
-        assert_eq!(ss.selected_frame_id(), Some(10));
-    }
-
-    #[test]
-    fn handle_input_enter_with_no_selected_thread_does_not_transition() {
-        let engine = StubEngine::with_threads(&[]);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter);
-        assert_eq!(app.focus, Focus::ThreadList);
-        assert!(app.stack_state.is_none());
-    }
-
-    #[test]
-    fn moving_thread_selection_updates_stack_preview_without_enter() {
-        let engine = StubEngine::with_thread_specific_frames(
-            &["main", "worker"],
-            &[(1, vec![make_frame(10)]), (2, vec![make_frame(20)])],
-        );
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Down);
-        assert_eq!(app.focus, Focus::ThreadList);
-        assert!(app.stack_state.is_none());
-        assert_eq!(app.preview_stack_state.selected_frame_id(), Some(20));
-    }
-}
-
-/// Tests for thread list search: activate, filter, Esc/Enter routing, UTF-8 backspace.
-mod search {
-    use super::super::*;
-    use super::fixtures::*;
 
     #[test]
     fn handle_input_search_activate_sets_search_active() {
@@ -634,6 +508,17 @@ mod search {
     }
 
     #[test]
+    fn handle_input_enter_in_thread_list_loads_frames_and_transitions_to_stack_frames() {
+        let frames = vec![make_frame(10), make_frame(20)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter);
+        assert_eq!(app.focus, Focus::StackFrames);
+        let ss = app.stack_state.as_ref().expect("stack_state must be Some");
+        assert_eq!(ss.selected_frame_id(), Some(10));
+    }
+
+    #[test]
     fn thread_list_enter_in_search_mode_deactivates_input_keeps_filter() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main", "worker"], frames);
@@ -669,35 +554,19 @@ mod search {
     }
 
     #[test]
-    fn search_char_s_in_non_search_mode_activates_search() {
-        let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        assert!(!app.thread_list.is_search_active());
-        app.handle_input(InputEvent::SearchChar('s'));
-        assert!(app.thread_list.is_search_active());
+    fn app_new_captures_thread_count_without_repeated_list_calls() {
+        let engine = StubEngine::with_threads(&["a", "b", "c"]);
+        let app = App::new(engine, "x.hprof".to_string());
+        assert_eq!(app.thread_count, 3);
     }
 
     #[test]
-    fn quit_from_thread_list_with_search_active_returns_quit() {
-        let engine = StubEngine::with_threads(&["main"]);
+    fn handle_input_enter_with_no_selected_thread_does_not_transition() {
+        let engine = StubEngine::with_threads(&[]);
         let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::SearchActivate);
-        assert!(app.thread_list.is_search_active());
-        assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
-    }
-
-    #[test]
-    fn tab_from_thread_list_with_search_active_moves_to_stack_frames() {
-        let frames = vec![make_frame(10)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter); // → StackFrames
-        app.focus = Focus::ThreadList;
-        app.handle_input(InputEvent::SearchActivate);
-        assert!(app.thread_list.is_search_active());
-
-        app.handle_input(InputEvent::Tab);
-        assert_eq!(app.focus, Focus::StackFrames);
+        app.handle_input(InputEvent::Enter);
+        assert_eq!(app.focus, Focus::ThreadList);
+        assert!(app.stack_state.is_none());
     }
 
     #[test]
@@ -719,10 +588,97 @@ mod search {
     }
 }
 
-/// Tests for async object expansion: pending state, loading threshold, collapse, warnings.
+mod stack_navigation {
+    //! Tests for stack-frame navigation: Up/Down, Enter expand/collapse, Esc back,
+    //! initial `stack_state`, and automatic preview update on thread change.
+    use super::*;
+
+    #[test]
+    fn handle_input_up_down_in_stack_frames_moves_cursor() {
+        let frames = vec![make_frame(10), make_frame(20), make_frame(30)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.handle_input(InputEvent::Down);
+        assert_eq!(
+            app.stack_state.as_ref().unwrap().selected_frame_id(),
+            Some(20)
+        );
+        app.handle_input(InputEvent::Up);
+        assert_eq!(
+            app.stack_state.as_ref().unwrap().selected_frame_id(),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn handle_input_enter_in_stack_frames_expands_then_collapses() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames, Enter on collapsed frame → expands
+        app.handle_input(InputEvent::Enter);
+        assert!(app.stack_state.as_ref().unwrap().is_expanded(10));
+        // Enter on expanded frame → collapses
+        app.handle_input(InputEvent::Enter);
+        assert!(!app.stack_state.as_ref().unwrap().is_expanded(10));
+    }
+
+    #[test]
+    fn handle_input_escape_in_stack_frames_clears_state_and_returns_to_thread_list() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter);
+        assert_eq!(app.focus, Focus::StackFrames);
+        app.handle_input(InputEvent::Escape);
+        assert_eq!(app.focus, Focus::ThreadList);
+        assert!(app.stack_state.is_none());
+    }
+
+    #[test]
+    fn stack_state_is_none_on_construction() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let app = App::new(engine, "test.hprof".to_string());
+        assert!(app.stack_state.is_none());
+    }
+
+    #[test]
+    fn app_new_initializes_stack_preview_for_selected_thread() {
+        let engine = StubEngine::with_thread_specific_frames(
+            &["main", "worker"],
+            &[(1, vec![make_frame(10)]), (2, vec![make_frame(20)])],
+        );
+        let app = App::new(engine, "test.hprof".to_string());
+        assert_eq!(app.focus, Focus::ThreadList);
+        assert!(app.stack_state.is_none());
+        assert_eq!(app.preview_stack_state.selected_frame_id(), Some(10));
+    }
+
+    #[test]
+    fn moving_thread_selection_updates_stack_preview_without_enter() {
+        let engine = StubEngine::with_thread_specific_frames(
+            &["main", "worker"],
+            &[(1, vec![make_frame(10)]), (2, vec![make_frame(20)])],
+        );
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Down);
+        assert_eq!(app.focus, Focus::ThreadList);
+        assert!(app.stack_state.is_none());
+        assert_eq!(app.preview_stack_state.selected_frame_id(), Some(20));
+    }
+
+    #[test]
+    fn variable_value_variants_accessible_via_hprof_engine() {
+        let v = VariableValue::Null;
+        assert_eq!(v, VariableValue::Null);
+    }
+}
+
 mod object_expansion {
-    use super::super::*;
-    use super::fixtures::*;
+    //! Tests for async object expansion: pending/loading/expanded states, nested expansion,
+    //! recursive collapse, static fields, and Esc cancellation on a loading node.
+    use super::*;
 
     #[test]
     fn start_object_expansion_registers_pending_but_no_loading_before_threshold() {
@@ -730,10 +686,11 @@ mod object_expansion {
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
+        // Enter StackFrames, expand frame 10, then move down to the ObjectRef var.
         app.handle_input(InputEvent::Enter); // → StackFrames, OnFrame(0)
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0} (ObjectRef 42)
-        app.handle_input(InputEvent::Enter); // start_object_expansion(42)
+        app.handle_input(InputEvent::Enter); // start_object_expansion(42), loading indicator is NOT shown yet.
         assert!(
             app.pending_expansions.contains_key(&42),
             "pending expansion must be registered"
@@ -755,7 +712,11 @@ mod object_expansion {
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
         app.handle_input(InputEvent::Enter); // start expansion; poll until worker finishes.
-        poll_all_expansions(&mut app);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         assert_eq!(
             app.stack_state.as_ref().unwrap().expansion_state(42),
             ExpansionPhase::Expanded
@@ -764,6 +725,7 @@ mod object_expansion {
 
     #[test]
     fn enter_on_nested_object_field_starts_expansion() {
+        // StubEngine.expand_object returns a field "child" ObjectRef(999)
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
@@ -771,8 +733,13 @@ mod object_expansion {
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
-        app.handle_input(InputEvent::Enter); // start expansion of object 42
-        poll_all_expansions(&mut app);
+        app.handle_input(InputEvent::Enter); // start expansion of object 42, then poll until complete
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // Object 42 expanded, has "child" field (ObjectRef 999) at index 1
         assert_eq!(
             app.stack_state.as_ref().unwrap().expansion_state(42),
             ExpansionPhase::Expanded
@@ -780,7 +747,7 @@ mod object_expansion {
         // Navigate down to the "child" field (index 1 in flat list: field_path=[1])
         app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[0]} (field "x")
         app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[1]} (field "child" = ObjectRef 999)
-        app.handle_input(InputEvent::Enter); // start nested expansion of 999
+        app.handle_input(InputEvent::Enter); // start nested expansion of 999; loading not shown before threshold.
         assert!(
             app.pending_expansions.contains_key(&999),
             "pending expansion for 999 must be registered"
@@ -802,7 +769,12 @@ mod object_expansion {
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
         app.handle_input(InputEvent::Enter); // start expansion
-        poll_all_expansions(&mut app);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // Now collapse via Enter on OnVar (expanded state)
         app.handle_input(InputEvent::Enter); // CollapseObj(42)
         assert_eq!(
             app.stack_state.as_ref().unwrap().expansion_state(42),
@@ -812,6 +784,7 @@ mod object_expansion {
 
     #[test]
     fn enter_twice_on_nested_object_field_collapses_it() {
+        // StubEngine.expand_object always returns [x:Int, child:ObjectRef(999)]
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
@@ -820,12 +793,20 @@ mod object_expansion {
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
         app.handle_input(InputEvent::Enter); // start expansion of object 42
-        poll_all_expansions(&mut app);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         // Navigate to "child" field at path [1] (ObjectRef 999)
         app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[0]} ("x")
         app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[1]} ("child" = 999)
         app.handle_input(InputEvent::Enter); // start nested expansion of 999
-        poll_all_expansions(&mut app);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         assert_eq!(
             app.stack_state.as_ref().unwrap().expansion_state(999),
             ExpansionPhase::Expanded
@@ -877,7 +858,12 @@ mod object_expansion {
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // -> OnVar{0,0}
         app.handle_input(InputEvent::Enter); // expand object 42
-        poll_all_expansions(&mut app);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
 
         // OnObjectField([0]) then OnStaticField([0]).
         app.handle_input(InputEvent::Down);
@@ -893,7 +879,12 @@ mod object_expansion {
             app.pending_expansions.contains_key(&777),
             "pending expansion for static object 777 must be registered"
         );
-        poll_all_expansions(&mut app);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
 
         assert_eq!(
             app.stack_state.as_ref().unwrap().expansion_state(777),
@@ -938,64 +929,34 @@ mod object_expansion {
             app.stack_state.as_ref().unwrap().expansion_state(42),
             ExpansionPhase::Collapsed
         );
+        // Focus must remain in StackFrames.
         assert_eq!(app.focus, Focus::StackFrames);
-    }
-
-    #[test]
-    fn failed_expansion_adds_warning_to_log() {
-        let frames = vec![make_frame(10)];
-        let vars = vec![make_obj_var(0, 55)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars)
-            .with_expand(55, None); // force None → unresolvable
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter);
-        app.handle_input(InputEvent::Enter);
-        app.handle_input(InputEvent::Down);
-        app.handle_input(InputEvent::Enter); // start expansion of 55
-        poll_all_expansions(&mut app);
-        assert_eq!(app.warnings.count(), 1);
-        assert!(
-            app.warnings.last().unwrap_or("").contains("0x37"),
-            "warning must reference the object id; got: {:?}",
-            app.warnings.last()
-        );
-    }
-
-    #[test]
-    fn disconnected_expansion_adds_warning_to_log() {
-        let frames = vec![make_frame(10)];
-        let vars = vec![make_obj_var(0, 77)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        // Manually inject a disconnected pending expansion (tx dropped immediately).
-        let (tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
-        drop(tx); // disconnect
-        app.pending_expansions.insert(
-            77,
-            PendingExpansion {
-                rx,
-                started: Instant::now(),
-                loading_shown: false,
-            },
-        );
-        app.poll_expansions();
-        assert_eq!(app.warnings.count(), 1);
-        assert!(
-            app.warnings.last().unwrap_or("").contains("0x4D"),
-            "warning must reference the object id 0x4D (77); got: {:?}",
-            app.warnings.last()
-        );
     }
 }
 
-/// Tests for collection pagination: eager page, chunk layout, loading indicator, collapse.
 mod collection_paging {
-    use super::super::*;
-    use super::fixtures::*;
+    //! Tests for collection and array pagination: chunk layout, page loading, loading
+    //! indicator, Esc, Left/Right in collection entries, ObjectRef expansion, and nested collections.
+    use super::*;
 
-    /// Builds an App with a frame that has one var (object 42) whose expand
-    /// returns a field "items" = ObjectRef(888, ArrayList, entry_count=ec).
+    fn make_var_collection_app(ec: u64) -> App<StubEngine> {
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let vars = vec![VariableInfo {
+            index: 0,
+            value: VariableValue::ObjectRef {
+                id: 888,
+                class_name: "Object[]".to_string(),
+                entry_count: Some(ec),
+            },
+        }];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+        App::new(engine, "test.hprof".to_string())
+    }
+
     fn make_collection_app(ec: u64) -> App<StubEngine> {
         let frames = vec![{
             let mut f = make_frame(10);
@@ -1018,375 +979,30 @@ mod collection_paging {
         App::new(engine, "test.hprof".to_string())
     }
 
-    #[test]
-    fn collection_enter_triggers_get_page_not_expand() {
-        let mut app = make_collection_app(250);
-        nav_to_collection_field(&mut app);
-        app.handle_input(InputEvent::Enter);
-        assert!(
-            !app.pending_pages.is_empty(),
-            "collection load should be pending"
-        );
-        assert!(
-            !app.pending_expansions.contains_key(&888),
-            "should NOT use expand_object for collection"
-        );
-    }
-
-    #[test]
-    fn collection_small_no_chunk_sections() {
-        let mut app = make_collection_app(50);
-        nav_to_collection_field(&mut app);
-        app.handle_input(InputEvent::Enter);
-        poll_all_pages(&mut app);
-        let ss = app.stack_state.as_ref().unwrap();
-        let cc = ss.expansion.collection_chunks.get(&888).unwrap();
-        assert!(cc.eager_page.is_some());
-        assert_eq!(cc.eager_page.as_ref().unwrap().entries.len(), 50);
-        assert!(
-            cc.chunk_pages.is_empty(),
-            "<= 100 entries → no chunk sections"
-        );
-    }
-
-    #[test]
-    fn collection_250_chunk_layout() {
-        let mut app = make_collection_app(250);
-        nav_to_collection_field(&mut app);
-        app.handle_input(InputEvent::Enter);
-        poll_all_pages(&mut app);
-        let ss = app.stack_state.as_ref().unwrap();
-        let cc = ss.expansion.collection_chunks.get(&888).unwrap();
-        assert_eq!(cc.eager_page.as_ref().unwrap().entries.len(), 100);
-        let ranges = compute_chunk_ranges(250);
-        assert_eq!(ranges.len(), 2);
-        assert_eq!(ranges[0], (100, 100));
-        assert_eq!(ranges[1], (200, 50));
-        for (offset, _) in &ranges {
-            assert!(matches!(
-                cc.chunk_pages.get(offset),
-                Some(ChunkState::Collapsed)
-            ));
-        }
-    }
-
-    #[test]
-    fn collection_3000_chunk_layout() {
-        let ranges = compute_chunk_ranges(3000);
-        assert_eq!(ranges.len(), 11);
-        assert_eq!(ranges[0], (100, 100));
-        assert_eq!(ranges[8], (900, 100));
-        assert_eq!(ranges[9], (1000, 1000));
-        assert_eq!(ranges[10], (2000, 1000));
-    }
-
-    #[test]
-    fn collection_2348_last_chunk_truncated() {
-        let ranges = compute_chunk_ranges(2348);
-        let last = ranges.last().unwrap();
-        assert_eq!(*last, (2000, 348));
-    }
-
-    #[test]
-    fn chunk_section_enter_loads_correct_range() {
-        let mut app = make_collection_app(250);
-        nav_to_collection_field(&mut app);
-        app.handle_input(InputEvent::Enter);
-        poll_all_pages(&mut app);
-        // Navigate down past eager entries to first chunk section.
-        for _ in 0..101 {
-            app.handle_input(InputEvent::Down);
-        }
-        let ss = app.stack_state.as_ref().unwrap();
-        assert_eq!(
-            cursor_chunk_section_offset(ss.cursor()),
-            Some(100),
-            "expected chunk section at offset 100, got {:?}",
-            ss.cursor()
-        );
-        app.handle_input(InputEvent::Enter);
-        assert!(
-            app.pending_pages.contains_key(&(888, 100)),
-            "chunk load should be pending"
-        );
-        poll_all_pages(&mut app);
-        let ss = app.stack_state.as_ref().unwrap();
-        let cc = ss.expansion.collection_chunks.get(&888).unwrap();
-        assert!(matches!(
-            cc.chunk_pages.get(&100),
-            Some(ChunkState::Loaded(_))
-        ));
-    }
-
-    #[test]
-    fn chunk_loading_indicator() {
-        let mut app = make_collection_app(250);
-        nav_to_collection_field(&mut app);
-        app.handle_input(InputEvent::Enter);
-        poll_all_pages(&mut app);
-        for _ in 0..101 {
-            app.handle_input(InputEvent::Down);
-        }
-        app.handle_input(InputEvent::Enter);
-        {
-            let ss = app.stack_state.as_ref().unwrap();
-            let cc = ss.expansion.collection_chunks.get(&888).unwrap();
-            assert!(
-                !matches!(cc.chunk_pages.get(&100), Some(ChunkState::Loading)),
-                "chunk must NOT be Loading before threshold"
-            );
-        }
-        if let Some(pp) = app.pending_pages.get_mut(&(888, 100)) {
-            pp.started = Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
-        }
-        app.poll_pages();
-        let ss = app.stack_state.as_ref().unwrap();
-        let cc = ss.expansion.collection_chunks.get(&888).unwrap();
-        assert!(
-            matches!(cc.chunk_pages.get(&100), Some(ChunkState::Loading)),
-            "chunk must be Loading after threshold"
-        );
-    }
-
-    #[test]
-    fn first_collection_page_shows_loading_indicator_after_threshold() {
-        let mut app = make_collection_app(250);
-        nav_to_collection_field(&mut app);
-        let (_tx, rx) = mpsc::channel::<Option<CollectionPage>>();
-        app.pending_pages.insert(
-            (888, 0),
-            PendingPage {
-                rx,
-                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
-                loading_shown: false,
-            },
-        );
-        {
-            let ss = app.stack_state.as_ref().unwrap();
-            assert_eq!(
-                ss.expansion_state(888),
-                ExpansionPhase::Collapsed,
-                "before poll, collection must not show loading"
-            );
-        }
-        app.poll_pages();
-        let ss = app.stack_state.as_ref().unwrap();
-        assert_eq!(
-            ss.expansion_state(888),
-            ExpansionPhase::Loading,
-            "after threshold, eager page load must show loading"
-        );
-    }
-
-    #[test]
-    fn escape_collapses_collection() {
-        let mut app = make_collection_app(250);
-        nav_to_collection_field(&mut app);
-        app.handle_input(InputEvent::Enter);
-        poll_all_pages(&mut app);
-        app.handle_input(InputEvent::Down);
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            cursor_ends_with_collection_entry(ss.cursor()),
-            "expected collection entry cursor, got {:?}",
-            ss.cursor()
-        );
-        app.handle_input(InputEvent::Escape);
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            !ss.expansion.collection_chunks.contains_key(&888),
-            "collection should be removed"
-        );
-        assert!(
-            cursor_ends_with_field(ss.cursor()),
-            "expected object field cursor, got {:?}",
-            ss.cursor()
-        );
-        assert_eq!(app.focus, Focus::StackFrames);
-    }
-
-    #[test]
-    fn escape_from_collection_opened_on_var_restores_on_var_cursor() {
-        let mut app = make_var_collection_app(250);
+    fn nav_to_collection_field(app: &mut App<StubEngine>) {
         app.handle_input(InputEvent::Enter); // StackFrames
         app.handle_input(InputEvent::Enter); // expand frame
-        app.handle_input(InputEvent::Down); // -> OnVar{0,0}
-        app.handle_input(InputEvent::Enter); // open collection 888 from var
-        poll_all_pages(&mut app);
-        assert!(
-            app.stack_state
-                .as_ref()
-                .unwrap()
-                .expansion
-                .collection_chunks
-                .contains_key(&888),
-            "collection 888 should be loaded before testing escape"
-        );
-
-        app.handle_input(InputEvent::Down); // -> first collection entry
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            cursor_ends_with_collection_entry(ss.cursor()),
-            "expected collection entry cursor before escape, got {:?}",
-            ss.cursor()
-        );
-
-        app.handle_input(InputEvent::Escape);
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            !ss.expansion.collection_chunks.contains_key(&888),
-            "collection should be removed"
-        );
-        assert_eq!(
-            ss.cursor(),
-            &RenderCursor::At(NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build()),
-            "escape from var-opened collection must restore var cursor"
-        );
+        app.handle_input(InputEvent::Down); // → OnVar
+        app.handle_input(InputEvent::Enter); // expand obj 42
+        poll_all_expansions(app);
+        app.handle_input(InputEvent::Down); // → items field
     }
 
-    #[test]
-    fn var_prim_array_triggers_collection_paging_not_expand() {
-        let frames = vec![{
-            let mut f = make_frame(10);
-            f.has_variables = true;
-            f
-        }];
-        let vars = vec![VariableInfo {
-            index: 0,
-            value: VariableValue::ObjectRef {
-                id: 888,
-                class_name: "int[]".to_string(),
-                entry_count: Some(5),
-            },
-        }];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter); // → StackFrames
-        app.handle_input(InputEvent::Enter); // expand frame
-        app.handle_input(InputEvent::Down); // → OnVar{0,0}
-        app.handle_input(InputEvent::Enter); // must start collection paging, not expand_object
-        assert!(
-            app.pending_pages.contains_key(&(888, 0)),
-            "prim array var with entry_count must trigger collection paging"
-        );
-        assert!(
-            !app.pending_expansions.contains_key(&888),
-            "prim array var must not call expand_object"
-        );
-        poll_all_pages(&mut app);
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            ss.expansion.collection_chunks.contains_key(&888),
-            "collection chunks must be present after polling"
-        );
-    }
-
-    #[test]
-    fn escape_from_chunk_section_collapses_collection() {
-        let mut app = make_collection_app(250);
-        nav_to_collection_field(&mut app);
-        app.handle_input(InputEvent::Enter);
-        poll_all_pages(&mut app);
-        for _ in 0..101 {
-            app.handle_input(InputEvent::Down);
-        }
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            cursor_is_chunk_section(ss.cursor()),
-            "should be on chunk section, got {:?}",
-            ss.cursor()
-        );
-        app.handle_input(InputEvent::Escape);
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            !ss.expansion.collection_chunks.contains_key(&888),
-            "collection should be removed after escape from chunk section"
-        );
-        assert!(
-            cursor_ends_with_field(ss.cursor()),
-            "expected object field cursor, got {:?}",
-            ss.cursor()
-        );
-    }
-
-    #[test]
-    fn unsupported_type_falls_back_to_expand_object() {
-        let frames = vec![{
-            let mut f = make_frame(10);
-            f.has_variables = true;
-            f
-        }];
-        let vars = vec![make_obj_var(0, 42)];
-        let expand_fields = Some(vec![FieldInfo {
-            name: "tree".to_string(),
-            value: FieldValue::ObjectRef {
-                id: 777,
-                class_name: "java.util.TreeMap".to_string(),
-                entry_count: Some(50),
-                inline_value: None,
-            },
-        }]);
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars)
-            .with_expand(42, expand_fields);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        nav_to_collection_field(&mut app);
-        app.handle_input(InputEvent::Enter);
+    fn poll_all_pages(app: &mut App<StubEngine>) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while (!app.pending_pages.is_empty() || !app.pending_expansions.is_empty())
-            && std::time::Instant::now() < deadline
-        {
-            let fallbacks = app.poll_pages();
-            for cid in fallbacks {
-                app.start_object_expansion(cid);
-            }
+        while !app.pending_pages.is_empty() && std::time::Instant::now() < deadline {
+            let _fallbacks = app.poll_pages();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn poll_all_expansions(app: &mut App<StubEngine>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
             app.poll_expansions();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(!ss.expansion.collection_chunks.contains_key(&777));
-        assert_eq!(ss.expansion_state(777), ExpansionPhase::Expanded);
     }
-
-    #[test]
-    fn re_enter_on_loaded_chunk_toggles_collapse() {
-        let mut app = make_collection_app(250);
-        nav_to_collection_field(&mut app);
-        app.handle_input(InputEvent::Enter);
-        poll_all_pages(&mut app);
-        for _ in 0..101 {
-            app.handle_input(InputEvent::Down);
-        }
-        app.handle_input(InputEvent::Enter);
-        poll_all_pages(&mut app);
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(matches!(
-            ss.expansion
-                .collection_chunks
-                .get(&888)
-                .unwrap()
-                .chunk_pages
-                .get(&100),
-            Some(ChunkState::Loaded(_))
-        ));
-        app.handle_input(InputEvent::Enter);
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(matches!(
-            ss.expansion
-                .collection_chunks
-                .get(&888)
-                .unwrap()
-                .chunk_pages
-                .get(&100),
-            Some(ChunkState::Collapsed)
-        ));
-    }
-}
-
-/// Tests for ObjectRef collection entries: expansion, nested collections, Left/Right nav.
-mod collection_entry_objects {
-    use super::super::*;
-    use super::fixtures::*;
 
     fn make_obj_entry_collection_app() -> App<StubEngine> {
         let frames = vec![{
@@ -1465,8 +1081,409 @@ mod collection_entry_objects {
     }
 
     #[test]
+    fn collection_enter_triggers_get_page_not_expand() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        // Enter on collection field → StartCollection
+        app.handle_input(InputEvent::Enter);
+        // Should have pending_pages, not pending_expansions
+        // for collection 888.
+        assert!(
+            !app.pending_pages.is_empty(),
+            "collection load should be pending"
+        );
+        assert!(
+            !app.pending_expansions.contains_key(&888),
+            "should NOT use expand_object for collection"
+        );
+    }
+
+    #[test]
+    fn collection_small_no_chunk_sections() {
+        let mut app = make_collection_app(50);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        let ss = app.stack_state.as_ref().unwrap();
+        let cc = ss.expansion.collection_chunks.get(&888).unwrap();
+        assert!(cc.eager_page.is_some());
+        assert_eq!(cc.eager_page.as_ref().unwrap().entries.len(), 50);
+        assert!(
+            cc.chunk_pages.is_empty(),
+            "<= 100 entries → no chunk sections"
+        );
+    }
+
+    #[test]
+    fn collection_250_chunk_layout() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        let ss = app.stack_state.as_ref().unwrap();
+        let cc = ss.expansion.collection_chunks.get(&888).unwrap();
+        // Eager page: 100 entries.
+        assert_eq!(cc.eager_page.as_ref().unwrap().entries.len(), 100);
+        // Chunk sections: [100..199], [200..249].
+        let ranges = compute_chunk_ranges(250);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0], (100, 100));
+        assert_eq!(ranges[1], (200, 50));
+        // All chunk sections start as Collapsed.
+        for (offset, _) in &ranges {
+            assert!(matches!(
+                cc.chunk_pages.get(offset),
+                Some(ChunkState::Collapsed)
+            ));
+        }
+    }
+
+    #[test]
+    fn collection_3000_chunk_layout() {
+        let ranges = compute_chunk_ranges(3000);
+        // 9 sections of 100 + 2 sections of 1000
+        assert_eq!(ranges.len(), 11);
+        assert_eq!(ranges[0], (100, 100));
+        assert_eq!(ranges[8], (900, 100));
+        assert_eq!(ranges[9], (1000, 1000));
+        assert_eq!(ranges[10], (2000, 1000));
+    }
+
+    #[test]
+    fn collection_2348_last_chunk_truncated() {
+        let ranges = compute_chunk_ranges(2348);
+        let last = ranges.last().unwrap();
+        assert_eq!(*last, (2000, 348));
+    }
+
+    #[test]
+    fn chunk_section_enter_loads_correct_range() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Navigate down past eager entries to first chunk
+        // section: 100 entries + 1 to pass them.
+        for _ in 0..101 {
+            app.handle_input(InputEvent::Down);
+        }
+        let ss = app.stack_state.as_ref().unwrap();
+        // Should be on first chunk section [100..199].
+        assert_eq!(
+            cursor_chunk_section_offset(ss.cursor()),
+            Some(100),
+            "expected chunk section at offset 100, got {:?}",
+            ss.cursor()
+        );
+        // Enter on chunk → LoadChunk(888, 100, 100).
+        app.handle_input(InputEvent::Enter);
+        assert!(
+            app.pending_pages.contains_key(&(888, 100)),
+            "chunk load should be pending"
+        );
+        poll_all_pages(&mut app);
+        let ss = app.stack_state.as_ref().unwrap();
+        let cc = ss.expansion.collection_chunks.get(&888).unwrap();
+        assert!(matches!(
+            cc.chunk_pages.get(&100),
+            Some(ChunkState::Loaded(_))
+        ));
+    }
+
+    #[test]
+    fn chunk_loading_indicator() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Navigate to first chunk.
+        for _ in 0..101 {
+            app.handle_input(InputEvent::Down);
+        }
+        app.handle_input(InputEvent::Enter);
+        // Before threshold, chunk is not in Loading state (still Collapsed or absent).
+        {
+            let ss = app.stack_state.as_ref().unwrap();
+            let cc = ss.expansion.collection_chunks.get(&888).unwrap();
+            assert!(
+                !matches!(cc.chunk_pages.get(&100), Some(ChunkState::Loading)),
+                "chunk must NOT be Loading before threshold"
+            );
+        }
+        // Simulate threshold elapsed.
+        if let Some(pp) = app.pending_pages.get_mut(&(888, 100)) {
+            pp.started = Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10);
+        }
+        // Poll once — threshold triggers ChunkState::Loading.
+        app.poll_pages();
+        let ss = app.stack_state.as_ref().unwrap();
+        let cc = ss.expansion.collection_chunks.get(&888).unwrap();
+        assert!(
+            matches!(cc.chunk_pages.get(&100), Some(ChunkState::Loading)),
+            "chunk must be Loading after threshold"
+        );
+    }
+
+    #[test]
+    fn first_collection_page_shows_loading_indicator_after_threshold() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        // Manually inject a PendingPage with an unsent channel so try_recv()
+        // returns Empty (no real thread spawned that would return immediately).
+        let (_tx, rx) = mpsc::channel::<Option<CollectionPage>>();
+        app.pending_pages.insert(
+            (888, 0),
+            PendingPage {
+                rx,
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: false,
+            },
+        );
+        // Before polling: expansion_state must not be Loading yet.
+        {
+            let ss = app.stack_state.as_ref().unwrap();
+            assert_eq!(
+                ss.expansion_state(888),
+                ExpansionPhase::Collapsed,
+                "before poll, collection must not show loading"
+            );
+        }
+        // One poll — threshold exceeded → set_expansion_loading(888).
+        app.poll_pages();
+        let ss = app.stack_state.as_ref().unwrap();
+        assert_eq!(
+            ss.expansion_state(888),
+            ExpansionPhase::Loading,
+            "after threshold, eager page load must show loading"
+        );
+    }
+
+    #[test]
+    fn escape_collapses_collection() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Move into collection entries.
+        app.handle_input(InputEvent::Down);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            cursor_ends_with_collection_entry(ss.cursor()),
+            "expected collection entry cursor, got {:?}",
+            ss.cursor()
+        );
+        // Escape → collapse collection.
+        app.handle_input(InputEvent::Escape);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            !ss.expansion.collection_chunks.contains_key(&888),
+            "collection should be removed"
+        );
+        // Cursor returns to the collection field.
+        assert!(
+            cursor_ends_with_field(ss.cursor()),
+            "expected object field cursor, got {:?}",
+            ss.cursor()
+        );
+        // Focus stays in StackFrames.
+        assert_eq!(app.focus, Focus::StackFrames);
+    }
+
+    #[test]
+    fn escape_from_collection_opened_on_var_restores_on_var_cursor() {
+        let mut app = make_var_collection_app(250);
+        app.handle_input(InputEvent::Enter); // StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.handle_input(InputEvent::Down); // -> OnVar{0,0}
+        app.handle_input(InputEvent::Enter); // open collection 888 from var
+        poll_all_pages(&mut app);
+        assert!(
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion
+                .collection_chunks
+                .contains_key(&888),
+            "collection 888 should be loaded before testing escape"
+        );
+
+        app.handle_input(InputEvent::Down); // -> first collection entry
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            cursor_ends_with_collection_entry(ss.cursor()),
+            "expected collection entry cursor before escape, got {:?}",
+            ss.cursor()
+        );
+
+        app.handle_input(InputEvent::Escape);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            !ss.expansion.collection_chunks.contains_key(&888),
+            "collection should be removed"
+        );
+        assert_eq!(
+            ss.cursor(),
+            &RenderCursor::At(NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build()),
+            "escape from var-opened collection must restore var cursor"
+        );
+    }
+
+    #[test]
+    fn var_prim_array_triggers_collection_paging_not_expand() {
+        // Regression: var with entry_count=Some(5) and class_name="int[]"
+        // must dispatch StartCollection (pending_pages), not expand_object.
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let vars = vec![VariableInfo {
+            index: 0,
+            value: VariableValue::ObjectRef {
+                id: 888,
+                class_name: "int[]".to_string(),
+                entry_count: Some(5),
+            },
+        }];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.handle_input(InputEvent::Down); // → OnVar{0,0}
+        app.handle_input(InputEvent::Enter); // must start collection paging, not expand_object
+        assert!(
+            app.pending_pages.contains_key(&(888, 0)),
+            "prim array var with entry_count must trigger collection paging"
+        );
+        assert!(
+            !app.pending_expansions.contains_key(&888),
+            "prim array var must not call expand_object"
+        );
+        poll_all_pages(&mut app);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            ss.expansion.collection_chunks.contains_key(&888),
+            "collection chunks must be present after polling"
+        );
+    }
+
+    #[test]
+    fn escape_from_chunk_section_collapses_collection() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Navigate to first chunk section (past 100 eager entries + 1 entry node).
+        for _ in 0..101 {
+            app.handle_input(InputEvent::Down);
+        }
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            cursor_is_chunk_section(ss.cursor()),
+            "should be on chunk section, got {:?}",
+            ss.cursor()
+        );
+        // Escape from chunk section should collapse the collection.
+        app.handle_input(InputEvent::Escape);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            !ss.expansion.collection_chunks.contains_key(&888),
+            "collection should be removed after escape from chunk section"
+        );
+        assert!(
+            cursor_ends_with_field(ss.cursor()),
+            "expected object field cursor, got {:?}",
+            ss.cursor()
+        );
+    }
+
+    #[test]
+    fn unsupported_type_falls_back_to_expand_object() {
+        // Use collection ID 777 which StubEngine.get_page
+        // returns None for.
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let vars = vec![make_obj_var(0, 42)];
+        let expand_fields = Some(vec![FieldInfo {
+            name: "tree".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 777,
+                class_name: "java.util.TreeMap".to_string(),
+                entry_count: Some(50),
+                inline_value: None,
+            },
+        }]);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(42, expand_fields);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        // poll_pages will get None and fall back to
+        // expand_object.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while (!app.pending_pages.is_empty() || !app.pending_expansions.is_empty())
+            && std::time::Instant::now() < deadline
+        {
+            let fallbacks = app.poll_pages();
+            for cid in fallbacks {
+                app.start_object_expansion(cid);
+            }
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let ss = app.stack_state.as_ref().unwrap();
+        // Collection chunks should be gone.
+        assert!(!ss.expansion.collection_chunks.contains_key(&777));
+        // Should have fallen back to expand_object →
+        // expansion state should be Expanded.
+        assert_eq!(ss.expansion_state(777), ExpansionPhase::Expanded);
+    }
+
+    #[test]
+    fn re_enter_on_loaded_chunk_toggles_collapse() {
+        let mut app = make_collection_app(250);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Navigate to first chunk, load it.
+        for _ in 0..101 {
+            app.handle_input(InputEvent::Down);
+        }
+        app.handle_input(InputEvent::Enter);
+        poll_all_pages(&mut app);
+        // Chunk is now Loaded.
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(matches!(
+            ss.expansion
+                .collection_chunks
+                .get(&888)
+                .unwrap()
+                .chunk_pages
+                .get(&100),
+            Some(ChunkState::Loaded(_))
+        ));
+        // Enter again → ToggleChunk → Collapsed.
+        app.handle_input(InputEvent::Enter);
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(matches!(
+            ss.expansion
+                .collection_chunks
+                .get(&888)
+                .unwrap()
+                .chunk_pages
+                .get(&100),
+            Some(ChunkState::Collapsed)
+        ));
+    }
+
+    #[test]
     fn entry_rendering_map_vs_list_format() {
         use crate::views::stack_view::StackState;
+        // Verify format_entry_line for map entry.
         let map_entry = EntryInfo {
             index: 5,
             key: Some(FieldValue::Int(42)),
@@ -1474,6 +1491,7 @@ mod collection_entry_objects {
         };
         let line = StackState::format_entry_line(&map_entry, "  ", None, false);
         assert!(line.contains("[5] 42 => 100"), "map entry format: {}", line);
+        // List entry.
         let list_entry = EntryInfo {
             index: 3,
             key: None,
@@ -1486,6 +1504,7 @@ mod collection_entry_objects {
             "list entry should not have =>: {}",
             line
         );
+        // ObjectRef value shows "+" toggle when collapsed.
         let obj_entry = EntryInfo {
             index: 0,
             key: None,
@@ -1523,6 +1542,7 @@ mod collection_entry_objects {
     #[test]
     fn collection_entry_objectref_shows_plus_prefix() {
         let mut app = make_obj_entry_collection_app();
+        // Navigate to collection field "items" (collection 889).
         let frames = vec![{
             let mut f = make_frame(10);
             f.has_variables = true;
@@ -1532,6 +1552,7 @@ mod collection_entry_objects {
         nav_to_collection_field(&mut app);
         app.handle_input(InputEvent::Enter); // start collection load
         poll_all_pages(&mut app);
+        // Navigate down to first entry (index 0).
         app.handle_input(InputEvent::Down);
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
@@ -1539,7 +1560,10 @@ mod collection_entry_objects {
             "should be on entry 0, got {:?}",
             ss.cursor()
         );
+        // The entry rendering is verified through format_entry_line above;
+        // here we verify Enter triggers start_object_expansion.
         app.handle_input(InputEvent::Enter);
+        // pending_expansions should contain ObjectRef id 700 (entry 0's value).
         assert!(
             app.pending_expansions.contains_key(&700),
             "entering on ObjectRef entry should start expansion of id 700"
@@ -1552,9 +1576,15 @@ mod collection_entry_objects {
         nav_to_collection_field(&mut app);
         app.handle_input(InputEvent::Enter);
         poll_all_pages(&mut app);
+        // Navigate to entry 0 and expand it.
         app.handle_input(InputEvent::Down);
-        app.handle_input(InputEvent::Enter); // start expand of id=700
-        poll_all_expansions(&mut app);
+        app.handle_input(InputEvent::Enter); // start expand of id=700, then poll until done.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // Navigate down — should enter OnCollectionEntryObjField.
         app.handle_input(InputEvent::Down);
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
@@ -1616,8 +1646,7 @@ mod collection_entry_objects {
             );
             assert!(
                 cursor_is_collection_entry_field(ss.cursor()),
-                "escape from nested collection should restore collection entry obj field, \
-                    got {:?}",
+                "escape from nested collection should restore collection entry obj field, got {:?}",
                 ss.cursor()
             );
         }
@@ -1630,7 +1659,7 @@ mod collection_entry_objects {
         app.handle_input(InputEvent::Enter); // open collection 890
         poll_all_pages(&mut app);
 
-        app.handle_input(InputEvent::Down); // -> entry 0 of collection 890
+        app.handle_input(InputEvent::Down); // -> entry 0 of collection 890 (value is Object[] id=888)
         {
             let ss = app.stack_state.as_ref().unwrap();
             assert!(
@@ -1670,8 +1699,7 @@ mod collection_entry_objects {
             );
             assert!(
                 matches!(cursor_collection_entry_ids(ss.cursor()), Some((890, 0))),
-                "escape from nested collection should restore outer collection entry, \
-                    got {:?}",
+                "escape from nested collection should restore outer collection entry, got {:?}",
                 ss.cursor()
             );
         }
@@ -1684,7 +1712,7 @@ mod collection_entry_objects {
         app.handle_input(InputEvent::Enter); // open collection 890
         poll_all_pages(&mut app);
 
-        app.handle_input(InputEvent::Down); // -> entry 0 of collection 890
+        app.handle_input(InputEvent::Down); // -> entry 0 of collection 890 (value Object[] id=888)
         app.handle_input(InputEvent::Right); // must mirror Enter and StartCollection(888)
 
         assert!(
@@ -1780,17 +1808,20 @@ mod collection_entry_objects {
     }
 }
 
-/// Tests for camera controls: scroll, center, page scroll — stack frames vs thread list.
 mod camera {
-    use super::super::*;
-    use super::fixtures::*;
+    //! Tests for camera controls: Page Up/Down, scroll without moving cursor, centering,
+    //! and no-ops in thread list or search mode.
+    use super::*;
 
     #[test]
     fn page_up_down_scrolls_tree_by_visible_height() {
+        // This is a general tree scroll test, not
+        // collection-specific.
         use crate::views::stack_view::StackState;
         let frames: Vec<_> = (1..=30).map(make_frame).collect();
         let mut state = StackState::new(frames);
         state.set_visible_height(10);
+        // Move to frame 5.
         for _ in 0..5 {
             state.move_down();
         }
@@ -1953,10 +1984,10 @@ mod camera {
     }
 }
 
-/// Tests for focus routing, help overlay, tabs, loading indicator, memory log formatting.
-mod focus_and_ui {
-    use super::super::*;
-    use super::fixtures::*;
+mod loading_and_warnings {
+    //! Tests for loading indicator threshold, warning emission on expansion failure or
+    //! disconnected channel, and memory log formatting.
+    use super::*;
 
     #[test]
     fn loading_indicator_not_shown_before_1_second() {
@@ -1968,7 +1999,13 @@ mod focus_and_ui {
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Down);
         app.handle_input(InputEvent::Enter); // start_object_expansion(42) — completes fast.
-        poll_all_expansions(&mut app);
+        // Poll once without sleeping — StubEngine responds immediately.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Expansion completed without ever setting Loading state.
         assert_eq!(
             app.stack_state.as_ref().unwrap().expansion_state(42),
             ExpansionPhase::Expanded,
@@ -1977,28 +2014,53 @@ mod focus_and_ui {
     }
 
     #[test]
-    fn loading_indicator_shown_if_not_yet_complete_after_1_second() {
+    fn failed_expansion_adds_warning_to_log() {
         let frames = vec![make_frame(10)];
-        let vars = vec![make_obj_var(0, 99)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+        let vars = vec![make_obj_var(0, 55)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(55, None); // force None → unresolvable
         let mut app = App::new(engine, "test.hprof".to_string());
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Down);
-        let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        app.handle_input(InputEvent::Enter); // start expansion of 55, then poll for result.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(app.warnings.count(), 1);
+        assert!(
+            app.warnings.last().unwrap_or("").contains("0x37"),
+            "warning must reference the object id; got: {:?}",
+            app.warnings.last()
+        );
+    }
+
+    #[test]
+    fn disconnected_expansion_adds_warning_to_log() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 77)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        // Manually inject a disconnected pending expansion (tx dropped immediately).
+        let (tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        drop(tx); // disconnect
         app.pending_expansions.insert(
-            99,
+            77,
             PendingExpansion {
                 rx,
-                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                started: Instant::now(),
                 loading_shown: false,
             },
         );
         app.poll_expansions();
-        let pe = app.pending_expansions.get(&99).unwrap();
+        assert_eq!(app.warnings.count(), 1);
         assert!(
-            pe.loading_shown,
-            "loading_shown must be set after threshold"
+            app.warnings.last().unwrap_or("").contains("0x4D"),
+            "warning must reference the object id 0x4D (77); got: {:?}",
+            app.warnings.last()
         );
     }
 
@@ -2013,10 +2075,48 @@ mod focus_and_ui {
 
     #[test]
     fn format_memory_log_rounds_down_to_mb() {
+        // 1.9 MB → 1 MB (integer division rounds down)
         let s = format_memory_log(1024 * 1024 + 900_000, 1_048_576, 0);
         assert!(s.contains("cache 1 MB"), "expected round-down; got: {s}");
         assert!(s.contains("skeleton 0 MB"), "got: {s}");
     }
+
+    #[test]
+    fn loading_indicator_shown_if_not_yet_complete_after_1_second() {
+        // Use a slow channel: create the receiver manually without sending a result.
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 99)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Down);
+        // Manually insert a PendingExpansion with an unsent channel and past started time.
+        let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        app.pending_expansions.insert(
+            99,
+            PendingExpansion {
+                rx,
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: false,
+            },
+        );
+        // Poll once — threshold exceeded, loading_shown transitions to true.
+        app.poll_expansions();
+        // Verify loading_shown was set.
+        let pe = app.pending_expansions.get(&99).unwrap();
+        assert!(
+            pe.loading_shown,
+            "loading_shown must be set after threshold"
+        );
+    }
+}
+
+mod favorites {
+    //! Tests for the favorites panel: toggle visibility/focus, help overlay, navigate-to-source
+    //! (exact thread, field, collection entry, stale path, nested entries, duplicate name resolution),
+    //! and snapshot page-limit enforcement.
+    use super::*;
 
     #[test]
     fn hidden_favorites_panel_forces_focus_back_to_previous_panel() {
@@ -2089,37 +2189,6 @@ mod focus_and_ui {
     }
 
     #[test]
-    fn tab_from_thread_list_with_no_stack_state_is_noop() {
-        let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        assert_eq!(app.focus, Focus::ThreadList);
-        app.handle_input(InputEvent::Tab);
-        assert_eq!(app.focus, Focus::ThreadList);
-    }
-
-    #[test]
-    fn tab_from_thread_list_with_stack_state_moves_to_stack_frames() {
-        let frames = vec![make_frame(10)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter); // → StackFrames, stack_state = Some(...)
-        app.focus = Focus::ThreadList; // simulate returning to thread list
-        app.handle_input(InputEvent::Tab);
-        assert_eq!(app.focus, Focus::StackFrames);
-    }
-
-    #[test]
-    fn tab_from_stack_frames_returns_to_thread_list() {
-        let frames = vec![make_frame(10)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter); // → StackFrames
-        assert_eq!(app.focus, Focus::StackFrames);
-        app.handle_input(InputEvent::Tab);
-        assert_eq!(app.focus, Focus::ThreadList);
-    }
-
-    #[test]
     fn tab_from_favorites_cycles_to_thread_list() {
         use crate::favorites::{PinnedItem, PinnedSnapshot};
 
@@ -2143,98 +2212,6 @@ mod focus_and_ui {
     }
 
     #[test]
-    fn quit_from_stack_frames_returns_quit() {
-        let frames = vec![make_frame(10)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter); // → StackFrames
-        assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
-    }
-
-    #[test]
-    fn toggle_object_ids_noop_outside_stack_frames_focus() {
-        let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        assert!(!app.show_object_ids);
-
-        app.handle_input(InputEvent::ToggleObjectIds);
-
-        assert!(!app.show_object_ids);
-    }
-
-    #[test]
-    fn toggle_object_ids_in_stack_frames_focus_toggles_flag() {
-        let frames = vec![make_frame(10)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter);
-        assert_eq!(app.focus, Focus::StackFrames);
-        assert!(!app.show_object_ids);
-
-        app.handle_input(InputEvent::ToggleObjectIds);
-        assert!(app.show_object_ids);
-
-        app.handle_input(InputEvent::ToggleObjectIds);
-        assert!(!app.show_object_ids);
-    }
-
-    #[test]
-    fn handle_input_up_down_in_stack_frames_moves_cursor() {
-        let frames = vec![make_frame(10), make_frame(20), make_frame(30)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter); // → StackFrames
-        app.handle_input(InputEvent::Down);
-        assert_eq!(
-            app.stack_state.as_ref().unwrap().selected_frame_id(),
-            Some(20)
-        );
-        app.handle_input(InputEvent::Up);
-        assert_eq!(
-            app.stack_state.as_ref().unwrap().selected_frame_id(),
-            Some(10)
-        );
-    }
-
-    #[test]
-    fn handle_input_enter_in_stack_frames_expands_then_collapses() {
-        let frames = vec![make_frame(10)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter); // → StackFrames, Enter on collapsed frame → expands
-        app.handle_input(InputEvent::Enter);
-        assert!(app.stack_state.as_ref().unwrap().is_expanded(10));
-        // Enter on expanded frame → collapses
-        app.handle_input(InputEvent::Enter);
-        assert!(!app.stack_state.as_ref().unwrap().is_expanded(10));
-    }
-
-    #[test]
-    fn handle_input_escape_in_stack_frames_clears_state_and_returns_to_thread_list() {
-        let frames = vec![make_frame(10)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        app.handle_input(InputEvent::Enter);
-        assert_eq!(app.focus, Focus::StackFrames);
-        app.handle_input(InputEvent::Escape);
-        assert_eq!(app.focus, Focus::ThreadList);
-        assert!(app.stack_state.is_none());
-    }
-
-    #[test]
-    fn handle_input_quit_returns_app_action_quit() {
-        let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
-        assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
-    }
-}
-
-/// Tests for favorites panel: navigate-to-source, thread/frame resolution, snapshot limits.
-mod favorites {
-    use super::super::*;
-    use super::fixtures::*;
-
-    #[test]
     fn favorites_navigate_to_source_empty_list_no_panic() {
         let engine = StubEngine::with_threads(&["main"]);
         let mut app = App::new(engine, "test.hprof".to_string());
@@ -2251,6 +2228,7 @@ mod favorites {
     fn favorites_navigate_to_source_zero_match_emits_warning() {
         let engine = StubEngine::with_threads(&["main"]);
         let mut app = App::new(engine, "test.hprof".to_string());
+        // thread_id=2 — does not exist in this engine (only thread serial=1)
         app.pinned
             .push(make_favorite_item_with_tid(2, "worker", 10));
         app.sync_favorites_selection();
@@ -2273,6 +2251,7 @@ mod favorites {
             &[(1, vec![make_frame(11)]), (2, vec![make_frame(22)])],
         );
         let mut app = App::new(engine, "test.hprof".to_string());
+        // "worker" is thread serial=2 in this engine
         app.pinned
             .push(make_favorite_item_with_tid(2, "worker", 22));
         app.sync_favorites_selection();
@@ -2433,6 +2412,7 @@ mod favorites {
                 value_label: "dummy".to_string(),
             },
             local_collapsed: HashSet::new(),
+            // Var at index 0 is directly the collection (no field hops).
             key: make_pin_key_coll_entry(1, "main", 10, 0, &[], 889, 1),
         });
         app.sync_favorites_selection();
@@ -2487,6 +2467,7 @@ mod favorites {
                 value_label: "dummy".to_string(),
             },
             local_collapsed: HashSet::new(),
+            // var[0][1].inner (field 0 of entry 1's object) is collection 890, entry 0.
             key: crate::favorites::PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -2517,11 +2498,14 @@ mod favorites {
 
     #[test]
     fn favorites_navigate_to_source_navigates_by_thread_id_when_names_duplicate() {
+        // Two threads with the same name "dup"; navigation uses thread_id (serial),
+        // not thread_name, so there is no ambiguity.
         let engine = StubEngine::with_thread_specific_frames(
             &["dup", "dup"],
             &[(1, vec![make_frame(11)]), (2, vec![make_frame(22)])],
         );
         let mut app = App::new(engine, "test.hprof".to_string());
+        // thread_id=1 → "dup" serial=1, frame_id=11
         app.pinned.push(make_favorite_item("dup", 11));
         app.sync_favorites_selection();
         app.focus = Focus::Favorites;
@@ -2671,5 +2655,117 @@ mod favorites {
             !cc.chunk_pages.contains_key(&new_offset),
             "chunk beyond snapshot page cap must not be inserted"
         );
+    }
+}
+
+mod focus {
+    //! Tests for focus management: Tab cycling between panels, key routing in search mode,
+    //! Quit from various contexts, and object-ID toggle.
+    use super::*;
+
+    #[test]
+    fn handle_input_quit_returns_app_action_quit() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
+    }
+
+    #[test]
+    fn tab_from_thread_list_with_no_stack_state_is_noop() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        assert_eq!(app.focus, Focus::ThreadList);
+        app.handle_input(InputEvent::Tab);
+        assert_eq!(app.focus, Focus::ThreadList);
+    }
+
+    #[test]
+    fn tab_from_thread_list_with_stack_state_moves_to_stack_frames() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames, stack_state = Some(...)
+        app.focus = Focus::ThreadList; // simulate returning to thread list
+        app.handle_input(InputEvent::Tab);
+        assert_eq!(app.focus, Focus::StackFrames);
+    }
+
+    #[test]
+    fn tab_from_stack_frames_returns_to_thread_list() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        assert_eq!(app.focus, Focus::StackFrames);
+        app.handle_input(InputEvent::Tab);
+        assert_eq!(app.focus, Focus::ThreadList);
+    }
+
+    #[test]
+    fn search_char_s_in_non_search_mode_activates_search() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        assert!(!app.thread_list.is_search_active());
+        app.handle_input(InputEvent::SearchChar('s'));
+        assert!(app.thread_list.is_search_active());
+    }
+
+    #[test]
+    fn quit_from_thread_list_with_search_active_returns_quit() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::SearchActivate);
+        assert!(app.thread_list.is_search_active());
+        assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
+    }
+
+    #[test]
+    fn quit_from_stack_frames_returns_quit() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
+    }
+
+    #[test]
+    fn tab_from_thread_list_with_search_active_moves_to_stack_frames() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.focus = Focus::ThreadList;
+        app.handle_input(InputEvent::SearchActivate);
+        assert!(app.thread_list.is_search_active());
+
+        app.handle_input(InputEvent::Tab);
+        assert_eq!(app.focus, Focus::StackFrames);
+    }
+
+    #[test]
+    fn toggle_object_ids_noop_outside_stack_frames_focus() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        assert!(!app.show_object_ids);
+
+        app.handle_input(InputEvent::ToggleObjectIds);
+
+        assert!(!app.show_object_ids);
+    }
+
+    #[test]
+    fn toggle_object_ids_in_stack_frames_focus_toggles_flag() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter);
+        assert_eq!(app.focus, Focus::StackFrames);
+        assert!(!app.show_object_ids);
+
+        app.handle_input(InputEvent::ToggleObjectIds);
+        assert!(app.show_object_ids);
+
+        app.handle_input(InputEvent::ToggleObjectIds);
+        assert!(!app.show_object_ids);
     }
 }
