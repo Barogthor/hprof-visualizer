@@ -110,6 +110,13 @@ impl StackState {
         &self.expansion.collection_chunks
     }
 
+    pub(crate) fn collection_restore_cursor(&self, collection_id: u64) -> Option<StackCursor> {
+        self.expansion
+            .collection_restore_cursors
+            .get(&collection_id)
+            .cloned()
+    }
+
     /// Sets the cursor to `new_cursor` and syncs the
     /// ratatui list state.
     pub fn set_cursor(&mut self, new_cursor: StackCursor) {

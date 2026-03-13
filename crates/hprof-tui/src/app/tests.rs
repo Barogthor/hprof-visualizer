@@ -2245,6 +2245,247 @@ fn favorites_navigate_to_source_positions_on_field_when_possible() {
 }
 
 #[test]
+fn favorites_navigate_to_source_positions_on_collection_entry() {
+    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+
+    let frames = vec![make_frame(10)];
+    let vars = vec![make_obj_var(0, 42)];
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+        .with_vars(10, vars)
+        .with_expand(
+            42,
+            Some(vec![FieldInfo {
+                name: "items".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 889,
+                    class_name: "Object[]".to_string(),
+                    entry_count: Some(3),
+                    inline_value: None,
+                },
+            }]),
+        );
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.pinned.push(PinnedItem {
+        thread_name: "main".to_string(),
+        frame_label: "Thread.run()".to_string(),
+        item_label: "var[0][1]".to_string(),
+        snapshot: PinnedSnapshot::Primitive {
+            value_label: "dummy".to_string(),
+        },
+        local_collapsed: HashSet::new(),
+        key: PinKey::CollectionEntry {
+            frame_id: 10,
+            thread_name: "main".to_string(),
+            var_idx: 0,
+            field_path: vec![0],
+            collection_id: 889,
+            entry_index: 1,
+            collection_restore_cursor: None,
+        },
+    });
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::NavigateToSource);
+
+    assert_eq!(app.focus, Focus::StackFrames);
+    assert_eq!(
+        app.stack_state.as_ref().unwrap().cursor(),
+        &StackCursor::OnCollectionEntry {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![0],
+            collection_id: 889,
+            entry_index: 1,
+        }
+    );
+}
+
+#[test]
+fn favorites_navigate_to_source_positions_on_collection_entry_obj_field() {
+    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+
+    let frames = vec![make_frame(10)];
+    let vars = vec![make_obj_var(0, 42)];
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+        .with_vars(10, vars)
+        .with_expand(
+            42,
+            Some(vec![FieldInfo {
+                name: "items".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 889,
+                    class_name: "Object[]".to_string(),
+                    entry_count: Some(3),
+                    inline_value: None,
+                },
+            }]),
+        );
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.pinned.push(PinnedItem {
+        thread_name: "main".to_string(),
+        frame_label: "Thread.run()".to_string(),
+        item_label: "var[0][1].child".to_string(),
+        snapshot: PinnedSnapshot::Primitive {
+            value_label: "dummy".to_string(),
+        },
+        local_collapsed: HashSet::new(),
+        key: PinKey::CollectionEntryField {
+            frame_id: 10,
+            thread_name: "main".to_string(),
+            var_idx: 0,
+            field_path: vec![0],
+            collection_id: 889,
+            entry_index: 1,
+            obj_field_path: vec![1],
+            collection_restore_cursor: None,
+        },
+    });
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::NavigateToSource);
+
+    assert_eq!(app.focus, Focus::StackFrames);
+    assert_eq!(
+        app.stack_state.as_ref().unwrap().cursor(),
+        &StackCursor::OnCollectionEntryObjField {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![0],
+            collection_id: 889,
+            entry_index: 1,
+            obj_field_path: vec![1],
+        }
+    );
+}
+
+#[test]
+fn favorites_navigate_to_source_collection_entry_with_stale_path_uses_semantic_match() {
+    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+
+    let frames = vec![make_frame(10)];
+    let vars = vec![VariableInfo {
+        index: 0,
+        value: VariableValue::ObjectRef {
+            id: 889,
+            class_name: "Object[]".to_string(),
+            entry_count: Some(3),
+        },
+    }];
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.pinned.push(PinnedItem {
+        thread_name: "main".to_string(),
+        frame_label: "Thread.run()".to_string(),
+        item_label: "var[0][1]".to_string(),
+        snapshot: PinnedSnapshot::Primitive {
+            value_label: "dummy".to_string(),
+        },
+        local_collapsed: HashSet::new(),
+        key: PinKey::CollectionEntry {
+            frame_id: 10,
+            thread_name: "main".to_string(),
+            var_idx: 0,
+            field_path: vec![99],
+            collection_id: 889,
+            entry_index: 1,
+            collection_restore_cursor: Some(StackCursor::OnVar {
+                frame_idx: 0,
+                var_idx: 0,
+            }),
+        },
+    });
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::NavigateToSource);
+
+    assert_eq!(app.focus, Focus::StackFrames);
+    assert_eq!(
+        app.stack_state.as_ref().unwrap().cursor(),
+        &StackCursor::OnCollectionEntry {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+            collection_id: 889,
+            entry_index: 1,
+        }
+    );
+}
+
+#[test]
+fn favorites_navigate_to_source_nested_collection_entry_uses_restore_cursor_chain() {
+    use crate::favorites::{PinKey, PinnedItem, PinnedSnapshot};
+
+    let frames = vec![make_frame(10)];
+    let vars = vec![VariableInfo {
+        index: 0,
+        value: VariableValue::ObjectRef {
+            id: 889,
+            class_name: "Object[]".to_string(),
+            entry_count: Some(3),
+        },
+    }];
+    let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+        .with_vars(10, vars)
+        .with_expand(
+            701,
+            Some(vec![FieldInfo {
+                name: "inner".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 890,
+                    class_name: "Object[]".to_string(),
+                    entry_count: Some(1),
+                    inline_value: None,
+                },
+            }]),
+        );
+    let mut app = App::new(engine, "test.hprof".to_string());
+    app.pinned.push(PinnedItem {
+        thread_name: "main".to_string(),
+        frame_label: "Thread.run()".to_string(),
+        item_label: "var[0][1].inner[0]".to_string(),
+        snapshot: PinnedSnapshot::Primitive {
+            value_label: "dummy".to_string(),
+        },
+        local_collapsed: HashSet::new(),
+        key: PinKey::CollectionEntry {
+            frame_id: 10,
+            thread_name: "main".to_string(),
+            var_idx: 0,
+            field_path: vec![777],
+            collection_id: 890,
+            entry_index: 0,
+            collection_restore_cursor: Some(StackCursor::OnCollectionEntryObjField {
+                frame_idx: 0,
+                var_idx: 0,
+                field_path: vec![],
+                collection_id: 889,
+                entry_index: 1,
+                obj_field_path: vec![0],
+            }),
+        },
+    });
+    app.sync_favorites_selection();
+    app.focus = Focus::Favorites;
+
+    app.handle_input(InputEvent::NavigateToSource);
+
+    assert_eq!(app.focus, Focus::StackFrames);
+    assert_eq!(
+        app.stack_state.as_ref().unwrap().cursor(),
+        &StackCursor::OnCollectionEntry {
+            frame_idx: 0,
+            var_idx: 0,
+            field_path: vec![],
+            collection_id: 890,
+            entry_index: 0,
+        }
+    );
+}
+
+#[test]
 fn favorites_navigate_to_source_warns_on_duplicate_thread_name() {
     let engine = StubEngine::with_thread_specific_frames(
         &["dup", "dup"],

@@ -53,6 +53,7 @@ pub enum PinKey {
         field_path: Vec<usize>,
         collection_id: u64,
         entry_index: usize,
+        collection_restore_cursor: Option<StackCursor>,
     },
     /// One field inside an object expanded from a collection entry.
     CollectionEntryField {
@@ -63,6 +64,7 @@ pub enum PinKey {
         collection_id: u64,
         entry_index: usize,
         obj_field_path: Vec<usize>,
+        collection_restore_cursor: Option<StackCursor>,
     },
 }
 
@@ -467,6 +469,7 @@ impl<'a> PinnedItemFactory<'a> {
                 field_path: field_path.to_vec(),
                 collection_id,
                 entry_index,
+                collection_restore_cursor: self.state.collection_restore_cursor(collection_id),
             },
         ))
     }
@@ -515,6 +518,7 @@ impl<'a> PinnedItemFactory<'a> {
                 collection_id,
                 entry_index,
                 obj_field_path: obj_field_path.to_vec(),
+                collection_restore_cursor: self.state.collection_restore_cursor(collection_id),
             },
         ))
     }
@@ -1218,6 +1222,7 @@ mod tests {
                 var_idx: 0,
                 collection_id: 20,
                 entry_index: 0,
+                collection_restore_cursor: _,
                 ..
             }
         ));
@@ -1347,6 +1352,7 @@ mod tests {
             PinKey::CollectionEntryField {
                 collection_id: 20,
                 entry_index: 0,
+                collection_restore_cursor: _,
                 ..
             }
         ));

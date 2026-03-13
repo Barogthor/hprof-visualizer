@@ -181,6 +181,440 @@ impl<E: NavigationEngine> App<E> {
         true
     }
 
+    fn root_object_id_for_var(&self, frame_id: u64, var_idx: usize) -> Option<u64> {
+        self.stack_state.as_ref().and_then(|stack_state| {
+            stack_state
+                .vars()
+                .get(&frame_id)
+                .and_then(|vars| vars.get(var_idx))
+                .and_then(|var| {
+                    if let VariableValue::ObjectRef { id, .. } = var.value {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                })
+        })
+    }
+
+    fn child_object_id_at(&self, object_id: u64, field_idx: usize) -> Option<u64> {
+        self.stack_state.as_ref().and_then(|stack_state| {
+            stack_state
+                .object_fields()
+                .get(&object_id)
+                .and_then(|fields| fields.get(field_idx))
+                .and_then(|field| {
+                    if let FieldValue::ObjectRef { id, .. } = field.value {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                })
+        })
+    }
+
+    fn ensure_object_path_expanded(&mut self, root_object_id: u64, field_path: &[usize]) -> bool {
+        let mut current_object_id = root_object_id;
+        for (depth, field_idx) in field_path.iter().enumerate() {
+            let is_expanded = self.stack_state.as_ref().is_some_and(|stack_state| {
+                stack_state.expansion_state(current_object_id) == ExpansionPhase::Expanded
+            });
+            if !is_expanded && !self.expand_object_sync(current_object_id) {
+                return false;
+            }
+
+            if depth + 1 < field_path.len() {
+                let Some(next_object_id) = self.child_object_id_at(current_object_id, *field_idx)
+                else {
+                    return false;
+                };
+                current_object_id = next_object_id;
+            }
+        }
+        true
+    }
+
+    fn ensure_collection_entry_loaded(&mut self, collection_id: u64, entry_index: usize) -> bool {
+        let mut needs_init = false;
+        let mut total_count = 0u64;
+
+        if let Some(stack_state) = &self.stack_state {
+            if let Some(cc) = stack_state.expansion.collection_chunks.get(&collection_id) {
+                total_count = cc.total_count;
+                if cc.find_entry(entry_index).is_some() {
+                    return true;
+                }
+            } else {
+                needs_init = true;
+            }
+        } else {
+            return false;
+        }
+
+        if needs_init {
+            let Some(first_page) = self.engine.get_page(collection_id, 0, 100) else {
+                return false;
+            };
+            total_count = first_page.total_count;
+            let chunks = CollectionChunks {
+                total_count,
+                eager_page: Some(first_page),
+                chunk_pages: compute_chunk_ranges(total_count)
+                    .into_iter()
+                    .map(|(o, _)| (o, ChunkState::Collapsed))
+                    .collect(),
+            };
+            if let Some(stack_state) = &mut self.stack_state {
+                stack_state
+                    .expansion
+                    .collection_chunks
+                    .insert(collection_id, chunks);
+            }
+        }
+
+        if let Some(stack_state) = &self.stack_state
+            && let Some(cc) = stack_state.expansion.collection_chunks.get(&collection_id)
+        {
+            if cc.find_entry(entry_index).is_some() {
+                return true;
+            }
+            total_count = cc.total_count;
+        }
+
+        let (offset, limit) = if entry_index < 100 {
+            (0usize, (total_count as usize).min(100))
+        } else if let Some((offset, limit)) = compute_chunk_ranges(total_count)
+            .into_iter()
+            .find(|(offset, limit)| entry_index >= *offset && entry_index < *offset + *limit)
+        {
+            (offset, limit)
+        } else {
+            return false;
+        };
+
+        let Some(page) = self.engine.get_page(collection_id, offset, limit) else {
+            return false;
+        };
+        if let Some(stack_state) = &mut self.stack_state
+            && let Some(cc) = stack_state
+                .expansion
+                .collection_chunks
+                .get_mut(&collection_id)
+        {
+            if offset == 0 {
+                cc.eager_page = Some(page);
+            } else {
+                cc.chunk_pages.insert(offset, ChunkState::Loaded(page));
+            }
+            return cc.find_entry(entry_index).is_some();
+        }
+        false
+    }
+
+    fn collection_entry_object_id(&self, collection_id: u64, entry_index: usize) -> Option<u64> {
+        self.stack_state.as_ref().and_then(|stack_state| {
+            let cc = stack_state
+                .expansion
+                .collection_chunks
+                .get(&collection_id)?;
+            let entry = cc.find_entry(entry_index)?;
+            if let FieldValue::ObjectRef { id, .. } = entry.value {
+                Some(id)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn remap_cursor_frame(cursor: &StackCursor, frame_idx: usize) -> StackCursor {
+        match cursor {
+            StackCursor::NoFrames => StackCursor::NoFrames,
+            StackCursor::OnFrame(_) => StackCursor::OnFrame(frame_idx),
+            StackCursor::OnVar { var_idx, .. } => StackCursor::OnVar {
+                frame_idx,
+                var_idx: *var_idx,
+            },
+            StackCursor::OnObjectField {
+                var_idx,
+                field_path,
+                ..
+            } => StackCursor::OnObjectField {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+            },
+            StackCursor::OnObjectLoadingNode {
+                var_idx,
+                field_path,
+                ..
+            } => StackCursor::OnObjectLoadingNode {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+            },
+            StackCursor::OnCyclicNode {
+                var_idx,
+                field_path,
+                ..
+            } => StackCursor::OnCyclicNode {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+            },
+            StackCursor::OnStaticSectionHeader {
+                var_idx,
+                field_path,
+                ..
+            } => StackCursor::OnStaticSectionHeader {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+            },
+            StackCursor::OnStaticField {
+                var_idx,
+                field_path,
+                static_idx,
+                ..
+            } => StackCursor::OnStaticField {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+                static_idx: *static_idx,
+            },
+            StackCursor::OnStaticOverflowRow {
+                var_idx,
+                field_path,
+                ..
+            } => StackCursor::OnStaticOverflowRow {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+            },
+            StackCursor::OnStaticObjectField {
+                var_idx,
+                field_path,
+                static_idx,
+                obj_field_path,
+                ..
+            } => StackCursor::OnStaticObjectField {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+                static_idx: *static_idx,
+                obj_field_path: obj_field_path.clone(),
+            },
+            StackCursor::OnCollectionEntry {
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                ..
+            } => StackCursor::OnCollectionEntry {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+                collection_id: *collection_id,
+                entry_index: *entry_index,
+            },
+            StackCursor::OnCollectionEntryObjField {
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                ..
+            } => StackCursor::OnCollectionEntryObjField {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+                collection_id: *collection_id,
+                entry_index: *entry_index,
+                obj_field_path: obj_field_path.clone(),
+            },
+            StackCursor::OnCollectionEntryStaticSectionHeader {
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                ..
+            } => StackCursor::OnCollectionEntryStaticSectionHeader {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+                collection_id: *collection_id,
+                entry_index: *entry_index,
+                obj_field_path: obj_field_path.clone(),
+            },
+            StackCursor::OnCollectionEntryStaticField {
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                static_idx,
+                ..
+            } => StackCursor::OnCollectionEntryStaticField {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+                collection_id: *collection_id,
+                entry_index: *entry_index,
+                obj_field_path: obj_field_path.clone(),
+                static_idx: *static_idx,
+            },
+            StackCursor::OnCollectionEntryStaticOverflowRow {
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                ..
+            } => StackCursor::OnCollectionEntryStaticOverflowRow {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+                collection_id: *collection_id,
+                entry_index: *entry_index,
+                obj_field_path: obj_field_path.clone(),
+            },
+            StackCursor::OnCollectionEntryStaticObjectField {
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                static_idx,
+                static_obj_field_path,
+                ..
+            } => StackCursor::OnCollectionEntryStaticObjectField {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+                collection_id: *collection_id,
+                entry_index: *entry_index,
+                obj_field_path: obj_field_path.clone(),
+                static_idx: *static_idx,
+                static_obj_field_path: static_obj_field_path.clone(),
+            },
+            StackCursor::OnChunkSection {
+                var_idx,
+                field_path,
+                collection_id,
+                chunk_offset,
+                ..
+            } => StackCursor::OnChunkSection {
+                frame_idx,
+                var_idx: *var_idx,
+                field_path: field_path.clone(),
+                collection_id: *collection_id,
+                chunk_offset: *chunk_offset,
+            },
+        }
+    }
+
+    fn ensure_cursor_materialized(
+        &mut self,
+        frame_id: u64,
+        frame_idx: usize,
+        cursor: &StackCursor,
+    ) {
+        match cursor {
+            StackCursor::OnVar { var_idx, .. } => {
+                let _ = self.root_object_id_for_var(frame_id, *var_idx);
+            }
+            StackCursor::OnObjectField {
+                var_idx,
+                field_path,
+                ..
+            } => {
+                if let Some(root_object_id) = self.root_object_id_for_var(frame_id, *var_idx) {
+                    let _ = self.ensure_object_path_expanded(root_object_id, field_path);
+                }
+            }
+            StackCursor::OnCollectionEntry {
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                ..
+            } => {
+                if let Some(root_object_id) = self.root_object_id_for_var(frame_id, *var_idx) {
+                    let _ = self.ensure_object_path_expanded(root_object_id, field_path);
+                }
+                let _ = self.ensure_collection_entry_loaded(*collection_id, *entry_index);
+            }
+            StackCursor::OnCollectionEntryObjField {
+                var_idx,
+                field_path,
+                collection_id,
+                entry_index,
+                obj_field_path,
+                ..
+            } => {
+                let entry_cursor = StackCursor::OnCollectionEntry {
+                    frame_idx,
+                    var_idx: *var_idx,
+                    field_path: field_path.clone(),
+                    collection_id: *collection_id,
+                    entry_index: *entry_index,
+                };
+                self.ensure_cursor_materialized(frame_id, frame_idx, &entry_cursor);
+                if let Some(entry_object_id) =
+                    self.collection_entry_object_id(*collection_id, *entry_index)
+                {
+                    let _ = self.ensure_object_path_expanded(entry_object_id, obj_field_path);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn find_collection_entry_cursor(
+        &self,
+        frame_idx: usize,
+        collection_id: u64,
+        entry_index: usize,
+    ) -> Option<StackCursor> {
+        let stack_state = self.stack_state.as_ref()?;
+        stack_state.flat_items().into_iter().find(|cursor| {
+            matches!(
+                cursor,
+                StackCursor::OnCollectionEntry {
+                    frame_idx: fi,
+                    collection_id: cid,
+                    entry_index: ei,
+                    ..
+                } if *fi == frame_idx && *cid == collection_id && *ei == entry_index
+            )
+        })
+    }
+
+    fn find_collection_entry_obj_field_cursor(
+        &self,
+        frame_idx: usize,
+        collection_id: u64,
+        entry_index: usize,
+        obj_field_path: &[usize],
+    ) -> Option<StackCursor> {
+        let stack_state = self.stack_state.as_ref()?;
+        stack_state.flat_items().into_iter().find(|cursor| {
+            matches!(
+                cursor,
+                StackCursor::OnCollectionEntryObjField {
+                    frame_idx: fi,
+                    collection_id: cid,
+                    entry_index: ei,
+                    obj_field_path: path,
+                    ..
+                } if *fi == frame_idx
+                    && *cid == collection_id
+                    && *ei == entry_index
+                    && path.as_slice() == obj_field_path
+            )
+        })
+    }
+
     fn navigate_stack_cursor_to_pin_key(&mut self, pin_key: &PinKey) {
         let frame_id = match pin_key {
             PinKey::Frame { frame_id, .. }
@@ -234,55 +668,10 @@ impl<E: NavigationEngine> App<E> {
                 field_path,
                 ..
             } => {
-                let Some(mut current_object_id) =
-                    self.stack_state.as_ref().and_then(|stack_state| {
-                        stack_state
-                            .vars()
-                            .get(&frame_id)
-                            .and_then(|vars| vars.get(*var_idx))
-                            .and_then(|var| {
-                                if let VariableValue::ObjectRef { id, .. } = var.value {
-                                    Some(id)
-                                } else {
-                                    None
-                                }
-                            })
-                    })
-                else {
+                let Some(root_object_id) = self.root_object_id_for_var(frame_id, *var_idx) else {
                     return;
                 };
-
-                // Synchronous expansion: each depth level calls expand_object on the main
-                // thread. Acceptable for best-effort cursor positioning, but may be slow
-                // on very deep field paths with a large hprof. Known limitation; no timeout.
-                for (depth, field_idx) in field_path.iter().enumerate() {
-                    let is_expanded = self.stack_state.as_ref().is_some_and(|stack_state| {
-                        stack_state.expansion_state(current_object_id) == ExpansionPhase::Expanded
-                    });
-                    if !is_expanded && !self.expand_object_sync(current_object_id) {
-                        break;
-                    }
-
-                    if depth + 1 < field_path.len() {
-                        let next_object_id = self.stack_state.as_ref().and_then(|stack_state| {
-                            stack_state
-                                .object_fields()
-                                .get(&current_object_id)
-                                .and_then(|fields| fields.get(*field_idx))
-                                .and_then(|field| {
-                                    if let FieldValue::ObjectRef { id, .. } = field.value {
-                                        Some(id)
-                                    } else {
-                                        None
-                                    }
-                                })
-                        });
-                        let Some(next_object_id) = next_object_id else {
-                            break;
-                        };
-                        current_object_id = next_object_id;
-                    }
-                }
+                let _ = self.ensure_object_path_expanded(root_object_id, field_path);
 
                 let field_cursor = StackCursor::OnObjectField {
                     frame_idx,
@@ -309,8 +698,30 @@ impl<E: NavigationEngine> App<E> {
                 field_path,
                 collection_id,
                 entry_index,
+                collection_restore_cursor,
                 ..
             } => {
+                let remapped_restore_cursor = collection_restore_cursor
+                    .as_ref()
+                    .map(|cursor| Self::remap_cursor_frame(cursor, frame_idx));
+
+                if let Some(restore_cursor) = &remapped_restore_cursor {
+                    self.ensure_cursor_materialized(frame_id, frame_idx, restore_cursor);
+                    if let Some(stack_state) = &mut self.stack_state {
+                        stack_state
+                            .expansion
+                            .collection_restore_cursors
+                            .insert(*collection_id, restore_cursor.clone());
+                    }
+                }
+
+                if remapped_restore_cursor.is_none()
+                    && let Some(root_object_id) = self.root_object_id_for_var(frame_id, *var_idx)
+                {
+                    let _ = self.ensure_object_path_expanded(root_object_id, field_path);
+                }
+                let _ = self.ensure_collection_entry_loaded(*collection_id, *entry_index);
+
                 let entry_cursor = StackCursor::OnCollectionEntry {
                     frame_idx,
                     var_idx: *var_idx,
@@ -318,6 +729,8 @@ impl<E: NavigationEngine> App<E> {
                     collection_id: *collection_id,
                     entry_index: *entry_index,
                 };
+                let semantic_entry_cursor =
+                    self.find_collection_entry_cursor(frame_idx, *collection_id, *entry_index);
                 let parent_cursor = if field_path.is_empty() {
                     StackCursor::OnVar {
                         frame_idx,
@@ -338,6 +751,18 @@ impl<E: NavigationEngine> App<E> {
                 if let Some(stack_state) = &mut self.stack_state {
                     if stack_state.flat_items().contains(&entry_cursor) {
                         stack_state.set_cursor(entry_cursor);
+                    } else if let Some(candidate) = semantic_entry_cursor {
+                        stack_state.set_cursor(candidate);
+                    } else if let Some(candidate) = remapped_restore_cursor {
+                        if stack_state.flat_items().contains(&candidate) {
+                            stack_state.set_cursor(candidate);
+                        } else if stack_state.flat_items().contains(&parent_cursor) {
+                            stack_state.set_cursor(parent_cursor);
+                        } else if stack_state.flat_items().contains(&var_cursor) {
+                            stack_state.set_cursor(var_cursor);
+                        } else {
+                            stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
+                        }
                     } else if stack_state.flat_items().contains(&parent_cursor) {
                         stack_state.set_cursor(parent_cursor);
                     } else if stack_state.flat_items().contains(&var_cursor) {
@@ -353,8 +778,35 @@ impl<E: NavigationEngine> App<E> {
                 collection_id,
                 entry_index,
                 obj_field_path,
+                collection_restore_cursor,
                 ..
             } => {
+                let remapped_restore_cursor = collection_restore_cursor
+                    .as_ref()
+                    .map(|cursor| Self::remap_cursor_frame(cursor, frame_idx));
+
+                if let Some(restore_cursor) = &remapped_restore_cursor {
+                    self.ensure_cursor_materialized(frame_id, frame_idx, restore_cursor);
+                    if let Some(stack_state) = &mut self.stack_state {
+                        stack_state
+                            .expansion
+                            .collection_restore_cursors
+                            .insert(*collection_id, restore_cursor.clone());
+                    }
+                }
+
+                if remapped_restore_cursor.is_none()
+                    && let Some(root_object_id) = self.root_object_id_for_var(frame_id, *var_idx)
+                {
+                    let _ = self.ensure_object_path_expanded(root_object_id, field_path);
+                }
+                if self.ensure_collection_entry_loaded(*collection_id, *entry_index)
+                    && let Some(entry_object_id) =
+                        self.collection_entry_object_id(*collection_id, *entry_index)
+                {
+                    let _ = self.ensure_object_path_expanded(entry_object_id, obj_field_path);
+                }
+
                 let entry_field_cursor = StackCursor::OnCollectionEntryObjField {
                     frame_idx,
                     var_idx: *var_idx,
@@ -363,6 +815,12 @@ impl<E: NavigationEngine> App<E> {
                     entry_index: *entry_index,
                     obj_field_path: obj_field_path.clone(),
                 };
+                let semantic_entry_field_cursor = self.find_collection_entry_obj_field_cursor(
+                    frame_idx,
+                    *collection_id,
+                    *entry_index,
+                    obj_field_path,
+                );
                 let entry_cursor = StackCursor::OnCollectionEntry {
                     frame_idx,
                     var_idx: *var_idx,
@@ -370,6 +828,8 @@ impl<E: NavigationEngine> App<E> {
                     collection_id: *collection_id,
                     entry_index: *entry_index,
                 };
+                let semantic_entry_cursor =
+                    self.find_collection_entry_cursor(frame_idx, *collection_id, *entry_index);
                 let parent_cursor = if field_path.is_empty() {
                     StackCursor::OnVar {
                         frame_idx,
@@ -390,8 +850,22 @@ impl<E: NavigationEngine> App<E> {
                 if let Some(stack_state) = &mut self.stack_state {
                     if stack_state.flat_items().contains(&entry_field_cursor) {
                         stack_state.set_cursor(entry_field_cursor);
+                    } else if let Some(candidate) = semantic_entry_field_cursor {
+                        stack_state.set_cursor(candidate);
                     } else if stack_state.flat_items().contains(&entry_cursor) {
                         stack_state.set_cursor(entry_cursor);
+                    } else if let Some(candidate) = semantic_entry_cursor {
+                        stack_state.set_cursor(candidate);
+                    } else if let Some(candidate) = remapped_restore_cursor {
+                        if stack_state.flat_items().contains(&candidate) {
+                            stack_state.set_cursor(candidate);
+                        } else if stack_state.flat_items().contains(&parent_cursor) {
+                            stack_state.set_cursor(parent_cursor);
+                        } else if stack_state.flat_items().contains(&var_cursor) {
+                            stack_state.set_cursor(var_cursor);
+                        } else {
+                            stack_state.set_cursor(StackCursor::OnFrame(frame_idx));
+                        }
                     } else if stack_state.flat_items().contains(&parent_cursor) {
                         stack_state.set_cursor(parent_cursor);
                     } else if stack_state.flat_items().contains(&var_cursor) {
