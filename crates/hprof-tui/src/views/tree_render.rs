@@ -95,7 +95,7 @@ pub(crate) fn render_variable_tree(
                 append_collection_items(root_id, chunks, "  ", 0, &ctx, &mut items);
             } else {
                 let mut visited = HashSet::new();
-                append_object_children(root_id, "  ", 0, &ctx, &mut visited, &mut items);
+                append_fields_expanded(root_id, "  ", 0, &ctx, &mut visited, &mut items);
             }
         }
     }
@@ -158,107 +158,121 @@ fn spans_with_dimmed_object_id(text: String, base_style: Style) -> Vec<Span<'sta
     }
 }
 
+/// Formats a failed object label as `ShortClass — error message`.
+fn format_failed_label(class_name: &str, err: &str) -> String {
+    let short = if class_name.is_empty() {
+        "Object"
+    } else {
+        class_name.rsplit('.').next().unwrap_or(class_name)
+    };
+    format!("{short}{FAILED_LABEL_SEP}{err}")
+}
+
+/// Appends a single field row with toggle indicator and dimmed object ID.
+fn push_field_row(
+    items: &mut Vec<ListItem<'static>>,
+    indent: &str,
+    toggle: &str,
+    label: String,
+    row_style: Style,
+) {
+    let toggle_style = if toggle.trim().is_empty() {
+        row_style
+    } else {
+        THEME.expand_indicator
+    };
+    let mut row_spans = vec![
+        Span::raw(indent.to_string()),
+        Span::styled(toggle.to_string(), toggle_style),
+    ];
+    row_spans.extend(spans_with_dimmed_object_id(label, row_style));
+    items.push(ListItem::new(Line::from(row_spans)));
+}
+
 fn append_var(
     var: &VariableInfo,
     indent: &str,
     ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
 ) {
-    let (toggle, val_str, val_style): (&str, String, Style) = match &var.value {
-        VariableValue::Null => ("  ", "null".to_string(), Style::new()),
-        VariableValue::ObjectRef {
-            id,
-            class_name,
-            entry_count,
-            ..
-        } => {
-            let (phase, unavailable) = object_ref_state(*id, *entry_count, ctx);
-            if unavailable {
+    let VariableValue::ObjectRef {
+        id,
+        class_name,
+        entry_count,
+    } = &var.value
+    else {
+        push_field_row(
+            items,
+            indent,
+            "  ",
+            format!("[{}] null", var.index),
+            Style::new(),
+        );
+        return;
+    };
+
+    let (phase, unavailable) = object_ref_state(*id, *entry_count, ctx);
+
+    let (toggle, val_str, val_style): (&str, String, Style) = if unavailable {
+        let label = format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
+        ("? ", format!("local variable: {label}"), THEME.null_value)
+    } else {
+        match phase.clone().unwrap_or(ExpansionPhase::Collapsed) {
+            ExpansionPhase::Failed => {
+                let err = ctx
+                    .object_errors
+                    .get(id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("Failed to resolve object");
+                (
+                    "! ",
+                    format_failed_label(class_name, err),
+                    THEME.error_indicator,
+                )
+            }
+            ExpansionPhase::Collapsed => {
                 let label =
                     format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
-                ("? ", format!("local variable: {label}"), THEME.null_value)
-            } else {
-                match phase.unwrap_or(ExpansionPhase::Collapsed) {
-                    ExpansionPhase::Failed => {
-                        let short = if class_name.is_empty() {
-                            "Object"
-                        } else {
-                            class_name.rsplit('.').next().unwrap_or(class_name)
-                        };
-                        let err = ctx
-                            .object_errors
-                            .get(id)
-                            .map(|s| s.as_str())
-                            .unwrap_or("Failed to resolve object");
-                        let label = format!("{short}{FAILED_LABEL_SEP}{err}");
-                        ("! ", label, THEME.error_indicator)
-                    }
-                    ExpansionPhase::Collapsed => {
-                        let label = format_object_ref_collapsed(
-                            class_name,
-                            *entry_count,
-                            ctx.show_object_ids,
-                            *id,
-                        );
-                        ("+ ", format!("local variable: {label}"), Style::new())
-                    }
-                    ExpansionPhase::Expanded | ExpansionPhase::Loading => {
-                        let label = format_object_ref_collapsed(
-                            class_name,
-                            *entry_count,
-                            ctx.show_object_ids,
-                            *id,
-                        );
-                        ("- ", format!("local variable: {label}"), Style::new())
-                    }
-                }
+                ("+ ", format!("local variable: {label}"), Style::new())
+            }
+            ExpansionPhase::Expanded | ExpansionPhase::Loading => {
+                let label =
+                    format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
+                ("- ", format!("local variable: {label}"), Style::new())
             }
         }
     };
 
-    let toggle_style = if toggle.trim().is_empty() {
-        Style::new()
-    } else {
-        THEME.expand_indicator
-    };
-
-    let mut row_spans = vec![
-        Span::raw(indent.to_string()),
-        Span::styled(toggle.to_string(), toggle_style),
-    ];
-    row_spans.extend(spans_with_dimmed_object_id(
+    push_field_row(
+        items,
+        indent,
+        toggle,
         format!("[{}] {val_str}", var.index),
         val_style,
-    ));
-    items.push(ListItem::new(Line::from(row_spans)));
+    );
 
-    if let VariableValue::ObjectRef {
-        id, entry_count, ..
-    } = &var.value
-    {
-        let (phase, unavailable) = object_ref_state(*id, *entry_count, ctx);
-        if unavailable {
-            return;
-        }
-        if entry_count.is_some() {
-            if matches!(
-                phase,
-                Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
-            ) && let Some(cc) = ctx.collection_chunks.get(id)
-            {
-                append_collection_items(*id, cc, &format!("{indent}  "), 0, ctx, items);
-            }
-            return;
-        }
-        let mut visited = HashSet::new();
-        append_object_children(*id, &format!("{indent}  "), 0, ctx, &mut visited, items);
+    if unavailable {
+        return;
     }
+    if entry_count.is_some() {
+        if matches!(
+            phase,
+            Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
+        ) && let Some(cc) = ctx.collection_chunks.get(id)
+        {
+            append_collection_items(*id, cc, &format!("{indent}  "), 0, ctx, items);
+        }
+        return;
+    }
+    let mut visited = HashSet::new();
+    append_fields_expanded(*id, &format!("{indent}  "), 0, ctx, &mut visited, items);
 }
 
-/// Appends items for `object_id`'s children at the given `indent`.
+/// Appends items for `object_id`'s instance fields, static fields, and nested
+/// objects at the given `indent`.
 ///
 /// `depth` is used only for the recursion guard (max 16 levels).
-fn append_object_children(
+fn append_fields_expanded(
     object_id: u64,
     indent: &str,
     depth: usize,
@@ -337,12 +351,7 @@ fn append_object_children(
                             .get(id)
                             .map(|s| s.as_str())
                             .unwrap_or("Failed to resolve object");
-                        let short = if class_name.is_empty() {
-                            "Object"
-                        } else {
-                            class_name.rsplit('.').next().unwrap_or(class_name)
-                        };
-                        format!("{short}{FAILED_LABEL_SEP}{err}")
+                        format_failed_label(class_name, err)
                     } else {
                         format_field_value_display(
                             &field.value,
@@ -358,20 +367,13 @@ fn append_object_children(
                         (Some(ExpansionPhase::Collapsed), false) => "+ ",
                         (None, false) => "  ",
                     };
-                    let toggle_style = if toggle.trim().is_empty() {
-                        row_style
-                    } else {
-                        THEME.expand_indicator
-                    };
-                    let mut row_spans = vec![
-                        Span::raw(indent.to_string()),
-                        Span::styled(toggle.to_string(), toggle_style),
-                    ];
-                    row_spans.extend(spans_with_dimmed_object_id(
+                    push_field_row(
+                        items,
+                        indent,
+                        toggle,
                         format!("{}: {val}", field.name),
                         row_style,
-                    ));
-                    items.push(ListItem::new(Line::from(row_spans)));
+                    );
 
                     if !child_unavailable
                         && let FieldValue::ObjectRef {
@@ -397,7 +399,7 @@ fn append_object_children(
                         continue;
                     }
                     if !child_unavailable && let FieldValue::ObjectRef { id, .. } = field.value {
-                        append_object_children(
+                        append_fields_expanded(
                             id,
                             &format!("{indent}  "),
                             depth + 1,
@@ -408,7 +410,7 @@ fn append_object_children(
                     }
                 }
             }
-            append_static_items(object_id, indent, ctx, items);
+            append_static_items(object_id, indent, depth, ctx, items);
             visited.remove(&object_id);
         }
         ExpansionPhase::Failed => {
@@ -420,6 +422,7 @@ fn append_object_children(
 fn append_static_items(
     object_id: u64,
     indent: &str,
+    depth: usize,
     ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
 ) {
@@ -466,6 +469,10 @@ fn append_static_items(
         } else {
             None
         };
+        // Static fields have no `child_unavailable` branch: snapshot_mode's
+        // "unavailable" logic applies only to instance-field object refs where
+        // the snapshot may be partial. Static fields are fully present when the
+        // class is loaded, so the `?` toggle is never needed here.
         let row_style = if matches!(child_phase, Some(ExpansionPhase::Failed)) {
             THEME.error_indicator
         } else {
@@ -480,12 +487,7 @@ fn append_static_items(
                     .get(id)
                     .map(|s| s.as_str())
                     .unwrap_or("Failed to resolve object");
-                let short = if class_name.is_empty() {
-                    "Object"
-                } else {
-                    class_name.rsplit('.').next().unwrap_or(class_name)
-                };
-                format!("{short}{FAILED_LABEL_SEP}{err}")
+                format_failed_label(class_name, err)
             } else {
                 format_field_value_display(&field.value, child_phase.as_ref(), ctx.show_object_ids)
             };
@@ -495,20 +497,13 @@ fn append_static_items(
             Some(ExpansionPhase::Collapsed) => "+ ",
             None => "  ",
         };
-        let toggle_style = if toggle.trim().is_empty() {
-            row_style
-        } else {
-            THEME.expand_indicator
-        };
-        let mut row_spans = vec![
-            Span::raw(format!("{indent}  ")),
-            Span::styled(toggle.to_string(), toggle_style),
-        ];
-        row_spans.extend(spans_with_dimmed_object_id(
+        push_field_row(
+            items,
+            &format!("{indent}  "),
+            toggle,
             format!("{}: {val}", field.name),
             row_style,
-        ));
-        items.push(ListItem::new(Line::from(row_spans)));
+        );
 
         if let FieldValue::ObjectRef {
             id,
@@ -521,7 +516,7 @@ fn append_static_items(
                 child_phase,
                 Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
             ) {
-                append_collection_items(id, cc, &format!("{indent}    "), 0, ctx, items);
+                append_collection_items(id, cc, &format!("{indent}    "), depth, ctx, items);
             }
             continue;
         }
@@ -530,7 +525,7 @@ fn append_static_items(
             append_static_object_children(
                 id,
                 &format!("{indent}    "),
-                0,
+                depth,
                 ctx,
                 &mut visited,
                 items,
@@ -618,6 +613,8 @@ fn append_static_object_children(
                 } else {
                     None
                 };
+                // Static object children also omit `child_unavailable`: as with
+                // `append_static_items`, static context never produces partial snapshots.
                 let row_style = if matches!(child_phase, Some(ExpansionPhase::Failed)) {
                     THEME.error_indicator
                 } else {
@@ -633,12 +630,7 @@ fn append_static_object_children(
                         .get(id)
                         .map(|s| s.as_str())
                         .unwrap_or("Failed to resolve object");
-                    let short = if class_name.is_empty() {
-                        "Object"
-                    } else {
-                        class_name.rsplit('.').next().unwrap_or(class_name)
-                    };
-                    format!("{short}{FAILED_LABEL_SEP}{err}")
+                    format_failed_label(class_name, err)
                 } else {
                     format_field_value_display(
                         &field.value,
@@ -652,20 +644,13 @@ fn append_static_object_children(
                     Some(ExpansionPhase::Collapsed) => "+ ",
                     None => "  ",
                 };
-                let toggle_style = if toggle.trim().is_empty() {
-                    row_style
-                } else {
-                    THEME.expand_indicator
-                };
-                let mut row_spans = vec![
-                    Span::raw(indent.to_string()),
-                    Span::styled(toggle.to_string(), toggle_style),
-                ];
-                row_spans.extend(spans_with_dimmed_object_id(
+                push_field_row(
+                    items,
+                    indent,
+                    toggle,
                     format!("{}: {val}", field.name),
                     row_style,
-                ));
-                items.push(ListItem::new(Line::from(row_spans)));
+                );
 
                 if let FieldValue::ObjectRef {
                     id,
@@ -678,14 +663,7 @@ fn append_static_object_children(
                         child_phase,
                         Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
                     ) {
-                        append_collection_items(
-                            id,
-                            cc,
-                            &format!("{indent}  "),
-                            depth,
-                            ctx,
-                            items,
-                        );
+                        append_collection_items(id, cc, &format!("{indent}  "), depth, ctx, items);
                     }
                     continue;
                 }
@@ -815,22 +793,12 @@ fn append_collection_entry_item(
             .get(id)
             .map(|s| s.as_str())
             .unwrap_or("Failed to resolve object");
-        let short = if class_name.is_empty() {
-            "Object"
-        } else {
-            class_name.rsplit('.').next().unwrap_or(class_name)
-        };
+        let failed = format_failed_label(class_name, err);
         if let Some(key) = &entry.key {
             let k = super::stack_view::format_entry_value_text(key, false);
-            format!(
-                "{indent}! [{}] {} => {}{FAILED_LABEL_SEP}{err}",
-                entry.index, k, short
-            )
+            format!("{indent}! [{}] {} => {failed}", entry.index, k)
         } else {
-            format!(
-                "{indent}! [{}] {}{FAILED_LABEL_SEP}{err}",
-                entry.index, short
-            )
+            format!("{indent}! [{}] {failed}", entry.index)
         }
     } else if value_unavailable {
         let val = format_entry_value_text(&entry.value, ctx.show_object_ids);
@@ -880,170 +848,7 @@ fn append_collection_entry_item(
 
     if !value_unavailable && let FieldValue::ObjectRef { id, .. } = &entry.value {
         let mut visited = HashSet::new();
-        append_collection_entry_obj(
-            *id,
-            &format!("{indent}  "),
-            depth,
-            ctx,
-            &mut visited,
-            items,
-        );
-    }
-}
-
-/// Appends items for an object expanded from a collection entry value.
-///
-/// `depth` used for the recursion guard (max 16 levels).
-fn append_collection_entry_obj(
-    obj_id: u64,
-    indent: &str,
-    depth: usize,
-    ctx: &RenderCtx<'_>,
-    visited: &mut HashSet<u64>,
-    items: &mut Vec<ListItem<'static>>,
-) {
-    if depth >= 16 {
-        return;
-    }
-    match get_phase(obj_id, ctx.object_phases) {
-        ExpansionPhase::Collapsed => {}
-        ExpansionPhase::Loading => {
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("{indent}~ Loading..."),
-                THEME.loading_indicator,
-            ))));
-        }
-        ExpansionPhase::Expanded => {
-            let field_list = ctx
-                .object_fields
-                .get(&obj_id)
-                .map(|f| f.as_slice())
-                .unwrap_or(&[]);
-            if field_list.is_empty() {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("{indent}(no fields)"),
-                    THEME.null_value,
-                ))));
-            } else {
-                visited.insert(obj_id);
-                for field in field_list {
-                    if let FieldValue::ObjectRef { id, class_name, .. } = &field.value
-                        && visited.contains(id)
-                    {
-                        let label = if *id == obj_id { "self-ref" } else { "cyclic" };
-                        let short = class_name.rsplit('.').next().unwrap_or(class_name);
-                        let text = format!(
-                            "{indent}  {}: \u{21BB} {} @ 0x{:X} [{label}]",
-                            field.name, short, id
-                        );
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            text,
-                            THEME.cyclic_ref,
-                        ))));
-                        continue;
-                    }
-                    let (child_phase, child_unavailable) =
-                        if let FieldValue::ObjectRef {
-                            id, entry_count, ..
-                        } = &field.value
-                        {
-                            object_ref_state(*id, *entry_count, ctx)
-                        } else {
-                            (None, false)
-                        };
-                    let row_style = if child_unavailable {
-                        THEME.null_value
-                    } else if matches!(child_phase, Some(ExpansionPhase::Failed)) {
-                        THEME.error_indicator
-                    } else {
-                        field_value_style(&field.value)
-                    };
-                    let val = if let (
-                        FieldValue::ObjectRef { id, class_name, .. },
-                        Some(ExpansionPhase::Failed),
-                    ) = (&field.value, &child_phase)
-                    {
-                        let err = ctx
-                            .object_errors
-                            .get(id)
-                            .map(|s| s.as_str())
-                            .unwrap_or("Failed to resolve object");
-                        let short = if class_name.is_empty() {
-                            "Object"
-                        } else {
-                            class_name.rsplit('.').next().unwrap_or(class_name)
-                        };
-                        format!("{short}{FAILED_LABEL_SEP}{err}")
-                    } else {
-                        format_field_value_display(
-                            &field.value,
-                            child_phase.as_ref(),
-                            ctx.show_object_ids,
-                        )
-                    };
-                    let toggle = match (&child_phase, child_unavailable) {
-                        (_, true) => "? ",
-                        (Some(ExpansionPhase::Expanded), false)
-                        | (Some(ExpansionPhase::Loading), false) => "- ",
-                        (Some(ExpansionPhase::Failed), false) => "! ",
-                        (Some(ExpansionPhase::Collapsed), false) => "+ ",
-                        (None, false) => "  ",
-                    };
-                    let toggle_style = if toggle.trim().is_empty() {
-                        row_style
-                    } else {
-                        THEME.expand_indicator
-                    };
-                    let mut row_spans = vec![
-                        Span::raw(indent.to_string()),
-                        Span::styled(toggle.to_string(), toggle_style),
-                    ];
-                    row_spans.extend(spans_with_dimmed_object_id(
-                        format!("{}: {val}", field.name),
-                        row_style,
-                    ));
-                    items.push(ListItem::new(Line::from(row_spans)));
-                    if !child_unavailable
-                        && let FieldValue::ObjectRef {
-                            id,
-                            entry_count: Some(_),
-                            ..
-                        } = field.value
-                        && let Some(cc) = ctx.collection_chunks.get(&id)
-                    {
-                        if matches!(
-                            child_phase,
-                            Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
-                        ) {
-                            append_collection_items(
-                                id,
-                                cc,
-                                &format!("{indent}  "),
-                                depth + 1,
-                                ctx,
-                                items,
-                            );
-                        }
-                        continue;
-                    }
-                    if !child_unavailable && let FieldValue::ObjectRef { id, .. } = field.value {
-                        append_collection_entry_obj(
-                            id,
-                            &format!("{indent}  "),
-                            depth + 1,
-                            ctx,
-                            visited,
-                            items,
-                        );
-                    }
-                }
-                visited.remove(&obj_id);
-            }
-            append_static_items(obj_id, indent, ctx, items);
-        }
-        ExpansionPhase::Failed => {
-            // Error state is styled on the parent node — no child row emitted here.
-        }
+        append_fields_expanded(*id, &format!("{indent}  "), depth, ctx, &mut visited, items);
     }
 }
 
