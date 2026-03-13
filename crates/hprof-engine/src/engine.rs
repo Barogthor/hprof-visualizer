@@ -396,316 +396,347 @@ mod tests {
         }
     }
 
-    #[test]
-    fn field_value_variants_exist() {
-        let _null = FieldValue::Null;
-        let _obj = FieldValue::ObjectRef {
-            id: 42,
-            class_name: "Object".to_string(),
-            entry_count: None,
-            inline_value: None,
-        };
-        let _b = FieldValue::Bool(true);
-        let _c = FieldValue::Char('A');
-        let _f = FieldValue::Float(1.0);
-        let _d = FieldValue::Double(2.0);
-        let _byte = FieldValue::Byte(-1);
-        let _short = FieldValue::Short(100);
-        let _int = FieldValue::Int(42);
-        let _long = FieldValue::Long(i64::MAX);
-        assert_eq!(_null, FieldValue::Null);
-    }
+    mod enum_variants {
+        //! Smoke-tests verifying that enum variants can be constructed and are distinct.
+        use super::*;
 
-    #[test]
-    fn field_info_has_name_and_value() {
-        let f = FieldInfo {
-            name: "count".to_string(),
-            value: FieldValue::Int(42),
-        };
-        assert_eq!(f.name, "count");
-        assert_eq!(f.value, FieldValue::Int(42));
-    }
-
-    #[test]
-    fn navigation_engine_trait_compiles_with_all_methods() {
-        let engine = DummyEngine;
-        assert!(engine.warnings().is_empty());
-        assert!(engine.list_threads().is_empty());
-        assert!(engine.select_thread(0).is_none());
-        assert_eq!(engine.get_stack_frames(0).len(), 1);
-        assert_eq!(engine.get_local_variables(0).len(), 1);
-        assert!(engine.expand_object(0).unwrap().is_empty());
-        assert!(engine.class_of_object(0).is_none());
-        assert!(engine.get_static_fields(0).is_empty());
-        assert!(engine.get_page(0, 0, 10).is_none());
-    }
-
-    #[test]
-    fn indexing_ratio_100_for_complete_file() {
-        assert_eq!(DummyEngine.indexing_ratio(), 100.0);
-    }
-
-    #[test]
-    fn is_fully_indexed_true_for_complete_file() {
-        assert!(DummyEngine.is_fully_indexed());
-    }
-
-    #[test]
-    fn skeleton_bytes_zero_for_dummy() {
-        assert_eq!(DummyEngine.skeleton_bytes(), 0);
-    }
-
-    #[test]
-    fn frame_info_has_required_fields() {
-        let f = FrameInfo {
-            frame_id: 10,
-            method_name: "run".to_string(),
-            class_name: "Thread".to_string(),
-            source_file: "Thread.java".to_string(),
-            line: LineNumber::Line(100),
-            has_variables: true,
-        };
-        assert_eq!(f.frame_id, 10);
-        assert_eq!(f.method_name, "run");
-        assert_eq!(f.class_name, "Thread");
-        assert_eq!(f.source_file, "Thread.java");
-        assert_eq!(f.line, LineNumber::Line(100));
-    }
-
-    #[test]
-    fn variable_info_has_index_and_value() {
-        let v = VariableInfo {
-            index: 2,
-            value: VariableValue::ObjectRef {
-                id: 0xDEAD,
+        #[test]
+        fn field_value_variants_exist() {
+            let _null = FieldValue::Null;
+            let _obj = FieldValue::ObjectRef {
+                id: 42,
                 class_name: "Object".to_string(),
                 entry_count: None,
-            },
-        };
-        assert_eq!(v.index, 2);
-        assert_eq!(
-            v.value,
-            VariableValue::ObjectRef {
-                id: 0xDEAD,
-                class_name: "Object".to_string(),
-                entry_count: None,
-            }
-        );
-    }
+                inline_value: None,
+            };
+            let _b = FieldValue::Bool(true);
+            let _c = FieldValue::Char('A');
+            let _f = FieldValue::Float(1.0);
+            let _d = FieldValue::Double(2.0);
+            let _byte = FieldValue::Byte(-1);
+            let _short = FieldValue::Short(100);
+            let _int = FieldValue::Int(42);
+            let _long = FieldValue::Long(i64::MAX);
+            assert_eq!(_null, FieldValue::Null);
+        }
 
-    #[test]
-    fn variable_value_null_and_object_ref_variants_exist() {
-        assert_eq!(VariableValue::Null, VariableValue::Null);
-        let oref = VariableValue::ObjectRef {
-            id: 1,
-            class_name: "Object".to_string(),
-            entry_count: None,
-        };
-        assert_eq!(
-            oref,
-            VariableValue::ObjectRef {
+        #[test]
+        fn variable_value_null_and_object_ref_variants_exist() {
+            assert_eq!(VariableValue::Null, VariableValue::Null);
+            let oref = VariableValue::ObjectRef {
                 id: 1,
                 class_name: "Object".to_string(),
                 entry_count: None,
-            }
-        );
-        assert_ne!(
-            VariableValue::Null,
-            VariableValue::ObjectRef {
-                id: 0,
+            };
+            assert_eq!(
+                oref,
+                VariableValue::ObjectRef {
+                    id: 1,
+                    class_name: "Object".to_string(),
+                    entry_count: None,
+                }
+            );
+            assert_ne!(
+                VariableValue::Null,
+                VariableValue::ObjectRef {
+                    id: 0,
+                    class_name: "Object".to_string(),
+                    entry_count: None,
+                }
+            );
+        }
+
+        #[test]
+        fn thread_state_variants_are_distinct() {
+            assert_ne!(ThreadState::Unknown, ThreadState::Runnable);
+            assert_ne!(ThreadState::Runnable, ThreadState::Waiting);
+            assert_ne!(ThreadState::Waiting, ThreadState::Blocked);
+        }
+    }
+
+    mod struct_construction {
+        //! Verifies the presence and types of fields on domain structs.
+        use super::*;
+
+        #[test]
+        fn field_info_has_name_and_value() {
+            let f = FieldInfo {
+                name: "count".to_string(),
+                value: FieldValue::Int(42),
+            };
+            assert_eq!(f.name, "count");
+            assert_eq!(f.value, FieldValue::Int(42));
+        }
+
+        #[test]
+        fn frame_info_has_required_fields() {
+            let f = FrameInfo {
+                frame_id: 10,
+                method_name: "run".to_string(),
+                class_name: "Thread".to_string(),
+                source_file: "Thread.java".to_string(),
+                line: LineNumber::Line(100),
+                has_variables: true,
+            };
+            assert_eq!(f.frame_id, 10);
+            assert_eq!(f.method_name, "run");
+            assert_eq!(f.class_name, "Thread");
+            assert_eq!(f.source_file, "Thread.java");
+            assert_eq!(f.line, LineNumber::Line(100));
+        }
+
+        #[test]
+        fn variable_info_has_index_and_value() {
+            let v = VariableInfo {
+                index: 2,
+                value: VariableValue::ObjectRef {
+                    id: 0xDEAD,
+                    class_name: "Object".to_string(),
+                    entry_count: None,
+                },
+            };
+            assert_eq!(v.index, 2);
+            assert_eq!(
+                v.value,
+                VariableValue::ObjectRef {
+                    id: 0xDEAD,
+                    class_name: "Object".to_string(),
+                    entry_count: None,
+                }
+            );
+        }
+
+        #[test]
+        fn thread_info_has_state_field_of_type_thread_state() {
+            let info = ThreadInfo {
+                thread_serial: 1,
+                name: "main".to_string(),
+                state: ThreadState::Unknown,
+            };
+            assert_eq!(info.state, ThreadState::Unknown);
+        }
+    }
+
+    mod navigation_engine_trait {
+        //! Validates that the `NavigationEngine` trait compiles and that `DummyEngine`
+        //! covers all methods with coherent values.
+        use super::*;
+
+        #[test]
+        fn navigation_engine_trait_compiles_with_all_methods() {
+            let engine = DummyEngine;
+            assert!(engine.warnings().is_empty());
+            assert!(engine.list_threads().is_empty());
+            assert!(engine.select_thread(0).is_none());
+            assert_eq!(engine.get_stack_frames(0).len(), 1);
+            assert_eq!(engine.get_local_variables(0).len(), 1);
+            assert!(engine.expand_object(0).unwrap().is_empty());
+            assert!(engine.class_of_object(0).is_none());
+            assert!(engine.get_static_fields(0).is_empty());
+            assert!(engine.get_page(0, 0, 10).is_none());
+        }
+
+        #[test]
+        fn indexing_ratio_100_for_complete_file() {
+            assert_eq!(DummyEngine.indexing_ratio(), 100.0);
+        }
+
+        #[test]
+        fn is_fully_indexed_true_for_complete_file() {
+            assert!(DummyEngine.is_fully_indexed());
+        }
+
+        #[test]
+        fn skeleton_bytes_zero_for_dummy() {
+            assert_eq!(DummyEngine.skeleton_bytes(), 0);
+        }
+    }
+
+    mod line_number {
+        //! Covers all conversion cases of `LineNumber::from_raw()`: positive, zero,
+        //! -1, -2, and values below -2.
+        use super::*;
+
+        #[test]
+        fn line_number_from_raw_positive_gives_line() {
+            assert_eq!(LineNumber::from_raw(42), LineNumber::Line(42));
+        }
+
+        #[test]
+        fn line_number_from_raw_zero_gives_no_info() {
+            assert_eq!(LineNumber::from_raw(0), LineNumber::NoInfo);
+        }
+
+        #[test]
+        fn line_number_from_raw_minus_one_gives_unknown() {
+            assert_eq!(LineNumber::from_raw(-1), LineNumber::Unknown);
+        }
+
+        #[test]
+        fn line_number_from_raw_minus_two_gives_compiled() {
+            assert_eq!(LineNumber::from_raw(-2), LineNumber::Compiled);
+        }
+
+        #[test]
+        fn line_number_from_raw_less_than_minus_two_gives_native() {
+            assert_eq!(LineNumber::from_raw(-3), LineNumber::Native);
+            assert_eq!(LineNumber::from_raw(-100), LineNumber::Native);
+        }
+    }
+
+    mod memory_size {
+        //! Validates the `MemorySize` trait implementation for all domain types:
+        //! `ThreadInfo`, `FrameInfo`, `FieldValue`, `FieldInfo`, `VariableValue`,
+        //! `VariableInfo`, `EntryInfo`, `CollectionPage`.
+        use super::*;
+
+        #[test]
+        fn thread_info_memory_size_includes_name() {
+            let info = ThreadInfo {
+                thread_serial: 1,
+                name: String::from("main-thread"),
+                state: ThreadState::Runnable,
+            };
+            let expected = std::mem::size_of::<ThreadInfo>() + info.name.capacity();
+            assert_eq!(info.memory_size(), expected);
+        }
+
+        #[test]
+        fn frame_info_memory_size_includes_strings() {
+            let f = FrameInfo {
+                frame_id: 1,
+                method_name: "run".to_string(),
+                class_name: "Thread".to_string(),
+                source_file: "Thread.java".to_string(),
+                line: LineNumber::Line(42),
+                has_variables: false,
+            };
+            let expected = std::mem::size_of::<FrameInfo>()
+                + f.method_name.capacity()
+                + f.class_name.capacity()
+                + f.source_file.capacity();
+            assert_eq!(f.memory_size(), expected);
+        }
+
+        #[test]
+        fn field_value_null_returns_static_size() {
+            let v = FieldValue::Null;
+            assert_eq!(v.memory_size(), std::mem::size_of::<FieldValue>());
+        }
+
+        #[test]
+        fn field_value_object_ref_includes_strings() {
+            let v = FieldValue::ObjectRef {
+                id: 42,
+                class_name: "java.lang.String".to_string(),
+                entry_count: None,
+                inline_value: Some("hello".to_string()),
+            };
+            let expected =
+                std::mem::size_of::<FieldValue>() + "java.lang.String".len() + "hello".len();
+            assert!(v.memory_size() >= expected);
+        }
+
+        #[test]
+        fn field_info_memory_size_includes_name_and_value() {
+            let f = FieldInfo {
+                name: "count".to_string(),
+                value: FieldValue::Int(42),
+            };
+            let expected = std::mem::size_of::<FieldInfo>() + f.name.capacity();
+            assert_eq!(f.memory_size(), expected);
+        }
+
+        #[test]
+        fn variable_value_null_returns_static_size() {
+            let v = VariableValue::Null;
+            assert_eq!(v.memory_size(), std::mem::size_of::<VariableValue>());
+        }
+
+        #[test]
+        fn variable_value_obj_ref_includes_class_name() {
+            let v = VariableValue::ObjectRef {
+                id: 1,
                 class_name: "Object".to_string(),
                 entry_count: None,
-            }
-        );
-    }
+            };
+            let expected = std::mem::size_of::<VariableValue>() + "Object".len();
+            assert!(v.memory_size() >= expected);
+        }
 
-    #[test]
-    fn line_number_from_raw_positive_gives_line() {
-        assert_eq!(LineNumber::from_raw(42), LineNumber::Line(42));
-    }
+        #[test]
+        fn variable_info_memory_size() {
+            let v = VariableInfo {
+                index: 0,
+                value: VariableValue::Null,
+            };
+            assert_eq!(v.memory_size(), std::mem::size_of::<VariableInfo>());
+        }
 
-    #[test]
-    fn line_number_from_raw_zero_gives_no_info() {
-        assert_eq!(LineNumber::from_raw(0), LineNumber::NoInfo);
-    }
-
-    #[test]
-    fn line_number_from_raw_minus_one_gives_unknown() {
-        assert_eq!(LineNumber::from_raw(-1), LineNumber::Unknown);
-    }
-
-    #[test]
-    fn line_number_from_raw_minus_two_gives_compiled() {
-        assert_eq!(LineNumber::from_raw(-2), LineNumber::Compiled);
-    }
-
-    #[test]
-    fn line_number_from_raw_less_than_minus_two_gives_native() {
-        assert_eq!(LineNumber::from_raw(-3), LineNumber::Native);
-        assert_eq!(LineNumber::from_raw(-100), LineNumber::Native);
-    }
-
-    #[test]
-    fn thread_info_has_state_field_of_type_thread_state() {
-        let info = ThreadInfo {
-            thread_serial: 1,
-            name: "main".to_string(),
-            state: ThreadState::Unknown,
-        };
-        assert_eq!(info.state, ThreadState::Unknown);
-    }
-
-    #[test]
-    fn thread_state_variants_are_distinct() {
-        assert_ne!(ThreadState::Unknown, ThreadState::Runnable);
-        assert_ne!(ThreadState::Runnable, ThreadState::Waiting);
-        assert_ne!(ThreadState::Waiting, ThreadState::Blocked);
-    }
-
-    #[test]
-    fn thread_info_memory_size_includes_name() {
-        let info = ThreadInfo {
-            thread_serial: 1,
-            name: String::from("main-thread"),
-            state: ThreadState::Runnable,
-        };
-        let expected = std::mem::size_of::<ThreadInfo>() + info.name.capacity();
-        assert_eq!(info.memory_size(), expected);
-    }
-
-    #[test]
-    fn frame_info_memory_size_includes_strings() {
-        let f = FrameInfo {
-            frame_id: 1,
-            method_name: "run".to_string(),
-            class_name: "Thread".to_string(),
-            source_file: "Thread.java".to_string(),
-            line: LineNumber::Line(42),
-            has_variables: false,
-        };
-        let expected = std::mem::size_of::<FrameInfo>()
-            + f.method_name.capacity()
-            + f.class_name.capacity()
-            + f.source_file.capacity();
-        assert_eq!(f.memory_size(), expected);
-    }
-
-    #[test]
-    fn field_value_null_returns_static_size() {
-        let v = FieldValue::Null;
-        assert_eq!(v.memory_size(), std::mem::size_of::<FieldValue>());
-    }
-
-    #[test]
-    fn field_value_object_ref_includes_strings() {
-        let v = FieldValue::ObjectRef {
-            id: 42,
-            class_name: "java.lang.String".to_string(),
-            entry_count: None,
-            inline_value: Some("hello".to_string()),
-        };
-        let expected = std::mem::size_of::<FieldValue>() + "java.lang.String".len() + "hello".len();
-        assert!(v.memory_size() >= expected);
-    }
-
-    #[test]
-    fn field_info_memory_size_includes_name_and_value() {
-        let f = FieldInfo {
-            name: "count".to_string(),
-            value: FieldValue::Int(42),
-        };
-        let expected = std::mem::size_of::<FieldInfo>() + f.name.capacity();
-        assert_eq!(f.memory_size(), expected);
-    }
-
-    #[test]
-    fn variable_value_null_returns_static_size() {
-        let v = VariableValue::Null;
-        assert_eq!(v.memory_size(), std::mem::size_of::<VariableValue>());
-    }
-
-    #[test]
-    fn variable_value_obj_ref_includes_class_name() {
-        let v = VariableValue::ObjectRef {
-            id: 1,
-            class_name: "Object".to_string(),
-            entry_count: None,
-        };
-        let expected = std::mem::size_of::<VariableValue>() + "Object".len();
-        assert!(v.memory_size() >= expected);
-    }
-
-    #[test]
-    fn variable_info_memory_size() {
-        let v = VariableInfo {
-            index: 0,
-            value: VariableValue::Null,
-        };
-        assert_eq!(v.memory_size(), std::mem::size_of::<VariableInfo>());
-    }
-
-    #[test]
-    fn entry_info_memory_size() {
-        let e = EntryInfo {
-            index: 0,
-            key: None,
-            value: FieldValue::Int(1),
-        };
-        assert_eq!(e.memory_size(), std::mem::size_of::<EntryInfo>());
-    }
-
-    #[test]
-    fn entry_info_memory_size_object_ref_value_includes_heap() {
-        let class_name = "java.lang.String".to_string();
-        let e = EntryInfo {
-            index: 0,
-            key: None,
-            value: FieldValue::ObjectRef {
-                id: 1,
-                class_name: class_name.clone(),
-                entry_count: None,
-                inline_value: None,
-            },
-        };
-        let expected = std::mem::size_of::<EntryInfo>() + class_name.capacity();
-        assert_eq!(e.memory_size(), expected);
-    }
-
-    #[test]
-    fn entry_info_memory_size_key_and_value_object_refs() {
-        let key_name = "key_class".to_string();
-        let val_name = "val_class".to_string();
-        let e = EntryInfo {
-            index: 0,
-            key: Some(FieldValue::ObjectRef {
-                id: 1,
-                class_name: key_name.clone(),
-                entry_count: None,
-                inline_value: None,
-            }),
-            value: FieldValue::ObjectRef {
-                id: 2,
-                class_name: val_name.clone(),
-                entry_count: None,
-                inline_value: None,
-            },
-        };
-        let expected = std::mem::size_of::<EntryInfo>() + key_name.capacity() + val_name.capacity();
-        assert_eq!(e.memory_size(), expected);
-    }
-
-    #[test]
-    fn collection_page_memory_size_includes_entries() {
-        let page = CollectionPage {
-            entries: vec![EntryInfo {
+        #[test]
+        fn entry_info_memory_size() {
+            let e = EntryInfo {
                 index: 0,
                 key: None,
                 value: FieldValue::Int(1),
-            }],
-            total_count: 1,
-            offset: 0,
-            has_more: false,
-        };
-        assert!(page.memory_size() > std::mem::size_of::<CollectionPage>());
+            };
+            assert_eq!(e.memory_size(), std::mem::size_of::<EntryInfo>());
+        }
+
+        #[test]
+        fn entry_info_memory_size_object_ref_value_includes_heap() {
+            let class_name = "java.lang.String".to_string();
+            let e = EntryInfo {
+                index: 0,
+                key: None,
+                value: FieldValue::ObjectRef {
+                    id: 1,
+                    class_name: class_name.clone(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            };
+            let expected = std::mem::size_of::<EntryInfo>() + class_name.capacity();
+            assert_eq!(e.memory_size(), expected);
+        }
+
+        #[test]
+        fn entry_info_memory_size_key_and_value_object_refs() {
+            let key_name = "key_class".to_string();
+            let val_name = "val_class".to_string();
+            let e = EntryInfo {
+                index: 0,
+                key: Some(FieldValue::ObjectRef {
+                    id: 1,
+                    class_name: key_name.clone(),
+                    entry_count: None,
+                    inline_value: None,
+                }),
+                value: FieldValue::ObjectRef {
+                    id: 2,
+                    class_name: val_name.clone(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            };
+            let expected =
+                std::mem::size_of::<EntryInfo>() + key_name.capacity() + val_name.capacity();
+            assert_eq!(e.memory_size(), expected);
+        }
+
+        #[test]
+        fn collection_page_memory_size_includes_entries() {
+            let page = CollectionPage {
+                entries: vec![EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::Int(1),
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            };
+            assert!(page.memory_size() > std::mem::size_of::<CollectionPage>());
+        }
     }
 }
