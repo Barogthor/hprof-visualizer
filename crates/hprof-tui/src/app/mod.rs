@@ -79,6 +79,9 @@ pub enum AppAction {
 }
 
 /// Outcome of a [`App::navigate_to_path`] walk.
+///
+/// Variant payloads are not yet consumed — callers currently
+/// discard the result. Retained for planned retry logic.
 #[derive(Debug)]
 #[allow(dead_code)]
 enum WalkOutcome {

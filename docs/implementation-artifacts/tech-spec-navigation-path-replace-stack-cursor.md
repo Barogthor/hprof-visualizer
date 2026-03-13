@@ -2,7 +2,7 @@
 title: 'NavigationPath: Replace StackCursor with Composable Path Model'
 slug: 'navigation-path-replace-stack-cursor'
 created: '2026-03-13'
-status: 'pending-review'
+status: 'done'
 stepsCompleted: [1, 2, 3, 4, 5]
 implementedCommit: 'abdc293'
 implementedDate: '2026-03-13'
