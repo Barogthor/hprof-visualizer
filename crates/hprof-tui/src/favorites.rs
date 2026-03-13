@@ -70,6 +70,21 @@ pub enum PinnedSnapshot {
     Primitive { value_label: String },
 }
 
+/// Identifies a renderable row that can be hidden within a pinned snapshot.
+///
+/// Only instance fields and Frame local variables are in scope.
+/// Static fields are excluded for simplicity.
+///
+/// Used as key in [`PinnedItem::hidden_fields`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HideKey {
+    /// A local variable row in a `Frame` snapshot: index in the `variables` vec.
+    Var(usize),
+    /// An instance field of an expanded object:
+    /// (`parent_id`, `field_idx` in that object's `FieldInfo` vec).
+    Field { parent_id: u64, field_idx: usize },
+}
+
 /// A single pinned item shown in the favorites panel.
 pub struct PinnedItem {
     /// Name of the thread that owns this pin.
@@ -84,6 +99,9 @@ pub struct PinnedItem {
     ///
     /// Default is empty: all captured nodes are expanded in the favorites view.
     pub local_collapsed: HashSet<u64>,
+    /// Field/variable rows hidden by the user (`h` key). Hidden rows are
+    /// replaced by a `▪ [hidden: …]` placeholder.
+    pub hidden_fields: HashSet<HideKey>,
     /// Structural key used for toggle detection and de-duplication.
     pub key: PinKey,
 }
@@ -522,6 +540,7 @@ impl<'a> PinnedItemFactory<'a> {
             item_label,
             snapshot,
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: PinKey {
                 thread_id: self.thread_id,
                 thread_name: self.thread_name.to_string(),
@@ -662,6 +681,89 @@ mod tests {
 
     use super::*;
     use crate::views::stack_view::{FieldIdx, FrameId, NavigationPathBuilder, StackState, VarIdx};
+
+    // ── Task 6.1–6.5: HideKey and hidden_fields ─────────────────────────────
+
+    #[test]
+    fn hide_key_var_and_field_are_distinct() {
+        let var = HideKey::Var(0);
+        let field = HideKey::Field {
+            parent_id: 0,
+            field_idx: 0,
+        };
+        assert_ne!(var, field);
+        let mut set = HashSet::new();
+        set.insert(var);
+        set.insert(field);
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_from_cursor_initializes_hidden_fields_empty() {
+        let state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::Null,
+            }],
+        );
+        let cursor = make_cursor_at(1);
+        let item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
+        assert!(item.hidden_fields.is_empty());
+    }
+
+    #[test]
+    fn pinned_item_hidden_fields_toggle_hides_and_restores() {
+        let state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::Null,
+            }],
+        );
+        let cursor = make_cursor_at(1);
+        let mut item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
+        item.hidden_fields.insert(HideKey::Var(0));
+        assert!(item.hidden_fields.contains(&HideKey::Var(0)));
+        item.hidden_fields.remove(&HideKey::Var(0));
+        assert!(!item.hidden_fields.contains(&HideKey::Var(0)));
+    }
+
+    #[test]
+    fn pinned_item_hidden_fields_reset_clears_multiple() {
+        let state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::Null,
+            }],
+        );
+        let cursor = make_cursor_at(1);
+        let mut item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
+        item.hidden_fields.insert(HideKey::Var(0));
+        item.hidden_fields.insert(HideKey::Field {
+            parent_id: 1,
+            field_idx: 0,
+        });
+        item.hidden_fields.clear();
+        assert!(item.hidden_fields.is_empty());
+    }
+
+    #[test]
+    fn pinned_item_hidden_fields_reset_noop_when_empty() {
+        let state = make_state_with_frame(
+            1,
+            vec![VariableInfo {
+                index: 0,
+                value: VariableValue::Null,
+            }],
+        );
+        let cursor = make_cursor_at(1);
+        let mut item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
+        assert!(item.hidden_fields.is_empty());
+        item.hidden_fields.clear(); // no-op
+        assert!(item.hidden_fields.is_empty());
+    }
 
     fn make_frame(frame_id: u64) -> FrameInfo {
         FrameInfo {

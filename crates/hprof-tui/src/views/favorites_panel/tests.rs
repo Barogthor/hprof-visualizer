@@ -42,6 +42,7 @@ fn make_frame_item() -> PinnedItem {
             truncated: false,
         },
         local_collapsed: HashSet::new(),
+        hidden_fields: HashSet::new(),
         key: PinKey {
             thread_id: ThreadId(1),
             thread_name: "main".to_string(),
@@ -59,6 +60,7 @@ fn make_primitive_item() -> PinnedItem {
             value_label: "42".to_string(),
         },
         local_collapsed: HashSet::new(),
+        hidden_fields: HashSet::new(),
         key: PinKey {
             thread_id: ThreadId(1),
             thread_name: "main".to_string(),
@@ -107,6 +109,7 @@ fn make_frame_with_nested_objects() -> PinnedItem {
             truncated: false,
         },
         local_collapsed: HashSet::new(),
+        hidden_fields: HashSet::new(),
         key: PinKey {
             thread_id: ThreadId(1),
             thread_name: "main".to_string(),
@@ -223,6 +226,7 @@ mod rendering_tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -302,6 +306,7 @@ mod rendering_tests {
                 truncated: false,
             },
             local_collapsed,
+            hidden_fields: HashSet::new(),
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -368,6 +373,7 @@ mod rendering_tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -406,6 +412,7 @@ mod scroll_state_tests {
             vec![3, 2],
             vec![HashMap::new(), HashMap::new()],
             vec![HashMap::new(), HashMap::new()],
+            vec![HashMap::new(), HashMap::new()],
         );
         state.selected_item = 0;
         state.sub_row = 2;
@@ -424,6 +431,7 @@ mod scroll_state_tests {
             vec![3, 2],
             vec![HashMap::new(), HashMap::new()],
             vec![HashMap::new(), HashMap::new()],
+            vec![HashMap::new(), HashMap::new()],
         );
         state.selected_item = 1;
         state.sub_row = 0;
@@ -438,7 +446,12 @@ mod scroll_state_tests {
     fn favorites_panel_state_move_down_noop_at_last_row() {
         let mut state = FavoritesPanelState::default();
         state.set_items_len(1);
-        state.update_row_metadata(vec![3], vec![HashMap::new()], vec![HashMap::new()]);
+        state.update_row_metadata(
+            vec![3],
+            vec![HashMap::new()],
+            vec![HashMap::new()],
+            vec![HashMap::new()],
+        );
         state.selected_item = 0;
         state.sub_row = 2;
 
@@ -454,6 +467,7 @@ mod scroll_state_tests {
         state.set_items_len(2);
         state.update_row_metadata(
             vec![3, 4],
+            vec![HashMap::new(), HashMap::new()],
             vec![HashMap::new(), HashMap::new()],
             vec![HashMap::new(), HashMap::new()],
         );
@@ -477,10 +491,20 @@ mod scroll_state_tests {
     fn sub_row_clamped_after_collapse() {
         let mut state = FavoritesPanelState::default();
         state.set_items_len(1);
-        state.update_row_metadata(vec![5], vec![HashMap::new()], vec![HashMap::new()]);
+        state.update_row_metadata(
+            vec![5],
+            vec![HashMap::new()],
+            vec![HashMap::new()],
+            vec![HashMap::new()],
+        );
         state.sub_row = 4;
 
-        state.update_row_metadata(vec![2], vec![HashMap::new()], vec![HashMap::new()]);
+        state.update_row_metadata(
+            vec![2],
+            vec![HashMap::new()],
+            vec![HashMap::new()],
+            vec![HashMap::new()],
+        );
         state.clamp_sub_row();
 
         assert_eq!(state.sub_row, 1);
@@ -494,7 +518,7 @@ mod row_metadata_tests {
     #[test]
     fn collect_row_metadata_matches_render_count_flat() {
         let item = make_frame_with_nested_objects();
-        let (row_count, _kind_map, _sentinel_map) = collect_row_metadata(&item);
+        let (row_count, _kind_map, _sentinel_map, _field_row_map) = collect_row_metadata(&item);
 
         let PinnedSnapshot::Frame {
             variables,
@@ -522,6 +546,7 @@ mod row_metadata_tests {
                 show_object_ids: false,
                 snapshot_mode: true,
             },
+            None,
         );
 
         assert_eq!(row_count, rendered.len() + 2);
@@ -617,6 +642,7 @@ mod row_metadata_tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -624,7 +650,7 @@ mod row_metadata_tests {
             },
         };
 
-        let (row_count, _kind_map, _sentinel_map) = collect_row_metadata(&item);
+        let (row_count, _kind_map, _sentinel_map, _field_row_map) = collect_row_metadata(&item);
 
         let object_phases = object_phases_for_item(
             &object_fields,
@@ -648,6 +674,7 @@ mod row_metadata_tests {
                 show_object_ids: false,
                 snapshot_mode: true,
             },
+            None,
         );
 
         assert_eq!(row_count, rendered.len() + 2);
@@ -674,6 +701,7 @@ mod row_metadata_tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -681,7 +709,7 @@ mod row_metadata_tests {
             },
         };
 
-        let (row_count, kind_map, _sentinel_map) = collect_row_metadata(&item);
+        let (row_count, kind_map, _sentinel_map, _field_row_map) = collect_row_metadata(&item);
 
         assert_eq!(row_count, 3);
         assert!(
@@ -722,6 +750,7 @@ mod row_metadata_tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -729,7 +758,7 @@ mod row_metadata_tests {
             },
         };
 
-        let (row_count, _kind_map, _sentinel_map) = collect_row_metadata(&item);
+        let (row_count, _kind_map, _sentinel_map, _field_row_map) = collect_row_metadata(&item);
         let PinnedSnapshot::Subtree {
             root_id,
             object_fields,
@@ -756,6 +785,7 @@ mod row_metadata_tests {
                 show_object_ids: false,
                 snapshot_mode: true,
             },
+            None,
         );
 
         assert_eq!(row_count, rendered.len() + 2);
@@ -807,6 +837,7 @@ mod row_metadata_tests {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -814,7 +845,7 @@ mod row_metadata_tests {
             },
         };
 
-        let (row_count, _, _) = collect_row_metadata(&item);
+        let (row_count, _, _, _) = collect_row_metadata(&item);
 
         // 1 header + A-row + b-field-row + cyclic-A-row + 1 separator = 5
         assert_eq!(row_count, 5);
@@ -823,7 +854,7 @@ mod row_metadata_tests {
     #[test]
     fn collect_row_metadata_primitive_and_unexpanded_ref_row_count() {
         let primitive = make_primitive_item();
-        let (primitive_rows, _, _) = collect_row_metadata(&primitive);
+        let (primitive_rows, _, _, _) = collect_row_metadata(&primitive);
         assert_eq!(primitive_rows, 3);
 
         let unexpanded = PinnedItem {
@@ -835,13 +866,14 @@ mod row_metadata_tests {
                 object_id: 1,
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
                 nav_path: NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build(),
             },
         };
-        let (unexpanded_rows, _, _) = collect_row_metadata(&unexpanded);
+        let (unexpanded_rows, _, _, _) = collect_row_metadata(&unexpanded);
         assert_eq!(unexpanded_rows, 3);
     }
 }
@@ -874,5 +906,257 @@ mod toggle_tests {
         }
 
         assert!(item.local_collapsed.contains(&10));
+    }
+}
+
+mod hide_field_tests {
+    use super::*;
+    use crate::views::tree_render::{RenderOptions, TreeRoot, render_variable_tree};
+
+    fn make_two_var_frame() -> PinnedItem {
+        PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Foo.bar()".to_string(),
+            item_label: "Foo.bar()".to_string(),
+            snapshot: PinnedSnapshot::Frame {
+                variables: vec![
+                    VariableInfo {
+                        index: 0,
+                        value: VariableValue::Null,
+                    },
+                    VariableInfo {
+                        index: 1,
+                        value: VariableValue::Null,
+                    },
+                ],
+                object_fields: HashMap::new(),
+                object_static_fields: HashMap::new(),
+                collection_chunks: HashMap::new(),
+                truncated: false,
+            },
+            local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            key: PinKey {
+                thread_id: crate::views::stack_view::ThreadId(1),
+                thread_name: "main".to_string(),
+                nav_path: crate::views::stack_view::NavigationPathBuilder::frame_only(
+                    crate::views::stack_view::FrameId(1),
+                ),
+            },
+        }
+    }
+
+    fn make_subtree_with_objectref_child() -> PinnedItem {
+        // root object 1 has one ObjectRef field (field_idx=0) pointing to child 2.
+        // child 2 has two primitive fields.
+        let mut object_fields = HashMap::new();
+        object_fields.insert(
+            1u64,
+            vec![FieldInfo {
+                name: "child".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 2,
+                    class_name: "Inner".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            }],
+        );
+        object_fields.insert(
+            2u64,
+            vec![
+                FieldInfo {
+                    name: "a".to_string(),
+                    value: FieldValue::Int(1),
+                },
+                FieldInfo {
+                    name: "b".to_string(),
+                    value: FieldValue::Int(2),
+                },
+            ],
+        );
+        PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Foo.bar()".to_string(),
+            item_label: "var[0]".to_string(),
+            snapshot: PinnedSnapshot::Subtree {
+                root_id: 1,
+                object_fields,
+                object_static_fields: HashMap::new(),
+                collection_chunks: HashMap::new(),
+                truncated: false,
+            },
+            local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            key: PinKey {
+                thread_id: crate::views::stack_view::ThreadId(1),
+                thread_name: "main".to_string(),
+                nav_path: crate::views::stack_view::NavigationPathBuilder::new(
+                    crate::views::stack_view::FrameId(1),
+                    crate::views::stack_view::VarIdx(0),
+                )
+                .build(),
+            },
+        }
+    }
+
+    // 6.9
+    #[test]
+    fn collect_row_metadata_field_row_map_populated() {
+        let item = make_two_var_frame();
+        let (_row_count, _kind_map, _sentinel_map, field_row_map) = collect_row_metadata(&item);
+
+        assert_eq!(field_row_map.get(&1), Some(&(HideKey::Var(0), false)));
+        assert_eq!(field_row_map.get(&2), Some(&(HideKey::Var(1), false)));
+        assert_eq!(field_row_map.len(), 2);
+    }
+
+    // 6.10
+    #[test]
+    fn collect_row_metadata_hidden_var_row_shows_is_hidden_true() {
+        let mut item = make_two_var_frame();
+        item.hidden_fields.insert(HideKey::Var(0));
+        let (_row_count, _kind_map, _sentinel_map, field_row_map) = collect_row_metadata(&item);
+
+        // var[0] is hidden: its entry should have is_hidden=true at sub_row 1.
+        assert_eq!(field_row_map.get(&1), Some(&(HideKey::Var(0), true)));
+        // var[1] is visible at sub_row 2.
+        assert_eq!(field_row_map.get(&2), Some(&(HideKey::Var(1), false)));
+    }
+
+    // 6.11
+    #[test]
+    fn collect_row_metadata_hidden_objectref_row_count_decreases() {
+        let item = make_subtree_with_objectref_child();
+
+        let PinnedSnapshot::Subtree {
+            root_id,
+            object_fields,
+            object_static_fields,
+            collection_chunks,
+            ..
+        } = &item.snapshot
+        else {
+            panic!("expected subtree");
+        };
+
+        // Baseline: nothing hidden.
+        let (row_count_base, _, _, _) = collect_row_metadata(&item);
+        let object_phases_base = object_phases_for_item(
+            object_fields,
+            object_static_fields,
+            collection_chunks,
+            &item.local_collapsed,
+        );
+        let rendered_base = render_variable_tree(
+            TreeRoot::Subtree { root_id: *root_id },
+            object_fields,
+            object_static_fields,
+            collection_chunks,
+            &object_phases_base,
+            &HashMap::new(),
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: true,
+            },
+            None,
+        );
+        // header=1, ObjectRef row=1, 2 child primitives=2, separator=1 → row_count=5
+        assert_eq!(row_count_base, 5);
+        assert_eq!(row_count_base, rendered_base.len() + 2);
+
+        // Hidden case: hide field_idx=0 of root object 1.
+        let mut item_hidden = make_subtree_with_objectref_child();
+        item_hidden.hidden_fields.insert(HideKey::Field {
+            parent_id: 1,
+            field_idx: 0,
+        });
+        let (row_count_hidden, _, _, _) = collect_row_metadata(&item_hidden);
+
+        let PinnedSnapshot::Subtree {
+            root_id: root_id2,
+            object_fields: of2,
+            object_static_fields: osf2,
+            collection_chunks: cc2,
+            ..
+        } = &item_hidden.snapshot
+        else {
+            panic!("expected subtree");
+        };
+        let object_phases_hidden =
+            object_phases_for_item(of2, osf2, cc2, &item_hidden.local_collapsed);
+        let hide_set = item_hidden.hidden_fields.clone();
+        let rendered_hidden = render_variable_tree(
+            TreeRoot::Subtree { root_id: *root_id2 },
+            of2,
+            osf2,
+            cc2,
+            &object_phases_hidden,
+            &HashMap::new(),
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: true,
+            },
+            Some(&hide_set),
+        );
+        // header=1, placeholder=1, separator=1 → row_count=3
+        assert_eq!(row_count_hidden, 3);
+        assert_eq!(row_count_hidden, rendered_hidden.len() + 2);
+    }
+
+    // 6.12
+    #[test]
+    fn favorites_panel_state_field_key_at_cursor_correct() {
+        let mut state = FavoritesPanelState::default();
+        state.set_items_len(1);
+        let mut field_row_map: FieldRowMap = HashMap::new();
+        field_row_map.insert(1, (HideKey::Var(0), false));
+        state.update_row_metadata(
+            vec![3],
+            vec![HashMap::new()],
+            vec![HashMap::new()],
+            vec![field_row_map],
+        );
+        state.selected_item = 0;
+        state.sub_row = 1;
+
+        assert_eq!(state.field_key_at_cursor(), Some((HideKey::Var(0), false)));
+    }
+
+    // 6.13
+    #[test]
+    fn favorites_panel_state_field_key_at_cursor_none_for_header() {
+        let mut state = FavoritesPanelState::default();
+        state.set_items_len(1);
+        let mut field_row_map: FieldRowMap = HashMap::new();
+        field_row_map.insert(1, (HideKey::Var(0), false));
+        state.update_row_metadata(
+            vec![3],
+            vec![HashMap::new()],
+            vec![HashMap::new()],
+            vec![field_row_map],
+        );
+        state.selected_item = 0;
+        state.sub_row = 0;
+
+        assert_eq!(state.field_key_at_cursor(), None);
+    }
+
+    // 6.17
+    #[test]
+    fn collect_row_metadata_truncated_offset_shifts_field_row_map() {
+        let mut item = make_two_var_frame();
+        if let PinnedSnapshot::Frame {
+            ref mut truncated, ..
+        } = item.snapshot
+        {
+            *truncated = true;
+        }
+        let (_row_count, _kind_map, _sentinel_map, field_row_map) = collect_row_metadata(&item);
+
+        // row 0 = header, row 1 = truncated-warning, row 2 = var[0], row 3 = var[1]
+        assert_eq!(field_row_map.get(&2), Some(&(HideKey::Var(0), false)));
+        assert_eq!(field_row_map.get(&3), Some(&(HideKey::Var(1), false)));
+        assert_eq!(field_row_map.get(&1), None);
     }
 }

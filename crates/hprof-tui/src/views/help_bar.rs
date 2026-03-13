@@ -14,7 +14,7 @@ use ratatui::{
 use crate::theme::THEME;
 
 /// Number of keymap entries documented in the help panel.
-const ENTRY_COUNT: u16 = 19;
+const ENTRY_COUNT: u16 = 21;
 
 // Context bitmask constants — private to this module.
 const THREAD: u8 = 0b001;
@@ -40,6 +40,8 @@ const ENTRIES: &[(&str, &str, u8)] = &[
     ("f", "Pin / unpin favorite", STACK | FAV),
     ("F", "Focus favorites panel", ALL),
     ("g", "Favorites: go to source", FAV),
+    ("h", "Favorites: hide / show field", FAV),
+    ("H", "Favorites: reset hidden fields", FAV),
     ("i", "Toggle object IDs (stack)", STACK),
     ("s or /", "Open search (thread list only)", THREAD),
     ("?", "Toggle help panel", ALL),
@@ -169,8 +171,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn required_height_returns_fourteen_for_nineteen_entries() {
-        assert_eq!(required_height(), 14);
+    fn required_height_returns_fifteen_for_twenty_one_entries() {
+        // div_ceil(21, 2) = 11; 2 + 1 + 11 + 1 = 15
+        assert_eq!(required_height(), 15);
     }
 
     #[test]
@@ -180,10 +183,10 @@ mod tests {
 
     #[test]
     fn build_rows_produces_correct_line_count() {
-        // 1 padding + ceil(19/2) + 1 separator = 1 + 10 + 1 = 12
-        assert_eq!(build_rows(HelpContext::ThreadList).len(), 12);
-        assert_eq!(build_rows(HelpContext::StackFrames).len(), 12);
-        assert_eq!(build_rows(HelpContext::Favorites).len(), 12);
+        // 1 padding + ceil(21/2) + 1 separator = 1 + 11 + 1 = 13
+        assert_eq!(build_rows(HelpContext::ThreadList).len(), 13);
+        assert_eq!(build_rows(HelpContext::StackFrames).len(), 13);
+        assert_eq!(build_rows(HelpContext::Favorites).len(), 13);
     }
 
     // --- Task 2 tests ---
@@ -241,5 +244,22 @@ mod tests {
         for (key, _action, mask) in ENTRIES {
             assert!(*mask != 0 && *mask <= ALL, "invalid mask for entry '{key}'");
         }
+    }
+
+    #[test]
+    fn help_bar_h_key_applicable_only_in_favorites() {
+        let idx = ENTRIES.iter().position(|(k, _, _)| *k == "h").unwrap();
+        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn help_bar_H_key_applicable_only_in_favorites() {
+        let idx = ENTRIES.iter().position(|(k, _, _)| *k == "H").unwrap();
+        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
     }
 }

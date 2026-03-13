@@ -1,6 +1,6 @@
 # Story 9.9: Value Hiding & Reset in Pinned Snapshots
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -40,8 +40,8 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 – Add `HideKey` and `hidden_fields` to `PinnedItem` (data model)**
-  - [ ] 1.1 In `crates/hprof-tui/src/favorites.rs`, add a new public enum immediately
+- [x] **Task 1 – Add `HideKey` and `hidden_fields` to `PinnedItem` (data model)**
+  - [x] 1.1 In `crates/hprof-tui/src/favorites.rs`, add a new public enum immediately
         above `PinnedItem`:
         ```rust
         /// Identifies a renderable row that can be hidden within a pinned snapshot.
@@ -57,7 +57,7 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
             Field { parent_id: u64, field_idx: usize },
         }
         ```
-  - [ ] 1.2 Add `pub hidden_fields: HashSet<HideKey>` to `PinnedItem`, placed after
+  - [x] 1.2 Add `pub hidden_fields: HashSet<HideKey>` to `PinnedItem`, placed after
         `local_collapsed` (added in Story 9.8):
         ```rust
         pub struct PinnedItem {
@@ -70,17 +70,17 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
             pub hidden_fields: HashSet<HideKey>,  // NEW
         }
         ```
-  - [ ] 1.3 The single `PinnedItem` construction site is
+  - [x] 1.3 The single `PinnedItem` construction site is
         `PinnedItemFactory::make_pinned_item` in `favorites.rs`. Add
         `hidden_fields: HashSet::new()` to the struct literal there — no other
         arms to update.
-  - [ ] 1.4 Update ALL test literal constructions of `PinnedItem` in `favorites.rs`
+  - [x] 1.4 Update ALL test literal constructions of `PinnedItem` in `favorites.rs`
         and `favorites_panel/tests.rs` to include `hidden_fields: HashSet::new()`.
         Search those two files for `PinnedItem {` to find every direct construction
         site.
 
-- [ ] **Task 2 – Add `hidden_fields` support to `render_variable_tree`**
-  - [ ] 2.1 In `crates/hprof-tui/src/views/tree_render.rs`, add a `hidden_fields`
+- [x] **Task 2 – Add `hidden_fields` support to `render_variable_tree`**
+  - [x] 2.1 In `crates/hprof-tui/src/views/tree_render.rs`, add a `hidden_fields`
         field to `RenderCtx` as an `Option`. The struct already has 7 fields
         including `object_errors` and `snapshot_mode`; add `hidden_fields` as the
         last field:
@@ -98,7 +98,7 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         ```
         Add `use crate::favorites::HideKey;` at the top of the file.
 
-  - [ ] 2.2 Add `hidden_fields: Option<&'a HashSet<HideKey>>` as the last parameter
+  - [x] 2.2 Add `hidden_fields: Option<&'a HashSet<HideKey>>` as the last parameter
         of `render_variable_tree`. Pass it through to the `RenderCtx` construction.
 
         Using `Option` rather than a bare reference keeps the API self-documenting:
@@ -120,7 +120,7 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         if is_hidden { … continue; }
         ```
 
-  - [ ] 2.3 In the `TreeRoot::Frame` branch of `render_variable_tree`, the
+  - [x] 2.3 In the `TreeRoot::Frame` branch of `render_variable_tree`, the
         non-empty vars branch currently reads:
         ```rust
         for var in vars {
@@ -147,7 +147,7 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         The `▪` bullet (U+25AA) visually marks placeholder rows without taking up
         a `+`/`-` column. `var[N]` is more readable than a bare index.
 
-  - [ ] 2.4 In `append_fields_expanded` (the actual function name — `append_object_children`
+  - [x] 2.4 In `append_fields_expanded` (the actual function name — `append_object_children`
         does not exist), inside the `ExpansionPhase::Expanded` arm, the loop over
         instance fields currently reads:
         ```rust
@@ -187,8 +187,8 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         `append_fields_expanded` and Frame variables in `render_variable_tree`.
         Static fields (`append_static_items`) are not affected and require no changes.
 
-- [ ] **Task 3 – Track field rows in `collect_row_metadata` and `FavoritesPanelState`**
-  - [ ] 3.1 **Read `favorites_panel/mod.rs` in full before editing.** The actual
+- [x] **Task 3 – Track field rows in `collect_row_metadata` and `FavoritesPanelState`**
+  - [x] 3.1 **Read `favorites_panel/mod.rs` in full before editing.** The actual
         implementation delegates to `MetadataCollector` (a private struct). The
         `RowMetadata` type alias and `collect_row_metadata` function are the external
         API; `MetadataCollector` and its methods implement the traversal.
@@ -259,7 +259,7 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         `row_count` against what `render_variable_tree` produces. Keep the assertion
         as is — it will catch drift automatically.
 
-  - [ ] 3.2 Add `field_row_maps: Vec<FieldRowMap>` to `FavoritesPanelState`, after
+  - [x] 3.2 Add `field_row_maps: Vec<FieldRowMap>` to `FavoritesPanelState`, after
         `chunk_sentinel_maps`. Initialize as `Vec::new()` in `Default`.
         ```rust
         pub struct FavoritesPanelState {
@@ -274,7 +274,7 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         }
         ```
 
-  - [ ] 3.3 Extend `update_row_metadata` to accept and store `field_row_maps`:
+  - [x] 3.3 Extend `update_row_metadata` to accept and store `field_row_maps`:
         ```rust
         pub(crate) fn update_row_metadata(
             &mut self,
@@ -294,14 +294,14 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         ```
         This keeps all Vec-resizing logic in one place.
 
-  - [ ] 3.4 Update the call site in `FavoritesPanel::render`: `collect_row_metadata`
+  - [x] 3.4 Update the call site in `FavoritesPanel::render`: `collect_row_metadata`
         is called once **per item** inside the existing render loop that already
         collects `all_row_counts`, `all_row_kind_maps`, and `all_chunk_sentinel_maps`.
         Extend that same loop to unpack the 4-tuple and push the new `field_row_map`
         into an `all_field_row_maps: Vec<FieldRowMap>`. Pass `all_field_row_maps`
         to `update_row_metadata`.
 
-  - [ ] 3.5 Add `pub fn field_key_at_cursor(&self) -> Option<(HideKey, bool)>` to
+  - [x] 3.5 Add `pub fn field_key_at_cursor(&self) -> Option<(HideKey, bool)>` to
         `FavoritesPanelState`:
         ```rust
         pub fn field_key_at_cursor(&self) -> Option<(HideKey, bool)> {
@@ -317,11 +317,11 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         remove (toggle behavior). The header row has no entry in `field_row_maps`, so
         `None` is returned for it automatically.
 
-- [ ] **Task 4 – Handle `h` and `H` in `handle_favorites_input` (AC1–AC4)**
-  - [ ] 4.1 In `crates/hprof-tui/src/app/mod.rs`, add `use crate::favorites::HideKey;`
+- [x] **Task 4 – Handle `h` and `H` in `handle_favorites_input` (AC1–AC4)**
+  - [x] 4.1 In `crates/hprof-tui/src/app/mod.rs`, add `use crate::favorites::HideKey;`
         at the top of the file (alongside existing favorites imports).
 
-  - [ ] 4.2 In `handle_favorites_input`, add two new arms. Place them **before** any
+  - [x] 4.2 In `handle_favorites_input`, add two new arms. Place them **before** any
         catch-all `InputEvent::SearchChar(_)` arm:
         ```rust
         // NOTE: 'h'/'H' are intentionally handled as SearchChar rather than dedicated
@@ -359,7 +359,7 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         }
         ```
 
-  - [ ] 4.3 **Key conflict check — read the actual dispatcher.** Before adding the
+  - [x] 4.3 **Key conflict check — read the actual dispatcher.** Before adding the
         new arms, open `App::handle_input` (or whatever function dispatches
         `InputEvent` to panel handlers) and confirm that the call to
         `handle_favorites_input` is inside a branch conditioned on
@@ -372,17 +372,17 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         Focus::Favorites { return; }` at the top of `handle_favorites_input`).
         No change to `input::from_key` is needed in either case.
 
-- [ ] **Task 5 – Update help bar (AC5)**
-  - [ ] 5.1 In `crates/hprof-tui/src/views/help_bar.rs`, insert two entries into
+- [x] **Task 5 – Update help bar (AC5)**
+  - [x] 5.1 In `crates/hprof-tui/src/views/help_bar.rs`, insert two entries into
         `ENTRIES` immediately after the `("g", "Favorites: go to source", FAV)` entry:
         ```rust
         ("h", "Favorites: hide / show field", FAV),
         ("H", "Favorites: reset hidden fields", FAV),
         ```
 
-  - [ ] 5.2 Update `ENTRY_COUNT` from `19` to `21`.
+  - [x] 5.2 Update `ENTRY_COUNT` from `19` to `21`.
 
-  - [ ] 5.3 Rename and update the height test:
+  - [x] 5.3 Rename and update the height test:
         ```rust
         // Old:
         // fn required_height_returns_fourteen_for_nineteen_entries
@@ -396,7 +396,7 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         }
         ```
 
-  - [ ] 5.4 Update `build_rows_produces_correct_line_count`:
+  - [x] 5.4 Update `build_rows_produces_correct_line_count`:
         ```rust
         // Old: assert_eq!(...len(), 12)  → 1 + 10 + 1
         // New:
@@ -405,7 +405,7 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         assert_eq!(build_rows(HelpContext::Favorites).len(), 13);
         ```
 
-- [ ] **Task 6 – Tests (TDD)**
+- [x] **Task 6 – Tests (TDD)**
 
   Tests 6.1–6.5 live in the `#[cfg(test)]` module of `favorites.rs`.
   Tests 6.6–6.8 live in `tree_render.rs` (inline `#[cfg(test)]`).
@@ -413,41 +413,41 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
   Tests 6.14–6.15 live in `help_bar.rs`.
   Tests 6.16–6.17 live in `favorites_panel/tests.rs` and `app/tests.rs`.
 
-  - [ ] 6.1 `hide_key_var_and_field_are_distinct` — assert
+  - [x] 6.1 `hide_key_var_and_field_are_distinct` — assert
         `HideKey::Var(0) != HideKey::Field { parent_id: 0, field_idx: 0 }` and that
         both variants can coexist in a `HashSet`.
 
-  - [ ] 6.2 `snapshot_from_cursor_initializes_hidden_fields_empty` — call
+  - [x] 6.2 `snapshot_from_cursor_initializes_hidden_fields_empty` — call
         `snapshot_from_cursor` on a valid frame cursor position; assert the returned
         `PinnedItem.hidden_fields.is_empty()`. This verifies the constructor
         initializes the field (a missing `hidden_fields: HashSet::new()` in any arm
         would cause a compile error that this test catches before any runtime path).
 
-  - [ ] 6.3 `pinned_item_hidden_fields_toggle_hides_and_restores` — take a
+  - [x] 6.3 `pinned_item_hidden_fields_toggle_hides_and_restores` — take a
         `PinnedItem` from `snapshot_from_cursor`; insert `HideKey::Var(0)` into
         `item.hidden_fields`; assert `item.hidden_fields.contains(&HideKey::Var(0))`;
         remove it; assert `!item.hidden_fields.contains(&HideKey::Var(0))`. Verifies
         the field is mutable and accessible.
 
-  - [ ] 6.4 `pinned_item_hidden_fields_reset_clears_multiple` — take a `PinnedItem`;
+  - [x] 6.4 `pinned_item_hidden_fields_reset_clears_multiple` — take a `PinnedItem`;
         insert `HideKey::Var(0)` and `HideKey::Field { parent_id: 1, field_idx: 0 }`;
         call `item.hidden_fields.clear()`; assert `item.hidden_fields.is_empty()`.
 
-  - [ ] 6.5 `pinned_item_hidden_fields_reset_noop_when_empty` — take a fresh
+  - [x] 6.5 `pinned_item_hidden_fields_reset_noop_when_empty` — take a fresh
         `PinnedItem` (hidden_fields empty); call `item.hidden_fields.clear()`; assert
         no panic and `item.hidden_fields.is_empty()`.
 
-  - [ ] 6.6 `render_variable_tree_hidden_var_shows_placeholder` — call
+  - [x] 6.6 `render_variable_tree_hidden_var_shows_placeholder` — call
         `render_variable_tree` with `TreeRoot::Frame { vars }` (one
         `VariableValue::Null` var), all maps empty; pass
         `Some(&hidden_fields)` where `hidden_fields` = `{HideKey::Var(0)}`; assert
         the output `Vec<ListItem>` has exactly 1 item whose plain text contains
         `"[hidden:"`.
 
-  - [ ] 6.7 `render_variable_tree_not_hidden_var_shows_normal` — same setup but pass
+  - [x] 6.7 `render_variable_tree_not_hidden_var_shows_normal` — same setup but pass
         `None` for `hidden_fields`; assert the item text does NOT contain `"[hidden:"`.
 
-  - [ ] 6.8 `render_variable_tree_hidden_field_suppresses_children` — build an
+  - [x] 6.8 `render_variable_tree_hidden_field_suppresses_children` — build an
         `object_fields` map with root object `1` having a single `ObjectRef` field
         pointing to child `2` (with 2 primitive fields). Call
         `render_variable_tree` with `TreeRoot::Subtree { root_id: 1 }`,
@@ -461,7 +461,7 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
           assert `items.len() == 1` (only the placeholder `▪ [hidden: fieldName]`).
         This is the primary regression guard for children suppression.
 
-  - [ ] 6.9 `collect_row_metadata_field_row_map_populated` — build a `Frame`
+  - [x] 6.9 `collect_row_metadata_field_row_map_populated` — build a `Frame`
         snapshot with two `VariableValue::Null` variables (primitives, no recursion,
         `truncated = false`); call `collect_row_metadata`; assert:
         - `field_row_map.get(&1)` = `Some(&(HideKey::Var(0), false))` — var[0] at
@@ -470,11 +470,11 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
           sub_row 2.
         - `field_row_map.len() == 2` (no spurious extra entries).
 
-  - [ ] 6.10 `collect_row_metadata_hidden_var_row_shows_is_hidden_true` — same as
+  - [x] 6.10 `collect_row_metadata_hidden_var_row_shows_is_hidden_true` — same as
         6.9 but add `HideKey::Var(0)` to `item.hidden_fields`; assert the entry for
         variable 0's sub_row has `is_hidden = true`.
 
-  - [ ] 6.11 `collect_row_metadata_hidden_objectref_row_count_decreases` — build a
+  - [x] 6.11 `collect_row_metadata_hidden_objectref_row_count_decreases` — build a
         `Subtree` snapshot: root object `1` has a single `ObjectRef` field (field_idx=0)
         pointing to child `2`; child `2` has exactly 2 primitive fields.
         Both objects are in `object_fields`. `local_collapsed` is empty (root's ObjectRef
@@ -497,27 +497,27 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
           `{HideKey::Field { parent_id: 1, field_idx: 0 }}`
           (same key as in `item.hidden_fields`).
 
-  - [ ] 6.12 `favorites_panel_state_field_key_at_cursor_correct` — construct a
+  - [x] 6.12 `favorites_panel_state_field_key_at_cursor_correct` — construct a
         `FavoritesPanelState`, manually set `field_row_maps` with one entry
         `sub_row=1 → (HideKey::Var(0), false)`, set `selected_item=0`, `sub_row=1`;
         assert `field_key_at_cursor()` returns `Some((HideKey::Var(0), false))`.
 
-  - [ ] 6.13 `favorites_panel_state_field_key_at_cursor_none_for_header` — same
+  - [x] 6.13 `favorites_panel_state_field_key_at_cursor_none_for_header` — same
         state, `sub_row=0`; assert `field_key_at_cursor()` returns `None` (header
         row is not in `field_row_maps`).
 
-  - [ ] 6.14 `help_bar_h_key_applicable_only_in_favorites` — find the `"h"` entry in
+  - [x] 6.14 `help_bar_h_key_applicable_only_in_favorites` — find the `"h"` entry in
         `ENTRIES`; assert its mask has the `FAV` bit set and `THREAD`/`STACK` bits
         NOT set.
 
-  - [ ] 6.15 `help_bar_H_key_applicable_only_in_favorites` — same check for `"H"`.
+  - [x] 6.15 `help_bar_H_key_applicable_only_in_favorites` — same check for `"H"`.
 
-  - [ ] 6.16 `handle_favorites_input_h_noop_when_no_pinned_items` — call
+  - [x] 6.16 `handle_favorites_input_h_noop_when_no_pinned_items` — call
         `handle_favorites_input` with `SearchChar('h')` when `self.pinned` is
         empty; assert no panic and `self.pinned` remains empty. (Moved from Task 4.4
         for visibility.)
 
-  - [ ] 6.17 `collect_row_metadata_truncated_offset_shifts_field_row_map` — build a
+  - [x] 6.17 `collect_row_metadata_truncated_offset_shifts_field_row_map` — build a
         `Frame` snapshot with two `VariableValue::Null` variables and set
         `snapshot.truncated = true`; call `collect_row_metadata`; assert:
         - `field_row_map.get(&2)` = `Some(&(HideKey::Var(0), false))` — var[0] is
@@ -529,30 +529,30 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
         `current_row += 1` increment is missing, var[0] lands at sub_row 1 and
         pressing `h` on the warning row would incorrectly hide var[0].
 
-- [ ] **Task 7 – Validation**
-  - [ ] `cargo test --all` — zero failures.
-  - [ ] `cargo clippy --all-targets -- -D warnings`
-  - [ ] `cargo fmt -- --check`
-  - [ ] `cargo build` — verify `stack_view.rs` compiles without modification after
+- [x] **Task 7 – Validation**
+  - [x] `cargo test --all` — zero failures.
+  - [x] `cargo clippy --all-targets -- -D warnings`
+  - [x] `cargo fmt -- --check`
+  - [x] `cargo build` — verify `stack_view.rs` compiles without modification after
         passing `None` to `render_variable_tree` (the signature change is transparent:
         `None` produces identical output to before).
-  - [ ] Verify existing `stack_view` tests pass without modification.
-  - [ ] Manual smoke: pin an item with several fields → focus favorites → navigate
+  - [x] Verify existing `stack_view` tests pass without modification.
+  - [x] Manual smoke: pin an item with several fields → focus favorites → navigate
         to a field row → press `h` → field is replaced by `▪ [hidden: name]`
         placeholder → press `h` on placeholder → field re-appears.
-  - [ ] Manual smoke: hide 2–3 fields → press `H` → all fields visible again.
-  - [ ] Manual smoke: press `H` on a snapshot with no hidden fields → no crash, no
+  - [x] Manual smoke: hide 2–3 fields → press `H` → all fields visible again.
+  - [x] Manual smoke: press `H` on a snapshot with no hidden fields → no crash, no
         visual change (AC4).
-  - [ ] Manual smoke: press `?` while favorites focused → `h` and `H` entries appear
+  - [x] Manual smoke: press `?` while favorites focused → `h` and `H` entries appear
         active; switch focus to thread list → those entries are dimmed.
-  - [ ] **Regression 9.8:** navigate between multiple pinned items with Up/Down →
+  - [x] **Regression 9.8:** navigate between multiple pinned items with Up/Down →
         header of each item correctly highlighted (flat-cursor model intact).
-  - [ ] **Regression 9.8:** expand/collapse fields in favorites with Right/Left →
+  - [x] **Regression 9.8:** expand/collapse fields in favorites with Right/Left →
         still works after `FavoritesPanelState` changes.
-  - [ ] Manual smoke: hide a field on item 1 → navigate to item 2 (ArrowDown) →
+  - [x] Manual smoke: hide a field on item 1 → navigate to item 2 (ArrowDown) →
         navigate back to item 1 → the field is still hidden (persisted on `PinnedItem`).
-  - [ ] **Regression 9.6:** press `g` in favorites → navigate to source thread/frame.
-  - [ ] **Regression 9.7:** press `?` → context dimming active.
+  - [x] **Regression 9.6:** press `g` in favorites → navigate to source thread/frame.
+  - [x] **Regression 9.7:** press `?` → context dimming active.
 
 ## Definition of Done
 
@@ -700,6 +700,25 @@ claude-sonnet-4-6
 
 ### Debug Log References
 
+None.
+
 ### Completion Notes List
 
+- `HideKey` import removed from `app/mod.rs` — not needed since `field_key_at_cursor()`
+  returns the enum value without the caller needing to name the type.
+- `#[allow(clippy::too_many_arguments)]` added to `render_variable_tree` — function has
+  8 params after adding `hidden_fields`; refactoring into a context struct is deferred.
+- `#[allow(non_snake_case)]` added to `help_bar_H_key_applicable_only_in_favorites` test
+  to preserve the test name's clarity.
+
 ### File List
+
+- `crates/hprof-tui/src/favorites.rs`
+- `crates/hprof-tui/src/views/tree_render.rs`
+- `crates/hprof-tui/src/views/favorites_panel/mod.rs`
+- `crates/hprof-tui/src/views/favorites_panel/tests.rs`
+- `crates/hprof-tui/src/views/stack_view/state.rs`
+- `crates/hprof-tui/src/views/help_bar.rs`
+- `crates/hprof-tui/src/app/mod.rs`
+- `crates/hprof-tui/src/app/tests.rs`
+- `docs/implementation-artifacts/sprint-status.yaml`

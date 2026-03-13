@@ -1745,6 +1745,7 @@ impl StackState {
                         show_object_ids,
                         snapshot_mode: false,
                     },
+                    None,
                 );
                 items.extend(tree_items);
             }

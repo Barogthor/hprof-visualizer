@@ -13,6 +13,7 @@ use ratatui::{
     widgets::ListItem,
 };
 
+use crate::favorites::HideKey;
 use crate::theme::THEME;
 
 use super::stack_view::{
@@ -47,6 +48,8 @@ struct RenderCtx<'a> {
     object_errors: &'a HashMap<u64, String>,
     show_object_ids: bool,
     snapshot_mode: bool,
+    /// Row-level hide overlay — `None` means hiding not applicable (e.g. stack view).
+    hidden_fields: Option<&'a HashSet<HideKey>>,
 }
 
 /// Renders a variable tree into a flat list of styled items.
@@ -59,6 +62,7 @@ struct RenderCtx<'a> {
 ///   `StackView`.
 /// - `TreeRoot::Subtree` starts at indent `"  "` (two spaces) for use
 ///   in `FavoritesPanel`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_variable_tree(
     root: TreeRoot<'_>,
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
@@ -67,6 +71,7 @@ pub(crate) fn render_variable_tree(
     object_phases: &HashMap<u64, ExpansionPhase>,
     object_errors: &HashMap<u64, String>,
     options: RenderOptions,
+    hidden_fields: Option<&HashSet<HideKey>>,
 ) -> Vec<ListItem<'static>> {
     let ctx = RenderCtx {
         object_fields,
@@ -76,6 +81,7 @@ pub(crate) fn render_variable_tree(
         object_errors,
         show_object_ids: options.show_object_ids,
         snapshot_mode: options.snapshot_mode,
+        hidden_fields,
     };
     let mut items = Vec::new();
     match root {
@@ -86,7 +92,16 @@ pub(crate) fn render_variable_tree(
                     THEME.null_value,
                 ))));
             } else {
-                for var in vars {
+                for (var_idx, var) in vars.iter().enumerate() {
+                    let key = HideKey::Var(var_idx);
+                    let is_hidden = ctx.hidden_fields.map(|s| s.contains(&key)).unwrap_or(false);
+                    if is_hidden {
+                        items.push(ListItem::new(Line::from(Span::styled(
+                            format!("  \u{25AA} [hidden: var[{}]]", var_idx),
+                            THEME.null_value,
+                        ))));
+                        continue;
+                    }
                     append_var(var, "  ", &ctx, &mut items);
                 }
             }
@@ -390,7 +405,23 @@ fn append_fields_expanded(
                     THEME.null_value,
                 ))));
             } else {
-                for field in field_list {
+                for (field_idx, field) in field_list.iter().enumerate() {
+                    let hide_key = HideKey::Field {
+                        parent_id: object_id,
+                        field_idx,
+                    };
+                    let is_hidden = ctx
+                        .hidden_fields
+                        .map(|s| s.contains(&hide_key))
+                        .unwrap_or(false);
+                    if is_hidden {
+                        items.push(ListItem::new(Line::from(Span::styled(
+                            format!("{indent}  \u{25AA} [hidden: {}]", field.name),
+                            THEME.null_value,
+                        ))));
+                        continue;
+                    }
+
                     if let FieldValue::ObjectRef { id, class_name, .. } = &field.value
                         && visited.contains(id)
                     {
@@ -763,6 +794,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: false,
                 },
+                None,
             );
             let text = render_items(items);
             assert!(text.contains("(no locals)"), "got: {text:?}");
@@ -782,6 +814,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: false,
                 },
+                None,
             );
             let text = render_items(items);
             assert!(text.contains("[0] null"), "got: {text:?}");
@@ -801,6 +834,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: false,
                 },
+                None,
             );
             let text = render_items(items);
             assert!(text.contains("+"), "expected + toggle, got: {text:?}");
@@ -832,6 +866,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: false,
                 },
+                None,
             );
             let text = render_items(items);
             assert!(text.contains("-"), "expected - toggle, got: {text:?}");
@@ -858,6 +893,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: true,
                 },
+                None,
             );
             let text = render_items(items);
             assert!(text.contains("?"), "expected ? toggle, got: {text:?}");
@@ -920,6 +956,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: true,
                 },
+                None,
             );
             let text = render_items(items);
 
@@ -973,6 +1010,7 @@ mod tests {
                     show_object_ids: true,
                     snapshot_mode: false,
                 },
+                None,
             );
             let with_ids_text = render_items(with_ids);
             assert!(
@@ -991,6 +1029,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: false,
                 },
+                None,
             );
             let without_ids_text = render_items(without_ids);
             assert!(
@@ -1029,6 +1068,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: false,
                 },
+                None,
             );
             let text = render_items(items);
             assert!(
@@ -1056,6 +1096,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: false,
                 },
+                None,
             );
             let text = render_items(items);
             assert!(text.contains("Object — boom"), "got: {text:?}");
@@ -1094,6 +1135,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: false,
                 },
+                None,
             );
             let text = render_items(items);
             assert!(text.contains("x"), "expected field name, got: {text:?}");
@@ -1134,6 +1176,7 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: true,
                 },
+                None,
             );
             let text = render_items(items);
 
@@ -1208,12 +1251,137 @@ mod tests {
                     show_object_ids: false,
                     snapshot_mode: false,
                 },
+                None,
             );
             let text = render_items(items);
             assert!(
                 text.contains("! [0] String — entry missing"),
                 "failed collection entry must include inline error message, got: {text:?}"
             );
+        }
+    }
+
+    /// Tests for hidden_fields overlay (Story 9.9).
+    mod hidden_fields_tests {
+        use super::*;
+        use crate::favorites::HideKey;
+
+        fn empty_options() -> RenderOptions {
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: true,
+            }
+        }
+
+        #[test]
+        fn render_variable_tree_hidden_var_shows_placeholder() {
+            let vars = vec![VariableInfo {
+                index: 0,
+                value: VariableValue::Null,
+            }];
+            let mut hidden = HashSet::new();
+            hidden.insert(HideKey::Var(0));
+            let items = render_variable_tree(
+                TreeRoot::Frame { vars: &vars },
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                empty_options(),
+                Some(&hidden),
+            );
+            assert_eq!(items.len(), 1, "hidden var → 1 placeholder row");
+            let text = render_items(items);
+            assert!(text.contains("[hidden:"), "got: {text:?}");
+        }
+
+        #[test]
+        fn render_variable_tree_not_hidden_var_shows_normal() {
+            let vars = vec![VariableInfo {
+                index: 0,
+                value: VariableValue::Null,
+            }];
+            let items = render_variable_tree(
+                TreeRoot::Frame { vars: &vars },
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                empty_options(),
+                None,
+            );
+            let text = render_items(items);
+            assert!(!text.contains("[hidden:"), "got: {text:?}");
+        }
+
+        #[test]
+        fn render_variable_tree_hidden_field_suppresses_children() {
+            use crate::views::stack_view::ExpansionPhase;
+
+            let mut object_fields = HashMap::new();
+            object_fields.insert(
+                1u64,
+                vec![FieldInfo {
+                    name: "child".to_string(),
+                    value: FieldValue::ObjectRef {
+                        id: 2,
+                        class_name: "Child".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+            );
+            object_fields.insert(
+                2u64,
+                vec![
+                    FieldInfo {
+                        name: "x".to_string(),
+                        value: FieldValue::Int(1),
+                    },
+                    FieldInfo {
+                        name: "y".to_string(),
+                        value: FieldValue::Int(2),
+                    },
+                ],
+            );
+            let mut object_phases = HashMap::new();
+            object_phases.insert(1u64, ExpansionPhase::Expanded);
+            object_phases.insert(2u64, ExpansionPhase::Expanded);
+
+            // Baseline: no hiding — 1 ObjectRef row + 2 primitive child rows = 3
+            let baseline = render_variable_tree(
+                TreeRoot::Subtree { root_id: 1 },
+                &object_fields,
+                &HashMap::new(),
+                &HashMap::new(),
+                &object_phases,
+                &HashMap::new(),
+                empty_options(),
+                None,
+            );
+            assert_eq!(baseline.len(), 3, "baseline: 1 field + 2 children");
+
+            // With hide: field 0 of object 1 hidden → 1 placeholder, children suppressed
+            let mut hidden = HashSet::new();
+            hidden.insert(HideKey::Field {
+                parent_id: 1,
+                field_idx: 0,
+            });
+            let hidden_items = render_variable_tree(
+                TreeRoot::Subtree { root_id: 1 },
+                &object_fields,
+                &HashMap::new(),
+                &HashMap::new(),
+                &object_phases,
+                &HashMap::new(),
+                empty_options(),
+                Some(&hidden),
+            );
+            assert_eq!(hidden_items.len(), 1, "hidden: only 1 placeholder row");
+            let text = render_items(hidden_items);
+            assert!(text.contains("[hidden:"), "got: {text:?}");
         }
     }
 

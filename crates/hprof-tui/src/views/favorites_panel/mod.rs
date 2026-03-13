@@ -14,7 +14,7 @@ use ratatui::{
 };
 
 use crate::{
-    favorites::{PinnedItem, PinnedSnapshot},
+    favorites::{HideKey, PinnedItem, PinnedSnapshot},
     theme::THEME,
     views::{
         stack_view::{
@@ -27,7 +27,8 @@ use crate::{
 
 type RowKindMap = HashMap<usize, (u64, bool)>;
 type ChunkSentinelMap = HashMap<usize, (u64, usize)>;
-type RowMetadata = (usize, RowKindMap, ChunkSentinelMap);
+type FieldRowMap = HashMap<usize, (HideKey, bool)>;
+type RowMetadata = (usize, RowKindMap, ChunkSentinelMap, FieldRowMap);
 
 /// Render-time data for the favorites panel (non-mutable).
 pub struct FavoritesPanel<'a> {
@@ -53,6 +54,8 @@ pub struct FavoritesPanelState {
     row_kind_maps: Vec<RowKindMap>,
     /// Per-item chunk sentinel map: sub_row -> (collection_id, chunk_offset).
     chunk_sentinel_maps: Vec<ChunkSentinelMap>,
+    /// Per-item field-row map: sub_row -> (HideKey, is_hidden).
+    field_row_maps: Vec<FieldRowMap>,
     /// ratatui list state — selected index is the absolute flat-row position.
     list_state: ListState,
 }
@@ -80,6 +83,7 @@ impl FavoritesPanelState {
         self.row_counts.resize(len, 1);
         self.row_kind_maps.resize_with(len, HashMap::new);
         self.chunk_sentinel_maps.resize_with(len, HashMap::new);
+        self.field_row_maps.resize_with(len, HashMap::new);
         self.clamp_sub_row();
     }
 
@@ -114,6 +118,7 @@ impl FavoritesPanelState {
         row_counts: Vec<usize>,
         row_kind_maps: Vec<RowKindMap>,
         chunk_sentinel_maps: Vec<ChunkSentinelMap>,
+        field_row_maps: Vec<FieldRowMap>,
     ) {
         debug_assert_eq!(
             row_counts.len(),
@@ -130,10 +135,16 @@ impl FavoritesPanelState {
             self.items_len,
             "chunk_sentinel_maps length mismatch"
         );
+        debug_assert_eq!(
+            field_row_maps.len(),
+            self.items_len,
+            "field_row_maps length mismatch"
+        );
 
         self.row_counts = row_counts;
         self.row_kind_maps = row_kind_maps;
         self.chunk_sentinel_maps = chunk_sentinel_maps;
+        self.field_row_maps = field_row_maps;
         self.clamp_sub_row();
     }
 
@@ -200,6 +211,15 @@ impl FavoritesPanelState {
             .copied()
     }
 
+    /// Returns the `HideKey` and hidden status for the row currently under the
+    /// cursor, or `None` if the cursor is on the header or a non-hideable row.
+    pub fn field_key_at_cursor(&self) -> Option<(HideKey, bool)> {
+        self.field_row_maps
+            .get(self.selected_item)?
+            .get(&self.sub_row)
+            .copied()
+    }
+
     pub(crate) fn clamp_sub_row(&mut self) {
         let max_sub_row = self
             .row_counts
@@ -238,9 +258,11 @@ struct MetadataCollector<'a> {
     object_static_fields: &'a HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &'a HashMap<u64, CollectionChunks>,
     object_phases: &'a HashMap<u64, ExpansionPhase>,
+    hidden_fields: &'a HashSet<HideKey>,
     row_count: usize,
     kind_map: RowKindMap,
     sentinel_map: ChunkSentinelMap,
+    field_row_map: FieldRowMap,
 }
 
 impl<'a> MetadataCollector<'a> {
@@ -250,20 +272,28 @@ impl<'a> MetadataCollector<'a> {
         collection_chunks: &'a HashMap<u64, CollectionChunks>,
         object_phases: &'a HashMap<u64, ExpansionPhase>,
         row_count: usize,
+        hidden_fields: &'a HashSet<HideKey>,
     ) -> Self {
         Self {
             object_fields,
             object_static_fields,
             collection_chunks,
             object_phases,
+            hidden_fields,
             row_count,
             kind_map: HashMap::new(),
             sentinel_map: HashMap::new(),
+            field_row_map: HashMap::new(),
         }
     }
 
     fn into_parts(self) -> RowMetadata {
-        (self.row_count, self.kind_map, self.sentinel_map)
+        (
+            self.row_count,
+            self.kind_map,
+            self.sentinel_map,
+            self.field_row_map,
+        )
     }
 
     fn push_row(&mut self) -> usize {
@@ -438,7 +468,16 @@ impl<'a> MetadataCollector<'a> {
             self.push_row(); // (no locals)
             return;
         }
-        for var in vars {
+        for (var_idx, var) in vars.iter().enumerate() {
+            let key = HideKey::Var(var_idx);
+            let is_hidden = self.hidden_fields.contains(&key);
+            if is_hidden {
+                let row = self.push_row();
+                self.field_row_map.insert(row, (key, true));
+                continue;
+            }
+            let var_row = self.row_count;
+            self.field_row_map.insert(var_row, (key, false));
             self.collect_var_row(var);
         }
     }
@@ -501,7 +540,18 @@ impl<'a> MetadataCollector<'a> {
                 if field_list.is_empty() {
                     self.push_row();
                 } else {
-                    for field in field_list {
+                    for (field_idx, field) in field_list.iter().enumerate() {
+                        let hide_key = HideKey::Field {
+                            parent_id: object_id,
+                            field_idx,
+                        };
+                        let is_hidden = self.hidden_fields.contains(&hide_key);
+                        if is_hidden {
+                            let row = self.push_row();
+                            self.field_row_map.insert(row, (hide_key, true));
+                            continue;
+                        }
+
                         if let FieldValue::ObjectRef { id, .. } = &field.value
                             && visited.contains(id)
                         {
@@ -520,6 +570,7 @@ impl<'a> MetadataCollector<'a> {
                             };
 
                         let row = self.push_row();
+                        self.field_row_map.insert(row, (hide_key, false));
                         if toggleable
                             && let FieldValue::ObjectRef { id, .. } = field.value
                             && !matches!(
@@ -704,6 +755,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
     let mut row_count = 1; // Header row.
     let mut kind_map = HashMap::new();
     let mut sentinel_map = HashMap::new();
+    let mut field_row_map = FieldRowMap::new();
 
     match &item.snapshot {
         PinnedSnapshot::Frame {
@@ -726,9 +778,10 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                 collection_chunks,
                 &object_phases,
                 start_count,
+                &item.hidden_fields,
             );
             collector.collect_frame_rows(variables);
-            (row_count, kind_map, sentinel_map) = collector.into_parts();
+            (row_count, kind_map, sentinel_map, field_row_map) = collector.into_parts();
 
             debug_assert_eq!(
                 row_count,
@@ -743,6 +796,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                         show_object_ids: false,
                         snapshot_mode: true,
                     },
+                    Some(&item.hidden_fields),
                 )
                 .len()
                     + 1
@@ -771,6 +825,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                 collection_chunks,
                 &object_phases,
                 start_count,
+                &item.hidden_fields,
             );
             if let Some(root_chunks) = collection_chunks.get(root_id) {
                 collector.collect_collection_rows(*root_id, root_chunks);
@@ -778,7 +833,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                 let mut visited = HashSet::new();
                 collector.collect_object_children_rows(*root_id, &mut visited, 0);
             }
-            (row_count, kind_map, sentinel_map) = collector.into_parts();
+            (row_count, kind_map, sentinel_map, field_row_map) = collector.into_parts();
 
             debug_assert_eq!(
                 row_count,
@@ -793,6 +848,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                         show_object_ids: false,
                         snapshot_mode: true,
                     },
+                    Some(&item.hidden_fields),
                 )
                 .len()
                     + 1
@@ -807,7 +863,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
     }
 
     row_count += 1; // Separator row.
-    (row_count, kind_map, sentinel_map)
+    (row_count, kind_map, sentinel_map, field_row_map)
 }
 
 impl StatefulWidget for FavoritesPanel<'_> {
@@ -818,13 +874,20 @@ impl StatefulWidget for FavoritesPanel<'_> {
         let mut all_row_counts = Vec::with_capacity(self.pinned.len());
         let mut all_row_kind_maps = Vec::with_capacity(self.pinned.len());
         let mut all_chunk_sentinel_maps = Vec::with_capacity(self.pinned.len());
+        let mut all_field_row_maps = Vec::with_capacity(self.pinned.len());
         for item in self.pinned {
-            let (row_count, kind_map, sentinel_map) = collect_row_metadata(item);
+            let (row_count, kind_map, sentinel_map, field_row_map) = collect_row_metadata(item);
             all_row_counts.push(row_count);
             all_row_kind_maps.push(kind_map);
             all_chunk_sentinel_maps.push(sentinel_map);
+            all_field_row_maps.push(field_row_map);
         }
-        state.update_row_metadata(all_row_counts, all_row_kind_maps, all_chunk_sentinel_maps);
+        state.update_row_metadata(
+            all_row_counts,
+            all_row_kind_maps,
+            all_chunk_sentinel_maps,
+            all_field_row_maps,
+        );
 
         let border_style = if self.focused {
             THEME.border_focused
@@ -889,6 +952,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                             show_object_ids: self.show_object_ids,
                             snapshot_mode: true,
                         },
+                        Some(&item.hidden_fields),
                     );
                     items.extend(tree);
                 }
@@ -922,6 +986,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                             show_object_ids: self.show_object_ids,
                             snapshot_mode: true,
                         },
+                        Some(&item.hidden_fields),
                     );
                     items.extend(tree);
                 }

@@ -701,6 +701,33 @@ impl<E: NavigationEngine> App<E> {
                 self.navigate_to_path(thread_id, &nav_path);
                 self.focus = Focus::StackFrames;
             }
+            // h — hide / show field (AC1, AC2)
+            // 'h'/'H' are caught here as SearchChar because input::from_key maps
+            // unbound printable keys to SearchChar. Focus-based dispatch ensures
+            // these arms fire only when the favorites panel is focused, leaving
+            // thread-list incremental search fully intact.
+            InputEvent::SearchChar('h') => {
+                if let Some((key, is_hidden)) = self.favorites_list_state.field_key_at_cursor() {
+                    let idx = self.favorites_list_state.selected_index();
+                    if let Some(item) = self.pinned.get_mut(idx) {
+                        if is_hidden {
+                            item.hidden_fields.remove(&key);
+                        } else {
+                            item.hidden_fields.insert(key);
+                        }
+                        // row_counts are one frame stale — clamp so sub_row
+                        // doesn't point past the (now shorter) item.
+                        self.favorites_list_state.clamp_sub_row();
+                    }
+                }
+            }
+            // H — reset all hidden fields in current snapshot (AC3, AC4)
+            InputEvent::SearchChar('H') => {
+                let idx = self.favorites_list_state.selected_index();
+                if let Some(item) = self.pinned.get_mut(idx) {
+                    item.hidden_fields.clear(); // no-op if already empty (AC4)
+                }
+            }
             InputEvent::FocusFavorites | InputEvent::Escape => {
                 self.focus = self.prev_focus;
             }

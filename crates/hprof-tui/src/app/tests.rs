@@ -379,6 +379,7 @@ fn make_favorite_item_with_tid(
             value_label: "42".to_string(),
         },
         local_collapsed: HashSet::new(),
+        hidden_fields: HashSet::new(),
         key: make_pin_key_var(thread_id, thread_name, frame_id, 0),
     }
 }
@@ -397,6 +398,7 @@ fn make_field_favorite_item(
             value_label: "42".to_string(),
         },
         local_collapsed: HashSet::new(),
+        hidden_fields: HashSet::new(),
         key: make_pin_key_field(1, thread_name, frame_id, var_idx, &field_path),
     }
 }
@@ -2133,6 +2135,7 @@ mod favorites {
                 value_label: "42".to_string(),
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: make_pin_key_var(1, "main", 1, 0),
         });
         app.sync_favorites_selection();
@@ -2202,6 +2205,7 @@ mod favorites {
                 value_label: "42".to_string(),
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: make_pin_key_var(1, "main", 1, 0),
         });
         app.last_area_width = MIN_WIDTH_FAVORITES_PANEL;
@@ -2321,6 +2325,7 @@ mod favorites {
                 value_label: "dummy".to_string(),
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: make_pin_key_coll_entry(1, "main", 10, 0, &[0], 889, 1),
         });
         app.sync_favorites_selection();
@@ -2369,6 +2374,7 @@ mod favorites {
                 value_label: "dummy".to_string(),
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: make_pin_key_coll_entry_field(1, "main", 10, 0, &[0], 889, 1, &[1]),
         });
         app.sync_favorites_selection();
@@ -2412,6 +2418,7 @@ mod favorites {
                 value_label: "dummy".to_string(),
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             // Var at index 0 is directly the collection (no field hops).
             key: make_pin_key_coll_entry(1, "main", 10, 0, &[], 889, 1),
         });
@@ -2467,6 +2474,7 @@ mod favorites {
                 value_label: "dummy".to_string(),
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             // var[0][1].inner (field 0 of entry 1's object) is collection 890, entry 0.
             key: crate::favorites::PinKey {
                 thread_id: ThreadId(1),
@@ -2614,6 +2622,7 @@ mod favorites {
                 truncated: false,
             },
             local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
             key: make_pin_key_var(1, "main", 1, 0),
         });
 
@@ -2655,6 +2664,18 @@ mod favorites {
             !cc.chunk_pages.contains_key(&new_offset),
             "chunk beyond snapshot page cap must not be inserted"
         );
+    }
+
+    // 6.16
+    #[test]
+    fn handle_favorites_input_h_noop_when_no_pinned_items() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.focus = Focus::Favorites;
+
+        // No panic expected; pinned remains empty.
+        app.handle_input(InputEvent::SearchChar('h'));
+        assert!(app.pinned.is_empty());
     }
 }
 
