@@ -317,6 +317,29 @@ impl NavigationEngine for StubEngine {
                     has_more: end < total as usize,
                 })
             }
+            // 1 entry: ObjectRef with entry_count == 0 (empty collection inside collection)
+            891 => {
+                let total: u64 = 1;
+                let end = (offset + limit).min(total as usize);
+                let entries = (offset..end)
+                    .map(|i| EntryInfo {
+                        index: i,
+                        key: None,
+                        value: FieldValue::ObjectRef {
+                            id: 777,
+                            class_name: "ArrayList".to_string(),
+                            entry_count: Some(0),
+                            inline_value: None,
+                        },
+                    })
+                    .collect();
+                Some(CollectionPage {
+                    entries,
+                    total_count: total,
+                    offset,
+                    has_more: end < total as usize,
+                })
+            }
             _ => None,
         }
     }
@@ -1860,6 +1883,152 @@ mod collection_paging {
         assert!(
             app.pending_pages.is_empty(),
             "Enter on field Object[0] must not start page load"
+        );
+    }
+
+    fn make_static_empty_collection_app() -> App<StubEngine> {
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(
+                42,
+                Some(vec![FieldInfo {
+                    name: "x".to_string(),
+                    value: FieldValue::Int(1),
+                }]),
+            )
+            .with_class_of(42, 500)
+            .with_static_fields(
+                500,
+                vec![FieldInfo {
+                    name: "EMPTY".to_string(),
+                    value: FieldValue::ObjectRef {
+                        id: 777,
+                        class_name: "ArrayList".to_string(),
+                        entry_count: Some(0),
+                        inline_value: None,
+                    },
+                }],
+            );
+        App::new(engine, "test.hprof".to_string())
+    }
+
+    fn nav_to_static_empty_collection(app: &mut App<StubEngine>) {
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.handle_input(InputEvent::Down); // → OnVar
+        app.handle_input(InputEvent::Enter); // expand object 42
+        poll_all_expansions(app);
+        app.handle_input(InputEvent::Down); // → x field
+        app.handle_input(InputEvent::Down); // → EMPTY static field
+    }
+
+    #[test]
+    fn enter_on_empty_collection_static_field_is_noop() {
+        let mut app = make_static_empty_collection_app();
+        nav_to_static_empty_collection(&mut app);
+        assert!(
+            cursor_ends_with_static_field(app.stack_state.as_ref().unwrap().cursor()),
+            "expected static field cursor, got {:?}",
+            app.stack_state.as_ref().unwrap().cursor()
+        );
+        app.handle_input(InputEvent::Enter); // should be no-op
+
+        assert!(
+            app.pending_expansions.is_empty(),
+            "Enter on empty static collection must not start expansion"
+        );
+        assert!(
+            app.pending_pages.is_empty(),
+            "Enter on empty static collection must not start page load"
+        );
+    }
+
+    #[test]
+    fn right_on_empty_collection_static_field_is_noop() {
+        let mut app = make_static_empty_collection_app();
+        nav_to_static_empty_collection(&mut app);
+        app.handle_input(InputEvent::Right); // should be no-op
+
+        assert!(
+            app.pending_expansions.is_empty(),
+            "Right on empty static collection must not start expansion"
+        );
+        assert!(
+            app.pending_pages.is_empty(),
+            "Right on empty static collection must not start page load"
+        );
+    }
+
+    fn make_empty_entry_collection_app() -> App<StubEngine> {
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let vars = vec![make_obj_var(0, 42)];
+        // Object 42 has field items: collection 891 (1 entry with entry_count == 0)
+        let expand_fields = Some(vec![FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 891,
+                class_name: "java.util.ArrayList".to_string(),
+                entry_count: Some(1),
+                inline_value: None,
+            },
+        }]);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(42, expand_fields);
+        App::new(engine, "test.hprof".to_string())
+    }
+
+    fn nav_to_empty_collection_entry(app: &mut App<StubEngine>) {
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.handle_input(InputEvent::Down); // → OnVar
+        app.handle_input(InputEvent::Enter); // expand object 42
+        poll_all_expansions(app);
+        app.handle_input(InputEvent::Down); // → items field
+        app.handle_input(InputEvent::Enter); // open collection 891
+        poll_all_pages(app);
+        app.handle_input(InputEvent::Down); // → entry [0] (empty ObjectRef)
+    }
+
+    #[test]
+    fn enter_on_empty_collection_entry_is_noop() {
+        let mut app = make_empty_entry_collection_app();
+        nav_to_empty_collection_entry(&mut app);
+        app.handle_input(InputEvent::Enter); // should be no-op
+
+        assert!(
+            app.pending_expansions.is_empty(),
+            "Enter on empty collection entry must not start expansion"
+        );
+        assert!(
+            app.pending_pages.is_empty(),
+            "Enter on empty collection entry must not start page load"
+        );
+    }
+
+    #[test]
+    fn right_on_empty_collection_entry_is_noop() {
+        let mut app = make_empty_entry_collection_app();
+        nav_to_empty_collection_entry(&mut app);
+        app.handle_input(InputEvent::Right); // should be no-op
+
+        assert!(
+            app.pending_expansions.is_empty(),
+            "Right on empty collection entry must not start expansion"
+        );
+        assert!(
+            app.pending_pages.is_empty(),
+            "Right on empty collection entry must not start page load"
         );
     }
 }

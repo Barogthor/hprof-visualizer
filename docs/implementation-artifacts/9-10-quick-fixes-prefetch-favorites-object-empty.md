@@ -20,7 +20,7 @@ frozen snapshots that cannot fetch new pages.
 
 **Fix:** Chunk sentinels for unloaded chunks are now completely hidden
 in snapshot mode (both render and metadata collector). Prefetch logic
-removed from all favorites input handlers (Down, Right, Enter).
+removed from the favorites Down handler (Right/Enter never had prefetch).
 
 ### N10 — Object[0] displayed as expandable
 

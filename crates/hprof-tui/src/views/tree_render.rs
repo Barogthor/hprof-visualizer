@@ -1507,6 +1507,50 @@ mod tests {
                 "empty collection must not show + toggle: {text:?}"
             );
         }
+
+        #[test]
+        fn empty_collection_field_renders_without_toggle() {
+            let vars = vec![make_var(0, 42)];
+            let mut object_fields = HashMap::new();
+            object_fields.insert(
+                42u64,
+                vec![FieldInfo {
+                    name: "items".to_string(),
+                    value: FieldValue::ObjectRef {
+                        id: 0x99,
+                        class_name: "java.util.ArrayList".to_string(),
+                        entry_count: Some(0),
+                        inline_value: None,
+                    },
+                }],
+            );
+            let mut object_phases = HashMap::new();
+            object_phases.insert(42u64, ExpansionPhase::Expanded);
+
+            let items = render_variable_tree(
+                TreeRoot::Frame { vars: &vars },
+                &object_fields,
+                &HashMap::new(),
+                &HashMap::new(),
+                &object_phases,
+                &HashMap::new(),
+                RenderOptions {
+                    show_object_ids: false,
+                    snapshot_mode: false,
+                    show_hidden: false,
+                },
+                None,
+            );
+            let text = render_items(items);
+            assert!(
+                text.contains("(empty)"),
+                "expected '(empty)' label on field, got: {text:?}"
+            );
+            assert!(
+                !text.contains('+'),
+                "empty collection field must not show + toggle: {text:?}"
+            );
+        }
     }
 
     /// Unit tests for low-level helper functions.

@@ -630,6 +630,9 @@ impl<'a> MetadataCollector<'a> {
         // cannot fetch new pages, so unloaded chunks are hidden.
         for (offset, _) in compute_chunk_ranges(cc.total_count) {
             if let Some(ChunkState::Loaded(page)) = cc.chunk_pages.get(&offset) {
+                // Push one row for the chunk header ([offset...end]) to keep
+                // metadata row indices in sync with the renderer. The row index
+                // itself is not used here since loaded chunks have no sentinel.
                 let _row = self.push_row();
                 for entry in &page.entries {
                     self.collect_collection_entry_row(collection_id, entry);
