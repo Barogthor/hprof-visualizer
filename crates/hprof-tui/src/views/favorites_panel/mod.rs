@@ -259,6 +259,7 @@ struct MetadataCollector<'a> {
     collection_chunks: &'a HashMap<u64, CollectionChunks>,
     object_phases: &'a HashMap<u64, ExpansionPhase>,
     hidden_fields: &'a HashSet<HideKey>,
+    show_hidden: bool,
     row_count: usize,
     kind_map: RowKindMap,
     sentinel_map: ChunkSentinelMap,
@@ -273,6 +274,7 @@ impl<'a> MetadataCollector<'a> {
         object_phases: &'a HashMap<u64, ExpansionPhase>,
         row_count: usize,
         hidden_fields: &'a HashSet<HideKey>,
+        show_hidden: bool,
     ) -> Self {
         Self {
             object_fields,
@@ -280,6 +282,7 @@ impl<'a> MetadataCollector<'a> {
             collection_chunks,
             object_phases,
             hidden_fields,
+            show_hidden,
             row_count,
             kind_map: HashMap::new(),
             sentinel_map: HashMap::new(),
@@ -472,8 +475,10 @@ impl<'a> MetadataCollector<'a> {
             let key = HideKey::Var(var_idx);
             let is_hidden = self.hidden_fields.contains(&key);
             if is_hidden {
-                let row = self.push_row();
-                self.field_row_map.insert(row, (key, true));
+                if self.show_hidden {
+                    let row = self.push_row();
+                    self.field_row_map.insert(row, (key, true));
+                }
                 continue;
             }
             let var_row = self.row_count;
@@ -547,8 +552,10 @@ impl<'a> MetadataCollector<'a> {
                         };
                         let is_hidden = self.hidden_fields.contains(&hide_key);
                         if is_hidden {
-                            let row = self.push_row();
-                            self.field_row_map.insert(row, (hide_key, true));
+                            if self.show_hidden {
+                                let row = self.push_row();
+                                self.field_row_map.insert(row, (hide_key, true));
+                            }
                             continue;
                         }
 
@@ -779,6 +786,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                 &object_phases,
                 start_count,
                 &item.hidden_fields,
+                item.show_hidden,
             );
             collector.collect_frame_rows(variables);
             (row_count, kind_map, sentinel_map, field_row_map) = collector.into_parts();
@@ -795,6 +803,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                     RenderOptions {
                         show_object_ids: false,
                         snapshot_mode: true,
+                        show_hidden: item.show_hidden,
                     },
                     Some(&item.hidden_fields),
                 )
@@ -826,6 +835,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                 &object_phases,
                 start_count,
                 &item.hidden_fields,
+                item.show_hidden,
             );
             if let Some(root_chunks) = collection_chunks.get(root_id) {
                 collector.collect_collection_rows(*root_id, root_chunks);
@@ -847,6 +857,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                     RenderOptions {
                         show_object_ids: false,
                         snapshot_mode: true,
+                        show_hidden: item.show_hidden,
                     },
                     Some(&item.hidden_fields),
                 )
@@ -951,6 +962,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         RenderOptions {
                             show_object_ids: self.show_object_ids,
                             snapshot_mode: true,
+                            show_hidden: item.show_hidden,
                         },
                         Some(&item.hidden_fields),
                     );
@@ -985,6 +997,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         RenderOptions {
                             show_object_ids: self.show_object_ids,
                             snapshot_mode: true,
+                            show_hidden: item.show_hidden,
                         },
                         Some(&item.hidden_fields),
                     );

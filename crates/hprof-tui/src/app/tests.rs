@@ -380,6 +380,7 @@ fn make_favorite_item_with_tid(
         },
         local_collapsed: HashSet::new(),
         hidden_fields: HashSet::new(),
+        show_hidden: false,
         key: make_pin_key_var(thread_id, thread_name, frame_id, 0),
     }
 }
@@ -399,6 +400,7 @@ fn make_field_favorite_item(
         },
         local_collapsed: HashSet::new(),
         hidden_fields: HashSet::new(),
+        show_hidden: false,
         key: make_pin_key_field(1, thread_name, frame_id, var_idx, &field_path),
     }
 }
@@ -2136,6 +2138,7 @@ mod favorites {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: make_pin_key_var(1, "main", 1, 0),
         });
         app.sync_favorites_selection();
@@ -2206,6 +2209,7 @@ mod favorites {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: make_pin_key_var(1, "main", 1, 0),
         });
         app.last_area_width = MIN_WIDTH_FAVORITES_PANEL;
@@ -2326,6 +2330,7 @@ mod favorites {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: make_pin_key_coll_entry(1, "main", 10, 0, &[0], 889, 1),
         });
         app.sync_favorites_selection();
@@ -2375,6 +2380,7 @@ mod favorites {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: make_pin_key_coll_entry_field(1, "main", 10, 0, &[0], 889, 1, &[1]),
         });
         app.sync_favorites_selection();
@@ -2419,6 +2425,7 @@ mod favorites {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             // Var at index 0 is directly the collection (no field hops).
             key: make_pin_key_coll_entry(1, "main", 10, 0, &[], 889, 1),
         });
@@ -2475,6 +2482,7 @@ mod favorites {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             // var[0][1].inner (field 0 of entry 1's object) is collection 890, entry 0.
             key: crate::favorites::PinKey {
                 thread_id: ThreadId(1),
@@ -2623,6 +2631,7 @@ mod favorites {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: make_pin_key_var(1, "main", 1, 0),
         });
 

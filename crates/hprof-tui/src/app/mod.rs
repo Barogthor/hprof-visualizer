@@ -721,11 +721,15 @@ impl<E: NavigationEngine> App<E> {
                     }
                 }
             }
-            // H — reset all hidden fields in current snapshot (AC3, AC4)
+            // H — toggle reveal mode for hidden rows in current snapshot
             InputEvent::SearchChar('H') => {
                 let idx = self.favorites_list_state.selected_index();
                 if let Some(item) = self.pinned.get_mut(idx) {
-                    item.hidden_fields.clear(); // no-op if already empty (AC4)
+                    item.show_hidden = !item.show_hidden;
+                    // Transitioning from reveal→hidden may shorten the item.
+                    if !item.show_hidden {
+                        self.favorites_list_state.clamp_sub_row();
+                    }
                 }
             }
             InputEvent::FocusFavorites | InputEvent::Escape => {

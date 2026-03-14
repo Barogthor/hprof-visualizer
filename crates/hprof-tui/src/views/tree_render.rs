@@ -37,6 +37,10 @@ pub(crate) struct RenderOptions {
     /// Whether rows without captured snapshot descendants should be
     /// marked as unavailable (`?`) instead of collapsed (`+`).
     pub snapshot_mode: bool,
+    /// When `true`, hidden rows are rendered as `▪ [hidden: …]` placeholders
+    /// so the user can navigate to them and restore individually.
+    /// When `false` (default), hidden rows are absent from the output.
+    pub show_hidden: bool,
 }
 
 /// Shared read-only context threaded through all render helpers.
@@ -50,6 +54,8 @@ struct RenderCtx<'a> {
     snapshot_mode: bool,
     /// Row-level hide overlay — `None` means hiding not applicable (e.g. stack view).
     hidden_fields: Option<&'a HashSet<HideKey>>,
+    /// Mirrors `RenderOptions::show_hidden`.
+    show_hidden: bool,
 }
 
 /// Renders a variable tree into a flat list of styled items.
@@ -82,6 +88,7 @@ pub(crate) fn render_variable_tree(
         show_object_ids: options.show_object_ids,
         snapshot_mode: options.snapshot_mode,
         hidden_fields,
+        show_hidden: options.show_hidden,
     };
     let mut items = Vec::new();
     match root {
@@ -96,10 +103,12 @@ pub(crate) fn render_variable_tree(
                     let key = HideKey::Var(var_idx);
                     let is_hidden = ctx.hidden_fields.map(|s| s.contains(&key)).unwrap_or(false);
                     if is_hidden {
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            format!("  \u{25AA} [hidden: var[{}]]", var_idx),
-                            THEME.null_value,
-                        ))));
+                        if ctx.show_hidden {
+                            items.push(ListItem::new(Line::from(Span::styled(
+                                format!("  \u{25AA} [hidden: var[{}]]", var_idx),
+                                THEME.null_value,
+                            ))));
+                        }
                         continue;
                     }
                     append_var(var, "  ", &ctx, &mut items);
@@ -415,10 +424,12 @@ fn append_fields_expanded(
                         .map(|s| s.contains(&hide_key))
                         .unwrap_or(false);
                     if is_hidden {
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            format!("{indent}  \u{25AA} [hidden: {}]", field.name),
-                            THEME.null_value,
-                        ))));
+                        if ctx.show_hidden {
+                            items.push(ListItem::new(Line::from(Span::styled(
+                                format!("{indent}  \u{25AA} [hidden: {}]", field.name),
+                                THEME.null_value,
+                            ))));
+                        }
                         continue;
                     }
 
@@ -793,6 +804,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: false,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -813,6 +825,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: false,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -833,6 +846,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: false,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -865,6 +879,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: false,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -892,6 +907,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: true,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -955,6 +971,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: true,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -1009,6 +1026,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: true,
                     snapshot_mode: false,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -1028,6 +1046,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: false,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -1067,6 +1086,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: false,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -1095,6 +1115,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: false,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -1134,6 +1155,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: false,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -1175,6 +1197,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: true,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -1250,6 +1273,7 @@ mod tests {
                 RenderOptions {
                     show_object_ids: false,
                     snapshot_mode: false,
+                    show_hidden: false,
                 },
                 None,
             );
@@ -1270,11 +1294,41 @@ mod tests {
             RenderOptions {
                 show_object_ids: false,
                 snapshot_mode: true,
+                show_hidden: false,
             }
         }
 
         #[test]
         fn render_variable_tree_hidden_var_shows_placeholder() {
+            // show_hidden=true: hidden row renders as placeholder
+            let vars = vec![VariableInfo {
+                index: 0,
+                value: VariableValue::Null,
+            }];
+            let mut hidden = HashSet::new();
+            hidden.insert(HideKey::Var(0));
+            let items = render_variable_tree(
+                TreeRoot::Frame { vars: &vars },
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                RenderOptions {
+                    show_object_ids: false,
+                    snapshot_mode: true,
+                    show_hidden: true,
+                },
+                Some(&hidden),
+            );
+            assert_eq!(items.len(), 1, "hidden var → 1 placeholder row");
+            let text = render_items(items);
+            assert!(text.contains("[hidden:"), "got: {text:?}");
+        }
+
+        #[test]
+        fn render_variable_tree_hidden_var_absent_when_show_hidden_false() {
+            // show_hidden=false (default): hidden row is completely absent
             let vars = vec![VariableInfo {
                 index: 0,
                 value: VariableValue::Null,
@@ -1291,9 +1345,7 @@ mod tests {
                 empty_options(),
                 Some(&hidden),
             );
-            assert_eq!(items.len(), 1, "hidden var → 1 placeholder row");
-            let text = render_items(items);
-            assert!(text.contains("[hidden:"), "got: {text:?}");
+            assert_eq!(items.len(), 0, "hidden var with show_hidden=false → no row");
         }
 
         #[test]
@@ -1363,7 +1415,7 @@ mod tests {
             );
             assert_eq!(baseline.len(), 3, "baseline: 1 field + 2 children");
 
-            // With hide: field 0 of object 1 hidden → 1 placeholder, children suppressed
+            // With hide + show_hidden=true: 1 placeholder, children suppressed
             let mut hidden = HashSet::new();
             hidden.insert(HideKey::Field {
                 parent_id: 1,
@@ -1376,12 +1428,29 @@ mod tests {
                 &HashMap::new(),
                 &object_phases,
                 &HashMap::new(),
-                empty_options(),
+                RenderOptions {
+                    show_object_ids: false,
+                    snapshot_mode: true,
+                    show_hidden: true,
+                },
                 Some(&hidden),
             );
             assert_eq!(hidden_items.len(), 1, "hidden: only 1 placeholder row");
             let text = render_items(hidden_items);
             assert!(text.contains("[hidden:"), "got: {text:?}");
+
+            // With hide + show_hidden=false: field and children completely absent
+            let hidden_absent = render_variable_tree(
+                TreeRoot::Subtree { root_id: 1 },
+                &object_fields,
+                &HashMap::new(),
+                &HashMap::new(),
+                &object_phases,
+                &HashMap::new(),
+                empty_options(),
+                Some(&hidden),
+            );
+            assert_eq!(hidden_absent.len(), 0, "show_hidden=false → no rows");
         }
     }
 

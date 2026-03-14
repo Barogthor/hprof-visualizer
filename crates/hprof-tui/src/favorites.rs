@@ -99,9 +99,15 @@ pub struct PinnedItem {
     ///
     /// Default is empty: all captured nodes are expanded in the favorites view.
     pub local_collapsed: HashSet<u64>,
-    /// Field/variable rows hidden by the user (`h` key). Hidden rows are
-    /// replaced by a `▪ [hidden: …]` placeholder.
+    /// Field/variable rows hidden by the user (`h` key).
+    ///
+    /// When `show_hidden = false` (default), hidden rows are removed entirely.
+    /// When `show_hidden = true`, they appear as `▪ [hidden: …]` placeholders.
     pub hidden_fields: HashSet<HideKey>,
+    /// Whether hidden rows are currently revealed as `▪ [hidden: …]` placeholders.
+    ///
+    /// Toggled by `H`. When `false`, hidden rows are absent from the display.
+    pub show_hidden: bool,
     /// Structural key used for toggle detection and de-duplication.
     pub key: PinKey,
 }
@@ -541,6 +547,7 @@ impl<'a> PinnedItemFactory<'a> {
             snapshot,
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: self.thread_id,
                 thread_name: self.thread_name.to_string(),

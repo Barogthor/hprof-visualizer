@@ -1744,6 +1744,7 @@ impl StackState {
                     RenderOptions {
                         show_object_ids,
                         snapshot_mode: false,
+                        show_hidden: false,
                     },
                     None,
                 );

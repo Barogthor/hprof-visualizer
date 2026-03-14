@@ -43,6 +43,7 @@ fn make_frame_item() -> PinnedItem {
         },
         local_collapsed: HashSet::new(),
         hidden_fields: HashSet::new(),
+        show_hidden: false,
         key: PinKey {
             thread_id: ThreadId(1),
             thread_name: "main".to_string(),
@@ -61,6 +62,7 @@ fn make_primitive_item() -> PinnedItem {
         },
         local_collapsed: HashSet::new(),
         hidden_fields: HashSet::new(),
+        show_hidden: false,
         key: PinKey {
             thread_id: ThreadId(1),
             thread_name: "main".to_string(),
@@ -110,6 +112,7 @@ fn make_frame_with_nested_objects() -> PinnedItem {
         },
         local_collapsed: HashSet::new(),
         hidden_fields: HashSet::new(),
+        show_hidden: false,
         key: PinKey {
             thread_id: ThreadId(1),
             thread_name: "main".to_string(),
@@ -227,6 +230,7 @@ mod rendering_tests {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -307,6 +311,7 @@ mod rendering_tests {
             },
             local_collapsed,
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -374,6 +379,7 @@ mod rendering_tests {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -545,6 +551,7 @@ mod row_metadata_tests {
             RenderOptions {
                 show_object_ids: false,
                 snapshot_mode: true,
+                show_hidden: false,
             },
             None,
         );
@@ -643,6 +650,7 @@ mod row_metadata_tests {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -673,6 +681,7 @@ mod row_metadata_tests {
             RenderOptions {
                 show_object_ids: false,
                 snapshot_mode: true,
+                show_hidden: false,
             },
             None,
         );
@@ -702,6 +711,7 @@ mod row_metadata_tests {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -751,6 +761,7 @@ mod row_metadata_tests {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -784,6 +795,7 @@ mod row_metadata_tests {
             RenderOptions {
                 show_object_ids: false,
                 snapshot_mode: true,
+                show_hidden: false,
             },
             None,
         );
@@ -838,6 +850,7 @@ mod row_metadata_tests {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -867,6 +880,7 @@ mod row_metadata_tests {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: ThreadId(1),
                 thread_name: "main".to_string(),
@@ -936,6 +950,7 @@ mod hide_field_tests {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: crate::views::stack_view::ThreadId(1),
                 thread_name: "main".to_string(),
@@ -988,6 +1003,7 @@ mod hide_field_tests {
             },
             local_collapsed: HashSet::new(),
             hidden_fields: HashSet::new(),
+            show_hidden: false,
             key: PinKey {
                 thread_id: crate::views::stack_view::ThreadId(1),
                 thread_name: "main".to_string(),
@@ -1016,12 +1032,19 @@ mod hide_field_tests {
     fn collect_row_metadata_hidden_var_row_shows_is_hidden_true() {
         let mut item = make_two_var_frame();
         item.hidden_fields.insert(HideKey::Var(0));
-        let (_row_count, _kind_map, _sentinel_map, field_row_map) = collect_row_metadata(&item);
 
-        // var[0] is hidden: its entry should have is_hidden=true at sub_row 1.
-        assert_eq!(field_row_map.get(&1), Some(&(HideKey::Var(0), true)));
-        // var[1] is visible at sub_row 2.
-        assert_eq!(field_row_map.get(&2), Some(&(HideKey::Var(1), false)));
+        // show_hidden=false (default): hidden var produces no row — absent from map.
+        // var[1] shifts to sub_row 1.
+        let (_row_count, _kind_map, _sentinel_map, field_row_map) = collect_row_metadata(&item);
+        assert_eq!(field_row_map.get(&1), Some(&(HideKey::Var(1), false)));
+        assert_eq!(field_row_map.get(&2), None);
+        assert_eq!(field_row_map.len(), 1);
+
+        // show_hidden=true: hidden var appears as placeholder at sub_row 1 with is_hidden=true.
+        item.show_hidden = true;
+        let (_row_count2, _kind_map2, _sentinel_map2, field_row_map2) = collect_row_metadata(&item);
+        assert_eq!(field_row_map2.get(&1), Some(&(HideKey::Var(0), true)));
+        assert_eq!(field_row_map2.get(&2), Some(&(HideKey::Var(1), false)));
     }
 
     // 6.11
@@ -1058,6 +1081,7 @@ mod hide_field_tests {
             RenderOptions {
                 show_object_ids: false,
                 snapshot_mode: true,
+                show_hidden: false,
             },
             None,
         );
@@ -1085,6 +1109,7 @@ mod hide_field_tests {
         };
         let object_phases_hidden =
             object_phases_for_item(of2, osf2, cc2, &item_hidden.local_collapsed);
+        // show_hidden=false: field + children completely absent → row_count=2
         let hide_set = item_hidden.hidden_fields.clone();
         let rendered_hidden = render_variable_tree(
             TreeRoot::Subtree { root_id: *root_id2 },
@@ -1096,12 +1121,56 @@ mod hide_field_tests {
             RenderOptions {
                 show_object_ids: false,
                 snapshot_mode: true,
+                show_hidden: false,
             },
             Some(&hide_set),
         );
-        // header=1, placeholder=1, separator=1 → row_count=3
-        assert_eq!(row_count_hidden, 3);
+        assert_eq!(
+            row_count_hidden, 2,
+            "show_hidden=false: header + separator only"
+        );
         assert_eq!(row_count_hidden, rendered_hidden.len() + 2);
+
+        // show_hidden=true: placeholder row → row_count=3
+        let mut item_revealed = make_subtree_with_objectref_child();
+        item_revealed.hidden_fields.insert(HideKey::Field {
+            parent_id: 1,
+            field_idx: 0,
+        });
+        item_revealed.show_hidden = true;
+        let (row_count_revealed, _, _, _) = collect_row_metadata(&item_revealed);
+
+        let PinnedSnapshot::Subtree {
+            root_id: root_id3,
+            object_fields: of3,
+            object_static_fields: osf3,
+            collection_chunks: cc3,
+            ..
+        } = &item_revealed.snapshot
+        else {
+            panic!("expected subtree");
+        };
+        let object_phases_revealed =
+            object_phases_for_item(of3, osf3, cc3, &item_revealed.local_collapsed);
+        let rendered_revealed = render_variable_tree(
+            TreeRoot::Subtree { root_id: *root_id3 },
+            of3,
+            osf3,
+            cc3,
+            &object_phases_revealed,
+            &HashMap::new(),
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: true,
+                show_hidden: true,
+            },
+            Some(&item_revealed.hidden_fields),
+        );
+        assert_eq!(
+            row_count_revealed, 3,
+            "show_hidden=true: header + placeholder + separator"
+        );
+        assert_eq!(row_count_revealed, rendered_revealed.len() + 2);
     }
 
     // 6.12

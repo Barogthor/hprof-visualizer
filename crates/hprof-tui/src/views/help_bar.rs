@@ -41,7 +41,7 @@ const ENTRIES: &[(&str, &str, u8)] = &[
     ("F", "Focus favorites panel", ALL),
     ("g", "Favorites: go to source", FAV),
     ("h", "Favorites: hide / show field", FAV),
-    ("H", "Favorites: reset hidden fields", FAV),
+    ("H", "Favorites: reveal / hide hidden", FAV),
     ("i", "Toggle object IDs (stack)", STACK),
     ("s or /", "Open search (thread list only)", THREAD),
     ("?", "Toggle help panel", ALL),
