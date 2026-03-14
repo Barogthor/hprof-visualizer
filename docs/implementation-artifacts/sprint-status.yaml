@@ -127,13 +127,13 @@ development_status:
   9-9-value-hiding-and-reset-in-pinned-snapshots: done
   9-10-quick-fixes-prefetch-favorites-object-empty: done
   9-11-go-to-pin-async-and-scroll-fix: done
-  epic-9-retrospective: optional
+  epic-9-retrospective: done
 
   # Epic 10: Large Dump Loading (sourced from large dump UX observations 2026-03-14)
   epic-10: in-progress
   10-1-progress-fidelity-heap-segment-scan: ready-for-dev
   10-2-split-oversized-heap-segments: ready-for-dev
-  10-3-memory-guard-budget-bytes-extract-all: backlog
+  10-3-memory-guard-budget-bytes-extract-all: ready-for-dev
   10-4-investigate-post-extraction-ram-spike: backlog
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)

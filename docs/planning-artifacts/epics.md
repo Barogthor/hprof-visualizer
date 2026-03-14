@@ -2,13 +2,14 @@
 stepsCompleted: ['step-01-validate-prerequisites', 'step-02-design-epics', 'step-03-create-stories', 'step-04-final-validation']
 status: 'complete'
 completedAt: '2026-03-06'
-revisedAt: '2026-03-10'
-revisionNotes: 'Added Epic 9: Navigation & Data Fidelity (stories 9.1-9.7) — bug fixes, collection correctness, keyboard navigation, camera scroll, static field display, search/favorites UX, footer polish. Sourced from real user testing session 2026-03-10.'
+revisedAt: '2026-03-14'
+revisionNotes: 'Added Epics 10-13 from large dump UX observations (2026-03-14): Epic 10 (Large Dump Loading), Epic 11 (Navigation Performance), Epic 12 (Path-Based Expand State), Epic 13 (UI Polish & Ergonomie). FR57-FR73, NFR12-NFR13 added. Backlog items: segment persistence (G9), multi-selection (B6), mouse support (B7).'
 inputDocuments:
   - 'docs/planning-artifacts/prd.md'
   - 'docs/planning-artifacts/architecture.md'
   - 'docs/planning-artifacts/ux-design-specification.md'
   - 'docs/report/party-mode-perf-optimization-2026-03-08.md'
+  - 'docs/report/large-dump-ux-observations-2026-03-14.md'
 ---
 
 # hprof-visualizer - Epic Breakdown
@@ -77,6 +78,23 @@ This document provides the complete epic and story breakdown for hprof-visualize
 - FR54: User can hide individual values from a pinned snapshot directly from the favorites panel
 - FR55: User can re-show hidden values in a pinned snapshot via a toggle
 - FR56: User can reset all hidden values in a pinned snapshot to restore the initial snapshot state
+- FR57: Progress bar reflects real file position during heap segment scanning (no freeze on large segment jumps)
+- FR58: System splits oversized heap segments into sub-slices when payload exceeds budget_bytes/num_threads threshold
+- FR59: System uses budget_bytes as batch size limit during parallel heap extraction to prevent RAM exhaustion
+- FR60: System can resolve multiple object instances in a single segment scan (batch find_instance)
+- FR61: System can resolve the first 100 eager collection items in parallel using a bounded thread pool
+- FR62: System can calculate O(1) offsets for OBJECT_ARRAY_DUMP elements (fixed-size, contiguous layout)
+- FR63: System can build skip-indexes at first traversal for variable-size collection sequences
+- FR64: Expanding a node only affects that specific tree path — other nodes with the same object ID remain unchanged
+- FR65: Static field references to the owner object (e.g., enum self-references) do not cause cross-path expand/collapse
+- FR66: Static fields section is collapsible and collapsed by default
+- FR67: User can unexpand a pinned item, navigate between pinned items (next/prev shortcut), and batch-unexpand multiple levels
+- FR68: Visual separators between UI sections (below search bar, above thread state indicators)
+- FR69: "Incomplete file" indicator uses attention-drawing color (red/orange)
+- FR70: Keyboard mappings support AZERTY layout by default with QWERTY alternative
+- FR71: Class metadata (type info, field names) is preloaded in the navigation skeleton during indexing
+- FR72: Logo/splash screen displayed during loading phases
+- FR73: Loading indicator (spinner or label) displayed when any resolution operation exceeds 200ms
 
 ### NonFunctional Requirements
 
@@ -91,6 +109,8 @@ This document provides the complete epic and story breakdown for hprof-visualize
 - NFR9: The source hprof file is never modified (read-only access enforced at OS level)
 - NFR10: The tool runs on Linux, macOS, and Windows (platforms supported by ratatui + crossterm + memmap2)
 - NFR11: No runtime dependencies beyond the compiled binary and optional config file
+- NFR12: RAM usage during parallel heap extraction stays within budget_bytes limit — no uncontrolled spikes to 99% system RAM
+- NFR13: Progress bars update at least every 2 seconds during all loading phases (scan, extraction, sort, filter build)
 
 ### Additional Requirements
 
@@ -148,6 +168,44 @@ From Architecture:
 - FR33: Epic 6 Story 6.1 - CLI > config > defaults precedence
 - FR34: Epic 6 Story 6.1 - Silent defaults on missing config
 - FR35: Epic 6 Story 6.1 - Warning + fallback on malformed config
+- FR36: Epic 9 Story 9.1 - Expand state correction on failed resolve
+- FR37: Epic 9 Story 9.1 - Failed-to-resolve non-navigable label
+- FR38: Epic 9 Story 9.2 - Full Object[] resolution
+- FR39: Epic 9 Story 9.2 - Java collection element display
+- FR40: Epic 9 Story 9.3 - ArrowRight expand
+- FR41: Epic 9 Story 9.3 - ArrowLeft unexpand
+- FR42: Epic 9 Story 9.3 - ArrowLeft parent navigation
+- FR43: Epic 9 Story 9.4 - Camera scroll
+- FR44: Epic 9 Story 9.5 - Real local variable names
+- FR45: Epic 9 Story 9.5 - Static fields in stack view
+- FR46: Epic 9 Story 9.6 - Search then select thread
+- FR47: Epic 9 Story 9.6 - Go-to-pin navigation
+- FR48: Epic 9 Story 9.6 - Unpin from favorites
+- FR49: Epic 9 Story 9.6 - Object ID toggle on all nodes
+- FR50: Epic 9 Story 9.7 - Contextual help footer
+- FR51: Epic 9 Story 9.8 - Navigate between pinned items
+- FR52: Epic 9 Story 9.8 - In-depth pinned item navigation
+- FR53: Epic 9 Story 9.8 - Pinned array expansion
+- FR54: Epic 9 Story 9.9 - Hide values in pinned snapshot
+- FR55: Epic 9 Story 9.9 - Re-show hidden values
+- FR56: Epic 9 Story 9.9 - Reset hidden values
+- FR57: Epic 10 Story 10.1 - Progress fidelity during heap segment scan
+- FR58: Epic 10 Story 10.2 - Split oversized heap segments
+- FR59: Epic 10 Story 10.3 - Memory guard via budget_bytes
+- FR60: Epic 11 Story 11.2 - Batch find_instance (grouped segment scan)
+- FR61: Epic 11 Story 11.3 - Parallel eager item resolution
+- FR62: Epic 11 Story 11.4 - O(1) OBJECT_ARRAY offset calculation
+- FR63: Epic 11 Story 11.5 - Skip-index for variable-size sequences
+- FR64: Epic 12 Story 12.1 - Path-based expand state isolation
+- FR65: Epic 12 Story 12.1 - Static field enum cross-path fix
+- FR66: Epic 13 Story 13.1 - Collapsible static section
+- FR67: Epic 13 Story 13.2 - Enhanced favorites navigation
+- FR68: Epic 13 Story 13.3 - UI separators
+- FR69: Epic 13 Story 13.4 - Incomplete file color
+- FR70: Epic 13 Story 13.5 - AZERTY/QWERTY keymapping
+- FR71: Epic 13 Story 13.6 - Class metadata preload
+- FR72: Epic 13 Story 13.7 - Logo/splash screen
+- FR73: Epic 11 Story 11.1 - Loading indicator (>200ms threshold)
 
 ### NFR Coverage Map
 
@@ -162,6 +220,8 @@ From Architecture:
 - NFR9: Epic 1 Story 1.3 - Read-only file access
 - NFR10: Epic 1 Story 1.1 - Cross-platform CI build matrix
 - NFR11: Epic 1 Story 1.1 - Single binary, no runtime dependencies
+- NFR12: Epic 10 Stories 10.2, 10.3 - RAM stays within budget during extraction
+- NFR13: Epic 10 Story 10.1 - Progress bar update frequency
 
 ## Epic List
 
@@ -205,8 +265,29 @@ The system loads and indexes heap dumps significantly faster through optimized d
 
 ### Epic 9: Navigation & Data Fidelity
 Fixes critical bugs discovered during real user testing, corrects collection data extraction (ArrayList cardinality, Object[] support), adds keyboard shortcuts for expand/unexpand/parent navigation and camera scroll, improves stack frame data display with static fields, and polishes search/favorites UX and the keyboard help footer.
-**FRs added:** FR36–FR50
+**FRs added:** FR36–FR56
 **Source:** User testing session 2026-03-10
+
+### Epic 10: Large Dump Loading
+The system handles 70 GB+ heap dumps with accurate progress reporting, controlled memory usage during segment extraction, and no RAM exhaustion. Progress bars reflect real file position during heap segment scanning, oversized segments are split, and budget_bytes is enforced as a batch size limit.
+**FRs covered:** FR57, FR58, FR59
+**NFRs verified:** NFR12, NFR13
+**Source:** Large dump UX observations 2026-03-14 (L1, L2, L3)
+
+### Epic 11: Navigation Performance
+Post-loading navigation is fast and responsive on large dumps. Batch segment scanning eliminates redundant linear scans, eager items resolve in parallel, O(1) array offset calculation and skip-indexes enable instant page navigation, and a loading indicator provides feedback during slow operations.
+**FRs covered:** FR60, FR61, FR62, FR63, FR73
+**Source:** Large dump UX observations 2026-03-14 (N4, N6, N7, O1, O2, O3)
+
+### Epic 12: Path-Based Expand State
+Expanding or collapsing a node only affects that specific tree path. Other nodes referencing the same object ID remain unchanged. Fixes the critical shared-state bug deferred from Epic 4 and the static field enum cross-path issue.
+**FRs covered:** FR64, FR65
+**Source:** Large dump UX observations 2026-03-14 (G4, G5), Epic 4 retro deferral
+
+### Epic 13: UI Polish & Ergonomie
+Quality-of-life improvements: collapsible static fields section, enhanced favorites navigation, UI separators, attention-drawing colors for warnings, AZERTY/QWERTY keymapping, class metadata preload, and loading splash screen.
+**FRs covered:** FR66, FR67, FR68, FR69, FR70, FR71, FR72
+**Source:** Large dump UX observations 2026-03-14 (G1, G2, G3, G6, G7, G8, G10)
 
 ## Epic 1: Open and Validate Heap Files
 
@@ -1386,3 +1467,663 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
 **Given** the help panel
 **When** rendered with focus on the favorites panel
 **Then** `h` (Hide value), and the reset shortcut are listed
+
+## Epic 10: Large Dump Loading
+
+The system handles 70 GB+ heap dumps with accurate progress reporting,
+controlled memory usage during segment extraction, and no RAM exhaustion.
+Sourced from large dump UX observations session 2026-03-14 (L1, L2, L3).
+
+### Story 10.1: Progress Fidelity — Heap Segment Scan
+
+As a user,
+I want the progress bar to reflect the real file position during the
+first-pass scan, even when heap segments are skipped via cursor jumps,
+So that I can see the tool is working and estimate how long loading
+will take.
+
+**FRs covered:** FR57
+**NFRs verified:** NFR13
+
+**Priority:** P0
+
+**Root cause:** In `record_scan.rs:130-137`, the `HeapDump` /
+`HeapDumpSegment` branches call `cursor.set_position(payload_end)`
+without calling `maybe_report_progress`. On a 70 GB dump where heap
+segments represent ~95% of bytes, the scan_bar stays frozen at ~2-5%
+until the loop finishes.
+
+**Acceptance Criteria:**
+
+**Given** a heap dump where heap segments represent >90% of total bytes
+**When** the first-pass scan processes a `HeapDump` or
+`HeapDumpSegment` record
+**Then** `maybe_report_progress` is called after the cursor jump, and
+the progress bar reflects the new position
+
+**Given** a 70 GB dump being scanned
+**When** the scan is in progress
+**Then** the progress bar updates at least every 2 seconds (NFR13) —
+no multi-minute freeze
+
+**Given** a small dump (<100 MB)
+**When** scanned
+**Then** behavior is identical to current (no regression)
+
+**Localisation:** `crates/hprof-parser/src/indexer/first_pass/record_scan.rs`
+
+### Story 10.2: Split Oversized Heap Segments
+
+As a user,
+I want the system to split oversized heap segments into smaller
+sub-slices before parallel extraction,
+So that a single 15-20 GB segment does not cause a +20 GB RAM spike.
+
+**FRs covered:** FR58
+**NFRs verified:** NFR12
+
+**Priority:** P0
+
+**Root cause:** `extract_heap_segment` receives the full segment
+payload as `&data[start..end]`. If a single `HEAP_DUMP_SEGMENT` is
+15-20 GB, rayon accumulates all `ObjectOffset` / `FilterEntry` in
+memory simultaneously. `Vec::with_capacity(payload.len() / 40)`
+pre-allocates for the entire estimation.
+
+**Acceptance Criteria:**
+
+**Given** a heap segment with `payload_length` exceeding
+`budget_bytes / num_threads`
+**When** the system prepares to extract it
+**Then** the segment is split into sub-slices (zero-copy views into
+the mmap) of at most `budget_bytes / num_threads` bytes each
+
+**Given** a sub-slice boundary falls mid-record
+**When** the split is performed
+**Then** the boundary is adjusted to the next record header boundary
+(sequential scan to find safe split point)
+
+**Given** a segment split into N sub-slices
+**When** extraction completes
+**Then** the combined results are identical to extracting the segment
+as a whole (no missing objects, no duplicates)
+
+**Given** a heap dump with all segments under the threshold
+**When** extracted
+**Then** behavior is unchanged (no split performed)
+
+**Localisation:** `crates/hprof-parser/src/indexer/first_pass/heap_extraction.rs`
+
+### Story 10.3: Memory Guard via budget_bytes in extract_all
+
+As a user,
+I want the system to use the configured memory budget as a batch size
+limit during parallel heap extraction,
+So that RAM usage stays controlled even on very large dumps.
+
+**FRs covered:** FR59
+**NFRs verified:** NFR12
+
+**Priority:** P0
+
+**Root cause:** `EngineConfig.budget_bytes` exists but is not used as
+a guard in `extract_all`. The parallel extraction has no awareness of
+memory consumption during processing.
+
+**Acceptance Criteria:**
+
+**Given** `budget_bytes` is set (via CLI `--memory-limit` or config)
+**When** `extract_all` processes segments in parallel
+**Then** the total in-flight batch size (sum of segment payloads
+currently being processed) does not exceed `budget_bytes`
+
+**Given** the total heap data exceeds `budget_bytes`
+**When** extraction runs
+**Then** segments are processed in sequential batches, each batch
+fitting within the budget — slower but safe
+
+**Given** `budget_bytes` is not set (auto-calculated default)
+**When** extraction runs
+**Then** the auto-calculated budget (50% available RAM) is used as
+the batch limit
+
+**Given** a dump that fits entirely within `budget_bytes`
+**When** extraction runs
+**Then** all segments are processed in a single parallel batch
+(no performance regression)
+
+**Localisation:** `crates/hprof-parser/src/indexer/first_pass/heap_extraction.rs`
+
+### Story 10.4: Investigate Post-Extraction RAM Spike
+
+As a developer,
+I want to profile and understand the second RAM spike that occurs
+after segment extraction (sort_offsets + BinaryFuse8 filter build),
+So that I can determine if it needs optimization or is acceptable.
+
+**Priority:** P1
+
+**Root cause (suspected):** `ctx.sort_offsets()` on tens of millions
+of `ObjectOffset` entries (sort_unstable may allocate internal
+buffers) + `seg_builder.finish()` which constructs BinaryFuse8 filters
+for all segments simultaneously.
+
+**Acceptance Criteria:**
+
+**Given** a 70 GB dump with tens of millions of ObjectOffset entries
+**When** post-extraction processing runs (sort_offsets + finish)
+**Then** the developer has profiling data (tracing-chrome or criterion)
+showing peak allocation, duration, and allocation patterns
+
+**Given** profiling results
+**When** analyzed
+**Then** a decision is documented: (a) optimize if spike exceeds
+budget_bytes, or (b) accept if spike is bounded and temporary
+
+**Given** the investigation produces an optimization
+**When** implemented
+**Then** a new story is created in this epic for the fix
+
+**Localisation:** `crates/hprof-parser/src/indexer/first_pass/mod.rs:198-203`
+
+## Epic 11: Navigation Performance
+
+Post-loading navigation is fast and responsive on large dumps. Batch
+segment scanning eliminates redundant linear scans, eager items
+resolve in parallel, and skip-indexes enable instant page navigation.
+Sourced from large dump UX observations 2026-03-14 (N4, N6, N7, O1,
+O2, O3).
+
+### Story 11.1: Loading Indicator for Slow Operations
+
+As a user,
+I want to see a loading indicator (spinner or "Loading…" label) when
+any resolution operation takes more than 200ms,
+So that I can distinguish "the tool is working" from "the tool is
+frozen".
+
+**FRs covered:** FR73
+
+**Priority:** P0
+
+**Context:** FR28 / Epic 6 Story 6.2 implemented a loading indicator
+with a 1-second threshold. This story lowers the threshold to 200ms
+and ensures coverage for all resolution paths: eager 100 items,
+single-item expand, and page loading.
+
+**Acceptance Criteria:**
+
+**Given** any resolution operation (find_instance, page load,
+eager batch) takes more than 200ms
+**When** the delay is detected
+**Then** a loading indicator appears in the status bar or inline
+(e.g., "Resolving…" or spinner)
+
+**Given** the operation completes
+**When** results are available
+**Then** the loading indicator is removed and results are displayed
+
+**Given** multiple concurrent resolution operations
+**When** any one exceeds 200ms
+**Then** a single consolidated indicator is shown (not one per
+operation)
+
+**Given** an operation completing in under 200ms
+**When** rendered
+**Then** no loading indicator flickers (debounce)
+
+### Story 11.2: Batch-Scan by Segment (Grouped find_instance)
+
+As a user,
+I want the system to resolve multiple object instances in a single
+segment scan instead of scanning the same segment once per object,
+So that opening collections on large dumps is ~100x faster on the
+fallback path.
+
+**FRs covered:** FR60
+
+**Priority:** P0
+
+**Root cause:** The current `find_instance` lookup is 1-by-1. Each
+call follows: (1) fast path via `instance_offsets` HashMap (O(1)),
+(2) fallback via BinaryFuse8 segment filter then linear scan of the
+entire segment. For 100 eager items from the same segment, this means
+100 linear scans of a potentially 15 GB segment.
+
+**Acceptance Criteria:**
+
+**Given** N object IDs to resolve that map to the same segment
+(via BinaryFuse8 filter)
+**When** the system resolves them
+**Then** a single linear scan of the segment is performed, collecting
+all N instances in one pass
+
+**Given** instances discovered during a batch scan
+**When** the scan completes
+**Then** each discovered instance's offset is cached in
+`instance_offsets` for O(1) access in subsequent lookups
+
+**Given** N object IDs that span multiple segments
+**When** batch-resolved
+**Then** one scan per distinct segment is performed (not one scan
+per object)
+
+**Given** existing tests using `find_instance` on small dumps
+**When** `cargo test` is run
+**Then** all pass — batch-scan is a transparent optimization
+
+**Localisation:**
+- `crates/hprof-parser/src/hprof_file.rs` — `find_instance()`
+- `crates/hprof-engine/src/engine_impl/mod.rs` — `read_instance()`
+- `crates/hprof-parser/src/indexer/precise.rs` — `instance_offsets`
+
+### Story 11.3: Parallel Eager Item Resolution
+
+As a user,
+I want the first 100 eager items of a collection to be resolved in
+parallel using a bounded thread pool,
+So that opening a large collection on a 70 GB cloud dump takes
+~10-15s instead of ~1 min.
+
+**FRs covered:** FR61
+
+**Priority:** P1
+
+**Depends on:** Story 11.2 (batch-scan) — the two are complementary.
+Batch-scan reduces the number of scans, parallelization accelerates
+the remaining scans.
+
+**Acceptance Criteria:**
+
+**Given** a collection with 100+ elements is expanded
+**When** the first 100 items are resolved eagerly
+**Then** resolution uses a bounded rayon thread pool (not sequential)
+
+**Given** the thread pool
+**When** items are resolved in parallel
+**Then** the pool is bounded (e.g., `rayon::ThreadPoolBuilder` with
+max threads = num_cpus or configurable) to avoid overwhelming the
+system
+
+**Given** parallel resolution of 100 items on a 70 GB dump
+**When** measured
+**Then** wall-clock time is at most 20s (down from ~60s sequential)
+
+**Given** a small dump where sequential resolution is already fast
+**When** 100 items are resolved
+**Then** parallel overhead does not cause regression (bounded pool
+reuses existing rayon pool)
+
+### Story 11.4: Skip-Index for OBJECT_ARRAY (O(1) Offset)
+
+As a user,
+I want the system to calculate the offset of any element in an
+OBJECT_ARRAY_DUMP in O(1) time,
+So that navigating to page N of a 450K-element array is instant
+instead of requiring sequential scanning.
+
+**FRs covered:** FR62
+
+**Priority:** P1
+
+**Context:** OBJECT_ARRAY_DUMP elements are contiguous and fixed-size
+(`id_size` bytes each). Offset of element N =
+`payload_start + header_size + N * id_size`. This is guaranteed by the
+hprof format — no scan or cache needed.
+
+**Acceptance Criteria:**
+
+**Given** an OBJECT_ARRAY_DUMP with N elements
+**When** the user navigates to page K (elements K*1000 to
+(K+1)*1000-1)
+**Then** element offsets are calculated via arithmetic (O(1)), not
+by scanning from the beginning
+
+**Given** an object array page navigation
+**When** compared to the current implementation
+**Then** page access time is constant regardless of page number
+(page 0 same speed as page 250)
+
+**Given** the O(1) offset for each element
+**When** the element's object ID is read
+**Then** the object is resolved via `find_instance` (or batch-scan
+from Story 11.2)
+
+### Story 11.5: Skip-Index for Variable-Size Sequences
+
+As a user,
+I want the system to build a skip-index at first traversal for
+variable-size collection sequences (e.g., consecutive INSTANCE_DUMP
+records),
+So that subsequent page navigation is fast without re-scanning from
+the beginning.
+
+**FRs covered:** FR63
+
+**Priority:** P2
+
+**Context:** Unlike OBJECT_ARRAY_DUMP, INSTANCE_DUMP records have
+variable sizes. A skip-index stores offsets at regular intervals
+(every 1000 elements): `[offset_0, offset_1000, offset_2000, …]`.
+Accessing page K costs at most 1000 entries of scanning from
+`offsets[K/1000]`.
+
+**Acceptance Criteria:**
+
+**Given** a variable-size collection traversed for the first time
+**When** the traversal completes
+**Then** a skip-index is built and cached, storing the offset of
+every 1000th element
+
+**Given** a subsequent page access (page K)
+**When** the system serves the page
+**Then** scanning starts from `skip_index[K/1000]` and reads at most
+1000 entries
+
+**Given** the skip-index for a collection
+**When** memory pressure triggers LRU eviction
+**Then** the skip-index is evicted with the collection data and
+rebuilt on next access
+
+### Story 11.6: Investigate Non-Array Item Slowness (5-10s)
+
+As a developer,
+I want to understand why opening a non-array element takes 5-10s on
+a 70 GB dump,
+So that I can determine if it's a false-positive BinaryFuse8 hit, a
+lookup cascade, or expected latency on cloud storage.
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+
+**Given** a non-array element is expanded on a 70 GB dump
+**When** the operation is instrumented with tracing spans
+**Then** the breakdown shows: (a) time in BinaryFuse8 filter check,
+(b) number of candidate segments, (c) time in linear scan per
+segment, (d) number of cascading find_instance calls
+
+**Given** the profiling results
+**When** analyzed
+**Then** a root cause is identified and documented — if actionable,
+a follow-up story is created
+
+## Epic 12: Path-Based Expand State
+
+Expanding or collapsing a node only affects that specific tree path.
+Other nodes referencing the same object ID remain unchanged. Fixes the
+critical shared-state bug deferred from Epic 4 and the static field
+enum cross-path issue. Sourced from Epic 4 retro deferral and large
+dump UX observations 2026-03-14 (G4, G5).
+
+### Story 12.1: Path-Based Expand State Isolation
+
+As a user,
+I want expanding a node to only affect that specific occurrence in the
+tree, not all nodes with the same object ID,
+So that navigating complex object graphs with shared references does
+not produce confusing auto-expand behavior.
+
+**FRs covered:** FR64, FR65
+
+**Priority:** P0 (critical bug — deferred from Epic 4)
+
+**Root cause:** `object_phases` and `object_fields` maps in the
+engine use plain `object_id` as keys. When object A appears at
+multiple tree paths (e.g., an enum's static field referencing itself),
+expanding one occurrence expands all of them. Same issue in the
+favorites panel.
+
+**Acceptance Criteria:**
+
+**Given** object A (id=0x1234) appears at two different tree paths:
+path `/thread-1/frame-0/local-0/field-x` and
+path `/thread-1/frame-0/local-0/field-y/field-z`
+**When** the user expands the occurrence at path field-x
+**Then** only that occurrence expands — the occurrence at
+field-y/field-z remains collapsed
+
+**Given** an enum class with a static field that references itself
+(e.g., `MyEnum.VALUE1` has a static field `VALUE1` pointing to the
+same object)
+**When** the user collapses the static field value
+**Then** the parent instance remains expanded — no cross-path
+collapse
+
+**Given** a pinned item in the favorites panel referencing the same
+object as a node in the stack view
+**When** the user expands the pinned item
+**Then** the stack view node is unaffected
+
+**Given** the current `object_phases` / `object_fields` maps
+**When** refactored
+**Then** keys use a path-based composite key (e.g.,
+`(parent_path, object_id)` or navigation path hash) instead of
+plain `object_id`
+
+**Given** all existing tests
+**When** `cargo test` is run
+**Then** zero failures — the refactoring is transparent to tests
+that use single-path scenarios
+
+**Technical notes:**
+- Approach deferred from Epic 4 retro: "Fix requires path-based
+  composite keys instead of plain object_id in object_phases /
+  object_fields maps"
+- G5 (static field enum) is a symptom of the same root cause
+- Impact: `crates/hprof-engine/src/engine_impl/` (expand/collapse
+  logic), `crates/hprof-tui/src/app/` (favorites panel state)
+
+## Epic 13: UI Polish & Ergonomie
+
+Quality-of-life improvements: collapsible static fields, enhanced
+favorites navigation, UI separators, attention-drawing warning colors,
+AZERTY/QWERTY keymapping, class metadata preload, and loading splash.
+Sourced from large dump UX observations 2026-03-14 (G1, G2, G3, G6,
+G7, G8, G10).
+
+### Story 13.1: Collapsible Static Fields Section
+
+As a user,
+I want the static fields section to be collapsible and collapsed by
+default,
+So that I can focus on instance fields without being overwhelmed by
+static fields I rarely need.
+
+**FRs covered:** FR66
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+
+**Given** a class instance is expanded and has static fields
+**When** the `[static]` section header is rendered
+**Then** it is collapsed by default (static fields hidden)
+
+**Given** the `[static]` section header
+**When** the user presses Enter or ArrowRight on it
+**Then** the section expands and static fields become visible
+
+**Given** an expanded `[static]` section
+**When** the user presses ArrowLeft or Enter on the header
+**Then** the section collapses
+
+### Story 13.2: Enhanced Favorites Navigation
+
+As a user,
+I want to unexpand a pinned item, navigate between pinned items with
+shortcuts, and batch-unexpand multiple levels at once,
+So that managing complex pinned snapshots is efficient.
+
+**FRs covered:** FR67
+
+**Priority:** P1
+
+**Acceptance Criteria:**
+
+**Given** a pinned item with expanded nested content
+**When** the user presses a shortcut (e.g., `Shift+ArrowLeft`)
+**Then** the entire expanded subtree collapses (batch unexpand)
+
+**Given** multiple pinned items in the favorites panel
+**When** the user presses a shortcut (e.g., `[` / `]` or
+`Shift+ArrowUp` / `Shift+ArrowDown`)
+**Then** the cursor jumps to the previous/next pinned item root
+(skipping nested content)
+
+**Given** the help panel
+**When** rendered with focus on favorites
+**Then** the new shortcuts are listed
+
+### Story 13.3: UI Separators
+
+As a user,
+I want visual separators between UI sections (below the search bar,
+above thread state indicators),
+So that the interface has clearer visual structure.
+
+**FRs covered:** FR68
+
+**Priority:** P2
+
+**Acceptance Criteria:**
+
+**Given** the thread list view
+**When** rendered
+**Then** a horizontal line separates the search bar from the thread
+list below
+
+**Given** the thread list view with thread state indicators
+**When** rendered
+**Then** a horizontal line separates the thread list from the state
+indicators above
+
+**Given** different terminal widths
+**When** the UI is resized
+**Then** separators stretch to fill the available width
+
+### Story 13.4: Incomplete File Warning Color
+
+As a user,
+I want the "Incomplete file" indicator to be displayed in an
+attention-drawing color (red or orange),
+So that I immediately notice when I'm working with a truncated dump.
+
+**FRs covered:** FR69
+
+**Priority:** P3
+
+**Acceptance Criteria:**
+
+**Given** the status bar shows "Incomplete file"
+**When** rendered
+**Then** the text uses a warning color (red or orange from the
+theme palette)
+
+**Given** a complete file
+**When** the status bar is rendered
+**Then** no warning color is applied (no visual noise)
+
+### Story 13.5: AZERTY/QWERTY Keymapping
+
+As a user,
+I want keyboard mappings that support AZERTY layout by default with
+an alternative QWERTY mode,
+So that I can use the tool comfortably on my keyboard layout without
+wrist strain.
+
+**FRs covered:** FR70
+
+**Priority:** P2
+
+**Acceptance Criteria:**
+
+**Given** the default configuration
+**When** the tool starts
+**Then** key bindings are optimized for AZERTY layout (keys reachable
+without stretching on an AZERTY keyboard)
+
+**Given** a `keymap = "qwerty"` setting in config or CLI flag
+**When** the tool starts
+**Then** key bindings use QWERTY-optimized positions
+
+**Given** either keymap
+**When** the help panel is displayed
+**Then** it shows the actual key bindings for the active layout
+
+**Given** the keymap configuration
+**When** persisted in the TOML config file
+**Then** the setting is documented with available options
+
+### Story 13.6: Class Metadata Preload
+
+As a user,
+I want class metadata (type information, field names) to be preloaded
+during indexing,
+So that expanding objects shows field names instantly without
+additional disk reads.
+
+**FRs covered:** FR71
+
+**Priority:** P2
+
+**Context:** Currently, class metadata (CLASS_DUMP records) is parsed
+during indexing but some field-level details may require additional
+reads. This story ensures that all class structure information needed
+for rendering field names and types is available in the index.
+
+**Acceptance Criteria:**
+
+**Given** the first-pass indexing completes
+**When** the user expands an object instance
+**Then** field names and types are available immediately from the
+index (no additional mmap read for class structure)
+
+**Given** the preloaded class metadata
+**When** memory usage is measured
+**Then** the overhead is documented and acceptable (class metadata is
+typically small relative to instance data)
+
+**Given** static fields of a class
+**When** considered for preloading
+**Then** only field metadata (names, types) is preloaded — field
+values remain lazy-loaded
+
+### Story 13.7: Logo/Splash Screen During Loading
+
+As a user,
+I want to see a logo or splash screen during the loading phases,
+So that the tool feels polished and I know it's starting up.
+
+**FRs covered:** FR72
+
+**Priority:** P3
+
+**Acceptance Criteria:**
+
+**Given** the tool is launched with a valid hprof file
+**When** the first-pass scan begins
+**Then** a splash screen with the tool name/logo is displayed before
+the progress bars appear
+
+**Given** the loading completes
+**When** the TUI is ready
+**Then** the splash screen is replaced by the normal TUI view
+
+**Given** the tool is launched with an invalid file
+**When** an error occurs before TUI initialization
+**Then** the error is displayed cleanly without splash artifacts
+
+## Backlog (Future Epics)
+
+Items identified during the 2026-03-14 large dump session but
+deferred from the current epic plan:
+
+- **Segment persistence (G9):** CLI option to persist indexed segments
+  to disk with file hash verification. Skips first-pass + segment
+  build on second load of the same file.
+- **Multi-selection Shift+Up/Down (B6):** Select multiple nodes then
+  Enter to expand in batch. Synergy with batch-scan (Story 11.2).
+- **Mouse support (B7):** Scroll wheel navigation, click-to-select,
+  click on expand/collapse icons. Ratatui supports mouse via
+  crossterm `EnableMouseCapture`.
