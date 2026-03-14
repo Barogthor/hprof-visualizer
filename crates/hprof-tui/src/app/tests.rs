@@ -408,6 +408,34 @@ fn make_favorite_item_with_tid(
     }
 }
 
+fn poll_all_expansions_top(app: &mut App<StubEngine>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+        app.poll_expansions();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// Drives the full async navigation loop until `pending_navigation` is None.
+///
+/// Mirrors the `run_loop` poll sequence: expansions → pages → Continue resume.
+fn poll_navigation_to_completion(app: &mut App<StubEngine>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while app.pending_navigation.is_some() && std::time::Instant::now() < deadline {
+        app.poll_expansions();
+        app.poll_pages();
+        if app
+            .pending_navigation
+            .as_ref()
+            .is_some_and(|p| p.awaited == AwaitedResource::Continue)
+            && let Some(pending) = app.pending_navigation.take()
+        {
+            app.resume_pending_navigation(pending);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 fn make_field_favorite_item(
     thread_name: &str,
     frame_id: u64,
@@ -1018,7 +1046,7 @@ mod collection_paging {
     fn poll_all_pages(app: &mut App<StubEngine>) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while !app.pending_pages.is_empty() && std::time::Instant::now() < deadline {
-            let _fallbacks = app.poll_pages();
+            app.poll_pages();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
@@ -1455,10 +1483,7 @@ mod collection_paging {
         while (!app.pending_pages.is_empty() || !app.pending_expansions.is_empty())
             && std::time::Instant::now() < deadline
         {
-            let fallbacks = app.poll_pages();
-            for cid in fallbacks {
-                app.start_object_expansion(cid);
-            }
+            app.poll_pages();
             app.poll_expansions();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -2509,6 +2534,7 @@ mod favorites {
         app.focus = Focus::Favorites;
 
         app.handle_input(InputEvent::NavigateToSource);
+        poll_navigation_to_completion(&mut app);
 
         assert_eq!(app.focus, Focus::StackFrames);
         assert_eq!(
@@ -2558,6 +2584,7 @@ mod favorites {
         app.focus = Focus::Favorites;
 
         app.handle_input(InputEvent::NavigateToSource);
+        poll_navigation_to_completion(&mut app);
 
         assert_eq!(app.focus, Focus::StackFrames);
         assert_eq!(
@@ -2608,6 +2635,7 @@ mod favorites {
         app.focus = Focus::Favorites;
 
         app.handle_input(InputEvent::NavigateToSource);
+        poll_navigation_to_completion(&mut app);
 
         assert_eq!(app.focus, Focus::StackFrames);
         assert_eq!(
@@ -2654,6 +2682,7 @@ mod favorites {
         app.focus = Focus::Favorites;
 
         app.handle_input(InputEvent::NavigateToSource);
+        poll_navigation_to_completion(&mut app);
 
         assert_eq!(app.focus, Focus::StackFrames);
         assert_eq!(
@@ -2719,6 +2748,7 @@ mod favorites {
         app.focus = Focus::Favorites;
 
         app.handle_input(InputEvent::NavigateToSource);
+        poll_navigation_to_completion(&mut app);
 
         assert_eq!(app.focus, Focus::StackFrames);
         assert_eq!(
@@ -2878,7 +2908,7 @@ mod favorites {
             },
         );
 
-        let _ = app.poll_pages();
+        app.poll_pages();
 
         let PinnedSnapshot::Subtree {
             collection_chunks, ..
@@ -3095,5 +3125,681 @@ mod focus {
 
         app.handle_input(InputEvent::ToggleObjectIds);
         assert!(!app.show_object_ids);
+    }
+}
+
+mod async_navigation {
+    //! Task 5 tests (5.1–5.12) for story 9-11: async go-to-pin and scroll-to-target.
+    use super::*;
+
+    fn poll_all_expansions(app: &mut App<StubEngine>) {
+        poll_all_expansions_top(app);
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.1 — navigate_to_path defers (non-blocking) when expansion is required.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn navigate_to_path_defers_on_unexpanded_object() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.pinned
+            .push(make_field_favorite_item("main", 10, 0, vec![1]));
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        // NavigateToSource should defer immediately (object 42 not yet expanded).
+        app.handle_input(InputEvent::NavigateToSource);
+
+        // Walk deferred — pending_navigation is set and spinner is active.
+        assert!(
+            app.pending_navigation.is_some(),
+            "pending_navigation must be set on deferral"
+        );
+        assert!(
+            app.navigating_to_pin,
+            "navigating_to_pin must be true during async wait"
+        );
+        let awaited = &app.pending_navigation.as_ref().unwrap().awaited;
+        assert_eq!(
+            *awaited,
+            AwaitedResource::ObjectExpansion(42),
+            "must await expansion of object 42"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.2 — after full walk, cursor_index matches the target in flat_items.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn cursor_index_matches_target_after_full_walk() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.pinned
+            .push(make_field_favorite_item("main", 10, 0, vec![1]));
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        app.handle_input(InputEvent::NavigateToSource);
+        poll_navigation_to_completion(&mut app);
+
+        let ss = app.stack_state.as_ref().unwrap();
+        let target = RenderCursor::At(
+            NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .field(FieldIdx(1))
+                .build(),
+        );
+        let flat = ss.flat_items();
+        let idx = flat.iter().position(|c| c == &target);
+        assert!(
+            idx.is_some(),
+            "target cursor must appear in flat_items after walk"
+        );
+        let cursor_idx = flat.iter().position(|c| c == ss.cursor());
+        assert_eq!(cursor_idx, idx, "cursor_index must match target position");
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.3 — App-level scroll: cursor placed in upper third after navigation.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn scroll_positions_cursor_in_upper_third_after_navigation() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        // Open the stack first from ThreadList focus so stack_state is Some.
+        app.handle_input(InputEvent::Enter); // ThreadList → opens stack
+        // Set visible height before navigation (persists since stack won't be recreated).
+        if let Some(s) = &mut app.stack_state {
+            s.set_visible_height(3);
+        }
+
+        app.pinned
+            .push(make_field_favorite_item("main", 10, 0, vec![1]));
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        app.handle_input(InputEvent::NavigateToSource);
+        poll_navigation_to_completion(&mut app);
+
+        // After navigation, scroll offset must be consistent with upper-third rule.
+        // With visible_height=3, upper_third=1. Offset = target_idx - 1 (clamped).
+        if let Some(s) = app.stack_state.as_ref() {
+            let flat = s.flat_items();
+            let target = RenderCursor::At(
+                NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                    .field(FieldIdx(1))
+                    .build(),
+            );
+            if let Some(target_idx) = flat.iter().position(|c| c == &target) {
+                let offset = s.list_state_offset_for_test();
+                let expected =
+                    target_idx.saturating_sub(1).min(flat.len().saturating_sub(3));
+                assert_eq!(
+                    offset, expected,
+                    "offset must place cursor in upper third (target at {target_idx}, \
+                    flat.len={})",
+                    flat.len()
+                );
+            } else {
+                panic!(
+                    "target Field(1) not found in flat_items after nav; flat={flat:?}"
+                );
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.4 — Escape during pending navigation clears state; cursor stays.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn escape_during_pending_nav_clears_state_cursor_stays() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.pinned
+            .push(make_field_favorite_item("main", 10, 0, vec![1]));
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        app.handle_input(InputEvent::NavigateToSource);
+        assert!(app.pending_navigation.is_some(), "must be pending before Esc");
+
+        // Escape cancels navigation.
+        app.handle_input(InputEvent::Escape);
+
+        assert!(
+            app.pending_navigation.is_none(),
+            "pending_navigation must be cleared"
+        );
+        assert!(!app.navigating_to_pin, "navigating_to_pin must be false");
+
+        // Cursor stays at last resolved step (Var(0)).
+        let ss = app.stack_state.as_ref().unwrap();
+        let cursor = ss.cursor();
+        assert!(
+            matches!(
+                cursor,
+                RenderCursor::At(p) if matches!(
+                    p.segments().last(),
+                    Some(PathSegment::Var(_))
+                )
+            ),
+            "cursor must remain at last resolved step (Var), got: {cursor:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.5 — Walk completes in one pass when all steps are already cached.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn walk_completes_in_one_pass_when_steps_cached() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+
+        // Navigate to StackFrames to open stack, then pre-expand object 42.
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.start_object_expansion(42);
+        poll_all_expansions(&mut app);
+
+        // Object 42 is now Expanded — walk should complete without deferral.
+        app.pinned
+            .push(make_field_favorite_item("main", 10, 0, vec![1]));
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        app.handle_input(InputEvent::NavigateToSource);
+
+        // No pending navigation — walk completed synchronously.
+        assert!(
+            app.pending_navigation.is_none(),
+            "no pending_navigation when all steps are cached"
+        );
+        assert!(
+            !app.navigating_to_pin,
+            "navigating_to_pin must be false after sync completion"
+        );
+        let ss = app.stack_state.as_ref().unwrap();
+        assert_eq!(
+            ss.cursor(),
+            &RenderCursor::At(
+                NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                    .field(FieldIdx(1))
+                    .build()
+            ),
+            "cursor must be at Field(1)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.6 — In-frame continuation cap: walk yields after 10 consecutive steps.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn in_frame_cap_yields_after_10_steps() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        // StubEngine default: any object → [x:Int, child:ObjectRef(999)].
+        // object 999 → field 1 = ObjectRef(999) again (self-referential via default).
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+
+        // Open stack + pre-expand 42 and 999 so all Field hops are cached.
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Enter); // expand frame 10
+        app.start_object_expansion(42);
+        poll_all_expansions(&mut app);
+        app.start_object_expansion(999);
+        poll_all_expansions(&mut app);
+
+        // Build path: Frame(10) → Var(0) → Field(1) × 9 = 11 segments total.
+        // Steps: Frame=1, Var=2, then 9 Fields → step_count=10 before Field[9].
+        // At segment index 10 (Field[9]): step_count=10 ≥ 10 → yield with Continue.
+        let nav_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+            .field(FieldIdx(1))
+            .field(FieldIdx(1))
+            .field(FieldIdx(1))
+            .field(FieldIdx(1))
+            .field(FieldIdx(1))
+            .field(FieldIdx(1))
+            .field(FieldIdx(1))
+            .field(FieldIdx(1))
+            .field(FieldIdx(1))
+            .build();
+        let pin_key = crate::favorites::PinKey {
+            thread_id: ThreadId(1),
+            thread_name: "main".to_string(),
+            nav_path,
+        };
+        app.pinned.push(crate::favorites::PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Thread.run()".to_string(),
+            item_label: "deep".to_string(),
+            snapshot: crate::favorites::PinnedSnapshot::Primitive {
+                value_label: "x".to_string(),
+            },
+            local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            show_hidden: false,
+            key: pin_key,
+        });
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        app.handle_input(InputEvent::NavigateToSource);
+
+        // Should have yielded with Continue (not async expansion/page).
+        let pending = app.pending_navigation.as_ref();
+        assert!(pending.is_some(), "must yield after 10 steps");
+        assert_eq!(
+            pending.unwrap().awaited,
+            AwaitedResource::Continue,
+            "must yield with Continue variant after in-frame cap"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.7 — Stale context triggers retry with original_path.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn stale_prereq_triggers_retry_with_original_path() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        // Default engine: 42→[x,child:999], 999→[x,child:999]
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+
+        // Pin: Frame(10) → Var(0) → Field(1) → Field(0)
+        // Field(1) on 42 = child(999); Field(0) on 999 = x(Int)
+        let pin_key = crate::favorites::PinKey {
+            thread_id: ThreadId(1),
+            thread_name: "main".to_string(),
+            nav_path: NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .field(FieldIdx(1))
+                .field(FieldIdx(0))
+                .build(),
+        };
+        app.pinned.push(crate::favorites::PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Thread.run()".to_string(),
+            item_label: "var[0].child.x".to_string(),
+            snapshot: crate::favorites::PinnedSnapshot::Primitive {
+                value_label: "0".to_string(),
+            },
+            local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            show_hidden: false,
+            key: pin_key,
+        });
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        // Step 1: NavigateToSource → defers waiting for ObjectExpansion(42).
+        app.handle_input(InputEvent::NavigateToSource);
+        assert!(
+            matches!(
+                app.pending_navigation.as_ref().map(|p| &p.awaited),
+                Some(AwaitedResource::ObjectExpansion(42))
+            ),
+            "must await expansion of 42"
+        );
+
+        // Step 2: 42 expands → resume → processes Field(1), prereq_expanded=[42],
+        // then hits Field(0) on 999 → defers waiting for ObjectExpansion(999).
+        // Poll only until 42's expansion completes (not 999).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while app.pending_expansions.contains_key(&42) && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        assert!(
+            matches!(
+                app.pending_navigation.as_ref().map(|p| &p.awaited),
+                Some(AwaitedResource::ObjectExpansion(999))
+            ),
+            "must await expansion of 999 at second step; pending={:?}",
+            app.pending_navigation.as_ref().map(|p| &p.awaited)
+        );
+        // prereq_expanded must contain 42 (the already-processed hop).
+        assert!(
+            app.pending_navigation
+                .as_ref()
+                .unwrap()
+                .prereq_expanded
+                .contains(&42),
+            "prereq_expanded must include 42"
+        );
+
+        // Step 3: Simulate stale context — collapse object 42.
+        app.stack_state
+            .as_mut()
+            .unwrap()
+            .collapse_object(42);
+
+        // Step 4: 999 expands → resume detects 42 is no longer Expanded → stale.
+        poll_all_expansions(&mut app);
+
+        assert_eq!(
+            app.ui_status.as_deref(),
+            Some("Pin context changed, retrying..."),
+            "must show stale context message"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.8 — Async expansion failure terminates walk and shows error.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn async_expansion_failure_clears_nav_and_shows_error() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(42, None); // force expansion failure
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.pinned
+            .push(make_field_favorite_item("main", 10, 0, vec![1]));
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        app.handle_input(InputEvent::NavigateToSource);
+        assert!(app.pending_navigation.is_some(), "must defer before poll");
+
+        poll_all_expansions(&mut app);
+
+        assert!(
+            app.pending_navigation.is_none(),
+            "pending_navigation must be cleared on failure"
+        );
+        assert!(!app.navigating_to_pin, "spinner must be off after failure");
+        assert!(
+            app.ui_status
+                .as_deref()
+                .is_some_and(|s| s.contains("Failed to navigate")),
+            "ui_status must contain failure message; got: {:?}",
+            app.ui_status
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.9 — Spam g cancels old navigation and starts new one (RT-A1).
+    // -------------------------------------------------------------------------
+    #[test]
+    fn second_navigate_to_source_cancels_first() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+
+        let path1 = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+            .field(FieldIdx(0))
+            .build();
+        let path2 = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+            .field(FieldIdx(1))
+            .build();
+
+        let key1 = crate::favorites::PinKey {
+            thread_id: ThreadId(1),
+            thread_name: "main".to_string(),
+            nav_path: path1,
+        };
+        let key2 = crate::favorites::PinKey {
+            thread_id: ThreadId(1),
+            thread_name: "main".to_string(),
+            nav_path: path2.clone(),
+        };
+
+        let make_item = |k: crate::favorites::PinKey| crate::favorites::PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Thread.run()".to_string(),
+            item_label: "pin".to_string(),
+            snapshot: crate::favorites::PinnedSnapshot::Primitive {
+                value_label: "v".to_string(),
+            },
+            local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            show_hidden: false,
+            key: k,
+        };
+
+        app.pinned.push(make_item(key1));
+        app.pinned.push(make_item(key2));
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        // Navigate to pin1 → defers.
+        app.handle_input(InputEvent::NavigateToSource);
+        let first_pending = app
+            .pending_navigation
+            .as_ref()
+            .map(|p| p.original_path.clone());
+        assert!(first_pending.is_some(), "must be pending after first nav");
+
+        // Select pin2 and navigate again → must cancel pin1 nav.
+        // After NavigateToSource, focus=StackFrames; restore Favorites to move its cursor.
+        app.focus = Focus::Favorites;
+        app.handle_input(InputEvent::Down); // select pin2 in favorites
+        app.handle_input(InputEvent::NavigateToSource);
+
+        let second_pending = app.pending_navigation.as_ref();
+        assert!(second_pending.is_some(), "must be pending after second nav");
+        assert_ne!(
+            second_pending.map(|p| p.original_path.clone()),
+            first_pending,
+            "second nav must use path2, not path1"
+        );
+        assert_eq!(
+            second_pending.unwrap().original_path,
+            path2,
+            "second nav must use path2"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.10 — Empty remaining_path on resume → walk treated as complete.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn single_deferred_segment_completes_on_resume() {
+        // Path: Frame(10) → Var(0) → CollectionEntry(889, 1)
+        // Var(0) is directly a collection — CollectionEntry is the last segment.
+        let frames = vec![make_frame(10)];
+        let vars = vec![VariableInfo {
+            index: 0,
+            value: VariableValue::ObjectRef {
+                id: 889,
+                class_name: "Object[]".to_string(),
+                entry_count: Some(3),
+            },
+        }];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+
+        let pin_key = crate::favorites::PinKey {
+            thread_id: ThreadId(1),
+            thread_name: "main".to_string(),
+            nav_path: NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .collection_entry(CollectionId(889), EntryIdx(1))
+                .build(),
+        };
+        app.pinned.push(crate::favorites::PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Thread.run()".to_string(),
+            item_label: "var[0][1]".to_string(),
+            snapshot: crate::favorites::PinnedSnapshot::Primitive {
+                value_label: "v".to_string(),
+            },
+            local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            show_hidden: false,
+            key: pin_key,
+        });
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        app.handle_input(InputEvent::NavigateToSource);
+
+        // CollectionEntry(889,1) is the only deferred segment → remaining_path=[CE].
+        assert!(
+            matches!(
+                app.pending_navigation.as_ref().map(|p| &p.awaited),
+                Some(AwaitedResource::CollectionPage(889))
+            ),
+            "must await collection page for 889"
+        );
+        assert_eq!(
+            app.pending_navigation.as_ref().unwrap().remaining_path.len(),
+            1,
+            "remaining_path must hold exactly the CollectionEntry segment"
+        );
+
+        // Poll until the page loads and walk resumes.
+        poll_navigation_to_completion(&mut app);
+
+        assert!(
+            app.pending_navigation.is_none(),
+            "pending_navigation must be None after walk completes"
+        );
+        assert_eq!(
+            app.stack_state.as_ref().unwrap().cursor(),
+            &RenderCursor::At(
+                NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                    .collection_entry(CollectionId(889), EntryIdx(1))
+                    .build()
+            ),
+            "cursor must land on collection entry"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.11 — Poll resume uses pending thread_id, not selected_serial.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn poll_resume_uses_pending_thread_id_not_selection() {
+        // Two threads: main (serial=1, frame=10), worker (serial=2, frame=20).
+        let frames1 = vec![make_frame(10)];
+        let frames2 = vec![make_frame(20)];
+        let engine = StubEngine::with_thread_specific_frames(&["main", "worker"], &[
+            (1, frames1),
+            (2, frames2),
+        ])
+        .with_vars(10, vec![make_obj_var(0, 42)])
+        .with_vars(20, vec![make_obj_var(0, 55)]);
+
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.pinned.push(crate::favorites::PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Thread.run()".to_string(),
+            item_label: "pin".to_string(),
+            snapshot: crate::favorites::PinnedSnapshot::Primitive {
+                value_label: "v".to_string(),
+            },
+            local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            show_hidden: false,
+            key: crate::favorites::PinKey {
+                thread_id: ThreadId(1),
+                thread_name: "main".to_string(),
+                nav_path: NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                    .field(FieldIdx(1))
+                    .build(),
+            },
+        });
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        // NavigateToSource for "main" thread → defers on ObjectExpansion(42).
+        app.handle_input(InputEvent::NavigateToSource);
+        assert!(
+            app.pending_navigation.as_ref().is_some_and(|p| p.thread_id == 1),
+            "pending thread_id must be 1 (main)"
+        );
+
+        // Switch selected thread to "worker" (serial=2).
+        app.handle_input(InputEvent::Escape); // back to ThreadList (if needed)
+        app.focus = Focus::ThreadList;
+        app.handle_input(InputEvent::Down); // select worker
+        assert_eq!(app.thread_list.selected_serial(), Some(2));
+
+        // Poll: expansion of 42 completes; resume must navigate to main's stack.
+        poll_navigation_to_completion(&mut app);
+
+        assert!(
+            app.pending_navigation.is_none(),
+            "walk must complete for main thread"
+        );
+        // Stack state should show main's frame (frame_id=10), not worker's (20).
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            ss.frames().iter().any(|f| f.frame_id == 10),
+            "stack must show main thread frames after resume"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // 5.12 — Integration: App + PinnedItem + NavigateToSource + viewport offset.
+    // -------------------------------------------------------------------------
+    #[test]
+    fn integration_navigate_to_source_positions_cursor_and_scroll() {
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+
+        // Set small visible height so scroll offset is non-trivial.
+        app.handle_input(InputEvent::Enter);
+        app.handle_input(InputEvent::Enter); // expand frame
+        if let Some(s) = &mut app.stack_state {
+            s.set_visible_height(3);
+        }
+        app.focus = Focus::Favorites;
+
+        app.pinned
+            .push(make_field_favorite_item("main", 10, 0, vec![1]));
+        app.sync_favorites_selection();
+
+        app.handle_input(InputEvent::NavigateToSource);
+        poll_navigation_to_completion(&mut app);
+
+        let ss = app.stack_state.as_ref().unwrap();
+        let target = RenderCursor::At(
+            NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .field(FieldIdx(1))
+                .build(),
+        );
+        assert_eq!(ss.cursor(), &target, "cursor must be at Field(1)");
+        assert!(
+            app.pending_navigation.is_none(),
+            "no pending navigation after completion"
+        );
+        assert!(!app.navigating_to_pin, "spinner must be off");
+
+        // Scroll offset: target is in flat_items at some index, offset ≤ index.
+        let flat = ss.flat_items();
+        if let Some(idx) = flat.iter().position(|c| c == &target) {
+            let offset = ss.list_state_offset_for_test();
+            assert!(
+                offset <= idx,
+                "offset {offset} must be ≤ target index {idx}"
+            );
+        }
     }
 }

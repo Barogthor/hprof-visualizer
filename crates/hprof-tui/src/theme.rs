@@ -30,6 +30,7 @@
 //! | `border_unfocused` | DarkGray | Unfocused panel border |
 //! | `status_bar_bg` | White on DarkGray | Status bar background |
 //! | `search_active` | Cyan | Active search input text |
+//! | `nav_spinner` | Cyan on DarkGray | Go-to-pin spinner + label in status bar |
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -76,6 +77,8 @@ pub struct Theme {
     pub status_bar_bg: Style,
     /// Active search input style.
     pub search_active: Style,
+    /// Go-to-pin spinner + "Navigating to pin..." label style in status bar.
+    pub nav_spinner: Style,
 }
 
 /// Singleton theme instance. Widgets reference colors via this constant.
@@ -104,6 +107,7 @@ pub const THEME: Theme = Theme {
     border_unfocused: Style::new().fg(Color::DarkGray),
     status_bar_bg: Style::new().fg(Color::White).bg(Color::DarkGray),
     search_active: Style::new().fg(Color::Cyan),
+    nav_spinner: Style::new().fg(Color::Cyan).bg(Color::DarkGray),
 };
 
 #[cfg(test)]
@@ -134,5 +138,6 @@ mod tests {
         assert_style(THEME.border_unfocused);
         assert_style(THEME.status_bar_bg);
         assert_style(THEME.search_active);
+        assert_style(THEME.nav_spinner);
     }
 }

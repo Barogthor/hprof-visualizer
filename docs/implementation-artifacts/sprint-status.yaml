@@ -126,4 +126,35 @@ development_status:
   9-8-pinned-item-navigation-and-array-expansion: done
   9-9-value-hiding-and-reset-in-pinned-snapshots: done
   9-10-quick-fixes-prefetch-favorites-object-empty: done
+  9-11-go-to-pin-async-and-scroll-fix: review
   epic-9-retrospective: optional
+
+  # Epic 10: Large Dump Loading (sourced from large dump UX observations 2026-03-14)
+  epic-10: backlog
+  10-1-progress-fidelity-heap-segment-scan: backlog
+  10-2-split-oversized-heap-segments: backlog
+  10-3-memory-guard-budget-bytes-extract-all: backlog
+  10-4-investigate-post-extraction-ram-spike: backlog
+
+  # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
+  epic-11: backlog
+  11-1-loading-indicator-slow-operations: backlog
+  11-2-batch-scan-by-segment: backlog
+  11-3-parallel-eager-item-resolution: backlog
+  11-4-skip-index-object-array: backlog
+  11-5-skip-index-variable-size: backlog
+  11-6-investigate-non-array-item-slowness: backlog
+
+  # Epic 12: Path-Based Expand State (sourced from Epic 4 retro + G4/G5)
+  epic-12: backlog
+  12-1-path-based-expand-state-isolation: backlog
+
+  # Epic 13: UI Polish & Ergonomie (sourced from large dump UX observations 2026-03-14)
+  epic-13: backlog
+  13-1-collapsible-static-fields-section: backlog
+  13-2-enhanced-favorites-navigation: backlog
+  13-3-ui-separators: backlog
+  13-4-incomplete-file-warning-color: backlog
+  13-5-azerty-qwerty-keymapping: backlog
+  13-6-class-metadata-preload: backlog
+  13-7-logo-splash-screen: backlog

@@ -44,8 +44,26 @@ impl<Id: PartialEq + Clone> CursorState<Id> {
         self.visible_height = h;
     }
 
-    fn cursor_index(&self, items: &[Id]) -> Option<usize> {
+    pub(crate) fn cursor_index(&self, items: &[Id]) -> Option<usize> {
         items.iter().position(|id| id == &self.cursor)
+    }
+
+    /// Scrolls the viewport so the cursor appears in the upper third.
+    ///
+    /// Sets `list_state.offset` directly. Offset is clamped to
+    /// `items.len().saturating_sub(visible_height)` to prevent blank rows.
+    /// No-op when `visible_height == 0` or cursor not found in `items`.
+    pub fn scroll_to_cursor(&mut self, items: &[Id], visible_height: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        if let Some(idx) = self.cursor_index(items) {
+            let third = visible_height / 3;
+            let offset = idx.saturating_sub(third);
+            let max_offset = items.len().saturating_sub(visible_height);
+            let offset = offset.min(max_offset);
+            *self.list_state.offset_mut() = offset;
+        }
     }
 
     /// Syncs list selection with current cursor if cursor is visible in `items`.
@@ -264,6 +282,48 @@ mod tests {
         state.move_down(&items);
         assert_eq!(state.cursor(), &10);
         assert_eq!(state.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn scroll_to_cursor_places_cursor_in_upper_third() {
+        let items: Vec<u32> = (0..30).collect();
+        let mut state = CursorState::new(18u32);
+        state.set_visible_height(9);
+        state.sync(&items);
+        state.scroll_to_cursor(&items, 9);
+        // upper third = 9/3 = 3; offset = 18 - 3 = 15
+        assert_eq!(state.list_state().offset(), 15);
+    }
+
+    #[test]
+    fn scroll_to_cursor_zero_visible_height_is_noop() {
+        let items: Vec<u32> = (0..10).collect();
+        let mut state = CursorState::new(8u32);
+        state.sync(&items);
+        let before = state.list_state().offset();
+        state.scroll_to_cursor(&items, 0);
+        assert_eq!(state.list_state().offset(), before);
+    }
+
+    #[test]
+    fn scroll_to_cursor_clamps_offset_at_end_of_list() {
+        // 5 items, cursor at last, visible_height 10 → max_offset = 5-10 → 0
+        let items: Vec<u32> = (0..5).collect();
+        let mut state = CursorState::new(4u32);
+        state.sync(&items);
+        state.scroll_to_cursor(&items, 10);
+        assert_eq!(state.list_state().offset(), 0);
+    }
+
+    #[test]
+    fn scroll_to_cursor_cursor_near_top_sets_zero_offset() {
+        let items: Vec<u32> = (0..20).collect();
+        let mut state = CursorState::new(1u32);
+        state.set_visible_height(9);
+        state.sync(&items);
+        state.scroll_to_cursor(&items, 9);
+        // idx=1, third=3 → 1.saturating_sub(3) = 0
+        assert_eq!(state.list_state().offset(), 0);
     }
 
     #[test]

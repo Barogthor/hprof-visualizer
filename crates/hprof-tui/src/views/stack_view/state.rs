@@ -105,6 +105,20 @@ impl StackState {
         self.nav.set_cursor_and_sync(new_cursor, &self.flat_items());
     }
 
+    /// Returns the current visible height (set by the last render pass).
+    pub fn visible_height(&self) -> usize {
+        self.nav.visible_height()
+    }
+
+    /// Adjusts the list viewport so the cursor appears in the upper third.
+    ///
+    /// Uses the `visible_height` stored in `nav`. No-op when `visible_height == 0`.
+    pub fn scroll_to_cursor(&mut self) {
+        let vh = self.nav.visible_height();
+        let items = self.flat_items();
+        self.nav.scroll_to_cursor(&items, vh);
+    }
+
     // === Path helpers ===
 
     /// Extracts the `NavigationPath` from the current cursor, if any.

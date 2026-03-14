@@ -79,17 +79,41 @@ pub enum AppAction {
 }
 
 /// Outcome of a [`App::navigate_to_path`] walk.
-///
-/// Variant payloads are not yet consumed — callers currently
-/// discard the result. Retained for planned retry logic.
 #[derive(Debug)]
 #[allow(dead_code)]
 enum WalkOutcome {
     /// All segments resolved; cursor placed at the given path.
     Success(NavigationPath),
-    /// A `CollectionEntry` chunk was not yet loaded; cursor placed on last
-    /// materialised ancestor. Retry after the awaited chunk loads.
+    /// Walk deferred on an async operation; cursor on last resolved step.
     PartialAt(NavigationPath),
+}
+
+/// Resource being awaited by an in-progress go-to-pin walk.
+#[derive(Debug, PartialEq)]
+enum AwaitedResource {
+    /// Waiting for async object expansion of the given `object_id`.
+    ObjectExpansion(u64),
+    /// Waiting for async collection page load for the given `collection_id`.
+    CollectionPage(u64),
+    /// In-frame step cap reached — resume on the next event-loop tick.
+    Continue,
+}
+
+/// State for an in-progress go-to-pin navigation.
+struct PendingNavigation {
+    /// Unresolved tail of the walk (including the step that triggered defer).
+    remaining_path: Vec<PathSegment>,
+    /// Full original path, kept for stale-context restart (AC9).
+    original_path: NavigationPath,
+    /// Thread serial that owns the walk (authoritative over selection state).
+    thread_id: u32,
+    /// What we are waiting for before the walk can continue.
+    awaited: AwaitedResource,
+    /// Object IDs already expanded in the materialised prefix.
+    ///
+    /// Checked on resume: if any is no longer `Expanded`, the context is
+    /// stale and the walk restarts from `original_path`.
+    prereq_expanded: Vec<u64>,
 }
 
 /// Top-level TUI application state.
@@ -132,11 +156,12 @@ pub struct App<E: NavigationEngine> {
     show_help: bool,
     /// Whether object IDs are displayed in stack frame rows.
     show_object_ids: bool,
-    /// Pending navigation target: full path and the awaited `CollectionId`.
-    ///
-    /// Set on `WalkOutcome::PartialAt` (unloaded chunk). Retried in `poll_pages`
-    /// when the exact `collection_id` loads.
-    pending_navigation: Option<(NavigationPath, u64)>,
+    /// In-progress go-to-pin navigation state (async walk deferred).
+    pending_navigation: Option<PendingNavigation>,
+    /// True while a go-to-pin walk is deferred; drives spinner in status bar.
+    navigating_to_pin: bool,
+    /// Spinner frame counter, incremented via `wrapping_add(1)` each render.
+    spinner_tick: u8,
 }
 
 impl<E: NavigationEngine> App<E> {
@@ -176,6 +201,8 @@ impl<E: NavigationEngine> App<E> {
             show_help: false,
             show_object_ids: false,
             pending_navigation: None,
+            navigating_to_pin: false,
+            spinner_tick: 0,
         }
     }
 
@@ -188,6 +215,7 @@ impl<E: NavigationEngine> App<E> {
         self.focus = Focus::StackFrames;
     }
 
+    #[allow(dead_code)]
     fn expand_object_sync(&mut self, object_id: u64) -> bool {
         let Some(fields) = self.engine.expand_object(object_id) else {
             return false;
@@ -237,6 +265,7 @@ impl<E: NavigationEngine> App<E> {
         })
     }
 
+    #[allow(dead_code)]
     fn ensure_collection_entry_loaded(&mut self, collection_id: u64, entry_index: usize) -> bool {
         let mut needs_init = false;
         let mut total_count = 0u64;
@@ -331,20 +360,41 @@ impl<E: NavigationEngine> App<E> {
 
     /// Navigates to `path` within the thread identified by `thread_id`.
     ///
-    /// Walks path segments sequentially, materialising each level.
-    /// Returns [`WalkOutcome::Success`] with the full path when all segments
-    /// are resolved, or [`WalkOutcome::PartialAt`] with the last successfully
-    /// reached path when a `CollectionEntry` chunk is not yet loaded.
+    /// Each segment is resolved using cached state only — no blocking engine
+    /// calls. When a cache miss occurs the async work is spawned and the walk
+    /// is suspended via [`PendingNavigation`]. Resumed by [`poll_expansions`]
+    /// or [`poll_pages`] when the awaited resource is ready.
     fn navigate_to_path(&mut self, thread_id: ThreadId, path: &NavigationPath) -> WalkOutcome
     where
         E: Send + Sync + 'static,
     {
-        // Thread selection: open the stack for the target thread if needed.
+        let segs = path.segments().to_vec();
+        self.navigate_walk(thread_id.0, path.clone(), vec![], &segs, 0)
+    }
+
+    /// Internal incremental walker.
+    ///
+    /// - `thread_id`: raw thread serial (authoritative even after thread switch)
+    /// - `original_path`: full path, kept for stale-context restart
+    /// - `materialised`: segments already resolved (prefix)
+    /// - `remaining`: segments still to process (may overlap with end of orig)
+    /// - `in_frame_steps`: cached steps taken so far (cap = 10)
+    fn navigate_walk(
+        &mut self,
+        thread_id: u32,
+        original_path: NavigationPath,
+        materialised: Vec<PathSegment>,
+        remaining: &[PathSegment],
+        in_frame_steps: usize,
+    ) -> WalkOutcome
+    where
+        E: Send + Sync + 'static,
+    {
         let target_serial = self
             .engine
             .list_threads()
             .into_iter()
-            .find(|t| t.thread_serial == thread_id.0)
+            .find(|t| t.thread_serial == thread_id)
             .map(|t| t.thread_serial);
         let Some(serial) = target_serial else {
             return WalkOutcome::PartialAt(NavigationPathBuilder::frame_only(FrameId(0)));
@@ -354,43 +404,59 @@ impl<E: NavigationEngine> App<E> {
             self.open_stack_for_selected_thread(serial);
         }
 
-        let segs = path.segments();
-        if segs.is_empty() {
-            return WalkOutcome::PartialAt(NavigationPathBuilder::frame_only(FrameId(0)));
+        if remaining.is_empty() {
+            self.position_cursor_and_scroll(&materialised);
+            self.pending_navigation = None;
+            self.navigating_to_pin = false;
+            self.spinner_tick = 0;
+            return WalkOutcome::Success(NavigationPath::from_segments(materialised));
         }
 
-        // Walk segments, building the materialised path as we go.
-        let mut materialised: Vec<PathSegment> = Vec::with_capacity(segs.len());
-        let mut current_object_id: Option<u64> = None;
+        // Reconstruct current_object_id from already-resolved prefix.
+        let mut current_object_id = self.object_id_at_path_end(&materialised);
 
-        for seg in segs {
+        let mut materialised = materialised;
+        let mut step_count = in_frame_steps;
+        let mut prereq_expanded: Vec<u64> = Vec::new();
+
+        for (i, seg) in remaining.iter().enumerate() {
+            if step_count >= 10 {
+                let new_remaining = remaining[i..].to_vec();
+                let partial = NavigationPath::from_segments(materialised.clone());
+                self.pending_navigation = Some(PendingNavigation {
+                    remaining_path: new_remaining,
+                    original_path,
+                    thread_id,
+                    awaited: AwaitedResource::Continue,
+                    prereq_expanded,
+                });
+                self.navigating_to_pin = true;
+                return WalkOutcome::PartialAt(partial);
+            }
+
             match seg {
                 PathSegment::Frame(fid) => {
-                    // Find the frame, expand it if needed.
                     let frame_exists = self
                         .stack_state
                         .as_ref()
                         .is_some_and(|s| s.frames().iter().any(|f| f.frame_id == fid.0));
                     if !frame_exists {
-                        if materialised.is_empty() {
-                            return WalkOutcome::PartialAt(NavigationPathBuilder::frame_only(
-                                FrameId(0),
-                            ));
-                        }
                         break;
                     }
-                    let needs_expand = self
+                    if self
                         .stack_state
                         .as_ref()
-                        .is_some_and(|s| !s.is_expanded(fid.0));
-                    if needs_expand {
+                        .is_some_and(|s| !s.is_expanded(fid.0))
+                    {
                         let vars = self.engine.get_local_variables(fid.0);
                         if let Some(s) = &mut self.stack_state {
                             s.toggle_expand(fid.0, vars);
                         }
                     }
                     materialised.push(seg.clone());
+                    self.position_cursor_and_scroll(&materialised);
                     current_object_id = None;
+                    step_count += 1;
                 }
                 PathSegment::Var(vi) => {
                     let frame_id = match materialised.first() {
@@ -399,7 +465,9 @@ impl<E: NavigationEngine> App<E> {
                     };
                     let oid = self.root_object_id_for_var(frame_id, vi.0);
                     materialised.push(seg.clone());
+                    self.position_cursor_and_scroll(&materialised);
                     current_object_id = oid;
+                    step_count += 1;
                 }
                 PathSegment::Field(fi) => {
                     let Some(oid) = current_object_id else {
@@ -409,31 +477,58 @@ impl<E: NavigationEngine> App<E> {
                         .stack_state
                         .as_ref()
                         .is_some_and(|s| s.expansion_state(oid) == ExpansionPhase::Expanded);
-                    if !expanded && !self.expand_object_sync(oid) {
-                        break;
+                    if !expanded {
+                        self.start_object_expansion(oid);
+                        let new_remaining = remaining[i..].to_vec();
+                        let partial = NavigationPath::from_segments(materialised.clone());
+                        self.pending_navigation = Some(PendingNavigation {
+                            remaining_path: new_remaining,
+                            original_path,
+                            thread_id,
+                            awaited: AwaitedResource::ObjectExpansion(oid),
+                            prereq_expanded,
+                        });
+                        self.navigating_to_pin = true;
+                        self.position_cursor_and_scroll(&materialised);
+                        return WalkOutcome::PartialAt(partial);
                     }
+                    prereq_expanded.push(oid);
                     materialised.push(seg.clone());
                     current_object_id = self.child_object_id_at(oid, fi.0);
+                    self.position_cursor_and_scroll(&materialised);
+                    step_count += 1;
                 }
                 PathSegment::StaticField(si) => {
                     let Some(oid) = current_object_id else {
                         break;
                     };
-                    // Expand the object if needed to load instance + static fields.
                     let expanded = self
                         .stack_state
                         .as_ref()
                         .is_some_and(|s| s.expansion_state(oid) == ExpansionPhase::Expanded);
-                    if !expanded && !self.expand_object_sync(oid) {
-                        break;
+                    if !expanded {
+                        self.start_object_expansion(oid);
+                        let new_remaining = remaining[i..].to_vec();
+                        let partial = NavigationPath::from_segments(materialised.clone());
+                        self.pending_navigation = Some(PendingNavigation {
+                            remaining_path: new_remaining,
+                            original_path,
+                            thread_id,
+                            awaited: AwaitedResource::ObjectExpansion(oid),
+                            prereq_expanded,
+                        });
+                        self.navigating_to_pin = true;
+                        self.position_cursor_and_scroll(&materialised);
+                        return WalkOutcome::PartialAt(partial);
                     }
-                    let statics_loaded = self
+                    if !self
                         .stack_state
                         .as_ref()
-                        .is_some_and(|s| s.object_static_fields().contains_key(&oid));
-                    if !statics_loaded {
+                        .is_some_and(|s| s.object_static_fields().contains_key(&oid))
+                    {
                         break;
                     }
+                    prereq_expanded.push(oid);
                     materialised.push(seg.clone());
                     current_object_id = self.stack_state.as_ref().and_then(|s| {
                         let fields = s.object_static_fields().get(&oid)?;
@@ -444,57 +539,195 @@ impl<E: NavigationEngine> App<E> {
                             None
                         }
                     });
+                    self.position_cursor_and_scroll(&materialised);
+                    step_count += 1;
                 }
                 PathSegment::CollectionEntry(cid, ei) => {
-                    // Mark collection as Expanded so flat_items() renders entries.
                     let collection_path = NavigationPath::from_segments(materialised.clone());
                     if let Some(s) = &mut self.stack_state {
                         s.expansion
                             .expansion_phases
                             .insert(collection_path, ExpansionPhase::Expanded);
                     }
-                    let loaded = self.ensure_collection_entry_loaded(cid.0, ei.0);
-                    materialised.push(seg.clone());
+                    let loaded = self.stack_state.as_ref().is_some_and(|s| {
+                        s.expansion
+                            .collection_chunks
+                            .get(&cid.0)
+                            .is_some_and(|cc| cc.find_entry(ei.0).is_some())
+                    });
                     if !loaded {
+                        self.ensure_collection_initialized_async(cid.0, ei.0);
+                        let new_remaining = remaining[i..].to_vec();
                         let partial = NavigationPath::from_segments(materialised.clone());
-                        // Store awaited collection for retry in poll_pages.
-                        let parent_mat = NavigationPath::from_segments({
-                            let mut v = materialised.clone();
-                            v.pop();
-                            v
+                        self.pending_navigation = Some(PendingNavigation {
+                            remaining_path: new_remaining,
+                            original_path,
+                            thread_id,
+                            awaited: AwaitedResource::CollectionPage(cid.0),
+                            prereq_expanded,
                         });
-                        self.pending_navigation = Some((path.clone(), cid.0));
-                        if let Some(s) = &mut self.stack_state {
-                            let flat = s.flat_items();
-                            let restore = if flat.contains(&RenderCursor::At(parent_mat.clone())) {
-                                RenderCursor::At(parent_mat)
-                            } else {
-                                flat.into_iter()
-                                    .find(|c| matches!(c, RenderCursor::At(_)))
-                                    .unwrap_or(RenderCursor::NoFrames)
-                            };
-                            s.set_cursor(restore);
-                        }
+                        self.navigating_to_pin = true;
+                        self.position_cursor_and_scroll(&materialised);
                         return WalkOutcome::PartialAt(partial);
                     }
+                    materialised.push(seg.clone());
                     current_object_id = self.collection_entry_object_id(cid.0, ei.0);
+                    self.position_cursor_and_scroll(&materialised);
+                    step_count += 1;
                 }
             }
         }
 
-        let final_path = NavigationPath::from_segments(materialised);
-        let target = RenderCursor::At(final_path.clone());
+        let final_path = NavigationPath::from_segments(materialised.clone());
+        self.position_cursor_and_scroll(&materialised);
+        self.pending_navigation = None;
+        self.navigating_to_pin = false;
+        self.spinner_tick = 0;
+        WalkOutcome::Success(final_path)
+    }
+
+    /// Resumes a deferred go-to-pin walk after its awaited resource is ready.
+    ///
+    /// Checks stale context (AC9): if any prerequisite object is no longer
+    /// expanded, restarts the full walk from `original_path`.
+    fn resume_pending_navigation(&mut self, pending: PendingNavigation)
+    where
+        E: Send + Sync + 'static,
+    {
+        // Stale context check: prerequisites must still be Expanded (AC9).
+        let stale = pending.prereq_expanded.iter().any(|&oid| {
+            self.stack_state
+                .as_ref()
+                .is_some_and(|s| s.expansion_state(oid) != ExpansionPhase::Expanded)
+        });
+        if stale {
+            self.ui_status = Some("Pin context changed, retrying...".to_string());
+            let original = pending.original_path.clone();
+            let segs = original.segments().to_vec();
+            self.navigate_walk(pending.thread_id, original, vec![], &segs, 0);
+            return;
+        }
+
+        let all_segs = pending.original_path.segments().to_vec();
+        let remaining_len = pending.remaining_path.len();
+        let done_count = all_segs.len().saturating_sub(remaining_len);
+        let materialised = all_segs[..done_count].to_vec();
+        let remaining = pending.remaining_path.clone();
+        self.navigate_walk(
+            pending.thread_id,
+            pending.original_path,
+            materialised,
+            &remaining,
+            0,
+        );
+    }
+
+    /// Positions the cursor at the last segment in `materialised` and scrolls.
+    ///
+    /// Falls back to the first `At(_)` cursor when the exact path is not yet
+    /// rendered (e.g. expansion not yet reflected in `flat_items`).
+    fn position_cursor_and_scroll(&mut self, materialised: &[PathSegment]) {
+        if materialised.is_empty() {
+            return;
+        }
+        let target_path = NavigationPath::from_segments(materialised.to_vec());
+        let target = RenderCursor::At(target_path);
         if let Some(s) = &mut self.stack_state {
             let flat = s.flat_items();
             if flat.contains(&target) {
                 s.set_cursor(target);
-            } else if let Some(fallback) =
-                flat.into_iter().find(|c| matches!(c, RenderCursor::At(_)))
-            {
-                s.set_cursor(fallback);
+            } else if let Some(fb) = flat.into_iter().find(|c| matches!(c, RenderCursor::At(_))) {
+                s.set_cursor(fb);
+            }
+            s.scroll_to_cursor();
+        }
+    }
+
+    /// Reconstructs the `current_object_id` by walking the materialised prefix.
+    ///
+    /// Used on walk resume to re-derive object context without re-expanding.
+    fn object_id_at_path_end(&self, materialised: &[PathSegment]) -> Option<u64> {
+        let mut current: Option<u64> = None;
+        let frame_id = match materialised.first() {
+            Some(PathSegment::Frame(fid)) => fid.0,
+            _ => return None,
+        };
+        for seg in materialised {
+            match seg {
+                PathSegment::Frame(_) => {
+                    current = None;
+                }
+                PathSegment::Var(vi) => {
+                    current = self.root_object_id_for_var(frame_id, vi.0);
+                }
+                PathSegment::Field(fi) => {
+                    current = current.and_then(|oid| self.child_object_id_at(oid, fi.0));
+                }
+                PathSegment::StaticField(si) => {
+                    current = current.and_then(|oid| {
+                        self.stack_state.as_ref().and_then(|s| {
+                            let fields = s.object_static_fields().get(&oid)?;
+                            let field = fields.get(si.0)?;
+                            if let hprof_engine::FieldValue::ObjectRef { id, .. } = field.value {
+                                Some(id)
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                }
+                PathSegment::CollectionEntry(cid, ei) => {
+                    current = self.collection_entry_object_id(cid.0, ei.0);
+                }
             }
         }
-        WalkOutcome::Success(final_path)
+        current
+    }
+
+    /// Initialises async loading for a collection entry when cache misses.
+    ///
+    /// Creates a deferred `CollectionChunks` entry (total_count=0 placeholder)
+    /// and spawns the appropriate page load. `total_count` is updated when the
+    /// page arrives in `poll_pages`.
+    fn ensure_collection_initialized_async(&mut self, collection_id: u64, entry_index: usize)
+    where
+        E: Send + Sync + 'static,
+    {
+        let has_chunks = self
+            .stack_state
+            .as_ref()
+            .is_some_and(|s| s.expansion.collection_chunks.contains_key(&collection_id));
+
+        if !has_chunks {
+            let chunks = CollectionChunks {
+                total_count: 0,
+                eager_page: None,
+                chunk_pages: std::collections::HashMap::new(),
+            };
+            if let Some(s) = &mut self.stack_state {
+                s.expansion.collection_chunks.insert(collection_id, chunks);
+            }
+            self.start_collection_page_load(collection_id, 0, 100);
+            return;
+        }
+
+        // Collection exists but the specific entry isn't loaded yet.
+        let chunk_info = self.stack_state.as_ref().and_then(|s| {
+            let cc = s.expansion.collection_chunks.get(&collection_id)?;
+            let total = cc.total_count;
+            if total == 0 {
+                return None;
+            }
+            if entry_index < 100 && cc.eager_page.is_none() {
+                return Some((0usize, (total as usize).min(100)));
+            }
+            compute_chunk_ranges(total)
+                .into_iter()
+                .find(|(offset, limit)| entry_index >= *offset && entry_index < *offset + *limit)
+        });
+        if let Some((offset, limit)) = chunk_info {
+            self.start_collection_page_load(collection_id, offset, limit);
+        }
     }
 
     fn cycle_focus(&mut self) {
@@ -672,7 +905,10 @@ impl<E: NavigationEngine> App<E> {
                     return AppAction::Continue;
                 }
 
+                // Cancel any in-progress navigation before starting a new one (RT-A1).
                 self.pending_navigation = None;
+                self.navigating_to_pin = false;
+                self.spinner_tick = 0;
                 self.navigate_to_path(thread_id, &nav_path);
                 self.focus = Focus::StackFrames;
             }
@@ -869,6 +1105,13 @@ impl<E: NavigationEngine> App<E> {
     {
         match event {
             InputEvent::Escape => {
+                // Priority: cancel any in-progress go-to-pin navigation (AC6).
+                if self.pending_navigation.is_some() {
+                    self.pending_navigation = None;
+                    self.navigating_to_pin = false;
+                    self.spinner_tick = 0;
+                    return AppAction::Continue;
+                }
                 // If inside a collection, collapse it and
                 // return cursor to the parent field.
                 let coll_info = self
@@ -1524,15 +1767,15 @@ impl<E: NavigationEngine> App<E> {
 
     /// Polls in-flight collection page receivers.
     ///
-    /// Returns object IDs that need fallback expansion
-    /// (unsupported collection types where `get_page`
-    /// returned `None`).
-    pub fn poll_pages(&mut self) -> Vec<u64>
+    /// Handles fallback object expansions internally (no return value).
+    /// Resumes any pending navigation whose awaited `CollectionPage` just loaded.
+    pub fn poll_pages(&mut self)
     where
         E: Send + Sync + 'static,
     {
         let mut done = Vec::new();
         let mut fallback = Vec::new();
+        let mut nav_resume_cid: Option<u64> = None;
         for (&(cid, offset), pp) in self.pending_pages.iter_mut() {
             match pp.rx.try_recv() {
                 Ok(Some(page)) => {
@@ -1546,11 +1789,27 @@ impl<E: NavigationEngine> App<E> {
                         && let Some(cc) = s.expansion.collection_chunks.get_mut(&cid)
                     {
                         if offset == 0 {
+                            // Update total_count/chunk_pages if initialised async.
+                            if cc.total_count == 0 {
+                                cc.total_count = page.total_count;
+                                cc.chunk_pages = compute_chunk_ranges(page.total_count)
+                                    .into_iter()
+                                    .map(|(o, _)| (o, ChunkState::Collapsed))
+                                    .collect();
+                            }
                             cc.eager_page = Some(page);
                             s.collapse_object(cid);
                         } else {
                             cc.chunk_pages.insert(offset, ChunkState::Loaded(page));
                         }
+                    }
+                    // Check if pending nav is waiting for this collection.
+                    let is_nav_cid = self
+                        .pending_navigation
+                        .as_ref()
+                        .is_some_and(|p| p.awaited == AwaitedResource::CollectionPage(cid));
+                    if is_nav_cid {
+                        nav_resume_cid = Some(cid);
                     }
                     done.push((cid, offset));
                 }
@@ -1561,6 +1820,18 @@ impl<E: NavigationEngine> App<E> {
                         if offset == 0 {
                             s.collapse_object(cid);
                         }
+                    }
+                    // Async failure: clear pending nav with failure message (AC8).
+                    if self
+                        .pending_navigation
+                        .as_ref()
+                        .is_some_and(|p| p.awaited == AwaitedResource::CollectionPage(cid))
+                    {
+                        self.pending_navigation = None;
+                        self.navigating_to_pin = false;
+                        self.spinner_tick = 0;
+                        self.ui_status =
+                            Some("Failed to navigate — object not resolvable".to_string());
                     }
                     fallback.push(cid);
                     done.push((cid, offset));
@@ -1594,24 +1865,20 @@ impl<E: NavigationEngine> App<E> {
             self.pending_pages.remove(&key);
         }
 
-        // Retry pending_navigation if the loaded collection matches the awaited one.
-        if let Some((nav_path, awaited_cid)) = self.pending_navigation.clone() {
-            let just_loaded = self.pending_pages.keys().any(|&(id, _)| id == awaited_cid);
-            if !just_loaded {
-                let chunk_loaded = self
-                    .stack_state
-                    .as_ref()
-                    .is_some_and(|s| s.expansion.collection_chunks.contains_key(&awaited_cid));
-                if chunk_loaded {
-                    self.pending_navigation = None;
-                    let thread_id = self
-                        .thread_list
-                        .selected_serial()
-                        .map(ThreadId)
-                        .unwrap_or(ThreadId(0));
-                    self.navigate_to_path(thread_id, &nav_path);
-                }
+        // Resume pending navigation if the awaited collection page just loaded (1.6).
+        if let Some(cid) = nav_resume_cid {
+            let still_pending = self
+                .pending_navigation
+                .as_ref()
+                .is_some_and(|p| p.awaited == AwaitedResource::CollectionPage(cid));
+            if still_pending {
+                let pending = self.pending_navigation.take().unwrap();
+                self.resume_pending_navigation(pending);
             }
+        }
+
+        for cid in fallback {
+            self.start_object_expansion(cid);
         }
 
         let mut pinned_done = Vec::new();
@@ -1673,17 +1940,20 @@ impl<E: NavigationEngine> App<E> {
         for key in pinned_done {
             self.pending_pinned_pages.remove(&key);
         }
-
-        fallback
     }
 
     /// Polls all in-flight expansion receivers and updates `StackState`.
     ///
     /// Completed or failed expansions are removed from `pending_expansions`.
     /// The loading spinner is shown only after [`EXPANSION_LOADING_THRESHOLD`]
-    /// has elapsed.
-    pub fn poll_expansions(&mut self) {
+    /// has elapsed. Resumes any pending navigation whose awaited object just
+    /// expanded (AC1, task 1.7).
+    pub fn poll_expansions(&mut self)
+    where
+        E: Send + Sync + 'static,
+    {
         let mut done = Vec::new();
+        let mut nav_resume_oid: Option<u64> = None;
         for (&object_id, pe) in self.pending_expansions.iter_mut() {
             match pe.rx.try_recv() {
                 Ok(Some(fields)) => {
@@ -1694,14 +1964,14 @@ impl<E: NavigationEngine> App<E> {
                     #[cfg(feature = "dev-profiling")]
                     match class_id {
                         Some(cid) => dbg_log!(
-                            "poll_expansions(0x{:X}): class=0x{:X} instance_fields={} static_fields={}",
+                            "poll_expansions(0x{:X}): class=0x{:X} fields={} statics={}",
                             object_id,
                             cid,
                             fields.len(),
                             static_fields.len()
                         ),
                         None => dbg_log!(
-                            "poll_expansions(0x{:X}): class=<none> instance_fields={} static_fields=0",
+                            "poll_expansions(0x{:X}): class=<none> fields={}",
                             object_id,
                             fields.len()
                         ),
@@ -1710,12 +1980,32 @@ impl<E: NavigationEngine> App<E> {
                         s.set_expansion_done(object_id, fields);
                         s.set_static_fields(object_id, static_fields);
                     }
+                    // Check if pending nav is waiting for this expansion.
+                    if self
+                        .pending_navigation
+                        .as_ref()
+                        .is_some_and(|p| p.awaited == AwaitedResource::ObjectExpansion(object_id))
+                    {
+                        nav_resume_oid = Some(object_id);
+                    }
                     done.push(object_id);
                 }
                 Ok(None) => {
                     dbg_log!("expand_object(0x{:X}) → None", object_id);
                     if let Some(s) = &mut self.stack_state {
                         s.set_expansion_failed(object_id, "Failed to resolve object".to_string());
+                    }
+                    // Async failure: clear pending nav with failure message (AC8).
+                    if self
+                        .pending_navigation
+                        .as_ref()
+                        .is_some_and(|p| p.awaited == AwaitedResource::ObjectExpansion(object_id))
+                    {
+                        self.pending_navigation = None;
+                        self.navigating_to_pin = false;
+                        self.spinner_tick = 0;
+                        self.ui_status =
+                            Some("Failed to navigate — object not resolvable".to_string());
                     }
                     self.warnings
                         .add(format!("Object 0x{object_id:X} could not be resolved"));
@@ -1742,17 +2032,25 @@ impl<E: NavigationEngine> App<E> {
         for id in done {
             self.pending_expansions.remove(&id);
         }
+
+        // Resume navigation after expansion completed (1.7).
+        if let Some(oid) = nav_resume_oid {
+            let still_pending = self
+                .pending_navigation
+                .as_ref()
+                .is_some_and(|p| p.awaited == AwaitedResource::ObjectExpansion(oid));
+            if still_pending {
+                let pending = self.pending_navigation.take().unwrap();
+                self.resume_pending_navigation(pending);
+            }
+        }
     }
 
     /// Renders the current state into a ratatui `Frame`.
-    pub fn render(&mut self, frame: &mut ratatui::Frame)
-    where
-        E: Send + Sync + 'static,
-    {
-        self.poll_expansions();
-        let page_fallbacks = self.poll_pages();
-        for cid in page_fallbacks {
-            self.start_object_expansion(cid);
+    pub fn render(&mut self, frame: &mut ratatui::Frame) {
+        // Advance spinner when a go-to-pin navigation is in progress.
+        if self.navigating_to_pin {
+            self.spinner_tick = self.spinner_tick.wrapping_add(1);
         }
         if self.last_memory_log.elapsed() >= Duration::from_secs(20) {
             #[cfg(feature = "dev-profiling")]
@@ -1904,6 +2202,8 @@ impl<E: NavigationEngine> App<E> {
                 last_warning: last_warning.as_deref(),
                 file_indexed_pct,
                 pinned_hidden_count,
+                navigating_to_pin: self.navigating_to_pin,
+                spinner_tick: self.spinner_tick,
             },
             status_area,
         );
@@ -1996,20 +2296,32 @@ fn run_loop<E: NavigationEngine + Send + Sync + 'static>(
     let mut app = App::new(engine, filename);
 
     loop {
-        terminal.draw(|f| app.render(f))?;
-
+        // 1. Input handling — Escape clears pending nav before polls can resume.
         if event::poll(Duration::from_millis(16))?
             && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && let Some(ev) = input::from_key(key)
+            && app.handle_input(ev) == AppAction::Quit
         {
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-            if let Some(ev) = input::from_key(key)
-                && app.handle_input(ev) == AppAction::Quit
-            {
-                return Ok(());
-            }
+            return Ok(());
         }
+
+        // 2. Polls — must run after input so Escape can cancel before resume.
+        app.poll_expansions();
+        app.poll_pages();
+
+        // 3. Resume cap-yielded navigation (AwaitedResource::Continue).
+        if app
+            .pending_navigation
+            .as_ref()
+            .is_some_and(|p| p.awaited == AwaitedResource::Continue)
+            && let Some(pending) = app.pending_navigation.take()
+        {
+            app.resume_pending_navigation(pending);
+        }
+
+        // 4. Render.
+        terminal.draw(|f| app.render(f))?;
     }
 }
 
