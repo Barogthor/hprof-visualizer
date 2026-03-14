@@ -5,7 +5,7 @@ Status: review
 ## Story
 
 As a user,
-I want to hide individual values from a pinned snapshot and reset all hidden values at once,
+I want to hide individual values from a pinned snapshot and reveal them on demand,
 So that I can reduce noise in the favorites panel and focus on the fields that matter.
 
 ## Acceptance Criteria
@@ -13,29 +13,33 @@ So that I can reduce noise in the favorites panel and focus on the fields that m
 1. **AC1 – Hide a field or variable:**
    Given the cursor is on a field or variable row within a pinned snapshot in the favorites panel,
    When the user presses `h`,
-   Then that row is hidden from the snapshot display — replaced by a
-   `▪ [hidden: var[N]]` placeholder (for variables) or `▪ [hidden: fieldName]`
-   (for fields) — without removing the pin or affecting any other data.
+   Then that row is completely removed from the display (line freed, no placeholder)
+   without removing the pin or affecting any other data.
 
-2. **AC2 – Toggle hidden → visible via placeholder:**
-   Given a row is hidden in a pinned snapshot (showing `▪ [hidden: …]` placeholder),
-   When the user presses `h` on the placeholder row,
-   Then the field is re-shown at its original position (toggle behavior).
-
-3. **AC3 – Reset all hidden fields in a snapshot:**
+2. **AC2 – Reveal hidden rows via `H` toggle:**
    Given a pinned snapshot has one or more hidden fields,
-   When the user presses `H` (Shift+h),
-   Then all hidden fields in that snapshot are restored to visible.
-
-4. **AC4 – Reset is a no-op when nothing is hidden:**
-   Given a pinned snapshot with no hidden fields,
    When the user presses `H`,
-   Then nothing changes (no crash, no visual change).
+   Then all hidden rows appear as `▪ [hidden: var[N]]` / `▪ [hidden: fieldName]`
+   placeholders, navigable with the cursor.
 
-5. **AC5 – Help panel reflects new shortcuts:**
+3. **AC3 – Restore a hidden field individually:**
+   Given the snapshot is in reveal mode (`H` active) and the cursor is on a placeholder,
+   When the user presses `h`,
+   Then that field is restored to visible at its original position.
+
+4. **AC4 – `H` toggles reveal mode off:**
+   Given reveal mode is active,
+   When the user presses `H` again,
+   Then placeholders are hidden again (rows removed from display).
+
+5. **AC5 – Scope:**
+   Only instance fields and Frame local variables can be hidden.
+   Static fields and collection entries are unaffected (`h` is a no-op on those rows).
+
+6. **AC6 – Help panel reflects new shortcuts:**
    Given the help panel is open,
    When focus is on the favorites panel,
-   Then `h` (Hide / show field) and `H` (Reset hidden fields) appear active in the
+   Then `h` (Hide / show field) and `H` (Reveal / hide hidden) appear active in the
    keymap; they are dimmed when focus is on the thread list or stack frames.
 
 ## Tasks / Subtasks
@@ -710,15 +714,22 @@ None.
   8 params after adding `hidden_fields`; refactoring into a context struct is deferred.
 - `#[allow(non_snake_case)]` added to `help_bar_H_key_applicable_only_in_favorites` test
   to preserve the test name's clarity.
+- **UX rework (post-initial-impl):** Hide semantics changed from placeholder-on-hide to
+  completely-remove-on-hide. `h` removes the line; `H` toggles `show_hidden` mode which
+  reveals placeholders navigable by cursor; `h` on a placeholder restores. `PinnedItem`
+  gained `show_hidden: bool` (init `false`). `RenderOptions` gained `show_hidden: bool`.
+  `MetadataCollector` mirrors the renderer: hidden rows are absent when `show_hidden=false`,
+  emit a placeholder row when `show_hidden=true`.
 
 ### File List
 
-- `crates/hprof-tui/src/favorites.rs`
-- `crates/hprof-tui/src/views/tree_render.rs`
-- `crates/hprof-tui/src/views/favorites_panel/mod.rs`
-- `crates/hprof-tui/src/views/favorites_panel/tests.rs`
-- `crates/hprof-tui/src/views/stack_view/state.rs`
-- `crates/hprof-tui/src/views/help_bar.rs`
-- `crates/hprof-tui/src/app/mod.rs`
-- `crates/hprof-tui/src/app/tests.rs`
+- `crates/hprof-tui/src/favorites.rs` — `HideKey`, `hidden_fields`, `show_hidden` on `PinnedItem`
+- `crates/hprof-tui/src/views/tree_render.rs` — `show_hidden` in `RenderOptions`/`RenderCtx`, hide logic
+- `crates/hprof-tui/src/views/favorites_panel/mod.rs` — `MetadataCollector` + render calls
+- `crates/hprof-tui/src/views/favorites_panel/tests.rs` — tests 6.9–6.13, 6.17
+- `crates/hprof-tui/src/views/stack_view/state.rs` — `render_variable_tree` call updated
+- `crates/hprof-tui/src/views/help_bar.rs` — `h`/`H` entries, `ENTRY_COUNT` 19→21
+- `crates/hprof-tui/src/app/mod.rs` — `h`/`H` handlers in `handle_favorites_input`
+- `crates/hprof-tui/src/app/tests.rs` — test 6.16
 - `docs/implementation-artifacts/sprint-status.yaml`
+- `docs/implementation-artifacts/9-9-value-hiding-and-reset-in-pinned-snapshots.md`
