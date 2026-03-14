@@ -125,4 +125,5 @@ development_status:
   9-7-help-footer-context-and-visibility: done
   9-8-pinned-item-navigation-and-array-expansion: done
   9-9-value-hiding-and-reset-in-pinned-snapshots: done
+  9-10-quick-fixes-prefetch-favorites-object-empty: done
   epic-9-retrospective: optional
