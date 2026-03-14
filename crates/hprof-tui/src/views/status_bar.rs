@@ -14,8 +14,7 @@ use ratatui::{
 use crate::theme::THEME;
 
 /// Braille spinner characters for the navigation-in-progress indicator.
-pub(crate) const SPINNER_CHARS: [char; 10] =
-    ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+pub(crate) const SPINNER_CHARS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// One-line status bar for the bottom of the TUI.
 pub struct StatusBar<'a> {
@@ -100,12 +99,7 @@ impl Widget for StatusBar<'_> {
         let main = Span::styled(
             format!(
                 " {}{}  |  {}  |  {}{}{}  |  [?]help",
-                incomplete_part,
-                self.filename,
-                thread_part,
-                selected_part,
-                pinned_part,
-                warn_part,
+                incomplete_part, self.filename, thread_part, selected_part, pinned_part, warn_part,
             ),
             THEME.status_bar_bg,
         );

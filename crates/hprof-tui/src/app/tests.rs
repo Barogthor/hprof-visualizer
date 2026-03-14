@@ -3143,8 +3143,7 @@ mod async_navigation {
     fn navigate_to_path_defers_on_unexpanded_object() {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
         app.pinned
             .push(make_field_favorite_item("main", 10, 0, vec![1]));
@@ -3178,8 +3177,7 @@ mod async_navigation {
     fn cursor_index_matches_target_after_full_walk() {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
         app.pinned
             .push(make_field_favorite_item("main", 10, 0, vec![1]));
@@ -3212,8 +3210,7 @@ mod async_navigation {
     fn scroll_positions_cursor_in_upper_third_after_navigation() {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
         // Open the stack first from ThreadList focus so stack_state is Some.
         app.handle_input(InputEvent::Enter); // ThreadList → opens stack
@@ -3241,18 +3238,18 @@ mod async_navigation {
             );
             if let Some(target_idx) = flat.iter().position(|c| c == &target) {
                 let offset = s.list_state_offset_for_test();
-                let expected =
-                    target_idx.saturating_sub(1).min(flat.len().saturating_sub(3));
+                let expected = target_idx
+                    .saturating_sub(1)
+                    .min(flat.len().saturating_sub(3));
                 assert_eq!(
-                    offset, expected,
+                    offset,
+                    expected,
                     "offset must place cursor in upper third (target at {target_idx}, \
                     flat.len={})",
                     flat.len()
                 );
             } else {
-                panic!(
-                    "target Field(1) not found in flat_items after nav; flat={flat:?}"
-                );
+                panic!("target Field(1) not found in flat_items after nav; flat={flat:?}");
             }
         }
     }
@@ -3264,8 +3261,7 @@ mod async_navigation {
     fn escape_during_pending_nav_clears_state_cursor_stays() {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
         app.pinned
             .push(make_field_favorite_item("main", 10, 0, vec![1]));
@@ -3273,7 +3269,10 @@ mod async_navigation {
         app.focus = Focus::Favorites;
 
         app.handle_input(InputEvent::NavigateToSource);
-        assert!(app.pending_navigation.is_some(), "must be pending before Esc");
+        assert!(
+            app.pending_navigation.is_some(),
+            "must be pending before Esc"
+        );
 
         // Escape cancels navigation.
         app.handle_input(InputEvent::Escape);
@@ -3306,8 +3305,7 @@ mod async_navigation {
     fn walk_completes_in_one_pass_when_steps_cached() {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
 
         // Navigate to StackFrames to open stack, then pre-expand object 42.
@@ -3354,8 +3352,7 @@ mod async_navigation {
         let vars = vec![make_obj_var(0, 42)];
         // StubEngine default: any object → [x:Int, child:ObjectRef(999)].
         // object 999 → field 1 = ObjectRef(999) again (self-referential via default).
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
 
         // Open stack + pre-expand 42 and 999 so all Field hops are cached.
@@ -3420,8 +3417,7 @@ mod async_navigation {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         // Default engine: 42→[x,child:999], 999→[x,child:999]
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
 
         // Pin: Frame(10) → Var(0) → Field(1) → Field(0)
@@ -3487,10 +3483,7 @@ mod async_navigation {
         );
 
         // Step 3: Simulate stale context — collapse object 42.
-        app.stack_state
-            .as_mut()
-            .unwrap()
-            .collapse_object(42);
+        app.stack_state.as_mut().unwrap().collapse_object(42);
 
         // Step 4: 999 expands → resume detects 42 is no longer Expanded → stale.
         poll_all_expansions(&mut app);
@@ -3544,8 +3537,7 @@ mod async_navigation {
     fn second_navigate_to_source_cancels_first() {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
 
         let path1 = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
@@ -3628,8 +3620,7 @@ mod async_navigation {
                 entry_count: Some(3),
             },
         }];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
 
         let pin_key = crate::favorites::PinKey {
@@ -3665,7 +3656,11 @@ mod async_navigation {
             "must await collection page for 889"
         );
         assert_eq!(
-            app.pending_navigation.as_ref().unwrap().remaining_path.len(),
+            app.pending_navigation
+                .as_ref()
+                .unwrap()
+                .remaining_path
+                .len(),
             1,
             "remaining_path must hold exactly the CollectionEntry segment"
         );
@@ -3696,10 +3691,10 @@ mod async_navigation {
         // Two threads: main (serial=1, frame=10), worker (serial=2, frame=20).
         let frames1 = vec![make_frame(10)];
         let frames2 = vec![make_frame(20)];
-        let engine = StubEngine::with_thread_specific_frames(&["main", "worker"], &[
-            (1, frames1),
-            (2, frames2),
-        ])
+        let engine = StubEngine::with_thread_specific_frames(
+            &["main", "worker"],
+            &[(1, frames1), (2, frames2)],
+        )
         .with_vars(10, vec![make_obj_var(0, 42)])
         .with_vars(20, vec![make_obj_var(0, 55)]);
 
@@ -3728,7 +3723,9 @@ mod async_navigation {
         // NavigateToSource for "main" thread → defers on ObjectExpansion(42).
         app.handle_input(InputEvent::NavigateToSource);
         assert!(
-            app.pending_navigation.as_ref().is_some_and(|p| p.thread_id == 1),
+            app.pending_navigation
+                .as_ref()
+                .is_some_and(|p| p.thread_id == 1),
             "pending thread_id must be 1 (main)"
         );
 
@@ -3760,8 +3757,7 @@ mod async_navigation {
     fn integration_navigate_to_source_positions_cursor_and_scroll() {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
-            .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
 
         // Set small visible height so scroll offset is non-trivial.
