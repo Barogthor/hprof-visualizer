@@ -592,31 +592,6 @@ impl<E: NavigationEngine> App<E> {
             InputEvent::Down => {
                 if !self.pinned.is_empty() {
                     self.favorites_list_state.move_down();
-                    if let Some((collection_id, chunk_offset)) =
-                        self.favorites_list_state.current_chunk_sentinel()
-                    {
-                        let item_idx = self
-                            .favorites_list_state
-                            .selected_index()
-                            .min(self.pinned.len().saturating_sub(1));
-                        let key = (item_idx, collection_id, chunk_offset);
-                        if !self.pending_pinned_pages.contains_key(&key) {
-                            let engine = Arc::clone(&self.engine);
-                            let (tx, rx) = mpsc::channel();
-                            self.pending_pinned_pages.insert(
-                                key,
-                                PendingPage {
-                                    rx,
-                                    started: Instant::now(),
-                                    loading_shown: false,
-                                },
-                            );
-                            std::thread::spawn(move || {
-                                let page = engine.get_page(collection_id, chunk_offset, 1000);
-                                let _ = tx.send(page);
-                            });
-                        }
-                    }
                 }
             }
             InputEvent::Right | InputEvent::Enter => {
@@ -992,7 +967,7 @@ impl<E: NavigationEngine> App<E> {
                                 // Var row
                                 let oid = s.selected_object_id()?;
                                 if let Some(ec) = s.selected_var_entry_count() {
-                                    if s.expansion.collection_chunks.contains_key(&oid) {
+                                    if ec == 0 || s.expansion.collection_chunks.contains_key(&oid) {
                                         return None;
                                     }
                                     return Some(RightCmd::StartCollection(oid, ec));
@@ -1007,7 +982,9 @@ impl<E: NavigationEngine> App<E> {
                                     PathSegment::Field(_) => {
                                         if let Some((cid, ec)) = s.selected_field_collection_info()
                                         {
-                                            if s.expansion.collection_chunks.contains_key(&cid) {
+                                            if ec == 0
+                                                || s.expansion.collection_chunks.contains_key(&cid)
+                                            {
                                                 return None;
                                             }
                                             return Some(RightCmd::StartCollection(cid, ec));
@@ -1023,7 +1000,9 @@ impl<E: NavigationEngine> App<E> {
                                     PathSegment::CollectionEntry(_, _) => {
                                         let oid = s.selected_collection_entry_ref_id()?;
                                         if let Some(ec) = s.selected_collection_entry_count() {
-                                            if s.expansion.collection_chunks.contains_key(&oid) {
+                                            if ec == 0
+                                                || s.expansion.collection_chunks.contains_key(&oid)
+                                            {
                                                 return None;
                                             }
                                             return Some(RightCmd::StartCollection(oid, ec));
@@ -1039,7 +1018,9 @@ impl<E: NavigationEngine> App<E> {
                                         if let Some((cid, ec)) =
                                             s.selected_static_field_collection_info()
                                         {
-                                            if s.expansion.collection_chunks.contains_key(&cid) {
+                                            if ec == 0
+                                                || s.expansion.collection_chunks.contains_key(&cid)
+                                            {
                                                 return None;
                                             }
                                             return Some(RightCmd::StartCollection(cid, ec));
@@ -1272,6 +1253,9 @@ impl<E: NavigationEngine> App<E> {
                                     s.expansion_state(oid)
                                 );
                                 if let Some(ec) = s.selected_var_entry_count() {
+                                    if ec == 0 {
+                                        return None;
+                                    }
                                     if s.expansion.collection_chunks.contains_key(&oid) {
                                         return Some(Cmd::CollapseCollection(oid));
                                     }
@@ -1290,6 +1274,9 @@ impl<E: NavigationEngine> App<E> {
                                         let coll_info = s.selected_field_collection_info();
                                         dbg_log!("Field Enter: coll_info={:?}", coll_info);
                                         if let Some((cid, ec)) = coll_info {
+                                            if ec == 0 {
+                                                return None;
+                                            }
                                             if s.expansion.collection_chunks.contains_key(&cid) {
                                                 return Some(Cmd::CollapseCollection(cid));
                                             }
@@ -1310,6 +1297,9 @@ impl<E: NavigationEngine> App<E> {
                                     PathSegment::CollectionEntry(_, _) => {
                                         let oid = s.selected_collection_entry_ref_id()?;
                                         if let Some(ec) = s.selected_collection_entry_count() {
+                                            if ec == 0 {
+                                                return None;
+                                            }
                                             if s.expansion.collection_chunks.contains_key(&oid) {
                                                 return Some(Cmd::CollapseCollection(oid));
                                             }
@@ -1326,6 +1316,9 @@ impl<E: NavigationEngine> App<E> {
                                         if let Some((cid, ec)) =
                                             s.selected_static_field_collection_info()
                                         {
+                                            if ec == 0 {
+                                                return None;
+                                            }
                                             if s.expansion.collection_chunks.contains_key(&cid) {
                                                 return Some(Cmd::CollapseCollection(cid));
                                             }

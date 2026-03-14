@@ -1810,6 +1810,58 @@ mod collection_paging {
             ss.cursor()
         );
     }
+
+    #[test]
+    fn enter_on_empty_collection_var_is_noop() {
+        let mut app = make_var_collection_app(0);
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.handle_input(InputEvent::Down); // → var row (Object[0])
+        app.handle_input(InputEvent::Enter); // should be no-op
+
+        assert!(
+            app.pending_expansions.is_empty(),
+            "Enter on Object[0] must not start object expansion"
+        );
+        assert!(
+            app.pending_pages.is_empty(),
+            "Enter on Object[0] must not start collection page load"
+        );
+    }
+
+    #[test]
+    fn right_on_empty_collection_var_is_noop() {
+        let mut app = make_var_collection_app(0);
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.handle_input(InputEvent::Down); // → var row (Object[0])
+        app.handle_input(InputEvent::Right); // should be no-op
+
+        assert!(
+            app.pending_expansions.is_empty(),
+            "Right on Object[0] must not start object expansion"
+        );
+        assert!(
+            app.pending_pages.is_empty(),
+            "Right on Object[0] must not start collection page load"
+        );
+    }
+
+    #[test]
+    fn enter_on_empty_collection_field_is_noop() {
+        let mut app = make_collection_app(0);
+        nav_to_collection_field(&mut app);
+        app.handle_input(InputEvent::Enter); // should be no-op
+
+        assert!(
+            app.pending_expansions.is_empty(),
+            "Enter on field Object[0] must not start expansion"
+        );
+        assert!(
+            app.pending_pages.is_empty(),
+            "Enter on field Object[0] must not start page load"
+        );
+    }
 }
 
 mod camera {
@@ -2672,6 +2724,83 @@ mod favorites {
         assert!(
             !cc.chunk_pages.contains_key(&new_offset),
             "chunk beyond snapshot page cap must not be inserted"
+        );
+    }
+
+    fn make_collection_pinned_item(collection_id: u64, total_count: u64) -> PinnedItem {
+        use crate::views::stack_view::CollectionChunks;
+
+        let eager_entries: Vec<EntryInfo> = (0..total_count.min(100))
+            .map(|i| EntryInfo {
+                index: i as usize,
+                key: None,
+                value: FieldValue::Int(i as i32),
+            })
+            .collect();
+        let eager_page = Some(CollectionPage {
+            entries: eager_entries,
+            total_count,
+            offset: 0,
+            has_more: total_count > 100,
+        });
+        PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Thread.run()".to_string(),
+            item_label: "var[0]".to_string(),
+            snapshot: PinnedSnapshot::Subtree {
+                root_id: collection_id,
+                object_fields: HashMap::new(),
+                object_static_fields: HashMap::new(),
+                collection_chunks: HashMap::from([(
+                    collection_id,
+                    CollectionChunks {
+                        total_count,
+                        eager_page,
+                        chunk_pages: HashMap::new(),
+                    },
+                )]),
+                truncated: false,
+            },
+            local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            show_hidden: false,
+            key: make_pin_key_var(1, "main", 1, 0),
+        }
+    }
+
+    /// Render the app to populate favorites panel state
+    /// (row_kind_maps, chunk_sentinel_maps, etc.).
+    fn render_app(app: &mut App<StubEngine>) {
+        use ratatui::{Terminal, backend::TestBackend};
+        let backend = TestBackend::new(200, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+    }
+
+    #[test]
+    fn favorites_snapshot_hides_unloaded_chunk_sentinels() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+
+        // 250 entries → eager page has [0..100], chunks [100..200]
+        // and [200..250] are NOT loaded in the snapshot.
+        app.pinned.push(make_collection_pinned_item(0xAA, 250));
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        render_app(&mut app);
+
+        // Navigate through all rows — no sentinel should appear.
+        for _ in 0..120 {
+            app.handle_input(InputEvent::Down);
+        }
+        assert!(
+            app.favorites_list_state.current_chunk_sentinel().is_none(),
+            "unloaded chunk sentinels must be hidden in snapshot mode"
+        );
+        assert!(
+            app.pending_pinned_pages.is_empty(),
+            "no prefetch should occur in snapshot mode"
         );
     }
 

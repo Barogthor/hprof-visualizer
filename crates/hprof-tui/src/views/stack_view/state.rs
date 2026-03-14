@@ -292,7 +292,8 @@ impl StackState {
         }
     }
 
-    /// Returns the `ObjectRef` id for the field under cursor if it is an `ObjectRef`.
+    /// Returns the `ObjectRef` id for the field under cursor if it is an
+    /// expandable `ObjectRef` (excludes empty collections).
     pub fn selected_field_ref_id(&self) -> Option<u64> {
         let RenderCursor::At(path) = self.nav.cursor() else {
             return None;
@@ -309,10 +310,13 @@ impl StackState {
             .unwrap_or(root_id);
         let fields = self.expansion.object_fields.get(&parent_id)?;
         let field = fields.get(fi.0)?;
-        if let FieldValue::ObjectRef { id, .. } = field.value {
-            Some(id)
-        } else {
-            None
+        match field.value {
+            FieldValue::ObjectRef {
+                entry_count: Some(0),
+                ..
+            } => None,
+            FieldValue::ObjectRef { id, .. } => Some(id),
+            _ => None,
         }
     }
 
@@ -336,17 +340,19 @@ impl StackState {
         })
     }
 
-    /// Returns the `ObjectRef` id when cursor is on a static field pointing to object.
+    /// Returns the `ObjectRef` id when cursor is on a static field
+    /// pointing to an expandable object (excludes empty collections).
     pub fn selected_static_field_ref_id(&self) -> Option<u64> {
         let RenderCursor::At(path) = self.nav.cursor() else {
             return None;
         };
-        self.static_field_value_info(path, |f| {
-            if let FieldValue::ObjectRef { id, .. } = f.value {
-                Some(id)
-            } else {
-                None
-            }
+        self.static_field_value_info(path, |f| match f.value {
+            FieldValue::ObjectRef {
+                entry_count: Some(0),
+                ..
+            } => None,
+            FieldValue::ObjectRef { id, .. } => Some(id),
+            _ => None,
         })
     }
 
@@ -498,7 +504,9 @@ impl StackState {
         Some((cid.0, offset.0, limit))
     }
 
-    /// Returns the `ObjectRef` id when cursor is on a `CollectionEntry` with ObjectRef.
+    /// Returns the `ObjectRef` id when cursor is on a
+    /// `CollectionEntry` with an expandable `ObjectRef`
+    /// (excludes empty collections).
     pub fn selected_collection_entry_ref_id(&self) -> Option<u64> {
         let RenderCursor::At(path) = self.nav.cursor() else {
             return None;
@@ -509,10 +517,13 @@ impl StackState {
         };
         let cc = self.expansion.collection_chunks.get(&cid.0)?;
         let entry = cc.find_entry(ei.0)?;
-        if let FieldValue::ObjectRef { id, .. } = &entry.value {
-            Some(*id)
-        } else {
-            None
+        match &entry.value {
+            FieldValue::ObjectRef {
+                entry_count: Some(0),
+                ..
+            } => None,
+            FieldValue::ObjectRef { id, .. } => Some(*id),
+            _ => None,
         }
     }
 

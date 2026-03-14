@@ -88,6 +88,7 @@ pub(crate) fn format_object_ref_collapsed(
     };
     let short = display_name.rsplit('.').next().unwrap_or(display_name);
     let base = match entry_count {
+        Some(0) => format!("{short} (empty)"),
         Some(n) => format!("{short} ({n} entries)"),
         None => short.to_string(),
     };
@@ -165,6 +166,7 @@ pub(crate) fn format_entry_value_text(v: &FieldValue, show_object_ids: bool) -> 
             };
             let short = display_name.rsplit('.').next().unwrap_or(display_name);
             let base = match entry_count {
+                Some(0) => format!("{short} (empty)"),
                 Some(n) => format!("{short} ({n} entries)"),
                 None => short.to_string(),
             };
@@ -329,6 +331,26 @@ mod tests {
             !without_ids.contains("@ 0x"),
             "expected no ID suffix when disabled: {without_ids}"
         );
+    }
+
+    #[test]
+    fn empty_collection_shows_empty_label() {
+        let label = format_object_ref_collapsed("java.lang.Object[]", Some(0), false, 0x100);
+        assert_eq!(label, "Object[] (empty)");
+    }
+
+    #[test]
+    fn empty_collection_entry_value_shows_empty_label() {
+        let label = super::format_entry_value_text(
+            &FieldValue::ObjectRef {
+                id: 0x200,
+                class_name: "java.util.ArrayList".to_string(),
+                entry_count: Some(0),
+                inline_value: None,
+            },
+            false,
+        );
+        assert_eq!(label, "ArrayList (empty)");
     }
 
     #[test]

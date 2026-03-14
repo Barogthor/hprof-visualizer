@@ -134,6 +134,9 @@ fn object_ref_state(
     entry_count: Option<u64>,
     ctx: &RenderCtx<'_>,
 ) -> (Option<ExpansionPhase>, bool) {
+    if entry_count == Some(0) {
+        return (None, false);
+    }
     if entry_count.is_some() && ctx.collection_chunks.contains_key(&object_id) {
         if ctx.snapshot_mode {
             return (Some(get_phase(object_id, ctx.object_phases)), false);
@@ -314,8 +317,8 @@ fn append_var(
     let (toggle, val_str, val_style): (&str, String, Style) = if unavailable {
         let label = format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
         ("? ", format!("local variable: {label}"), THEME.null_value)
-    } else {
-        match phase.clone().unwrap_or(ExpansionPhase::Collapsed) {
+    } else if let Some(p) = phase.clone() {
+        match p {
             ExpansionPhase::Failed => {
                 let err = ctx
                     .object_errors
@@ -339,6 +342,9 @@ fn append_var(
                 ("- ", format!("local variable: {label}"), Style::new())
             }
         }
+    } else {
+        let label = format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
+        ("  ", format!("local variable: {label}"), Style::new())
     };
 
     push_field_row(
@@ -621,6 +627,13 @@ fn append_collection_items_inner(
     for (offset, limit) in &ranges {
         let end = offset + limit - 1;
         let chunk_state = cc.chunk_pages.get(offset);
+
+        // In snapshot mode, skip unloaded chunks entirely —
+        // snapshots are frozen and cannot fetch new pages.
+        if ctx.snapshot_mode && !matches!(chunk_state, Some(ChunkState::Loaded(_))) {
+            continue;
+        }
+
         let (toggle, label) = match chunk_state {
             Some(ChunkState::Loading) => ("~ ", format!("Loading [{offset}...{end}]")),
             Some(ChunkState::Loaded(_)) => ("- ", format!("[{offset}...{end}]")),
@@ -1207,9 +1220,11 @@ mod tests {
                 text.contains("[0] 7"),
                 "expected eager entry, got: {text:?}"
             );
+            // Unloaded chunk sentinels are hidden in snapshot mode —
+            // snapshots are frozen and cannot fetch new pages.
             assert!(
-                text.contains("+ [100...119]"),
-                "expected chunk sentinel row, got: {text:?}"
+                !text.contains("[100...119]"),
+                "unloaded chunk must be hidden in snapshot mode: {text:?}"
             );
         }
 
@@ -1451,6 +1466,46 @@ mod tests {
                 Some(&hidden),
             );
             assert_eq!(hidden_absent.len(), 0, "show_hidden=false → no rows");
+        }
+    }
+
+    /// Empty collections (entry_count == 0) render as leaf without toggle.
+    mod empty_collections {
+        use super::*;
+
+        #[test]
+        fn empty_collection_var_renders_without_toggle() {
+            let vars = vec![VariableInfo {
+                index: 0,
+                value: VariableValue::ObjectRef {
+                    id: 0x50,
+                    class_name: "Object[]".to_string(),
+                    entry_count: Some(0),
+                },
+            }];
+            let items = render_variable_tree(
+                TreeRoot::Frame { vars: &vars },
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                RenderOptions {
+                    show_object_ids: false,
+                    snapshot_mode: false,
+                    show_hidden: false,
+                },
+                None,
+            );
+            let text = render_items(items);
+            assert!(
+                text.contains("(empty)"),
+                "expected '(empty)' label, got: {text:?}"
+            );
+            assert!(
+                !text.contains('+'),
+                "empty collection must not show + toggle: {text:?}"
+            );
         }
     }
 

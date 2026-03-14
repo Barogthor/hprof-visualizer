@@ -626,18 +626,14 @@ impl<'a> MetadataCollector<'a> {
             }
         }
 
+        // Only show loaded chunks — snapshots are frozen and
+        // cannot fetch new pages, so unloaded chunks are hidden.
         for (offset, _) in compute_chunk_ranges(cc.total_count) {
-            let row = self.push_row();
-            match cc.chunk_pages.get(&offset) {
-                Some(ChunkState::Collapsed) => {
-                    self.sentinel_map.insert(row, (collection_id, offset));
+            if let Some(ChunkState::Loaded(page)) = cc.chunk_pages.get(&offset) {
+                let _row = self.push_row();
+                for entry in &page.entries {
+                    self.collect_collection_entry_row(collection_id, entry);
                 }
-                Some(ChunkState::Loaded(page)) => {
-                    for entry in &page.entries {
-                        self.collect_collection_entry_row(collection_id, entry);
-                    }
-                }
-                Some(ChunkState::Loading) | None => {}
             }
         }
     }
