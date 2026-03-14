@@ -1,6 +1,7 @@
 # Story 9.10: Quick Fixes — Prefetch Favoris + Object[0] Empty
 
 Status: done
+Review: done
 
 ## Story
 
