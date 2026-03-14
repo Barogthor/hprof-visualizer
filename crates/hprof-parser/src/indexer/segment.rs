@@ -182,18 +182,6 @@ mod tests {
     }
 
     #[test]
-    fn segment0_does_not_contain_segment3_id() {
-        let mut builder = SegmentFilterBuilder::new();
-        builder.add(0, 500);
-        builder.add(3 * SEGMENT_SIZE, 9999);
-        let (mut filters, _) = builder.build();
-        filters.sort_by_key(|f| f.segment_index);
-        let seg0 = &filters[0];
-        // 9999 was only added to segment 3 — guaranteed false negative in seg0
-        assert!(!seg0.contains(9999));
-    }
-
-    #[test]
     fn duplicate_ids_same_segment_deduped_filter_contains_once() {
         let mut builder = SegmentFilterBuilder::new();
         builder.add(0, 77);

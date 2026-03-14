@@ -115,14 +115,46 @@ development_status:
   epic-7-retrospective: done
 
   # Epic 9: Navigation & Data Fidelity (sourced from user testing 2026-03-10)
-  epic-9: backlog
-  9-1-expand-state-bugs-and-failed-resolve-non-navigable: backlog
-  9-2-collection-data-fidelity: backlog
-  9-3-arrow-expand-unexpand-parent-navigation: backlog
-  9-4-camera-scroll: backlog
-  9-5-stack-frame-variable-names-and-static-fields: backlog
-  9-6-search-and-favorites-ux-polish: backlog
-  9-7-help-footer-context-and-visibility: backlog
-  9-8-pinned-item-navigation-and-array-expansion: backlog
-  9-9-value-hiding-and-reset-in-pinned-snapshots: backlog
-  epic-9-retrospective: optional
+  epic-9: in-progress
+  9-1-expand-state-bugs-and-failed-resolve-non-navigable: done
+  9-2-collection-data-fidelity: done
+  9-3-arrow-expand-unexpand-parent-navigation: done  # post-release fixes 2026-03-12
+  9-4-camera-scroll: done
+  9-5-static-fields-in-stack-view: done
+  9-6-search-and-favorites-ux-polish: done
+  9-7-help-footer-context-and-visibility: done
+  9-8-pinned-item-navigation-and-array-expansion: done
+  9-9-value-hiding-and-reset-in-pinned-snapshots: done
+  9-10-quick-fixes-prefetch-favorites-object-empty: done
+  9-11-go-to-pin-async-and-scroll-fix: done
+  epic-9-retrospective: done
+
+  # Epic 10: Large Dump Loading (sourced from large dump UX observations 2026-03-14)
+  epic-10: in-progress
+  10-1-progress-fidelity-heap-segment-scan: ready-for-dev
+  10-2-split-oversized-heap-segments: ready-for-dev
+  10-3-memory-guard-budget-bytes-extract-all: ready-for-dev
+  10-4-investigate-post-extraction-ram-spike: backlog
+
+  # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
+  epic-11: backlog
+  11-1-loading-indicator-slow-operations: backlog
+  11-2-batch-scan-by-segment: backlog
+  11-3-parallel-eager-item-resolution: backlog
+  11-4-skip-index-object-array: backlog
+  11-5-skip-index-variable-size: backlog
+  11-6-investigate-non-array-item-slowness: backlog
+
+  # Epic 12: Path-Based Expand State (sourced from Epic 4 retro + G4/G5)
+  epic-12: backlog
+  12-1-path-based-expand-state-isolation: backlog
+
+  # Epic 13: UI Polish & Ergonomie (sourced from large dump UX observations 2026-03-14)
+  epic-13: backlog
+  13-1-collapsible-static-fields-section: backlog
+  13-2-enhanced-favorites-navigation: backlog
+  13-3-ui-separators: backlog
+  13-4-incomplete-file-warning-color: backlog
+  13-5-azerty-qwerty-keymapping: backlog
+  13-6-class-metadata-preload: backlog
+  13-7-logo-splash-screen: backlog

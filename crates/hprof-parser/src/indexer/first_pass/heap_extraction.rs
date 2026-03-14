@@ -116,6 +116,15 @@ pub(super) fn extract_heap_segment(
 
             HeapSubTag::ClassDump => match parse_class_dump(&mut cursor, id_size) {
                 Some(info) => {
+                    #[cfg(feature = "dev-profiling")]
+                    if !info.static_fields.is_empty() {
+                        tracing::debug!(
+                            "heap_extract class_dump class=0x{:X} static_fields={} at_offset={}",
+                            info.class_object_id,
+                            info.static_fields.len(),
+                            sub_record_start
+                        );
+                    }
                     result.class_dumps.push(ClassDumpEntry {
                         class_object_id: info.class_object_id,
                         info,
@@ -123,6 +132,11 @@ pub(super) fn extract_heap_segment(
                     true
                 }
                 None => {
+                    #[cfg(feature = "dev-profiling")]
+                    tracing::debug!(
+                        "heap_extract class_dump parse failed at_offset={}",
+                        sub_record_start
+                    );
                     result.warnings.push(
                         "truncated CLASS_DUMP \
                              sub-record — skipping"

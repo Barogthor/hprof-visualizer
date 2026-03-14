@@ -13,10 +13,11 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, StatefulWidget, Widget},
+    widgets::{Block, BorderType, Borders, List, ListItem, StatefulWidget, Widget},
 };
 
 use crate::theme::THEME;
+use crate::views::cursor::CursorState;
 
 /// Owns all thread list state: full data, active filter, and selection.
 pub struct ThreadListState {
@@ -26,10 +27,8 @@ pub struct ThreadListState {
     filter: String,
     /// Thread serials in display order after filtering.
     filtered_serials: Vec<u32>,
-    /// Serial of the currently highlighted thread.
-    selected_serial: Option<u32>,
-    /// ratatui list state (owns the visual scroll offset).
-    list_state: ListState,
+    /// Cursor and ratatui list state for filtered serials.
+    nav: CursorState<u32>,
     /// Whether the search input box is focused.
     search_active: bool,
 }
@@ -38,17 +37,13 @@ impl ThreadListState {
     /// Builds state from a sorted thread list. Selects first thread if any.
     pub fn new(threads: Vec<ThreadInfo>) -> Self {
         let filtered_serials: Vec<u32> = threads.iter().map(|t| t.thread_serial).collect();
-        let selected_serial = filtered_serials.first().copied();
-        let mut list_state = ListState::default();
-        if selected_serial.is_some() {
-            list_state.select(Some(0));
-        }
+        let mut nav = CursorState::new(filtered_serials.first().copied().unwrap_or(0));
+        nav.sync(&filtered_serials);
         Self {
             threads,
             filter: String::new(),
             filtered_serials,
-            selected_serial,
-            list_state,
+            nav,
             search_active: false,
         }
     }
@@ -65,96 +60,68 @@ impl ThreadListState {
             .map(|t| t.thread_serial)
             .collect();
 
-        // Keep selection if still visible; otherwise pick first.
-        let keep = self
-            .selected_serial
-            .filter(|s| self.filtered_serials.contains(s));
-        if let Some(s) = keep {
-            self.selected_serial = Some(s);
-            let idx = self.filtered_serials.iter().position(|&x| x == s);
-            self.list_state.select(idx);
+        if self.filtered_serials.is_empty() {
+            self.nav.sync(&self.filtered_serials);
         } else {
-            self.selected_serial = self.filtered_serials.first().copied();
-            self.list_state.select(if self.filtered_serials.is_empty() {
-                None
-            } else {
-                Some(0)
-            });
+            self.nav.sync_or_select_first(&self.filtered_serials);
         }
     }
 
     /// Moves selection down one item (clamps at end).
     pub fn move_down(&mut self) {
-        if self.filtered_serials.is_empty() {
-            return;
-        }
-        let current = self.list_state.selected().unwrap_or(0);
-        let next = (current + 1).min(self.filtered_serials.len() - 1);
-        self.list_state.select(Some(next));
-        self.selected_serial = self.filtered_serials.get(next).copied();
+        self.nav.move_down(&self.filtered_serials);
     }
 
     /// Moves selection up one item (clamps at start).
     pub fn move_up(&mut self) {
-        if self.filtered_serials.is_empty() {
-            return;
-        }
-        let current = self.list_state.selected().unwrap_or(0);
-        let prev = current.saturating_sub(1);
-        self.list_state.select(Some(prev));
-        self.selected_serial = self.filtered_serials.get(prev).copied();
+        self.nav.move_up(&self.filtered_serials);
     }
 
     /// Moves selection to the first item.
     pub fn move_home(&mut self) {
-        if self.filtered_serials.is_empty() {
-            return;
-        }
-        self.list_state.select(Some(0));
-        self.selected_serial = self.filtered_serials.first().copied();
+        self.nav.move_home(&self.filtered_serials);
     }
 
     /// Moves selection to the last item.
     pub fn move_end(&mut self) {
-        if self.filtered_serials.is_empty() {
-            return;
-        }
-        let last = self.filtered_serials.len() - 1;
-        self.list_state.select(Some(last));
-        self.selected_serial = self.filtered_serials.last().copied();
+        self.nav.move_end(&self.filtered_serials);
     }
 
-    /// Moves selection down by `n` items (clamps at end).
-    pub fn page_down(&mut self, n: usize) {
-        if self.filtered_serials.is_empty() {
-            return;
-        }
-        let current = self.list_state.selected().unwrap_or(0);
-        let next = (current + n).min(self.filtered_serials.len() - 1);
-        self.list_state.select(Some(next));
-        self.selected_serial = self.filtered_serials.get(next).copied();
+    /// Moves selection down by one visible page (clamps at end).
+    pub fn page_down(&mut self) {
+        self.nav.move_page_down(&self.filtered_serials);
     }
 
-    /// Moves selection up by `n` items (clamps at start).
-    pub fn page_up(&mut self, n: usize) {
-        if self.filtered_serials.is_empty() {
-            return;
-        }
-        let current = self.list_state.selected().unwrap_or(0);
-        let prev = current.saturating_sub(n);
-        self.list_state.select(Some(prev));
-        self.selected_serial = self.filtered_serials.get(prev).copied();
+    /// Moves selection up by one visible page (clamps at start).
+    pub fn page_up(&mut self) {
+        self.nav.move_page_up(&self.filtered_serials);
+    }
+
+    /// Sets visible list height used by page navigation.
+    pub fn set_visible_height(&mut self, h: usize) {
+        self.nav.set_visible_height(h);
     }
 
     /// Returns the serial of the currently highlighted thread, or `None`
     /// when the filtered list is empty.
     pub fn selected_serial(&self) -> Option<u32> {
-        self.selected_serial
+        if self.filtered_serials.is_empty() {
+            None
+        } else {
+            Some(*self.nav.cursor())
+        }
     }
 
     /// Current filter string.
     pub fn filter(&self) -> &str {
         &self.filter
+    }
+
+    /// Selects a thread by serial when it is visible in the current filtered list.
+    pub fn select_serial(&mut self, serial: u32) {
+        if self.filtered_serials.contains(&serial) {
+            self.nav.set_cursor_and_sync(serial, &self.filtered_serials);
+        }
     }
 
     /// Number of threads in the filtered view.
@@ -169,6 +136,9 @@ impl ThreadListState {
 
     /// Activates the search input box.
     pub fn activate_search(&mut self) {
+        if self.search_active {
+            return;
+        }
         self.search_active = true;
     }
 
@@ -177,9 +147,15 @@ impl ThreadListState {
         self.search_active = false;
     }
 
+    /// Clears the active filter and restores the full list.
+    pub fn clear_filter(&mut self) {
+        self.apply_filter("");
+    }
+
     /// Returns the [`ThreadInfo`] for the currently selected thread, or `None`.
     pub fn selected_thread(&self) -> Option<&ThreadInfo> {
-        self.selected_serial.and_then(|s| self.thread_by_serial(s))
+        self.selected_serial()
+            .and_then(|s| self.thread_by_serial(s))
     }
 
     fn thread_by_serial(&self, serial: u32) -> Option<&ThreadInfo> {
@@ -238,6 +214,11 @@ impl StatefulWidget for SearchableList {
                 Span::styled(state.filter(), THEME.search_active),
                 Span::styled("_", THEME.search_active),
             ])
+        } else if !state.filter().is_empty() {
+            Line::from(vec![
+                Span::styled("/ ", THEME.search_active),
+                Span::styled(state.filter(), THEME.search_active),
+            ])
         } else {
             Line::from(Span::styled("Press / to search", THEME.null_value))
         };
@@ -264,7 +245,7 @@ impl StatefulWidget for SearchableList {
                 .collect();
 
             let list = List::new(items).highlight_style(THEME.selection_bg);
-            StatefulWidget::render(list, list_area, buf, &mut state.list_state);
+            StatefulWidget::render(list, list_area, buf, state.nav.list_state_mut());
         }
 
         // Legend row
@@ -377,14 +358,16 @@ mod tests {
     #[test]
     fn page_down_jumps_by_n_items() {
         let mut state = ThreadListState::new(make_threads(&["t1", "t2", "t3", "t4", "t5", "t6"]));
-        state.page_down(3);
+        state.set_visible_height(3);
+        state.page_down();
         assert_eq!(state.selected_serial(), Some(4));
     }
 
     #[test]
     fn page_down_clamps_at_last_item() {
         let mut state = ThreadListState::new(make_threads(&["t1", "t2", "t3"]));
-        state.page_down(10);
+        state.set_visible_height(10);
+        state.page_down();
         assert_eq!(state.selected_serial(), Some(3));
     }
 
@@ -392,7 +375,8 @@ mod tests {
     fn page_up_jumps_by_n_items() {
         let mut state = ThreadListState::new(make_threads(&["t1", "t2", "t3", "t4", "t5", "t6"]));
         state.move_end();
-        state.page_up(3);
+        state.set_visible_height(3);
+        state.page_up();
         assert_eq!(state.selected_serial(), Some(3));
     }
 
@@ -400,7 +384,49 @@ mod tests {
     fn page_up_clamps_at_first_item() {
         let mut state = ThreadListState::new(make_threads(&["t1", "t2", "t3"]));
         state.move_end();
-        state.page_up(10);
+        state.set_visible_height(10);
+        state.page_up();
+        assert_eq!(state.selected_serial(), Some(1));
+    }
+
+    #[test]
+    fn thread_list_clear_filter_on_empty_result_syncs_cursor() {
+        let mut state = ThreadListState::new(make_threads(&["main", "worker-1", "worker-2"]));
+        state.apply_filter("xyz");
+        assert_eq!(state.selected_serial(), None);
+
+        state.clear_filter();
+
+        assert_eq!(state.filter(), "");
+        assert_eq!(state.filtered_count(), 3);
+        assert_eq!(state.selected_serial(), Some(1));
+    }
+
+    #[test]
+    fn thread_list_reopen_search_preserves_existing_filter_in_input() {
+        let mut state = ThreadListState::new(make_threads(&["main", "worker-1"]));
+        state.apply_filter("work");
+        state.activate_search();
+        state.deactivate_search();
+
+        state.activate_search();
+
+        assert!(state.is_search_active());
+        assert_eq!(state.filter(), "work");
+    }
+
+    #[test]
+    fn select_serial_sets_cursor_when_visible() {
+        let mut state = ThreadListState::new(make_threads(&["main", "worker-1", "worker-2"]));
+        state.select_serial(3);
+        assert_eq!(state.selected_serial(), Some(3));
+    }
+
+    #[test]
+    fn select_serial_noop_when_hidden_by_filter() {
+        let mut state = ThreadListState::new(make_threads(&["main", "worker-1", "worker-2"]));
+        state.apply_filter("main");
+        state.select_serial(3);
         assert_eq!(state.selected_serial(), Some(1));
     }
 }

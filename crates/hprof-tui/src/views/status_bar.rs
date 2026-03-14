@@ -1,8 +1,7 @@
-//! Status bar widget rendering file info and key hints at the bottom of
-//! the TUI layout.
+//! Status bar widget rendering file info and status at the bottom of the TUI
+//! layout.
 //!
-//! Displays: `<filename>  |  <N> threads  |  <thread-name>  <STATE>  |
-//! [q]uit  [/]search  [Esc]back`
+//! Displays: `<filename>  |  <N> threads  |  <thread-name>  <STATE>`
 
 use hprof_engine::{ThreadInfo, ThreadState};
 use ratatui::{
@@ -13,6 +12,9 @@ use ratatui::{
 };
 
 use crate::theme::THEME;
+
+/// Braille spinner characters for the navigation-in-progress indicator.
+pub(crate) const SPINNER_CHARS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// One-line status bar for the bottom of the TUI.
 pub struct StatusBar<'a> {
@@ -30,6 +32,10 @@ pub struct StatusBar<'a> {
     pub last_warning: Option<&'a str>,
     /// Number of pinned items hidden because terminal is too narrow.
     pub pinned_hidden_count: usize,
+    /// Whether a go-to-pin navigation is in progress (shows spinner).
+    pub navigating_to_pin: bool,
+    /// Spinner frame index, incremented each render tick (`% 10` gives char).
+    pub spinner_tick: u8,
 }
 
 pub(crate) fn state_label(state: ThreadState) -> &'static str {
@@ -83,14 +89,22 @@ impl Widget for StatusBar<'_> {
             String::new()
         };
 
-        let line = Line::from(vec![Span::styled(
+        let nav_part = if self.navigating_to_pin {
+            let ch = SPINNER_CHARS[(self.spinner_tick % 10) as usize];
+            format!("  |  {} Navigating to pin...", ch)
+        } else {
+            String::new()
+        };
+
+        let main = Span::styled(
             format!(
-                " {}{}  |  {}  |  {}  |  [q]uit  [/]search  [Esc]back{}{}",
-                incomplete_part, self.filename, thread_part, selected_part, pinned_part, warn_part
+                " {}{}  |  {}  |  {}{}{}  |  [?]help",
+                incomplete_part, self.filename, thread_part, selected_part, pinned_part, warn_part,
             ),
             THEME.status_bar_bg,
-        )]);
-        line.render(area, buf);
+        );
+        let nav = Span::styled(nav_part, THEME.nav_spinner);
+        Line::from(vec![main, nav]).render(area, buf);
     }
 }
 
@@ -168,6 +182,8 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
+                navigating_to_pin: false,
+                spinner_tick: 0,
             },
             120,
         );
@@ -188,6 +204,8 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
+                navigating_to_pin: false,
+                spinner_tick: 0,
             },
             120,
         );
@@ -208,6 +226,8 @@ mod tests {
                 file_indexed_pct: Some(75.3),
                 last_warning: None,
                 pinned_hidden_count: 0,
+                navigating_to_pin: false,
+                spinner_tick: 0,
             },
             200,
         );
@@ -228,12 +248,58 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: Some("Object 0xABC not found"),
                 pinned_hidden_count: 0,
+                navigating_to_pin: false,
+                spinner_tick: 0,
             },
             200,
         );
         assert!(
             content.contains("Object 0xABC not found"),
             "last warning text must appear; got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn navigating_to_pin_shows_spinner_in_status_bar() {
+        let content = render_status_bar(
+            StatusBar {
+                filename: "test.hprof",
+                thread_count: 1,
+                selected: None,
+                warning_count: 0,
+                file_indexed_pct: None,
+                last_warning: None,
+                pinned_hidden_count: 0,
+                navigating_to_pin: true,
+                spinner_tick: 0,
+            },
+            200,
+        );
+        assert!(
+            content.contains("Navigating to pin"),
+            "spinner text must appear; got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn not_navigating_shows_no_spinner() {
+        let content = render_status_bar(
+            StatusBar {
+                filename: "test.hprof",
+                thread_count: 1,
+                selected: None,
+                warning_count: 0,
+                file_indexed_pct: None,
+                last_warning: None,
+                pinned_hidden_count: 0,
+                navigating_to_pin: false,
+                spinner_tick: 0,
+            },
+            200,
+        );
+        assert!(
+            !content.contains("Navigating to pin"),
+            "no spinner when not navigating; got: {content:?}"
         );
     }
 
@@ -249,6 +315,8 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: Some(&long_warning),
                 pinned_hidden_count: 0,
+                navigating_to_pin: false,
+                spinner_tick: 0,
             },
             300,
         );

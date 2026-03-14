@@ -17,6 +17,8 @@
 //! assert_eq!(&bytes[..18], b"JAVA PROFILE 1.0.2");
 //! ```
 
+use crate::StaticValue;
+
 /// Returns the byte offset of the first record in a builder-produced byte slice.
 ///
 /// Advances past the null-terminated version string, `id_size` (`u32`), and
@@ -235,11 +237,33 @@ impl HprofTestBuilder {
     ///
     /// `fields`: slice of `(name_string_id, field_type)` pairs.
     pub fn add_class_dump(
-        mut self,
+        self,
         class_object_id: u64,
         super_class_id: u64,
         instance_size: u32,
         fields: &[(u64, u8)],
+    ) -> Self {
+        self.add_class_dump_with_static_fields(
+            class_object_id,
+            super_class_id,
+            instance_size,
+            fields,
+            &[],
+        )
+    }
+
+    /// Appends a `HEAP_DUMP_SEGMENT` (tag `0x1C`) containing one `CLASS_DUMP`
+    /// (sub-tag `0x20`) sub-record with static field values.
+    ///
+    /// - `instance_fields`: slice of `(name_string_id, field_type)` pairs.
+    /// - `static_fields`: slice of `(name_string_id, value)` pairs.
+    pub fn add_class_dump_with_static_fields(
+        mut self,
+        class_object_id: u64,
+        super_class_id: u64,
+        instance_size: u32,
+        instance_fields: &[(u64, u8)],
+        static_fields: &[(u64, StaticValue)],
     ) -> Self {
         let mut sub = vec![0x20u8]; // CLASS_DUMP sub-tag
         sub.extend_from_slice(&self.encode_id(class_object_id));
@@ -251,9 +275,14 @@ impl HprofTestBuilder {
         }
         sub.extend_from_slice(&instance_size.to_be_bytes());
         sub.extend_from_slice(&0u16.to_be_bytes()); // constant_pool_count = 0
-        sub.extend_from_slice(&0u16.to_be_bytes()); // static_fields_count = 0
-        sub.extend_from_slice(&(fields.len() as u16).to_be_bytes());
-        for &(name_id, field_type) in fields {
+        sub.extend_from_slice(&(static_fields.len() as u16).to_be_bytes());
+        for (name_id, value) in static_fields {
+            sub.extend_from_slice(&self.encode_id(*name_id));
+            sub.push(Self::static_value_type(value));
+            Self::encode_static_value(&mut sub, value, self.id_size);
+        }
+        sub.extend_from_slice(&(instance_fields.len() as u16).to_be_bytes());
+        for &(name_id, field_type) in instance_fields {
             sub.extend_from_slice(&self.encode_id(name_id));
             sub.push(field_type);
         }
@@ -368,6 +397,45 @@ impl HprofTestBuilder {
             id_size == 4 || id_size == 8,
             "id_size must be 4 or 8, got {id_size}"
         );
+    }
+
+    fn static_value_type(value: &StaticValue) -> u8 {
+        match value {
+            StaticValue::ObjectRef(_) => 2,
+            StaticValue::Bool(_) => 4,
+            StaticValue::Char(_) => 5,
+            StaticValue::Float(_) => 6,
+            StaticValue::Double(_) => 7,
+            StaticValue::Byte(_) => 8,
+            StaticValue::Short(_) => 9,
+            StaticValue::Int(_) => 10,
+            StaticValue::Long(_) => 11,
+        }
+    }
+
+    fn encode_static_value(out: &mut Vec<u8>, value: &StaticValue, id_size: u32) {
+        match value {
+            StaticValue::ObjectRef(id) => {
+                let all = id.to_be_bytes();
+                out.extend_from_slice(&all[8 - id_size as usize..]);
+            }
+            StaticValue::Bool(v) => out.push(u8::from(*v)),
+            StaticValue::Char(v) => {
+                let code = *v as u32;
+                let unit = if code <= u16::MAX as u32 {
+                    code as u16
+                } else {
+                    0xFFFD
+                };
+                out.extend_from_slice(&unit.to_be_bytes());
+            }
+            StaticValue::Float(v) => out.extend_from_slice(&v.to_be_bytes()),
+            StaticValue::Double(v) => out.extend_from_slice(&v.to_be_bytes()),
+            StaticValue::Byte(v) => out.push(*v as u8),
+            StaticValue::Short(v) => out.extend_from_slice(&v.to_be_bytes()),
+            StaticValue::Int(v) => out.extend_from_slice(&v.to_be_bytes()),
+            StaticValue::Long(v) => out.extend_from_slice(&v.to_be_bytes()),
+        }
     }
 
     /// Builds a record: `tag(u8)` + `time_offset(u32=0)` + `length(u32)` + `payload`.

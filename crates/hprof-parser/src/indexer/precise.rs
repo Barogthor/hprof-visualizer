@@ -137,7 +137,10 @@ impl MemorySize for PreciseIndex {
             + self
                 .class_dumps
                 .values()
-                .map(|cd| cd.instance_fields.capacity() * std::mem::size_of::<crate::FieldDef>())
+                .map(|cd| {
+                    cd.instance_fields.capacity() * std::mem::size_of::<crate::FieldDef>()
+                        + cd.static_fields.capacity() * std::mem::size_of::<crate::StaticFieldDef>()
+                })
                 .sum::<usize>()
             + fxhashmap_memory_size::<u32, u64>(self.thread_object_ids.capacity())
             + fxhashmap_memory_size::<u64, String>(self.class_names_by_id.capacity())

@@ -35,7 +35,8 @@ pub use strings::{HprofStringRef, parse_string_ref};
 pub(crate) mod types;
 pub use types::{
     ClassDef, ClassDumpInfo, FieldDef, HprofThread, RawInstance, StackFrame, StackTrace,
-    parse_load_class, parse_stack_frame, parse_stack_trace, parse_start_thread,
+    StaticFieldDef, StaticValue, parse_load_class, parse_stack_frame, parse_stack_trace,
+    parse_start_thread,
 };
 
 pub(crate) mod java_types;
