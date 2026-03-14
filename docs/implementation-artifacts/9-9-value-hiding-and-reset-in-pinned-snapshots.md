@@ -1,6 +1,6 @@
 # Story 9.9: Value Hiding & Reset in Pinned Snapshots
 
-Status: review
+Status: done
 
 ## Story
 

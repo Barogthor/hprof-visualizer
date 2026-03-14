@@ -75,6 +75,7 @@ impl FavoritesPanelState {
             self.row_counts.clear();
             self.row_kind_maps.clear();
             self.chunk_sentinel_maps.clear();
+            self.field_row_maps.clear();
             self.list_state.select(None);
             return;
         }

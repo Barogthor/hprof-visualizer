@@ -81,7 +81,7 @@ pub(crate) fn context_bit(ctx: &HelpContext) -> u8 {
 ///
 /// Formula: `2 (borders) + 1 (padding) + div_ceil(ENTRY_COUNT, 2) + 1 (separator)`
 ///
-/// With `ENTRY_COUNT = 19`: `2 + 1 + 10 + 1 = 14`.
+/// With `ENTRY_COUNT = 21`: `2 + 1 + 11 + 1 = 15`.
 pub fn required_height() -> u16 {
     2 + 1 + ENTRY_COUNT.div_ceil(2) + 1
 }
