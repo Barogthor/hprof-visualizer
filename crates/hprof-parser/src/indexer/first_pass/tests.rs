@@ -13,7 +13,8 @@ use byteorder::ReadBytesExt;
 use super::heap_extraction::extract_heap_segment;
 #[cfg(feature = "test-utils")]
 use super::hprof_primitives::{
-    PARALLEL_THRESHOLD, gc_root_skip_size, parse_class_dump, primitive_element_size, skip_n,
+    PARALLEL_THRESHOLD, PROGRESS_REPORT_INTERVAL, gc_root_skip_size, parse_class_dump,
+    primitive_element_size, skip_n,
 };
 use super::thread_resolution::lookup_offset;
 use super::*;
@@ -1592,5 +1593,316 @@ mod builder_tests {
         for (done, total) in events {
             assert!(done <= total, "done must not exceed total");
         }
+    }
+
+    // =====================================================
+    // Story 10.1 — Progress after heap segment skip
+    // =====================================================
+
+    /// Builds a record header (9 bytes): tag + timestamp(0)
+    /// + payload length.
+    #[cfg(feature = "test-utils")]
+    fn build_record_header(
+        buf: &mut Vec<u8>,
+        tag: u8,
+        payload_len: u32,
+    ) {
+        buf.write_u8(tag).unwrap();
+        buf.write_u32::<BigEndian>(0).unwrap(); // timestamp
+        buf.write_u32::<BigEndian>(payload_len).unwrap();
+    }
+
+    #[cfg(feature = "test-utils")]
+    const RECORD_HEADER_SIZE: usize = 9;
+
+    /// Test 2.1: STRING + large HeapDumpSegment + STRING.
+    /// Progress must include a position after the segment
+    /// skip, not just string positions.
+    #[test]
+    #[cfg(feature = "test-utils")]
+    fn progress_reports_after_heap_segment_skip() {
+        let id_size = 8u32;
+        let seg_payload_len =
+            PROGRESS_REPORT_INTERVAL as u32 + 1024;
+
+        // STRING record: id(8 bytes) + "hi"(2 bytes)
+        let str_payload = {
+            let mut p = Vec::new();
+            p.write_u64::<BigEndian>(1).unwrap();
+            p.extend_from_slice(b"hi");
+            p
+        };
+
+        let total_size = RECORD_HEADER_SIZE
+            + str_payload.len()
+            + RECORD_HEADER_SIZE
+            + seg_payload_len as usize
+            + RECORD_HEADER_SIZE
+            + str_payload.len();
+
+        let mut data = vec![0u8; total_size];
+        let mut offset = 0;
+
+        // STRING #1
+        {
+            let mut hdr = Vec::new();
+            build_record_header(
+                &mut hdr,
+                0x01,
+                str_payload.len() as u32,
+            );
+            data[offset..offset + hdr.len()]
+                .copy_from_slice(&hdr);
+            offset += hdr.len();
+            data[offset..offset + str_payload.len()]
+                .copy_from_slice(&str_payload);
+            offset += str_payload.len();
+        }
+
+        // HeapDumpSegment (0x1C)
+        let heap_seg_start = offset;
+        {
+            let mut hdr = Vec::new();
+            build_record_header(
+                &mut hdr,
+                0x1C,
+                seg_payload_len,
+            );
+            data[offset..offset + hdr.len()]
+                .copy_from_slice(&hdr);
+            offset += hdr.len();
+            // payload is zeros (already allocated)
+            offset += seg_payload_len as usize;
+        }
+        let heap_seg_end =
+            (heap_seg_start + RECORD_HEADER_SIZE
+                + seg_payload_len as usize) as u64;
+
+        // STRING #2
+        {
+            let mut hdr = Vec::new();
+            build_record_header(
+                &mut hdr,
+                0x01,
+                str_payload.len() as u32,
+            );
+            data[offset..offset + hdr.len()]
+                .copy_from_slice(&hdr);
+            offset += hdr.len();
+            // Reuse str_payload but with different id
+            let mut p2 = Vec::new();
+            p2.write_u64::<BigEndian>(2).unwrap();
+            p2.extend_from_slice(b"hi");
+            data[offset..offset + p2.len()]
+                .copy_from_slice(&p2);
+        }
+
+        let (_result, obs) =
+            run_fp_with_test_observer(&data, id_size);
+        let positions = bytes_scanned_positions(&obs);
+
+        let has_post_segment = positions
+            .iter()
+            .any(|&p| p >= heap_seg_end);
+        assert!(
+            has_post_segment,
+            "expected BytesScanned position >= {heap_seg_end} \
+             (after heap segment skip), got: {positions:?}"
+        );
+    }
+
+    /// Test 2.2: Two heap segments only (no structural
+    /// records). Must produce exactly 2 BytesScanned events.
+    ///
+    /// Relies on synchronous execution: each segment
+    /// exceeds `PROGRESS_REPORT_INTERVAL` (4 MB) so the
+    /// bytes throttle fires once per segment. The time
+    /// throttle (1 s) never triggers because the scan loop
+    /// is CPU-bound with no real I/O delay.
+    #[test]
+    #[cfg(feature = "test-utils")]
+    fn progress_heap_only_dump_two_segments() {
+        let id_size = 8u32;
+        let seg_payload_len =
+            PROGRESS_REPORT_INTERVAL as u32 + 1024;
+
+        let total_size =
+            2 * (RECORD_HEADER_SIZE + seg_payload_len as usize);
+        let mut data = vec![0u8; total_size];
+        let mut offset = 0;
+
+        for _ in 0..2 {
+            let mut hdr = Vec::new();
+            build_record_header(
+                &mut hdr,
+                0x1C,
+                seg_payload_len,
+            );
+            data[offset..offset + hdr.len()]
+                .copy_from_slice(&hdr);
+            offset += hdr.len() + seg_payload_len as usize;
+        }
+
+        let (_result, obs) =
+            run_fp_with_test_observer(&data, id_size);
+        let positions = bytes_scanned_positions(&obs);
+
+        assert_eq!(
+            positions.len(),
+            2,
+            "expected exactly 2 BytesScanned events \
+             (one per segment), got: {positions:?}"
+        );
+    }
+
+    /// Test 2.3: Small heap segment (1-byte payload) — no
+    /// regression. Only the catch-all event fires.
+    #[test]
+    #[cfg(feature = "test-utils")]
+    fn progress_small_heap_segment_no_extra_event() {
+        let id_size = 8u32;
+        let seg_payload_len = 1u32;
+        let total_size =
+            RECORD_HEADER_SIZE + seg_payload_len as usize;
+        let mut data = vec![0u8; total_size];
+        let mut hdr = Vec::new();
+        build_record_header(&mut hdr, 0x1C, seg_payload_len);
+        data[..hdr.len()].copy_from_slice(&hdr);
+
+        let (_result, obs) =
+            run_fp_with_test_observer(&data, id_size);
+        let positions = bytes_scanned_positions(&obs);
+
+        assert_eq!(
+            positions.len(),
+            1,
+            "expected exactly 1 BytesScanned event \
+             (catch-all only), got: {positions:?}"
+        );
+        assert_eq!(
+            positions[0],
+            total_size as u64,
+            "catch-all should report end of blob"
+        );
+    }
+
+    /// Test 2.4: Multiple heap segments interleaved with
+    /// structural records. BytesScanned positions must be
+    /// monotonically increasing and include post-segment
+    /// positions.
+    #[test]
+    #[cfg(feature = "test-utils")]
+    fn progress_interleaved_segments_monotonic() {
+        let id_size = 8u32;
+        let seg_payload_len =
+            PROGRESS_REPORT_INTERVAL as u32 + 1024;
+        let str_payload = {
+            let mut p = Vec::new();
+            p.write_u64::<BigEndian>(1).unwrap();
+            p.extend_from_slice(b"ab");
+            p
+        };
+
+        // Layout: SEG + STRING + SEG + STRING
+        let total_size = 2
+            * (RECORD_HEADER_SIZE + seg_payload_len as usize)
+            + 2
+                * (RECORD_HEADER_SIZE + str_payload.len());
+        let mut data = vec![0u8; total_size];
+        let mut offset = 0;
+        let mut seg_ends = Vec::new();
+
+        for i in 0..2 {
+            // Heap segment
+            let mut hdr = Vec::new();
+            build_record_header(
+                &mut hdr,
+                0x1C,
+                seg_payload_len,
+            );
+            data[offset..offset + hdr.len()]
+                .copy_from_slice(&hdr);
+            offset += hdr.len() + seg_payload_len as usize;
+            seg_ends.push(offset as u64);
+
+            // STRING record
+            let mut shdr = Vec::new();
+            build_record_header(
+                &mut shdr,
+                0x01,
+                str_payload.len() as u32,
+            );
+            data[offset..offset + shdr.len()]
+                .copy_from_slice(&shdr);
+            offset += shdr.len();
+            let mut sp = Vec::new();
+            sp.write_u64::<BigEndian>((i + 10) as u64)
+                .unwrap();
+            sp.extend_from_slice(b"ab");
+            data[offset..offset + sp.len()]
+                .copy_from_slice(&sp);
+            offset += sp.len();
+        }
+
+        let (_result, obs) =
+            run_fp_with_test_observer(&data, id_size);
+        let positions = bytes_scanned_positions(&obs);
+
+        // Monotonically increasing
+        for w in positions.windows(2) {
+            assert!(
+                w[1] > w[0],
+                "positions not monotonic: {positions:?}"
+            );
+        }
+
+        // Each segment end is covered
+        for seg_end in &seg_ends {
+            let has = positions
+                .iter()
+                .any(|&p| p >= *seg_end);
+            assert!(
+                has,
+                "no BytesScanned >= segment end \
+                 {seg_end}, got: {positions:?}"
+            );
+        }
+    }
+
+    /// Test 2.5: HeapDump tag (0x0C) variant also triggers
+    /// progress reporting after skip.
+    #[test]
+    #[cfg(feature = "test-utils")]
+    fn progress_heap_dump_tag_variant() {
+        let id_size = 8u32;
+        let seg_payload_len =
+            PROGRESS_REPORT_INTERVAL as u32 + 1024;
+        let total_size =
+            RECORD_HEADER_SIZE + seg_payload_len as usize;
+        let mut data = vec![0u8; total_size];
+        let mut hdr = Vec::new();
+        build_record_header(
+            &mut hdr,
+            0x0C, // HeapDump tag
+            seg_payload_len,
+        );
+        data[..hdr.len()].copy_from_slice(&hdr);
+
+        let (_result, obs) =
+            run_fp_with_test_observer(&data, id_size);
+        let positions = bytes_scanned_positions(&obs);
+
+        // Should have at least one event from the new code
+        // path (segment skip) — the payload exceeds the
+        // 4 MB throttle.
+        assert!(
+            !positions.is_empty(),
+            "expected at least one BytesScanned event"
+        );
+        assert_eq!(
+            positions.last().copied().unwrap(),
+            total_size as u64,
+            "last position should be end of blob"
+        );
     }
 }
