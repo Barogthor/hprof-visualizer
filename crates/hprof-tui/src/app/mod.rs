@@ -608,6 +608,9 @@ impl<E: NavigationEngine> App<E> {
             return;
         }
 
+        // Invariant: `remaining_path` is always a suffix of
+        // `original_path.segments()`. We reconstruct `materialised`
+        // as the prefix that has already been resolved.
         let all_segs = pending.original_path.segments().to_vec();
         let remaining_len = pending.remaining_path.len();
         let done_count = all_segs.len().saturating_sub(remaining_len);
@@ -2209,10 +2212,14 @@ impl<E: NavigationEngine> App<E> {
         );
 
         if let Some(area) = help_area {
-            let ctx = match self.focus {
-                Focus::ThreadList => HelpContext::ThreadList,
-                Focus::StackFrames => HelpContext::StackFrames,
-                Focus::Favorites => HelpContext::Favorites,
+            let ctx = if self.navigating_to_pin {
+                HelpContext::Navigating
+            } else {
+                match self.focus {
+                    Focus::ThreadList => HelpContext::ThreadList,
+                    Focus::StackFrames => HelpContext::StackFrames,
+                    Focus::Favorites => HelpContext::Favorites,
+                }
             };
             frame.render_widget(HelpBar { context: ctx }, area);
         }

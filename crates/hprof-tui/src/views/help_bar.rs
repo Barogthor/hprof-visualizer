@@ -56,6 +56,9 @@ pub enum HelpContext {
     ThreadList,
     StackFrames,
     Favorites,
+    /// Go-to-pin navigation in progress — same shortcuts as
+    /// `StackFrames` but Esc shows "Cancel navigation".
+    Navigating,
 }
 
 /// Stateless keyboard shortcut help widget.
@@ -72,7 +75,7 @@ pub struct HelpBar {
 pub(crate) fn context_bit(ctx: &HelpContext) -> u8 {
     match ctx {
         HelpContext::ThreadList => THREAD,
-        HelpContext::StackFrames => STACK,
+        HelpContext::StackFrames | HelpContext::Navigating => STACK,
         HelpContext::Favorites => FAV,
     }
 }
@@ -121,12 +124,23 @@ pub(crate) fn build_rows(ctx: HelpContext) -> Vec<Line<'static>> {
     let mut i = 0;
     while i < ENTRIES.len() {
         let (key_a, action_a, mask_a) = ENTRIES[i];
+        // Override Esc label when navigating (AC6 / Task 3.5).
+        let action_a = if ctx == HelpContext::Navigating && key_a == "Esc" {
+            "Cancel navigation"
+        } else {
+            action_a
+        };
         let applicable_a = ctx_bit & mask_a != 0;
         let left_key = format!("  {:width$}", key_a, width = key_col_width);
         let left_action = format!("{:<width$}", action_a, width = entry_col_width);
 
         let spans: Vec<Span<'static>> = if i + 1 < ENTRIES.len() {
             let (key_b, action_b, mask_b) = ENTRIES[i + 1];
+            let action_b = if ctx == HelpContext::Navigating && key_b == "Esc" {
+                "Cancel navigation"
+            } else {
+                action_b
+            };
             let applicable_b = ctx_bit & mask_b != 0;
             let right_key = format!("{:width$}", key_b, width = key_col_width);
             let right_action = action_b.to_string();
@@ -252,6 +266,41 @@ mod tests {
         assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
         assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
         assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+    }
+
+    #[test]
+    fn navigating_context_overrides_esc_label() {
+        let rows = build_rows(HelpContext::Navigating);
+        let text: String = rows
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(
+            text.contains("Cancel navigation"),
+            "Navigating context must show 'Cancel navigation' for Esc; \
+             got: {text}"
+        );
+        assert!(
+            !text.contains("clear filter"),
+            "Navigating context must NOT show normal Esc label"
+        );
+    }
+
+    #[test]
+    fn navigating_context_uses_stack_bit() {
+        assert_eq!(
+            context_bit(&HelpContext::Navigating),
+            context_bit(&HelpContext::StackFrames),
+            "Navigating must have same bitmask as StackFrames"
+        );
+    }
+
+    #[test]
+    fn build_rows_navigating_same_line_count() {
+        assert_eq!(
+            build_rows(HelpContext::Navigating).len(),
+            build_rows(HelpContext::StackFrames).len(),
+        );
     }
 
     #[test]

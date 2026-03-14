@@ -1,6 +1,6 @@
 # Story 9.11: Go-to-Pin Async Navigation & Scroll-to-Target
 
-Status: review
+Status: done
 
 ## Story
 
@@ -133,7 +133,9 @@ the walk completes, `set_cursor(target)` is called. However:
         `thread_id: u32`, `awaited: AwaitedResource` enum.
         `AwaitedResource` has three variants:
         `ObjectExpansion(u64)`, `CollectionPage(u64)`,
-        `StaleRestart` (full walk restart needed)
+        `Continue` (in-frame step cap reached, resume next tick).
+        Stale restarts are handled in `resume_pending_navigation`
+        by checking `prereq_expanded` — no dedicated variant needed
   - [x] 1.2 Refactor `navigate_to_path` to accept a
         `&[PathSegment]` slice (remaining steps). After each
         resolved step, drop it from remaining and reposition
@@ -383,7 +385,7 @@ struct PendingNavigation {
 enum AwaitedResource {
     ObjectExpansion(u64),   // object_id
     CollectionPage(u64),    // collection_id
-    StaleRestart,           // context invalidated, full restart
+    Continue,               // in-frame step cap reached, resume next tick
 }
 ```
 
@@ -566,5 +568,7 @@ None — all issues resolved via test output and clippy feedback.
 - `crates/hprof-tui/src/app/mod.rs`
 - `crates/hprof-tui/src/app/tests.rs`
 - `crates/hprof-tui/src/views/cursor.rs`
+- `crates/hprof-tui/src/views/help_bar.rs`
 - `crates/hprof-tui/src/views/status_bar.rs`
 - `crates/hprof-tui/src/views/stack_view/state.rs`
+- `crates/hprof-tui/src/theme.rs`
