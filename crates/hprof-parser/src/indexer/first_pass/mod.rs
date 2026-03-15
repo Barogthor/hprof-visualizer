@@ -174,9 +174,11 @@ impl<'a> FirstPassContext<'a> {
     }
 
     /// Finishes the segment filter builder early,
-    /// storing results for later use by `finish()`.
-    /// Returns `(filters, entry_points)` for immediate
+    /// returning `(filters, entry_points)` for immediate
     /// use in thread resolution.
+    ///
+    /// Any filter-build warnings are pushed directly into
+    /// `self.result.warnings` so they are never lost.
     fn finish_filters_early(
         &mut self,
     ) -> (Vec<SegmentFilter>, Vec<offset_lookup::SegmentEntryPoint>) {
@@ -185,8 +187,10 @@ impl<'a> FirstPassContext<'a> {
             .take()
             .expect("seg_builder already consumed")
             .finish();
-        self.built_filters =
-            Some((Vec::new(), warnings));
+        for w in warnings {
+            self.push_warning(w);
+        }
+        self.built_filters = Some((Vec::new(), Vec::new()));
         let entry_points =
             std::mem::take(&mut self.segment_entry_points);
         (filters, entry_points)

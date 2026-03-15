@@ -253,7 +253,7 @@ pub(super) fn extract_heap_segment(
                     break;
                 };
                 result.filter_ids.push(FilterEntry {
-                    data_offset: sub_record_start,
+                    data_offset: tag_pos,
                     object_id: obj_id,
                 });
                 let Ok(_) =
@@ -281,7 +281,7 @@ pub(super) fn extract_heap_segment(
                     break;
                 };
                 result.filter_ids.push(FilterEntry {
-                    data_offset: sub_record_start,
+                    data_offset: tag_pos,
                     object_id: arr_id,
                 });
                 let Ok(_) =
@@ -313,7 +313,7 @@ pub(super) fn extract_heap_segment(
                     break;
                 };
                 result.filter_ids.push(FilterEntry {
-                    data_offset: sub_record_start,
+                    data_offset: tag_pos,
                     object_id: arr_id,
                 });
                 let Ok(_) =

@@ -3112,8 +3112,9 @@ fn entry_points_at_segment_boundary_large() {
 
 // ── Task 1.7: entry points across multiple segments ──
 
-/// Verifies entry points are recorded across multiple
-/// HEAP_DUMP_SEGMENT records.
+/// Verifies extraction and filtering work across
+/// multiple HEAP_DUMP_SEGMENT records, and that at
+/// least one entry point is recorded.
 #[cfg(feature = "test-utils")]
 #[test]
 fn entry_points_across_multiple_heap_segments() {
@@ -3132,9 +3133,6 @@ fn entry_points_across_multiple_heap_segments() {
     let start = advance_past_header(&bytes);
     let result = run_fp(&bytes[start..], 8);
 
-    // Both instances should be indexed. With small
-    // data they're both in segment 0 but we verify the
-    // extraction worked correctly.
     assert!(
         result
             .segment_filters
@@ -3148,6 +3146,84 @@ fn entry_points_across_multiple_heap_segments() {
             .iter()
             .any(|f| f.contains(2)),
         "instance 2 must be in a filter"
+    );
+    assert!(
+        result.diagnostics.entry_point_count >= 1,
+        "at least one entry point must be recorded"
+    );
+}
+
+/// Verifies that `extract_heap_segment` records entry
+/// points for two distinct 64 MiB windows when the
+/// `data_offset` places sub-records across a segment
+/// boundary — without allocating 64 MiB of payload.
+///
+/// Uses `data_offset = SEGMENT_SIZE - 5`:
+/// - Sub-record 1 tag at SEGMENT_SIZE - 5 → segment 0
+/// - Sub-record 2 tag at SEGMENT_SIZE + 20 → segment 1
+#[cfg(feature = "test-utils")]
+#[test]
+fn extract_heap_segment_cross_segment_entry_points() {
+    use crate::indexer::segment::SEGMENT_SIZE;
+
+    let id_size: u32 = 8;
+    let mut payload = Vec::new();
+
+    // INSTANCE_DUMP: tag(1)+id(8)+stack(4)+class(8)+
+    //   num_bytes(4) = 25 bytes each.
+    // Two records → 50 bytes total payload.
+    for obj_id in [1u64, 2u64] {
+        payload.push(0x21); // InstanceDump sub-tag
+        payload.extend_from_slice(&obj_id.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(
+            &100u64.to_be_bytes(),
+        );
+        payload.extend_from_slice(&0u32.to_be_bytes());
+    }
+
+    // data_offset places tag #1 at SEGMENT_SIZE - 5
+    // (segment 0) and tag #2 at SEGMENT_SIZE + 20
+    // (segment 1).
+    let data_offset = SEGMENT_SIZE - 5;
+    let parsing_result = extract_heap_segment(
+        &payload,
+        data_offset,
+        id_size,
+        usize::MAX,
+    );
+
+    let entry_points: Vec<SegmentEntryPoint> =
+        parsing_result
+            .chunks
+            .iter()
+            .flat_map(|c| c.segment_entry_points.iter())
+            .copied()
+            .collect();
+
+    assert_eq!(
+        entry_points.len(),
+        2,
+        "expected entry points for segment 0 and 1, \
+         got {entry_points:?}"
+    );
+    assert_eq!(
+        entry_points[0].segment_index, 0,
+        "first entry point must be segment 0"
+    );
+    assert_eq!(
+        entry_points[0].scan_offset,
+        data_offset,
+        "segment 0 entry at tag byte of sub-record 1"
+    );
+    assert_eq!(
+        entry_points[1].segment_index, 1,
+        "second entry point must be segment 1"
+    );
+    assert_eq!(
+        entry_points[1].scan_offset,
+        data_offset + 25,
+        "segment 1 entry at tag byte of sub-record 2"
     );
 }
 
