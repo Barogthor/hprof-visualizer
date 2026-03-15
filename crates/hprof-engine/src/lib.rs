@@ -68,6 +68,12 @@ impl EngineConfig {
         self.budget_bytes
             .unwrap_or_else(cache::system_memory::auto_budget)
     }
+
+    /// Returns the resolved [`MemoryBudget`] for the
+    /// parser's chunked extraction.
+    pub fn memory_budget(&self) -> hprof_api::MemoryBudget {
+        hprof_api::MemoryBudget::Bytes(self.effective_budget())
+    }
 }
 
 /// Summary of a completed first-pass indexing run.
@@ -101,7 +107,11 @@ pub fn open_hprof_file_with_progress(
     path: &Path,
     observer: &mut dyn ParseProgressObserver,
 ) -> Result<IndexSummary, HprofError> {
-    let hfile = hprof_parser::HprofFile::from_path_with_progress(path, observer)?;
+    let hfile = hprof_parser::HprofFile::from_path_with_progress(
+        path,
+        observer,
+        hprof_api::MemoryBudget::Unlimited,
+    )?;
     Ok(IndexSummary {
         records_attempted: hfile.records_attempted,
         records_indexed: hfile.records_indexed,

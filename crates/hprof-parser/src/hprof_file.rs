@@ -12,7 +12,7 @@
 use std::path::Path;
 
 use byteorder::{BigEndian, ReadBytesExt};
-use hprof_api::{NullProgressObserver, ParseProgressObserver, ProgressNotifier};
+use hprof_api::{MemoryBudget, NullProgressObserver, ParseProgressObserver, ProgressNotifier};
 use memmap2::Mmap;
 
 use crate::indexer::{first_pass::run_first_pass, precise::PreciseIndex, segment::SegmentFilter};
@@ -81,6 +81,7 @@ impl HprofFile {
     pub fn from_path_with_progress(
         path: &Path,
         observer: &mut dyn ParseProgressObserver,
+        budget: MemoryBudget,
     ) -> Result<Self, HprofError> {
         let mmap = open_readonly(path)?;
         let header = parse_header(&mmap)?;
@@ -91,6 +92,7 @@ impl HprofFile {
             header.id_size,
             records_start as u64,
             &mut notifier,
+            budget,
         );
         Ok(Self {
             mmap,
@@ -118,7 +120,7 @@ impl HprofFile {
     /// - [`HprofError::TruncatedRecord`] — file header is
     ///   truncated.
     pub fn from_path(path: &Path) -> Result<Self, HprofError> {
-        Self::from_path_with_progress(path, &mut NullProgressObserver)
+        Self::from_path_with_progress(path, &mut NullProgressObserver, MemoryBudget::Unlimited)
     }
 
     /// Returns the raw bytes of the records section (immediately after the
@@ -651,7 +653,7 @@ mod tests {
             call_count: 0,
             last_offset: None,
         };
-        HprofFile::from_path_with_progress(tmp.path(), &mut obs).unwrap();
+        HprofFile::from_path_with_progress(tmp.path(), &mut obs, MemoryBudget::Unlimited).unwrap();
         assert!(obs.call_count >= 1, "observer must be called at least once");
         assert_eq!(
             obs.last_offset,

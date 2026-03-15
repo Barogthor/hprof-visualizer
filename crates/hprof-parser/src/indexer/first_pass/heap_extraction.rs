@@ -26,24 +26,73 @@ pub(super) struct HeapSegmentResult {
     pub(super) warnings: Vec<String>,
 }
 
-/// Extracts heap sub-record data from a single segment.
-/// No mutable shared state — all output goes into the
-/// returned [`HeapSegmentResult`].
+impl HeapSegmentResult {
+    fn is_empty(&self) -> bool {
+        self.all_offsets.is_empty()
+            && self.filter_ids.is_empty()
+            && self.class_dumps.is_empty()
+            && self.raw_frame_roots.is_empty()
+            && self.raw_thread_objects.is_empty()
+            && self.warnings.is_empty()
+    }
+
+    /// Creates a result with pre-allocated capacity for
+    /// `all_offsets` and `filter_ids` based on an
+    /// estimated record count.
+    pub(super) fn new_with_capacity(est: usize) -> Self {
+        Self {
+            all_offsets: Vec::with_capacity(est),
+            filter_ids: Vec::with_capacity(est),
+            raw_frame_roots: Vec::new(),
+            raw_thread_objects: Vec::new(),
+            class_dumps: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+/// Wrapper around one or more [`HeapSegmentResult`]
+/// chunks extracted from a single heap segment.
+///
+/// Abstracts whether a segment was extracted as a single
+/// chunk or split into N chunks. The caller merges via
+/// [`HeapSegmentParsingResult::merge_into`] without
+/// knowing the chunk count.
+pub(super) struct HeapSegmentParsingResult {
+    pub(super) chunks: Vec<HeapSegmentResult>,
+}
+
+impl HeapSegmentParsingResult {
+    pub(super) fn new(chunks: Vec<HeapSegmentResult>) -> Self {
+        Self { chunks }
+    }
+
+    /// Merges all chunks into the shared context.
+    pub(super) fn merge_into(self, ctx: &mut FirstPassContext) {
+        for chunk in self.chunks {
+            merge_segment_result(ctx, chunk);
+        }
+    }
+}
+
+/// Extracts heap sub-record data from a single segment,
+/// producing one or more chunks bounded by
+/// `max_chunk_bytes`.
+///
+/// When `max_chunk_bytes >= payload.len()`, produces a
+/// single chunk (no-op, identical to pre-chunking
+/// behavior).
 pub(super) fn extract_heap_segment(
     payload: &[u8],
     data_offset: usize,
     id_size: u32,
-) -> HeapSegmentResult {
+    max_chunk_bytes: usize,
+) -> HeapSegmentParsingResult {
     let mut cursor = Cursor::new(payload);
-    let est_records = payload.len() / 40;
-    let mut result = HeapSegmentResult {
-        all_offsets: Vec::with_capacity(est_records),
-        filter_ids: Vec::with_capacity(est_records),
-        raw_frame_roots: Vec::new(),
-        raw_thread_objects: Vec::new(),
-        class_dumps: Vec::new(),
-        warnings: Vec::new(),
-    };
+    let chunk_est = max_chunk_bytes.min(payload.len()) / 40;
+    let mut chunks: Vec<HeapSegmentResult> = Vec::new();
+    let mut result = HeapSegmentResult::new_with_capacity(chunk_est);
+    let mut next_checkpoint = max_chunk_bytes;
 
     while let Ok(raw) = cursor.read_u8() {
         let sub_tag = HeapSubTag::from(raw);
@@ -119,7 +168,10 @@ pub(super) fn extract_heap_segment(
                     #[cfg(feature = "dev-profiling")]
                     if !info.static_fields.is_empty() {
                         tracing::debug!(
-                            "heap_extract class_dump class=0x{:X} static_fields={} at_offset={}",
+                            "heap_extract class_dump \
+                                 class=0x{:X} \
+                                 static_fields={} \
+                                 at_offset={}",
                             info.class_object_id,
                             info.static_fields.len(),
                             sub_record_start
@@ -134,7 +186,8 @@ pub(super) fn extract_heap_segment(
                 None => {
                     #[cfg(feature = "dev-profiling")]
                     tracing::debug!(
-                        "heap_extract class_dump parse failed at_offset={}",
+                        "heap_extract class_dump \
+                             parse failed at_offset={}",
                         sub_record_start
                     );
                     result.warnings.push(
@@ -227,9 +280,20 @@ pub(super) fn extract_heap_segment(
         if !ok {
             break;
         }
+
+        // Chunk checkpoint: flush after each complete
+        // sub-record when we pass the boundary.
+        if cursor.position() as usize >= next_checkpoint {
+            chunks.push(result);
+            result = HeapSegmentResult::new_with_capacity(chunk_est);
+            next_checkpoint += max_chunk_bytes;
+        }
     }
 
-    result
+    if !result.is_empty() {
+        chunks.push(result);
+    }
+    HeapSegmentParsingResult::new(chunks)
 }
 
 /// Merges a per-segment result into the shared context.
@@ -251,6 +315,9 @@ pub(super) fn merge_segment_result(ctx: &mut FirstPassContext, seg_result: HeapS
     }
 }
 
+/// Minimum chunk size to avoid micro-chunking overhead.
+const CHUNK_FLOOR: usize = 64 * 1024 * 1024;
+
 /// Extracts all heap segments — parallel or sequential
 /// depending on total heap size. Reports segment-level
 /// progress via [`ProgressNotifier::segment_completed`].
@@ -268,23 +335,32 @@ pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNot
     let total_segments = ranges.len();
     let mut segments_done: usize = 0;
 
+    let max_chunk_bytes = match ctx.budget.bytes() {
+        Some(b) => {
+            let b = usize::try_from(b).unwrap_or(usize::MAX);
+            let per_thread = b / rayon::current_num_threads().max(1);
+            per_thread.max(CHUNK_FLOOR)
+        }
+        None => usize::MAX,
+    };
+
     if total_heap_bytes >= PARALLEL_THRESHOLD {
         #[cfg(feature = "dev-profiling")]
         let _par_span = tracing::info_span!("parallel_heap_extraction").entered();
 
         let batch_size = rayon::current_num_threads().max(1);
         for batch in ranges.chunks(batch_size) {
-            let batch_results: Vec<HeapSegmentResult> = batch
+            let batch_results: Vec<HeapSegmentParsingResult> = batch
                 .par_iter()
                 .map(|r| {
                     let start = r.payload_start as usize;
                     let end = start + r.payload_length as usize;
-                    extract_heap_segment(&data[start..end], start, id_size)
+                    extract_heap_segment(&data[start..end], start, id_size, max_chunk_bytes)
                 })
                 .collect();
 
-            for seg_result in batch_results {
-                merge_segment_result(ctx, seg_result);
+            for parsing_result in batch_results {
+                parsing_result.merge_into(ctx);
                 segments_done += 1;
                 notifier.segment_completed(segments_done, total_segments);
             }
@@ -296,8 +372,9 @@ pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNot
         for r in &ranges {
             let start = r.payload_start as usize;
             let end = start + r.payload_length as usize;
-            let seg_result = extract_heap_segment(&data[start..end], start, id_size);
-            merge_segment_result(ctx, seg_result);
+            let parsing_result =
+                extract_heap_segment(&data[start..end], start, id_size, max_chunk_bytes);
+            parsing_result.merge_into(ctx);
             segments_done += 1;
             notifier.segment_completed(segments_done, total_segments);
         }

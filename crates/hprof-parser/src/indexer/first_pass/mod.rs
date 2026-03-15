@@ -18,7 +18,7 @@
 
 use std::time::Instant;
 
-use hprof_api::ProgressNotifier;
+use hprof_api::{MemoryBudget, ProgressNotifier};
 
 use crate::ClassDumpInfo;
 use crate::indexer::IndexResult;
@@ -91,10 +91,12 @@ struct FirstPassContext<'a> {
     last_progress_bytes: usize,
     last_progress_at: Instant,
     cursor_position: u64,
+    /// Memory budget for chunked heap extraction.
+    budget: MemoryBudget,
 }
 
 impl<'a> FirstPassContext<'a> {
-    fn new(data: &'a [u8], id_size: u32, base_offset: u64) -> Self {
+    fn new(data: &'a [u8], id_size: u32, base_offset: u64, budget: MemoryBudget) -> Self {
         Self {
             data,
             id_size,
@@ -115,6 +117,7 @@ impl<'a> FirstPassContext<'a> {
             last_progress_bytes: 0,
             last_progress_at: Instant::now(),
             cursor_position: 0,
+            budget,
         }
     }
 
@@ -183,16 +186,19 @@ impl<'a> FirstPassContext<'a> {
 ///   (i.e. `records_start`), added to relative scan
 ///   positions before reporting.
 /// - `notifier`: progress observer wrapper.
+/// - `budget`: memory budget for chunked heap
+///   extraction.
 pub fn run_first_pass(
     data: &[u8],
     id_size: u32,
     base_offset: u64,
     notifier: &mut ProgressNotifier,
+    budget: MemoryBudget,
 ) -> IndexResult {
     #[cfg(feature = "dev-profiling")]
     let _first_pass_span = tracing::info_span!("first_pass").entered();
 
-    let mut ctx = FirstPassContext::new(data, id_size, base_offset);
+    let mut ctx = FirstPassContext::new(data, id_size, base_offset, budget);
     record_scan::scan_records(&mut ctx, notifier);
     heap_extraction::extract_all(&mut ctx, notifier);
     ctx.sort_offsets();

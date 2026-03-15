@@ -4,13 +4,13 @@
 use std::io::Cursor;
 
 use byteorder::{BigEndian, WriteBytesExt};
-use hprof_api::{NullProgressObserver, ProgressNotifier};
+use hprof_api::{MemoryBudget, NullProgressObserver, ProgressNotifier};
 
 #[cfg(feature = "test-utils")]
 use byteorder::ReadBytesExt;
 
 #[cfg(feature = "test-utils")]
-use super::heap_extraction::extract_heap_segment;
+use super::heap_extraction::{extract_heap_segment, merge_segment_result};
 #[cfg(feature = "test-utils")]
 use super::hprof_primitives::{
     PARALLEL_THRESHOLD, PROGRESS_REPORT_INTERVAL, gc_root_skip_size, parse_class_dump,
@@ -27,7 +27,7 @@ use crate::{ClassDumpInfo, read_id};
 fn run_fp(data: &[u8], id_size: u32) -> IndexResult {
     let mut obs = NullProgressObserver;
     let mut notifier = ProgressNotifier::new(&mut obs);
-    run_first_pass(data, id_size, 0, &mut notifier)
+    run_first_pass(data, id_size, 0, &mut notifier, MemoryBudget::Unlimited)
 }
 
 #[cfg(feature = "test-utils")]
@@ -35,7 +35,7 @@ fn run_fp_with_test_observer(data: &[u8], id_size: u32) -> (IndexResult, hprof_a
     let mut obs = hprof_api::TestObserver::default();
     let result = {
         let mut notifier = ProgressNotifier::new(&mut obs);
-        run_first_pass(data, id_size, 0, &mut notifier)
+        run_first_pass(data, id_size, 0, &mut notifier, MemoryBudget::Unlimited)
     };
     (result, obs)
 }
@@ -372,7 +372,7 @@ mod progress_tests {
     fn progress_observer_called_once_with_zero_for_empty_data() {
         let mut obs = NullProgressObserver;
         let mut notifier = ProgressNotifier::new(&mut obs);
-        let _result = run_first_pass(&[], 8, 0, &mut notifier);
+        let _result = run_first_pass(&[], 8, 0, &mut notifier, MemoryBudget::Unlimited);
     }
 
     #[cfg(feature = "test-utils")]
@@ -382,7 +382,7 @@ mod progress_tests {
         let data = make_record(0x01, &payload);
         let mut obs = hprof_api::TestObserver::default();
         let mut notifier = ProgressNotifier::new(&mut obs);
-        run_first_pass(&data, 8, 0, &mut notifier);
+        run_first_pass(&data, 8, 0, &mut notifier, MemoryBudget::Unlimited);
         let calls = bytes_scanned_positions(&obs);
         assert!(!calls.is_empty(), "observer must be called at least once");
         assert_eq!(
@@ -404,7 +404,7 @@ mod progress_tests {
         }
         let mut obs = hprof_api::TestObserver::default();
         let mut notifier = ProgressNotifier::new(&mut obs);
-        run_first_pass(&data, 8, 0, &mut notifier);
+        run_first_pass(&data, 8, 0, &mut notifier, MemoryBudget::Unlimited);
         let values = bytes_scanned_positions(&obs);
         assert!(
             values.len() > 1,
@@ -426,7 +426,7 @@ mod progress_tests {
         data.extend_from_slice(&[0u8; 50]);
         let mut obs = hprof_api::TestObserver::default();
         let mut notifier = ProgressNotifier::new(&mut obs);
-        run_first_pass(&data, 8, 0, &mut notifier);
+        run_first_pass(&data, 8, 0, &mut notifier, MemoryBudget::Unlimited);
         let calls = bytes_scanned_positions(&obs);
         let reported = *calls.last().expect("observer must be called at least once");
         let declared_end = 9u64 + DECLARED_PAYLOAD as u64;
@@ -1395,7 +1395,10 @@ mod builder_tests {
         payload.extend(make_prim_array_sub_record(600, 10, &[1, 0, 0, 0], id_size));
 
         let data_offset = 100;
-        let result = extract_heap_segment(&payload, data_offset, id_size);
+        let parsing_result = extract_heap_segment(&payload, data_offset, id_size, usize::MAX);
+        // Single chunk (no chunking)
+        assert_eq!(parsing_result.chunks.len(), 1);
+        let result = &parsing_result.chunks[0];
 
         // all_offsets: INSTANCE_DUMP + PRIM_ARRAY
         assert_eq!(result.all_offsets.len(), 2);
@@ -1602,11 +1605,7 @@ mod builder_tests {
     /// Builds a record header (9 bytes): tag + timestamp(0)
     /// + payload length.
     #[cfg(feature = "test-utils")]
-    fn build_record_header(
-        buf: &mut Vec<u8>,
-        tag: u8,
-        payload_len: u32,
-    ) {
+    fn build_record_header(buf: &mut Vec<u8>, tag: u8, payload_len: u32) {
         buf.write_u8(tag).unwrap();
         buf.write_u32::<BigEndian>(0).unwrap(); // timestamp
         buf.write_u32::<BigEndian>(payload_len).unwrap();
@@ -1622,8 +1621,7 @@ mod builder_tests {
     #[cfg(feature = "test-utils")]
     fn progress_reports_after_heap_segment_skip() {
         let id_size = 8u32;
-        let seg_payload_len =
-            PROGRESS_REPORT_INTERVAL as u32 + 1024;
+        let seg_payload_len = PROGRESS_REPORT_INTERVAL as u32 + 1024;
 
         // STRING record: id(8 bytes) + "hi"(2 bytes)
         let str_payload = {
@@ -1646,16 +1644,10 @@ mod builder_tests {
         // STRING #1
         {
             let mut hdr = Vec::new();
-            build_record_header(
-                &mut hdr,
-                0x01,
-                str_payload.len() as u32,
-            );
-            data[offset..offset + hdr.len()]
-                .copy_from_slice(&hdr);
+            build_record_header(&mut hdr, 0x01, str_payload.len() as u32);
+            data[offset..offset + hdr.len()].copy_from_slice(&hdr);
             offset += hdr.len();
-            data[offset..offset + str_payload.len()]
-                .copy_from_slice(&str_payload);
+            data[offset..offset + str_payload.len()].copy_from_slice(&str_payload);
             offset += str_payload.len();
         }
 
@@ -1663,47 +1655,31 @@ mod builder_tests {
         let heap_seg_start = offset;
         {
             let mut hdr = Vec::new();
-            build_record_header(
-                &mut hdr,
-                0x1C,
-                seg_payload_len,
-            );
-            data[offset..offset + hdr.len()]
-                .copy_from_slice(&hdr);
+            build_record_header(&mut hdr, 0x1C, seg_payload_len);
+            data[offset..offset + hdr.len()].copy_from_slice(&hdr);
             offset += hdr.len();
             // payload is zeros (already allocated)
             offset += seg_payload_len as usize;
         }
-        let heap_seg_end =
-            (heap_seg_start + RECORD_HEADER_SIZE
-                + seg_payload_len as usize) as u64;
+        let heap_seg_end = (heap_seg_start + RECORD_HEADER_SIZE + seg_payload_len as usize) as u64;
 
         // STRING #2
         {
             let mut hdr = Vec::new();
-            build_record_header(
-                &mut hdr,
-                0x01,
-                str_payload.len() as u32,
-            );
-            data[offset..offset + hdr.len()]
-                .copy_from_slice(&hdr);
+            build_record_header(&mut hdr, 0x01, str_payload.len() as u32);
+            data[offset..offset + hdr.len()].copy_from_slice(&hdr);
             offset += hdr.len();
             // Reuse str_payload but with different id
             let mut p2 = Vec::new();
             p2.write_u64::<BigEndian>(2).unwrap();
             p2.extend_from_slice(b"hi");
-            data[offset..offset + p2.len()]
-                .copy_from_slice(&p2);
+            data[offset..offset + p2.len()].copy_from_slice(&p2);
         }
 
-        let (_result, obs) =
-            run_fp_with_test_observer(&data, id_size);
+        let (_result, obs) = run_fp_with_test_observer(&data, id_size);
         let positions = bytes_scanned_positions(&obs);
 
-        let has_post_segment = positions
-            .iter()
-            .any(|&p| p >= heap_seg_end);
+        let has_post_segment = positions.iter().any(|&p| p >= heap_seg_end);
         assert!(
             has_post_segment,
             "expected BytesScanned position >= {heap_seg_end} \
@@ -1723,28 +1699,20 @@ mod builder_tests {
     #[cfg(feature = "test-utils")]
     fn progress_heap_only_dump_two_segments() {
         let id_size = 8u32;
-        let seg_payload_len =
-            PROGRESS_REPORT_INTERVAL as u32 + 1024;
+        let seg_payload_len = PROGRESS_REPORT_INTERVAL as u32 + 1024;
 
-        let total_size =
-            2 * (RECORD_HEADER_SIZE + seg_payload_len as usize);
+        let total_size = 2 * (RECORD_HEADER_SIZE + seg_payload_len as usize);
         let mut data = vec![0u8; total_size];
         let mut offset = 0;
 
         for _ in 0..2 {
             let mut hdr = Vec::new();
-            build_record_header(
-                &mut hdr,
-                0x1C,
-                seg_payload_len,
-            );
-            data[offset..offset + hdr.len()]
-                .copy_from_slice(&hdr);
+            build_record_header(&mut hdr, 0x1C, seg_payload_len);
+            data[offset..offset + hdr.len()].copy_from_slice(&hdr);
             offset += hdr.len() + seg_payload_len as usize;
         }
 
-        let (_result, obs) =
-            run_fp_with_test_observer(&data, id_size);
+        let (_result, obs) = run_fp_with_test_observer(&data, id_size);
         let positions = bytes_scanned_positions(&obs);
 
         assert_eq!(
@@ -1762,15 +1730,13 @@ mod builder_tests {
     fn progress_small_heap_segment_no_extra_event() {
         let id_size = 8u32;
         let seg_payload_len = 1u32;
-        let total_size =
-            RECORD_HEADER_SIZE + seg_payload_len as usize;
+        let total_size = RECORD_HEADER_SIZE + seg_payload_len as usize;
         let mut data = vec![0u8; total_size];
         let mut hdr = Vec::new();
         build_record_header(&mut hdr, 0x1C, seg_payload_len);
         data[..hdr.len()].copy_from_slice(&hdr);
 
-        let (_result, obs) =
-            run_fp_with_test_observer(&data, id_size);
+        let (_result, obs) = run_fp_with_test_observer(&data, id_size);
         let positions = bytes_scanned_positions(&obs);
 
         assert_eq!(
@@ -1780,8 +1746,7 @@ mod builder_tests {
              (catch-all only), got: {positions:?}"
         );
         assert_eq!(
-            positions[0],
-            total_size as u64,
+            positions[0], total_size as u64,
             "catch-all should report end of blob"
         );
     }
@@ -1794,8 +1759,7 @@ mod builder_tests {
     #[cfg(feature = "test-utils")]
     fn progress_interleaved_segments_monotonic() {
         let id_size = 8u32;
-        let seg_payload_len =
-            PROGRESS_REPORT_INTERVAL as u32 + 1024;
+        let seg_payload_len = PROGRESS_REPORT_INTERVAL as u32 + 1024;
         let str_payload = {
             let mut p = Vec::new();
             p.write_u64::<BigEndian>(1).unwrap();
@@ -1804,10 +1768,8 @@ mod builder_tests {
         };
 
         // Layout: SEG + STRING + SEG + STRING
-        let total_size = 2
-            * (RECORD_HEADER_SIZE + seg_payload_len as usize)
-            + 2
-                * (RECORD_HEADER_SIZE + str_payload.len());
+        let total_size = 2 * (RECORD_HEADER_SIZE + seg_payload_len as usize)
+            + 2 * (RECORD_HEADER_SIZE + str_payload.len());
         let mut data = vec![0u8; total_size];
         let mut offset = 0;
         let mut seg_ends = Vec::new();
@@ -1815,52 +1777,34 @@ mod builder_tests {
         for i in 0..2 {
             // Heap segment
             let mut hdr = Vec::new();
-            build_record_header(
-                &mut hdr,
-                0x1C,
-                seg_payload_len,
-            );
-            data[offset..offset + hdr.len()]
-                .copy_from_slice(&hdr);
+            build_record_header(&mut hdr, 0x1C, seg_payload_len);
+            data[offset..offset + hdr.len()].copy_from_slice(&hdr);
             offset += hdr.len() + seg_payload_len as usize;
             seg_ends.push(offset as u64);
 
             // STRING record
             let mut shdr = Vec::new();
-            build_record_header(
-                &mut shdr,
-                0x01,
-                str_payload.len() as u32,
-            );
-            data[offset..offset + shdr.len()]
-                .copy_from_slice(&shdr);
+            build_record_header(&mut shdr, 0x01, str_payload.len() as u32);
+            data[offset..offset + shdr.len()].copy_from_slice(&shdr);
             offset += shdr.len();
             let mut sp = Vec::new();
-            sp.write_u64::<BigEndian>((i + 10) as u64)
-                .unwrap();
+            sp.write_u64::<BigEndian>((i + 10) as u64).unwrap();
             sp.extend_from_slice(b"ab");
-            data[offset..offset + sp.len()]
-                .copy_from_slice(&sp);
+            data[offset..offset + sp.len()].copy_from_slice(&sp);
             offset += sp.len();
         }
 
-        let (_result, obs) =
-            run_fp_with_test_observer(&data, id_size);
+        let (_result, obs) = run_fp_with_test_observer(&data, id_size);
         let positions = bytes_scanned_positions(&obs);
 
         // Monotonically increasing
         for w in positions.windows(2) {
-            assert!(
-                w[1] > w[0],
-                "positions not monotonic: {positions:?}"
-            );
+            assert!(w[1] > w[0], "positions not monotonic: {positions:?}");
         }
 
         // Each segment end is covered
         for seg_end in &seg_ends {
-            let has = positions
-                .iter()
-                .any(|&p| p >= *seg_end);
+            let has = positions.iter().any(|&p| p >= *seg_end);
             assert!(
                 has,
                 "no BytesScanned >= segment end \
@@ -1875,10 +1819,8 @@ mod builder_tests {
     #[cfg(feature = "test-utils")]
     fn progress_heap_dump_tag_variant() {
         let id_size = 8u32;
-        let seg_payload_len =
-            PROGRESS_REPORT_INTERVAL as u32 + 1024;
-        let total_size =
-            RECORD_HEADER_SIZE + seg_payload_len as usize;
+        let seg_payload_len = PROGRESS_REPORT_INTERVAL as u32 + 1024;
+        let total_size = RECORD_HEADER_SIZE + seg_payload_len as usize;
         let mut data = vec![0u8; total_size];
         let mut hdr = Vec::new();
         build_record_header(
@@ -1888,8 +1830,7 @@ mod builder_tests {
         );
         data[..hdr.len()].copy_from_slice(&hdr);
 
-        let (_result, obs) =
-            run_fp_with_test_observer(&data, id_size);
+        let (_result, obs) = run_fp_with_test_observer(&data, id_size);
         let positions = bytes_scanned_positions(&obs);
 
         // Should have at least one event from the new code
@@ -1904,5 +1845,369 @@ mod builder_tests {
             total_size as u64,
             "last position should be end of blob"
         );
+    }
+}
+
+// ---- Story 10.2: Chunked heap extraction tests ----
+
+#[cfg(feature = "test-utils")]
+mod chunked_extraction_tests {
+    use super::*;
+    use byteorder::{BigEndian, WriteBytesExt};
+
+    fn write_id(buf: &mut Vec<u8>, id: u64, id_size: u32) {
+        if id_size == 8 {
+            buf.write_u64::<BigEndian>(id).unwrap();
+        } else {
+            buf.write_u32::<BigEndian>(id as u32).unwrap();
+        }
+    }
+
+    fn make_instance_sub(obj_id: u64, class_id: u64, field_data: &[u8], id_size: u32) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.write_u8(0x21).unwrap(); // InstanceDump
+        write_id(&mut p, obj_id, id_size);
+        p.write_u32::<BigEndian>(0).unwrap(); // stack
+        write_id(&mut p, class_id, id_size);
+        p.write_u32::<BigEndian>(field_data.len() as u32).unwrap();
+        p.extend_from_slice(field_data);
+        p
+    }
+
+    fn make_prim_array_sub(arr_id: u64, elem_type: u8, elements: &[u8], id_size: u32) -> Vec<u8> {
+        let elem_size = primitive_element_size(elem_type);
+        let num_elements = if elem_size > 0 {
+            elements.len() / elem_size
+        } else {
+            0
+        };
+        let mut p = Vec::new();
+        p.write_u8(0x23).unwrap(); // PrimArrayDump
+        write_id(&mut p, arr_id, id_size);
+        p.write_u32::<BigEndian>(0).unwrap(); // stack
+        p.write_u32::<BigEndian>(num_elements as u32).unwrap();
+        p.write_u8(elem_type).unwrap();
+        p.extend_from_slice(elements);
+        p
+    }
+
+    fn make_class_dump_sub(
+        class_object_id: u64,
+        super_class_id: u64,
+        instance_size: u32,
+        id_size: u32,
+    ) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.write_u8(0x20).unwrap(); // ClassDump
+        write_id(&mut p, class_object_id, id_size);
+        p.write_u32::<BigEndian>(0).unwrap();
+        write_id(&mut p, super_class_id, id_size);
+        for _ in 0..5 {
+            write_id(&mut p, 0, id_size);
+        }
+        p.write_u32::<BigEndian>(instance_size).unwrap();
+        p.write_u16::<BigEndian>(0).unwrap(); // const
+        p.write_u16::<BigEndian>(0).unwrap(); // static
+        p.write_u16::<BigEndian>(0).unwrap(); // inst
+        p
+    }
+
+    fn make_gc_root_java_frame_sub(
+        object_id: u64,
+        thread_serial: u32,
+        frame_number: i32,
+        id_size: u32,
+    ) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.write_u8(0x03).unwrap(); // GcRootJavaFrame
+        write_id(&mut p, object_id, id_size);
+        p.write_u32::<BigEndian>(thread_serial).unwrap();
+        p.write_i32::<BigEndian>(frame_number).unwrap();
+        p
+    }
+
+    /// 5.1: 6 InstanceDumps, chunk to hold ~2 each
+    #[test]
+    fn chunked_6_instances_3_chunks() {
+        let id_size = 8u32;
+        let field_data = [0u8; 8];
+        let mut payload = Vec::new();
+        for i in 1..=6u64 {
+            payload.extend(make_instance_sub(i, 100, &field_data, id_size));
+        }
+        // Each InstanceDump: 1+8+4+8+4+8 = 33 bytes
+        let record_size = 33usize;
+        // Chunk boundary exactly at 2 records = 66 bytes
+        // (cursor >= 66 triggers flush after 2nd record)
+        let max_chunk = record_size * 2;
+
+        let result = extract_heap_segment(&payload, 0, id_size, max_chunk);
+        assert_eq!(result.chunks.len(), 3, "6 records / 2 per chunk = 3 chunks");
+        for chunk in &result.chunks {
+            assert_eq!(
+                chunk.all_offsets.len(),
+                2,
+                "each chunk should have 2 offsets"
+            );
+        }
+    }
+
+    /// 5.2: max_chunk_bytes > payload → single chunk
+    #[test]
+    fn no_chunking_when_max_exceeds_payload() {
+        let id_size = 8u32;
+        let field_data = [0u8; 8];
+        let mut payload = Vec::new();
+        for i in 1..=6u64 {
+            payload.extend(make_instance_sub(i, 100, &field_data, id_size));
+        }
+        let single = extract_heap_segment(&payload, 0, id_size, usize::MAX);
+        assert_eq!(single.chunks.len(), 1, "large max → single chunk");
+        assert_eq!(single.chunks[0].all_offsets.len(), 6);
+    }
+
+    /// 5.3: chunk boundary exactly at sub-record end
+    #[test]
+    fn chunk_boundary_at_exact_record_end() {
+        let id_size = 8u32;
+        let field_data = [0u8; 8];
+        let mut payload = Vec::new();
+        for i in 1..=4u64 {
+            payload.extend(make_instance_sub(i, 100, &field_data, id_size));
+        }
+        // Each record: 1+8+4+8+4+8 = 33 bytes
+        // Set chunk exactly at 2 records = 66 bytes
+        let max_chunk = 66;
+        let result = extract_heap_segment(&payload, 0, id_size, max_chunk);
+        assert_eq!(result.chunks.len(), 2);
+        assert_eq!(result.chunks[0].all_offsets.len(), 2);
+        assert_eq!(result.chunks[1].all_offsets.len(), 2);
+    }
+
+    /// 5.4: mixed sub-records; single vs multi-chunk
+    /// merged results must be identical
+    #[test]
+    fn mixed_records_single_vs_multi_chunk_identical() {
+        let id_size = 8u32;
+        let mut payload = Vec::new();
+        payload.extend(make_instance_sub(1, 100, &[0u8; 8], id_size));
+        payload.extend(make_prim_array_sub(
+            2, 10, // int
+            &[0u8; 16], id_size,
+        ));
+        payload.extend(make_class_dump_sub(3, 0, 32, id_size));
+        payload.extend(make_gc_root_java_frame_sub(4, 1, 0, id_size));
+
+        // Single chunk
+        let single = extract_heap_segment(&payload, 0, id_size, usize::MAX);
+        // Multi chunk (small boundary)
+        let multi = extract_heap_segment(&payload, 0, id_size, 40);
+        assert!(multi.chunks.len() > 1, "must produce multiple chunks");
+
+        // Merge both into separate contexts and compare
+        let mut ctx_s = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
+        single.merge_into(&mut ctx_s);
+
+        let mut ctx_m = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
+        multi.merge_into(&mut ctx_m);
+
+        // Sort for comparison
+        let mut s_offsets: Vec<u64> = ctx_s.all_offsets.iter().map(|o| o.object_id).collect();
+        s_offsets.sort();
+        let mut m_offsets: Vec<u64> = ctx_m.all_offsets.iter().map(|o| o.object_id).collect();
+        m_offsets.sort();
+        assert_eq!(s_offsets, m_offsets);
+
+        assert_eq!(ctx_s.raw_frame_roots.len(), ctx_m.raw_frame_roots.len(),);
+        assert_eq!(
+            ctx_s.result.index.class_dumps.len(),
+            ctx_m.result.index.class_dumps.len(),
+        );
+    }
+
+    /// 5.5: full plumbing through `run_first_pass`
+    /// with MemoryBudget::Bytes(512)
+    #[test]
+    fn run_first_pass_with_budget_bytes() {
+        use crate::test_utils::HprofTestBuilder;
+
+        // Build a blob with many InstanceDumps
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+        for i in 1..=10u64 {
+            builder = builder.add_instance(i, 0, 100, &[0u8; 16]);
+        }
+        let bytes = builder.build();
+        let start = crate::test_utils::advance_past_header(&bytes);
+
+        // With budget
+        let mut obs = NullProgressObserver;
+        let mut notifier = ProgressNotifier::new(&mut obs);
+        let result_budgeted = run_first_pass(
+            &bytes[start..],
+            8,
+            start as u64,
+            &mut notifier,
+            MemoryBudget::Bytes(512),
+        );
+
+        // Without budget
+        let mut obs2 = NullProgressObserver;
+        let mut notifier2 = ProgressNotifier::new(&mut obs2);
+        let result_none = run_first_pass(
+            &bytes[start..],
+            8,
+            start as u64,
+            &mut notifier2,
+            MemoryBudget::Unlimited,
+        );
+
+        // Same segment filters and records indexed
+        assert_eq!(
+            result_budgeted.segment_filters.len(),
+            result_none.segment_filters.len(),
+        );
+        assert_eq!(result_budgeted.records_indexed, result_none.records_indexed,);
+        assert_eq!(result_budgeted.warnings.len(), result_none.warnings.len(),);
+    }
+
+    /// 5.6: run_first_pass with budget_bytes = None
+    /// is identical to current behavior
+    #[test]
+    fn run_first_pass_none_budget_regression() {
+        use crate::test_utils::HprofTestBuilder;
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xDEAD, 0, 100, &[1, 2, 3, 4])
+            .build();
+        let start = crate::test_utils::advance_past_header(&bytes);
+        let result = run_fp(&bytes[start..], 8);
+        assert_eq!(
+            result.segment_filters.len(),
+            1,
+            "must produce one segment filter"
+        );
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            result.heap_record_ranges.len(),
+            1,
+            "must have one heap record range"
+        );
+    }
+
+    /// 5.7: truncated sub-record at end of payload
+    #[test]
+    fn chunked_extraction_truncated_sub_record() {
+        let id_size = 8u32;
+        let mut payload = Vec::new();
+        payload.extend(make_instance_sub(1, 100, &[0u8; 8], id_size));
+        payload.extend(make_instance_sub(2, 100, &[0u8; 8], id_size));
+        // Add truncated record: sub-tag + partial id
+        payload.push(0x21); // InstanceDump tag
+        payload.extend(&[0u8; 4]); // partial id
+
+        let chunked = extract_heap_segment(&payload, 0, id_size, 40);
+        let unchunked = extract_heap_segment(&payload, 0, id_size, usize::MAX);
+
+        // Both must find exactly 2 records (break on 3rd)
+        let c_total: usize = chunked.chunks.iter().map(|c| c.all_offsets.len()).sum();
+        let u_total: usize = unchunked.chunks.iter().map(|c| c.all_offsets.len()).sum();
+        assert_eq!(c_total, 2);
+        assert_eq!(u_total, 2);
+    }
+
+    /// 5.8: data_offset correctness across chunks
+    #[test]
+    fn data_offset_correctness_across_chunks() {
+        let id_size = 8u32;
+        let field_data = [0u8; 8];
+        let data_offset = 500usize;
+        let mut payload = Vec::new();
+        for i in 1..=4u64 {
+            payload.extend(make_instance_sub(i, 100, &field_data, id_size));
+        }
+        // Also add a PrimArrayDump
+        payload.extend(make_prim_array_sub(
+            5, 10, // int
+            &[0u8; 16], id_size,
+        ));
+
+        let result = extract_heap_segment(&payload, data_offset, id_size, 40);
+        assert!(result.chunks.len() > 1, "must produce multiple chunks");
+
+        // Verify every ObjectOffset.offset and
+        // FilterEntry.data_offset uses absolute offsets
+        for chunk in &result.chunks {
+            for o in &chunk.all_offsets {
+                assert!(
+                    o.offset >= data_offset as u64,
+                    "offset {} must be >= data_offset {}",
+                    o.offset,
+                    data_offset,
+                );
+            }
+            for f in &chunk.filter_ids {
+                assert!(
+                    f.data_offset >= data_offset,
+                    "filter data_offset {} must be \
+                     >= data_offset {}",
+                    f.data_offset,
+                    data_offset,
+                );
+            }
+        }
+    }
+
+    /// 5.9: single-chunk HeapSegmentParsingResult.
+    /// merge_into produces same state as direct
+    /// merge_segment_result call.
+    #[test]
+    fn single_chunk_merge_same_as_direct() {
+        let id_size = 8u32;
+        let mut payload = Vec::new();
+        payload.extend(make_instance_sub(1, 100, &[0u8; 8], id_size));
+        payload.extend(make_instance_sub(2, 100, &[0u8; 8], id_size));
+
+        // Direct extraction (usize::MAX = single chunk)
+        let parsing_result = extract_heap_segment(&payload, 0, id_size, usize::MAX);
+        assert_eq!(parsing_result.chunks.len(), 1);
+
+        // Get the single result for direct merge
+        let direct_result = extract_heap_segment(&payload, 0, id_size, usize::MAX);
+
+        // Merge via HeapSegmentParsingResult
+        let mut ctx_wrapper = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
+        parsing_result.merge_into(&mut ctx_wrapper);
+
+        // Merge via direct merge_segment_result
+        let mut ctx_direct = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
+        for chunk in direct_result.chunks {
+            merge_segment_result(&mut ctx_direct, chunk);
+        }
+
+        assert_eq!(ctx_wrapper.all_offsets.len(), ctx_direct.all_offsets.len(),);
+        for (w, d) in ctx_wrapper
+            .all_offsets
+            .iter()
+            .zip(ctx_direct.all_offsets.iter())
+        {
+            assert_eq!(w.object_id, d.object_id);
+            assert_eq!(w.offset, d.offset);
+        }
+    }
+
+    /// 5.10: empty payload → zero chunks
+    #[test]
+    fn empty_payload_zero_chunks() {
+        let result = extract_heap_segment(&[], 0, 8, 100);
+        assert!(
+            result.chunks.is_empty(),
+            "empty payload should produce no chunks"
+        );
+
+        // merge_into is a no-op
+        let mut ctx = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
+        result.merge_into(&mut ctx);
+        assert!(ctx.all_offsets.is_empty());
+        assert!(ctx.raw_frame_roots.is_empty());
     }
 }
