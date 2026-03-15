@@ -132,7 +132,7 @@ development_status:
   # Epic 10: Large Dump Loading (sourced from large dump UX observations 2026-03-14)
   epic-10: in-progress
   10-1-progress-fidelity-heap-segment-scan: done
-  10-2-split-oversized-heap-segments: review
+  10-2-split-oversized-heap-segments: done
   10-3-memory-guard-budget-bytes-extract-all: ready-for-dev
   10-4-investigate-post-extraction-ram-spike: backlog
 

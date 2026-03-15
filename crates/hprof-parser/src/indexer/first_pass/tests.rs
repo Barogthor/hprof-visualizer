@@ -2013,15 +2013,25 @@ mod chunked_extraction_tests {
 
         // Sort for comparison
         let mut s_offsets: Vec<u64> = ctx_s.all_offsets.iter().map(|o| o.object_id).collect();
-        s_offsets.sort();
+        s_offsets.sort_unstable();
         let mut m_offsets: Vec<u64> = ctx_m.all_offsets.iter().map(|o| o.object_id).collect();
-        m_offsets.sort();
-        assert_eq!(s_offsets, m_offsets);
+        m_offsets.sort_unstable();
+        assert_eq!(s_offsets, m_offsets, "all_offsets object_ids must match");
 
-        assert_eq!(ctx_s.raw_frame_roots.len(), ctx_m.raw_frame_roots.len(),);
+        let s_frame_roots = ctx_s.raw_frame_roots.len();
+        let m_frame_roots = ctx_m.raw_frame_roots.len();
+        let s_class_dumps = ctx_s.result.index.class_dumps.len();
+        let m_class_dumps = ctx_m.result.index.class_dumps.len();
+        assert_eq!(s_frame_roots, m_frame_roots, "raw_frame_roots count must match");
+        assert_eq!(s_class_dumps, m_class_dumps, "class_dumps count must match");
+
+        // Verify filter_ids equivalence via segment_filters (AC3)
+        let idx_s = ctx_s.finish();
+        let idx_m = ctx_m.finish();
         assert_eq!(
-            ctx_s.result.index.class_dumps.len(),
-            ctx_m.result.index.class_dumps.len(),
+            idx_s.segment_filters.len(),
+            idx_m.segment_filters.len(),
+            "segment_filter count must match (validates filter_ids identity)"
         );
     }
 
@@ -2068,6 +2078,31 @@ mod chunked_extraction_tests {
         );
         assert_eq!(result_budgeted.records_indexed, result_none.records_indexed,);
         assert_eq!(result_budgeted.warnings.len(), result_none.warnings.len(),);
+
+        // Value-for-value: instance_offsets keys and offsets
+        // (derived from all_offsets — verifies plumbing through
+        // FirstPassContext → extract_all → merge_into).
+        let mut budgeted_ids: Vec<u64> = result_budgeted
+            .index
+            .instance_offsets
+            .keys()
+            .cloned()
+            .collect();
+        budgeted_ids.sort_unstable();
+        let mut none_ids: Vec<u64> =
+            result_none.index.instance_offsets.keys().cloned().collect();
+        none_ids.sort_unstable();
+        assert_eq!(
+            budgeted_ids, none_ids,
+            "instance_offsets keys must match value-for-value"
+        );
+        for id in &none_ids {
+            assert_eq!(
+                result_budgeted.index.instance_offsets.get(id),
+                result_none.index.instance_offsets.get(id),
+                "instance_offset for id {id:#X} must match"
+            );
+        }
     }
 
     /// 5.6: run_first_pass with budget_bytes = None

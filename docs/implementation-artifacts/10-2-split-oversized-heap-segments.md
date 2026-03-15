@@ -1,6 +1,6 @@
 # Story 10.2: Chunked Heap Segment Extraction
 
-Status: review
+Status: done
 
 ## Story
 
@@ -421,12 +421,15 @@ story changes intra-segment allocation; 10.3 changes
 inter-segment scheduling.
 
 **Note for 10.3 — interface contract:**
-Story 10.3 will read `ctx.budget_bytes: Option<u64>` from
-`FirstPassContext` — the same field added in Task 1.2 here.
+Story 10.3 will read `ctx.budget: MemoryBudget` from
+`FirstPassContext` — the same field added in Task 1.2 here
+(implemented as `MemoryBudget` enum, not `Option<u64>`).
+`ctx.budget.bytes()` returns `Option<u64>` for callers
+that need the raw byte value.
 The field name and type must not be changed in 10.2 without
 updating the 10.3 story spec. Story 10.3 must NOT add a
-second `budget_bytes` field or re-plumb the parameter; it
-reads the one stored by this story.
+second budget field or re-plumb the parameter; it reads
+the one stored by this story.
 
 ### `HeapSegmentParsingResult` — Stable Return Type
 
@@ -633,7 +636,7 @@ Claude Opus 4.6 (1M context)
 
 ### Completion Notes List
 
-- Task 1: Added `budget_bytes: Option<u64>` parameter through full call chain: `run_first_pass` → `FirstPassContext` → `HprofFile::from_path_with_progress` → `HprofFile::from_path`. Engine passes `Some(config.effective_budget())`, all other callers pass `None`.
+- Task 1: Added `budget: MemoryBudget` parameter through full call chain: `run_first_pass` → `FirstPassContext` → `HprofFile::from_path_with_progress`. **Design deviation from spec:** Instead of `budget_bytes: Option<u64>`, a `MemoryBudget` enum was introduced in `hprof-api` (`Unlimited` | `Bytes(u64)`) for better type safety and clarity. `HprofFile::from_path` was kept as a zero-arg convenience wrapper (always `Unlimited`, no parameter added). Engine passes `config.memory_budget()` which wraps `effective_budget()` as `Bytes(n)`; all other callers pass `Unlimited`.
 - Task 2: Added `HeapSegmentResult::is_empty()`, `HeapSegmentResult::new_with_capacity(est)`, and `HeapSegmentParsingResult` wrapper with `new(chunks)` and `merge_into(ctx)`.
 - Task 3: Replaced `extract_heap_segment` body with chunked version. New signature adds `max_chunk_bytes: usize`. Checkpoint flush after each complete sub-record when `cursor.position() >= next_checkpoint`. Returns `HeapSegmentParsingResult`.
 - Task 4: Updated `extract_all` to compute `max_chunk_bytes = max(budget/threads, 64MB)`. Both parallel and sequential paths use `HeapSegmentParsingResult::merge_into`. Progress reporting unchanged (per-segment, not per-chunk).
@@ -641,7 +644,9 @@ Claude Opus 4.6 (1M context)
 
 ### File List
 
-- `crates/hprof-parser/src/indexer/first_pass/mod.rs` — `budget_bytes` in `FirstPassContext`, `run_first_pass` signature
+- `crates/hprof-api/src/budget.rs` — new `MemoryBudget` enum (`Unlimited` / `Bytes(u64)`)
+- `crates/hprof-api/src/lib.rs` — re-exports `MemoryBudget`
+- `crates/hprof-parser/src/indexer/first_pass/mod.rs` — `budget: MemoryBudget` in `FirstPassContext`, `run_first_pass` signature
 - `crates/hprof-parser/src/indexer/first_pass/heap_extraction.rs` — `HeapSegmentResult::is_empty`, `new_with_capacity`, `HeapSegmentParsingResult`, chunked `extract_heap_segment`, updated `extract_all`
 - `crates/hprof-parser/src/indexer/first_pass/tests.rs` — 10 new chunked extraction tests, updated test helpers and existing callers
 - `crates/hprof-parser/src/hprof_file.rs` — `budget_bytes` param on `from_path_with_progress` and `from_path`
