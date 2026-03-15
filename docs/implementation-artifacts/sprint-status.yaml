@@ -133,8 +133,8 @@ development_status:
   epic-10: in-progress
   10-1-progress-fidelity-heap-segment-scan: done
   10-2-split-oversized-heap-segments: done
-  10-3-memory-guard-budget-bytes-extract-all: review
-  10-4-investigate-post-extraction-ram-spike: ready-for-dev
+  10-3-memory-guard-budget-bytes-extract-all: done
+  10-4-investigate-post-extraction-ram-spike: done
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
   epic-11: backlog
@@ -146,8 +146,8 @@ development_status:
   11-6-investigate-non-array-item-slowness: backlog
 
   # Epic 12: Path-Based Expand State (sourced from Epic 4 retro + G4/G5)
-  epic-12: backlog
-  12-1-path-based-expand-state-isolation: backlog
+  epic-12: in-progress
+  12-1-path-based-expand-state-isolation: ready-for-dev
 
   # Epic 13: UI Polish & Ergonomie (sourced from large dump UX observations 2026-03-14)
   epic-13: backlog

@@ -26,6 +26,26 @@ pub struct HeapRecordRange {
     pub payload_length: u64,
 }
 
+/// Post-extraction allocation diagnostics.
+///
+/// Captures `all_offsets` Vec state and `PreciseIndex` heap size
+/// immediately after extraction, before the index is returned.
+/// Used to compute waste ratio and coexistence watermark.
+///
+/// Only available with the `test-utils` feature.
+#[cfg(feature = "test-utils")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DiagnosticInfo {
+    /// Actual number of object offsets indexed.
+    pub offsets_len: usize,
+    /// Allocated Vec capacity. May exceed `offsets_len` due to
+    /// Vec doubling strategy.
+    pub offsets_capacity: usize,
+    /// Estimated heap bytes of the `PreciseIndex` structures,
+    /// computed via [`hprof_api::MemorySize`].
+    pub precise_index_heap_bytes: usize,
+}
+
 /// Result of a tolerant first-pass index run.
 ///
 /// All non-fatal errors are collected in `warnings` rather than propagated.
@@ -48,6 +68,11 @@ pub struct IndexResult {
     /// Location of every `HEAP_DUMP` (0x0C) and
     /// `HEAP_DUMP_SEGMENT` (0x1C) record.
     pub heap_record_ranges: Vec<HeapRecordRange>,
+    /// Post-extraction allocation diagnostics.
+    ///
+    /// Only populated with the `test-utils` feature.
+    #[cfg(feature = "test-utils")]
+    pub diagnostics: DiagnosticInfo,
 }
 
 impl IndexResult {
@@ -74,6 +99,8 @@ mod tests {
             records_indexed: indexed,
             segment_filters: Vec::new(),
             heap_record_ranges: Vec::new(),
+            #[cfg(feature = "test-utils")]
+            diagnostics: DiagnosticInfo::default(),
         }
     }
 

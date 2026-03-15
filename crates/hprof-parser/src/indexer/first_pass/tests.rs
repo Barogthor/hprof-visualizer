@@ -2662,3 +2662,405 @@ mod budget_batching_tests {
         }
     }
 }
+
+// =====================================================
+// mod post_extraction_tests — post-extraction profiling
+// and correctness tests (Story 10.4)
+// =====================================================
+
+#[cfg(feature = "test-utils")]
+mod post_extraction_tests {
+    use hprof_api::{MemoryBudget, NullProgressObserver, ProgressNotifier};
+
+    use crate::indexer::DiagnosticInfo;
+    use crate::indexer::IndexResult;
+    use crate::indexer::first_pass::run_first_pass;
+    use crate::test_utils::{HprofTestBuilder, advance_past_header};
+
+    fn run_fp(data: &[u8], id_size: u32) -> IndexResult {
+        let mut obs = NullProgressObserver;
+        let mut notifier = ProgressNotifier::new(&mut obs);
+        run_first_pass(data, id_size, 0, &mut notifier, MemoryBudget::Unlimited)
+    }
+
+    /// Parse `/proc/self/statm` to get private RSS in MB.
+    ///
+    /// Returns `(resident - shared) * page_size / 1_MB`. Indicative
+    /// only — high variance on WSL2 due to rayon thread pool and
+    /// delayed page reclaim. Returns 0.0 on non-Linux or read failure.
+    fn private_rss_mb() -> f64 {
+        #[cfg(target_os = "linux")]
+        if let Ok(s) = std::fs::read_to_string("/proc/self/statm") {
+            let mut parts = s.split_whitespace();
+            let resident: u64 =
+                parts.nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+            let shared: u64 =
+                parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            // Assume 4 KiB pages (standard on Linux/WSL2 x86-64)
+            return (resident.saturating_sub(shared) * 4096) as f64
+                / (1024.0 * 1024.0);
+        }
+        0.0
+    }
+
+    /// Coexistence watermark: `all_offsets` capacity + `PreciseIndex`
+    /// heap bytes. `ObjectOffset` = `u64 + u64` = 16 bytes.
+    ///
+    /// Deterministic primary metric — use this for decisions, not RSS.
+    fn theoretical_mem_mb(diag: &DiagnosticInfo) -> f64 {
+        let offsets_bytes = diag.offsets_capacity * 16;
+        (offsets_bytes + diag.precise_index_heap_bytes) as f64
+            / (1024.0 * 1024.0)
+    }
+
+    // ------------------------------------------------------------------
+    // Task 3.1 — CI: waste ratio bounded on synthetic dump
+    // ------------------------------------------------------------------
+
+    /// Asserts that Vec doubling never wastes more than 2× capacity
+    /// relative to actual object count on a synthetic 1 000-instance
+    /// dump.
+    ///
+    /// Excludes `s06-tiny` fixtures (low-density, potentially flaky).
+    #[test]
+    fn waste_ratio_bounded_on_synthetic_dump() {
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+        for id in 1u64..=1000 {
+            builder = builder.add_instance(id, 0, 100, &[]);
+        }
+        let bytes = builder.build();
+        let start = advance_past_header(&bytes);
+        let result = run_fp(&bytes[start..], 8);
+        let diag = &result.diagnostics;
+        assert!(
+            diag.offsets_capacity <= 2 * diag.offsets_len.max(1),
+            "capacity ({}) > 2 * len ({}): waste ratio too high",
+            diag.offsets_capacity,
+            diag.offsets_len
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Task 3.2 — CI: DiagnosticInfo fields are well-formed
+    // ------------------------------------------------------------------
+
+    /// Asserts that `DiagnosticInfo` is populated with coherent values
+    /// after a minimal first pass (one instance).
+    #[test]
+    fn diagnostics_fields_present() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(1, 0, 100, &[])
+            .build();
+        let start = advance_past_header(&bytes);
+        let result = run_fp(&bytes[start..], 8);
+        let diag = &result.diagnostics;
+        assert!(diag.offsets_len > 0, "offsets_len must be > 0");
+        assert!(
+            diag.offsets_capacity >= diag.offsets_len,
+            "capacity ({}) must be >= len ({})",
+            diag.offsets_capacity,
+            diag.offsets_len
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Task 2.3 / 2.4 / 2.5 — profiling: all fixtures (#[ignore])
+    // ------------------------------------------------------------------
+
+    /// Runs `run_first_pass` on all `assets/generated/*-san.hprof`
+    /// fixtures plus the RustRover and VisualVM real-world dumps,
+    /// then prints a structured profiling log and scaling summary.
+    ///
+    /// Run:
+    /// ```text
+    /// cargo test post_extraction -- --ignored --nocapture
+    /// ```
+    ///
+    /// Expected runtime: ~15-25 minutes (1.4 GB total).
+    #[test]
+    #[ignore]
+    fn all_fixtures_profiling() {
+        let assets_gen = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/generated"
+        );
+        let real_dumps: &[&str] = &[
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../assets/heapdump-rustrover-sanitarized.hprof"
+            ),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../assets/heapdump-visualvm-sanitarized.hprof"
+            ),
+        ];
+
+        let mut fixtures: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(assets_gen) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                if name.ends_with("-san.hprof") && !name.contains("truncated") {
+                    fixtures.push(path);
+                }
+            }
+        }
+        for dump in real_dumps {
+            let p = std::path::Path::new(dump);
+            if p.exists() {
+                fixtures.push(p.to_path_buf());
+            }
+        }
+
+        if fixtures.is_empty() {
+            eprintln!("[post_extraction] No fixtures found — skipping");
+            return;
+        }
+
+        fixtures.sort();
+
+        // Exclude scenarios where all size variants have identical
+        // file sizes (e.g. s06: 4.8 MB across all sizes = no scaling data)
+        let fixtures = {
+            let mut scenario_sizes: std::collections::HashMap<String, Vec<u64>> =
+                std::collections::HashMap::new();
+            for p in &fixtures {
+                let name =
+                    p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if let Some(seg) = name
+                    .split('-')
+                    .find(|s| s.len() == 3 && s.starts_with('s'))
+                {
+                    let size = p.metadata().map(|m| m.len()).unwrap_or(0);
+                    scenario_sizes.entry(seg.to_string()).or_default().push(size);
+                }
+            }
+            let uniform: std::collections::HashSet<_> = scenario_sizes
+                .into_iter()
+                .filter(|(_, v)| v.len() >= 4 && v.iter().all(|&s| s == v[0]))
+                .map(|(k, _)| k)
+                .collect();
+            fixtures
+                .into_iter()
+                .filter(|p| {
+                    let name =
+                        p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    !name.split('-').any(|s| uniform.contains(s))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        eprintln!(
+            "[post_extraction] profiling {} fixtures\n",
+            fixtures.len()
+        );
+
+        struct Row {
+            name: String,
+            objects: usize,
+            objects_cap: usize,
+            waste_pct: f64,
+            theo_mb: f64,
+        }
+        let mut rows: Vec<Row> = Vec::new();
+
+        for path in &fixtures {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            let size_mb =
+                path.metadata().map(|m| m.len()).unwrap_or(0) as f64
+                    / (1024.0 * 1024.0);
+            let raw = match std::fs::read(path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("[post_extraction] Cannot read {name}: {e}");
+                    continue;
+                }
+            };
+            let null_pos = match raw.iter().position(|&b| b == 0) {
+                Some(p) => p,
+                None => {
+                    eprintln!("[post_extraction] {name}: no null byte in header");
+                    continue;
+                }
+            };
+            let id_size_offset = null_pos + 1;
+            let id_size = if id_size_offset + 4 <= raw.len() {
+                u32::from_be_bytes([
+                    raw[id_size_offset],
+                    raw[id_size_offset + 1],
+                    raw[id_size_offset + 2],
+                    raw[id_size_offset + 3],
+                ])
+            } else {
+                eprintln!("[post_extraction] {name}: header too short");
+                continue;
+            };
+            let hdr_end = id_size_offset + 4 + 8;
+            if hdr_end >= raw.len() {
+                eprintln!("[post_extraction] {name}: too short");
+                continue;
+            }
+            let data = &raw[hdr_end..];
+            let rss_before = private_rss_mb();
+            let t0 = std::time::Instant::now();
+            let result = run_fp(data, id_size);
+            let total_ms = t0.elapsed().as_millis();
+            let rss_after = private_rss_mb();
+            let diag = &result.diagnostics;
+            let waste_pct = if diag.offsets_capacity > 0 {
+                (diag.offsets_capacity - diag.offsets_len) as f64
+                    / diag.offsets_capacity as f64
+                    * 100.0
+            } else {
+                0.0
+            };
+            let theo_mb = theoretical_mem_mb(diag);
+            let segments = result.segment_filters.len();
+            eprintln!(
+                "[post_extraction] fixture={name} size_mb={size_mb:.1} \
+                 objects={} objects_cap={} waste_pct={waste_pct:.1}% \
+                 theo_mem_mb={theo_mb:.1} segments={segments} \
+                 total_ms={total_ms} rss_before={rss_before:.1}MB \
+                 rss_after={rss_after:.1}MB",
+                diag.offsets_len, diag.offsets_capacity
+            );
+            let _ = (segments, total_ms, rss_before, rss_after);
+            rows.push(Row {
+                name: name.to_string(),
+                objects: diag.offsets_len,
+                objects_cap: diag.offsets_capacity,
+                waste_pct,
+                theo_mb,
+            });
+        }
+
+        // Scaling summary: check waste_ratio consistency (±10%)
+        if rows.len() >= 2 {
+            let waste_vals: Vec<f64> = rows.iter().map(|r| r.waste_pct).collect();
+            let mean = waste_vals.iter().sum::<f64>() / waste_vals.len() as f64;
+            let consistent = waste_vals.iter().all(|&w| (w - mean).abs() <= 10.0);
+            eprintln!(
+                "\n[post_extraction] Waste ratio mean={mean:.1}% \
+                 consistent(±10%)={consistent}"
+            );
+        }
+
+        // Linear extrapolation to 70 GB from RustRover 1.1 GB baseline
+        let baseline = rows.iter().find(|r| r.name.contains("rustrover"));
+        if let Some(b) = baseline {
+            // objects_per_mb = b.objects / (theo_mb for offsets only)
+            let offsets_mb = b.objects_cap as f64 * 16.0 / (1024.0 * 1024.0);
+            if offsets_mb > 0.0 {
+                let objects_per_mb = b.objects as f64 / offsets_mb;
+                let objects_70gb = (objects_per_mb * 70_000.0) as u64;
+                let theo_70gb_mb = theoretical_mem_mb(&DiagnosticInfo {
+                    offsets_len: objects_70gb as usize,
+                    offsets_capacity: (objects_70gb as f64 * 1.5) as usize,
+                    // Scale index bytes proportionally
+                    precise_index_heap_bytes: (b.theo_mb * 1024.0 * 1024.0
+                        - offsets_mb * 1024.0 * 1024.0)
+                        as usize,
+                });
+                eprintln!(
+                    "[post_extraction] 70 GB extrapolation: \
+                     est_objects={objects_70gb} theo_mem_mb~{theo_70gb_mb:.0}"
+                );
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Task 4.1 — manual 70 GB profiling (#[ignore])
+    // ------------------------------------------------------------------
+
+    /// Runs `run_first_pass` on the dump pointed to by the
+    /// `HPROF_BENCH_FILE` env var and prints the same structured log.
+    ///
+    /// Skips gracefully if `HPROF_BENCH_FILE` is unset.
+    ///
+    /// Run:
+    /// ```text
+    /// HPROF_BENCH_FILE=/path/to/dump.hprof \
+    ///   cargo test post_extraction__manual -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn manual_large_dump_profiling() {
+        let path_str = match std::env::var("HPROF_BENCH_FILE") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!(
+                    "[post_extraction] HPROF_BENCH_FILE not set — skipping"
+                );
+                return;
+            }
+        };
+        let path = std::path::Path::new(&path_str);
+        let name =
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+        let size_mb =
+            path.metadata().map(|m| m.len()).unwrap_or(0) as f64
+                / (1024.0 * 1024.0);
+        let raw = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("[post_extraction] Cannot read {path:?}: {e}");
+                return;
+            }
+        };
+        let null_pos = match raw.iter().position(|&b| b == 0) {
+            Some(p) => p,
+            None => {
+                eprintln!("[post_extraction] {name}: no null byte in header");
+                return;
+            }
+        };
+        let id_size_offset = null_pos + 1;
+        let id_size = if id_size_offset + 4 <= raw.len() {
+            u32::from_be_bytes([
+                raw[id_size_offset],
+                raw[id_size_offset + 1],
+                raw[id_size_offset + 2],
+                raw[id_size_offset + 3],
+            ])
+        } else {
+            eprintln!("[post_extraction] {name}: header too short");
+            return;
+        };
+        let hdr_end = id_size_offset + 4 + 8;
+        if hdr_end >= raw.len() {
+            eprintln!("[post_extraction] {name}: file too short");
+            return;
+        }
+        let data = &raw[hdr_end..];
+        let rss_before = private_rss_mb();
+        let t0 = std::time::Instant::now();
+        let result = run_fp(data, id_size);
+        let total_ms = t0.elapsed().as_millis();
+        let rss_after = private_rss_mb();
+        let diag = &result.diagnostics;
+        let waste_pct = if diag.offsets_capacity > 0 {
+            (diag.offsets_capacity - diag.offsets_len) as f64
+                / diag.offsets_capacity as f64
+                * 100.0
+        } else {
+            0.0
+        };
+        let theo_mb = theoretical_mem_mb(diag);
+        let segments = result.segment_filters.len();
+        eprintln!(
+            "[post_extraction] fixture={name} size_mb={size_mb:.1} \
+             objects={} objects_cap={} waste_pct={waste_pct:.1}% \
+             theo_mem_mb={theo_mb:.1} segments={segments} \
+             total_ms={total_ms} rss_before={rss_before:.1}MB \
+             rss_after={rss_after:.1}MB",
+            diag.offsets_len, diag.offsets_capacity
+        );
+    }
+}

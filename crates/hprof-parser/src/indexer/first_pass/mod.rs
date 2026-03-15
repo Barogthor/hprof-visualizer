@@ -19,8 +19,12 @@
 use std::time::Instant;
 
 use hprof_api::{MemoryBudget, ProgressNotifier};
+#[cfg(feature = "test-utils")]
+use hprof_api::MemorySize;
 
 use crate::ClassDumpInfo;
+#[cfg(feature = "test-utils")]
+use crate::indexer::DiagnosticInfo;
 use crate::indexer::IndexResult;
 use crate::indexer::precise::PreciseIndex;
 use crate::indexer::segment::SegmentFilterBuilder;
@@ -108,6 +112,8 @@ impl<'a> FirstPassContext<'a> {
                 records_indexed: 0,
                 segment_filters: Vec::new(),
                 heap_record_ranges: Vec::new(),
+                #[cfg(feature = "test-utils")]
+                diagnostics: DiagnosticInfo::default(),
             },
             seg_builder: SegmentFilterBuilder::new(),
             all_offsets: Vec::with_capacity((data.len() / 80).min(8_000_000)),
@@ -152,10 +158,22 @@ impl<'a> FirstPassContext<'a> {
     }
 
     fn sort_offsets(&mut self) {
+        #[cfg(feature = "dev-profiling")]
+        tracing::debug!(
+            offsets_len = self.all_offsets.len(),
+            offsets_capacity = self.all_offsets.capacity(),
+            "sort_offsets: pre-sort state"
+        );
         self.all_offsets.sort_unstable_by_key(|o| o.object_id);
     }
 
     fn finish(mut self) -> IndexResult {
+        #[cfg(feature = "dev-profiling")]
+        tracing::debug!(
+            completed_segments = self.seg_builder.completed_count(),
+            pending_ids = self.seg_builder.pending_id_count(),
+            "segment_filter_build: pre-finish state"
+        );
         self.push_suppressed_summary();
         let (filters, filter_warnings) = self.seg_builder.finish();
         self.result.segment_filters = filters;
@@ -201,11 +219,27 @@ pub fn run_first_pass(
     let mut ctx = FirstPassContext::new(data, id_size, base_offset, budget);
     record_scan::scan_records(&mut ctx, notifier);
     heap_extraction::extract_all(&mut ctx, notifier);
-    ctx.sort_offsets();
+    {
+        #[cfg(feature = "dev-profiling")]
+        let _sort_span = tracing::info_span!("sort_offsets").entered();
+        ctx.sort_offsets();
+    }
+    // Capture coexistence watermark before thread_resolution clears
+    // all_offsets (Vec::new() at thread_resolution.rs:104).
+    #[cfg(feature = "test-utils")]
+    {
+        ctx.result.diagnostics = DiagnosticInfo {
+            offsets_len: ctx.all_offsets.len(),
+            offsets_capacity: ctx.all_offsets.capacity(),
+            precise_index_heap_bytes: ctx.result.index.memory_size(),
+        };
+    }
     thread_resolution::resolve_all(&mut ctx);
 
-    #[cfg(feature = "dev-profiling")]
-    let _seg_filter_span = tracing::info_span!("segment_filter_build").entered();
-
-    ctx.finish()
+    {
+        #[cfg(feature = "dev-profiling")]
+        let _seg_filter_span =
+            tracing::info_span!("segment_filter_build").entered();
+        ctx.finish()
+    }
 }

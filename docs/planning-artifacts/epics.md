@@ -1603,10 +1603,12 @@ So that I can determine if it needs optimization or is acceptable.
 
 **Priority:** P1
 
-**Root cause (suspected):** `ctx.sort_offsets()` on tens of millions
-of `ObjectOffset` entries (sort_unstable may allocate internal
-buffers) + `seg_builder.finish()` which constructs BinaryFuse8 filters
-for all segments simultaneously.
+**Root cause (confirmed, 2026-03-15):** Vec doubling in `all_offsets`
+via sequential `extend()` in `merge_segment_result()`. Pre-alloc
+heuristic `data.len()/80` caps at 8 M entries for dumps > 640 MB;
+RustRover 1.1 GB triggers one doubling (8 M → 16 M), giving 24.8%
+waste (ACCEPTABLE). `sort_unstable` is in-place O(log n) stack — NOT
+a spike source. BinaryFuse8 filters are ~9 bits/object — negligible.
 
 **Acceptance Criteria:**
 
