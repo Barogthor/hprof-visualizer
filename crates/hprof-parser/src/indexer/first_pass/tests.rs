@@ -2418,7 +2418,8 @@ mod budget_batching_tests {
         }
     }
 
-    /// 3.1b: results identical with budget vs without.
+    /// 3.1b: results identical with budget vs without —
+    /// counts AND actual extracted IDs and offsets.
     #[test]
     fn budget_batching_results_identical() {
         use crate::test_utils::HprofTestBuilder;
@@ -2430,26 +2431,41 @@ mod budget_batching_tests {
         let bytes = builder.build();
         let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (result_budget, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(128));
-        let (result_none, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
+        let (result_budget, _) =
+            run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(128));
+        let (result_none, _) =
+            run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
 
-        // Same segment filters
         assert_eq!(
             result_budget.segment_filters.len(),
             result_none.segment_filters.len(),
         );
-
-        // Same records indexed
-        assert_eq!(result_budget.records_indexed, result_none.records_indexed,);
-
-        // Same heap record ranges
+        assert_eq!(result_budget.records_indexed, result_none.records_indexed);
         assert_eq!(
             result_budget.heap_record_ranges.len(),
             result_none.heap_record_ranges.len(),
         );
+        assert_eq!(result_budget.warnings.len(), result_none.warnings.len());
 
-        // Same warnings
-        assert_eq!(result_budget.warnings.len(), result_none.warnings.len(),);
+        // Content check: same object IDs and offsets extracted.
+        let mut budget_ids: Vec<u64> = result_budget
+            .index
+            .instance_offsets
+            .keys()
+            .copied()
+            .collect();
+        let mut none_ids: Vec<u64> =
+            result_none.index.instance_offsets.keys().copied().collect();
+        budget_ids.sort_unstable();
+        none_ids.sort_unstable();
+        assert_eq!(budget_ids, none_ids, "extracted IDs must match");
+        for id in &budget_ids {
+            assert_eq!(
+                result_budget.index.instance_offsets.get(id),
+                result_none.index.instance_offsets.get(id),
+                "offset for ID {id} must match"
+            );
+        }
     }
 
     /// 3.2: regression — unlimited budget matches
@@ -2490,10 +2506,10 @@ mod budget_batching_tests {
         assert_eq!(result.heap_record_ranges.len(), 1);
     }
 
-    /// 3.4: HprofFile::from_path still compiles and works
-    /// without budget_bytes.
+    /// 3.4: HprofFile::from_path uses Unlimited budget
+    /// (no regression on the convenience wrapper).
     #[test]
-    fn hprof_file_from_path_no_budget_compiles() {
+    fn hprof_file_from_path_uses_unlimited_budget() {
         let bytes = crate::test_utils::HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
             .add_instance(1, 0, 100, &[0u8; 4])
             .build();
@@ -2593,5 +2609,56 @@ mod budget_batching_tests {
             hfile_budget.heap_record_ranges.len(),
             hfile_none.heap_record_ranges.len(),
         );
+    }
+
+    /// 10.3-parallel: verifies that the parallel extraction path
+    /// is entered (total heap > PARALLEL_THRESHOLD = 32 MB)
+    /// and produces correct results and cumulative progress.
+    ///
+    /// Two prim-array segments of 17 MB each (total ~34 MB) are
+    /// used. With BATCH_FLOOR = 64 MB and total < 64 MB, all
+    /// segments go in one batch — the multi-batch aspect of
+    /// the parallel path requires > 64 MB and is covered by
+    /// the `compute_batch_ranges` unit tests (10.3-unit-*).
+    #[test]
+    fn budget_parallel_path_single_batch() {
+        use crate::test_utils::HprofTestBuilder;
+        use hprof_api::ProgressEvent;
+
+        // 17 MB per segment × 2 = ~34 MB > PARALLEL_THRESHOLD
+        let seg_bytes = 17 * 1024 * 1024_usize;
+        let data = vec![0u8; seg_bytes];
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            // element_type 8 = TYPE_BYTE (1 byte each)
+            .add_prim_array(1, 0, seg_bytes as u32, 8, &data)
+            .add_prim_array(2, 0, seg_bytes as u32, 8, &data)
+            .build();
+        let start = crate::test_utils::advance_past_header(&bytes);
+
+        let (result, obs) =
+            run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
+
+        // Two HEAP_DUMP_SEGMENT records correctly indexed.
+        // Both fall in the same 64 MB SegmentFilter bucket
+        // (SEGMENT_SIZE = 64 MB, total data ~34 MB).
+        assert_eq!(result.heap_record_ranges.len(), 2);
+        assert!(result.warnings.is_empty());
+
+        // Progress events are cumulative across the parallel batch
+        let seg_events: Vec<(usize, usize)> = obs
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                ProgressEvent::SegmentCompleted { done, total } => {
+                    Some((*done, *total))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seg_events.len(), 2);
+        assert_eq!(*seg_events.last().unwrap(), (2, 2));
+        for (_, total) in &seg_events {
+            assert_eq!(*total, 2);
+        }
     }
 }

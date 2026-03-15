@@ -2085,3 +2085,40 @@ mod lru_eviction_tests {
         );
     }
 }
+
+/// AC6 E2E: budget_bytes flows through Engine::from_file →
+/// HprofFile::from_path_with_progress → run_first_pass →
+/// extract_all. Results with explicit budget must match results
+/// with auto budget.
+#[test]
+fn budget_e2e_through_engine() {
+    use hprof_parser::HprofTestBuilder;
+
+    let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+    for i in 1..=5u64 {
+        builder = builder.add_instance(i, 0, 100, &[0u8; 16]);
+    }
+    let bytes = builder.build();
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    tmp.write_all(&bytes).unwrap();
+    tmp.flush().unwrap();
+
+    let config_explicit = EngineConfig {
+        budget_bytes: Some(128),
+    };
+    let config_auto = EngineConfig::default();
+
+    let engine_explicit = Engine::from_file(tmp.path(), &config_explicit).unwrap();
+    let engine_auto = Engine::from_file(tmp.path(), &config_auto).unwrap();
+
+    assert_eq!(
+        engine_explicit.indexing_ratio(),
+        engine_auto.indexing_ratio(),
+        "indexing_ratio must match with explicit vs auto budget"
+    );
+    assert_eq!(
+        engine_explicit.warnings().len(),
+        engine_auto.warnings().len(),
+        "warning counts must match"
+    );
+}

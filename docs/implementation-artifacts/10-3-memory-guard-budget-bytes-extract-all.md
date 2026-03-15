@@ -1,6 +1,6 @@
 # Story 10.3: Memory Guard via budget_bytes in extract_all
 
-Status: review
+Status: done
 
 ## Story
 
@@ -405,8 +405,12 @@ Claude Opus 4.6 (1M context)
 
 - 2026-03-15: Implemented budget-aware batching in
   `extract_all` (Tasks 2-3).
+- 2026-03-15: Code review fixes — parallel path test,
+  Engine E2E test, stronger result assertions, test
+  rename.
 
 ### File List
 
 - `crates/hprof-parser/src/indexer/first_pass/heap_extraction.rs` (modified)
 - `crates/hprof-parser/src/indexer/first_pass/tests.rs` (modified)
+- `crates/hprof-engine/src/engine_impl/tests.rs` (modified)
