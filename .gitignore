@@ -12,3 +12,5 @@ assets/
 diag.txt
 trace.json
 profile.json.gz
+
+docs/
