@@ -2,6 +2,7 @@
 //! paths.
 
 use std::io::Cursor;
+use std::ops::Range;
 
 use byteorder::{BigEndian, ReadBytesExt};
 use hprof_api::ProgressNotifier;
@@ -13,6 +14,7 @@ use super::hprof_primitives::{
 use super::{
     ClassDumpEntry, FilterEntry, FirstPassContext, ObjectOffset, RawFrameRoot, RawThreadObject,
 };
+use crate::indexer::HeapRecordRange;
 use crate::read_id;
 use crate::tags::HeapSubTag;
 
@@ -318,6 +320,43 @@ pub(super) fn merge_segment_result(ctx: &mut FirstPassContext, seg_result: HeapS
 /// Minimum chunk size to avoid micro-chunking overhead.
 const CHUNK_FLOOR: usize = 64 * 1024 * 1024;
 
+/// Minimum inter-segment batch payload to prevent
+/// degenerate micro-batching (e.g. `budget_bytes = 0`).
+const BATCH_FLOOR: u64 = 64 * 1024 * 1024;
+
+/// Groups contiguous segments into batches whose
+/// cumulative payload does not exceed `max_batch_payload`.
+///
+/// A single segment exceeding `max_batch_payload` is
+/// placed in its own solo batch (never skipped).
+/// Returns index ranges into `ranges`.
+pub(super) fn compute_batch_ranges(
+    ranges: &[HeapRecordRange],
+    max_batch_payload: u64,
+) -> Vec<Range<usize>> {
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    let mut batches = Vec::new();
+    let mut batch_start = 0;
+    let mut batch_payload = 0u64;
+
+    for (i, r) in ranges.iter().enumerate() {
+        if batch_payload + r.payload_length > max_batch_payload && batch_start < i {
+            batches.push(batch_start..i);
+            batch_start = i;
+            batch_payload = 0;
+        }
+        batch_payload += r.payload_length;
+    }
+
+    if batch_start < ranges.len() {
+        batches.push(batch_start..ranges.len());
+    }
+
+    batches
+}
+
 /// Extracts all heap segments — parallel or sequential
 /// depending on total heap size. Reports segment-level
 /// progress via [`ProgressNotifier::segment_completed`].
@@ -335,6 +374,7 @@ pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNot
     let total_segments = ranges.len();
     let mut segments_done: usize = 0;
 
+    // Intra-segment chunk size (story 10.2).
     let max_chunk_bytes = match ctx.budget.bytes() {
         Some(b) => {
             let b = usize::try_from(b).unwrap_or(usize::MAX);
@@ -344,12 +384,37 @@ pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNot
         None => usize::MAX,
     };
 
+    // Inter-segment batch payload limit (story 10.3).
+    let max_batch_payload: u64 = ctx
+        .budget
+        .bytes()
+        .map(|b| b.max(BATCH_FLOOR))
+        .unwrap_or(u64::MAX);
+
     if total_heap_bytes >= PARALLEL_THRESHOLD {
         #[cfg(feature = "dev-profiling")]
         let _par_span = tracing::info_span!("parallel_heap_extraction").entered();
 
-        let batch_size = rayon::current_num_threads().max(1);
-        for batch in ranges.chunks(batch_size) {
+        let batches = compute_batch_ranges(&ranges, max_batch_payload);
+
+        for (batch_idx, batch_range) in batches.iter().enumerate() {
+            let batch = &ranges[batch_range.clone()];
+            let batch_payload: u64 = batch.iter().map(|r| r.payload_length).sum();
+
+            #[cfg(feature = "dev-profiling")]
+            tracing::info!(
+                "heap extraction batch {}/{}: \
+                 {} segment(s), {} bytes payload, \
+                 limit {} bytes",
+                batch_idx + 1,
+                batches.len(),
+                batch.len(),
+                batch_payload,
+                max_batch_payload,
+            );
+            #[cfg(not(feature = "dev-profiling"))]
+            let _ = (batch_idx, batch_payload);
+
             let batch_results: Vec<HeapSegmentParsingResult> = batch
                 .par_iter()
                 .map(|r| {

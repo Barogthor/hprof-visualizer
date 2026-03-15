@@ -10,7 +10,7 @@ use hprof_api::{MemoryBudget, NullProgressObserver, ProgressNotifier};
 use byteorder::ReadBytesExt;
 
 #[cfg(feature = "test-utils")]
-use super::heap_extraction::{extract_heap_segment, merge_segment_result};
+use super::heap_extraction::{compute_batch_ranges, extract_heap_segment, merge_segment_result};
 #[cfg(feature = "test-utils")]
 use super::hprof_primitives::{
     PARALLEL_THRESHOLD, PROGRESS_REPORT_INTERVAL, gc_root_skip_size, parse_class_dump,
@@ -2022,7 +2022,10 @@ mod chunked_extraction_tests {
         let m_frame_roots = ctx_m.raw_frame_roots.len();
         let s_class_dumps = ctx_s.result.index.class_dumps.len();
         let m_class_dumps = ctx_m.result.index.class_dumps.len();
-        assert_eq!(s_frame_roots, m_frame_roots, "raw_frame_roots count must match");
+        assert_eq!(
+            s_frame_roots, m_frame_roots,
+            "raw_frame_roots count must match"
+        );
         assert_eq!(s_class_dumps, m_class_dumps, "class_dumps count must match");
 
         // Verify filter_ids equivalence via segment_filters (AC3)
@@ -2089,8 +2092,7 @@ mod chunked_extraction_tests {
             .cloned()
             .collect();
         budgeted_ids.sort_unstable();
-        let mut none_ids: Vec<u64> =
-            result_none.index.instance_offsets.keys().cloned().collect();
+        let mut none_ids: Vec<u64> = result_none.index.instance_offsets.keys().cloned().collect();
         none_ids.sort_unstable();
         assert_eq!(
             budgeted_ids, none_ids,
@@ -2244,5 +2246,352 @@ mod chunked_extraction_tests {
         result.merge_into(&mut ctx);
         assert!(ctx.all_offsets.is_empty());
         assert!(ctx.raw_frame_roots.is_empty());
+    }
+}
+
+// ---- Story 10.3: Budget-aware batching tests ----
+
+#[cfg(feature = "test-utils")]
+mod budget_batching_tests {
+    use super::*;
+    use crate::indexer::HeapRecordRange;
+
+    // ---- compute_batch_ranges unit tests ----
+
+    fn make_ranges(sizes: &[u64]) -> Vec<HeapRecordRange> {
+        let mut offset = 0u64;
+        sizes
+            .iter()
+            .map(|&len| {
+                let r = HeapRecordRange {
+                    payload_start: offset,
+                    payload_length: len,
+                };
+                offset += len;
+                r
+            })
+            .collect()
+    }
+
+    /// 10.3-unit-1: all segments fit in one batch
+    #[test]
+    fn batch_all_fit_single_batch() {
+        let ranges = make_ranges(&[100, 200, 300]);
+        let batches = compute_batch_ranges(&ranges, 1000);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0], 0..3);
+    }
+
+    /// 10.3-unit-2: segments split across two batches
+    #[test]
+    fn batch_split_across_two() {
+        // 300 + 300 = 600 > 500 → first batch [0..1],
+        // second batch [1..3]
+        let ranges = make_ranges(&[300, 300, 200]);
+        let batches = compute_batch_ranges(&ranges, 500);
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0], 0..1);
+        assert_eq!(batches[1], 1..3);
+    }
+
+    /// 10.3-unit-3: single oversized segment → solo batch
+    #[test]
+    fn batch_single_oversized_segment() {
+        let ranges = make_ranges(&[1000, 100, 100]);
+        let batches = compute_batch_ranges(&ranges, 500);
+        assert_eq!(batches.len(), 2);
+        // First segment alone (oversized)
+        assert_eq!(batches[0], 0..1);
+        // Remaining fit together
+        assert_eq!(batches[1], 1..3);
+    }
+
+    /// 10.3-unit-4: all segments exceed budget →
+    /// each in its own batch
+    #[test]
+    fn batch_all_oversized() {
+        let ranges = make_ranges(&[600, 700, 800]);
+        let batches = compute_batch_ranges(&ranges, 500);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0], 0..1);
+        assert_eq!(batches[1], 1..2);
+        assert_eq!(batches[2], 2..3);
+    }
+
+    /// 10.3-unit-5: empty ranges → empty batches
+    #[test]
+    fn batch_empty_ranges() {
+        let ranges: Vec<HeapRecordRange> = Vec::new();
+        let batches = compute_batch_ranges(&ranges, 500);
+        assert!(batches.is_empty());
+    }
+
+    /// 10.3-unit-6: exact fit → single batch
+    #[test]
+    fn batch_exact_fit() {
+        let ranges = make_ranges(&[250, 250]);
+        let batches = compute_batch_ranges(&ranges, 500);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0], 0..2);
+    }
+
+    /// 10.3-unit-7: u64::MAX budget → single batch
+    #[test]
+    fn batch_unlimited_budget() {
+        let ranges = make_ranges(&[100, 200, 300, 400]);
+        let batches = compute_batch_ranges(&ranges, u64::MAX);
+        assert_eq!(batches.len(), 1);
+    }
+
+    /// 10.3-unit-8: multiple batches with mixed sizes
+    #[test]
+    fn batch_realistic_distribution() {
+        // budget = 800
+        // [400, 400] = 800 ≤ 800 → batch 1
+        // [400, 200, 200] = 800 ≤ 800 → batch 2
+        // [100] → batch 3
+        let ranges = make_ranges(&[400, 400, 400, 200, 200, 100]);
+        let batches = compute_batch_ranges(&ranges, 800);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0], 0..2);
+        assert_eq!(batches[1], 2..5);
+        assert_eq!(batches[2], 5..6);
+    }
+
+    // ---- Integration tests via run_first_pass ----
+
+    /// Helper: run first pass with budget, returning both
+    /// result and observer events.
+    fn run_fp_with_budget(
+        data: &[u8],
+        id_size: u32,
+        budget: MemoryBudget,
+    ) -> (IndexResult, hprof_api::TestObserver) {
+        let mut obs = hprof_api::TestObserver::default();
+        let result = {
+            let mut notifier = ProgressNotifier::new(&mut obs);
+            run_first_pass(data, id_size, 0, &mut notifier, budget)
+        };
+        (result, obs)
+    }
+
+    /// 3.1a: batching occurs — progress events
+    /// segment_completed are cumulative.
+    #[test]
+    fn budget_batching_progress_events_cumulative() {
+        use crate::test_utils::HprofTestBuilder;
+        use hprof_api::ProgressEvent;
+
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+        for i in 1..=5u64 {
+            builder = builder.add_instance(i, 0, 100, &[0u8; 16]);
+        }
+        let bytes = builder.build();
+        let start = crate::test_utils::advance_past_header(&bytes);
+
+        let (_, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(64));
+
+        let seg_events: Vec<(usize, usize)> = obs
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                ProgressEvent::SegmentCompleted { done, total } => Some((*done, *total)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(seg_events.len(), 5);
+        // Final event must be (5, 5)
+        assert_eq!(
+            *seg_events.last().unwrap(),
+            (5, 5),
+            "final segment_completed must be \
+             (total, total)"
+        );
+        // Events must be monotonically increasing
+        for w in seg_events.windows(2) {
+            assert!(w[1].0 > w[0].0, "done must be strictly increasing");
+        }
+        // All report against total_segments = 5
+        for (_, total) in &seg_events {
+            assert_eq!(*total, 5);
+        }
+    }
+
+    /// 3.1b: results identical with budget vs without.
+    #[test]
+    fn budget_batching_results_identical() {
+        use crate::test_utils::HprofTestBuilder;
+
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+        for i in 1..=8u64 {
+            builder = builder.add_instance(i, 0, 100, &[0u8; 32]);
+        }
+        let bytes = builder.build();
+        let start = crate::test_utils::advance_past_header(&bytes);
+
+        let (result_budget, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(128));
+        let (result_none, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
+
+        // Same segment filters
+        assert_eq!(
+            result_budget.segment_filters.len(),
+            result_none.segment_filters.len(),
+        );
+
+        // Same records indexed
+        assert_eq!(result_budget.records_indexed, result_none.records_indexed,);
+
+        // Same heap record ranges
+        assert_eq!(
+            result_budget.heap_record_ranges.len(),
+            result_none.heap_record_ranges.len(),
+        );
+
+        // Same warnings
+        assert_eq!(result_budget.warnings.len(), result_none.warnings.len(),);
+    }
+
+    /// 3.2: regression — unlimited budget matches
+    /// existing behavior.
+    #[test]
+    fn budget_none_regression() {
+        use crate::test_utils::HprofTestBuilder;
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xDEAD, 0, 100, &[1, 2, 3, 4])
+            .build();
+        let start = crate::test_utils::advance_past_header(&bytes);
+
+        let result = run_fp(&bytes[start..], 8);
+        assert_eq!(result.segment_filters.len(), 1);
+        assert!(result.warnings.is_empty());
+        assert_eq!(result.heap_record_ranges.len(), 1);
+    }
+
+    /// 3.3: single segment larger than budget →
+    /// processed alone (not skipped).
+    #[test]
+    fn budget_single_oversized_segment_processed() {
+        use crate::test_utils::HprofTestBuilder;
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xBEEF, 0, 42, &[0u8; 256])
+            .build();
+        let start = crate::test_utils::advance_past_header(&bytes);
+
+        // Budget smaller than segment payload
+        let (result, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(16));
+        assert_eq!(
+            result.segment_filters.len(),
+            1,
+            "oversized segment must produce filters"
+        );
+        assert_eq!(result.heap_record_ranges.len(), 1);
+    }
+
+    /// 3.4: HprofFile::from_path still compiles and works
+    /// without budget_bytes.
+    #[test]
+    fn hprof_file_from_path_no_budget_compiles() {
+        let bytes = crate::test_utils::HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(1, 0, 100, &[0u8; 4])
+            .build();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut tmp, &bytes).unwrap();
+        std::io::Write::flush(&mut tmp).unwrap();
+        let hfile = crate::HprofFile::from_path(tmp.path()).unwrap();
+        assert_eq!(hfile.segment_filters.len(), 1);
+        assert_eq!(hfile.heap_record_ranges.len(), 1);
+    }
+
+    /// 3.5: budget_bytes = 0 → floor kicks in,
+    /// extraction completes normally.
+    #[test]
+    fn budget_zero_floor_kicks_in() {
+        use crate::test_utils::HprofTestBuilder;
+
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+        for i in 1..=3u64 {
+            builder = builder.add_instance(i, 0, 100, &[0u8; 8]);
+        }
+        let bytes = builder.build();
+        let start = crate::test_utils::advance_past_header(&bytes);
+
+        // budget = 0 → floor = 64 MB
+        let (result, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(0));
+        // 3 HEAP_DUMP_SEGMENT records
+        assert_eq!(result.heap_record_ranges.len(), 3);
+        assert!(result.warnings.is_empty());
+    }
+
+    /// 3.6: all segments exceed budget individually →
+    /// each processed in solo batch (verified via
+    /// compute_batch_ranges).
+    #[test]
+    fn budget_all_segments_exceed_individually() {
+        // Synthetic ranges: each 100 MB, budget = 80 MB
+        let ranges = make_ranges(&[100 * 1024 * 1024, 100 * 1024 * 1024, 100 * 1024 * 1024]);
+        let batches = compute_batch_ranges(&ranges, 80 * 1024 * 1024);
+        // Each segment exceeds 80 MB → solo batch
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0], 0..1);
+        assert_eq!(batches[1], 1..2);
+        assert_eq!(batches[2], 2..3);
+    }
+
+    /// 3.6b: integration — all segments individually
+    /// oversized (but floor dominates for tiny test data).
+    #[test]
+    fn budget_all_oversized_extraction_succeeds() {
+        use crate::test_utils::HprofTestBuilder;
+
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+        for i in 1..=4u64 {
+            builder = builder.add_instance(i, 0, 100, &[0u8; 512]);
+        }
+        let bytes = builder.build();
+        let start = crate::test_utils::advance_past_header(&bytes);
+
+        let (result, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(1));
+        // All 4 segments found despite tiny budget
+        assert_eq!(result.heap_record_ranges.len(), 4);
+        assert!(result.warnings.is_empty());
+    }
+
+    /// 3.7: end-to-end plumbing through HprofFile.
+    #[test]
+    fn budget_e2e_through_hprof_file() {
+        use crate::test_utils::HprofTestBuilder;
+
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+        for i in 1..=5u64 {
+            builder = builder.add_instance(i, 0, 100, &[0u8; 16]);
+        }
+        let bytes = builder.build();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut tmp, &bytes).unwrap();
+        std::io::Write::flush(&mut tmp).unwrap();
+
+        // With budget
+        let hfile_budget = crate::HprofFile::from_path_with_progress(
+            tmp.path(),
+            &mut hprof_api::NullProgressObserver,
+            MemoryBudget::Bytes(128),
+        )
+        .unwrap();
+
+        // Without budget
+        let hfile_none = crate::HprofFile::from_path(tmp.path()).unwrap();
+
+        assert_eq!(
+            hfile_budget.segment_filters.len(),
+            hfile_none.segment_filters.len(),
+        );
+        assert_eq!(hfile_budget.records_indexed, hfile_none.records_indexed,);
+        assert_eq!(
+            hfile_budget.heap_record_ranges.len(),
+            hfile_none.heap_record_ranges.len(),
+        );
     }
 }
