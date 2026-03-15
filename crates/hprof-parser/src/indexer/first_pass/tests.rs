@@ -3277,3 +3277,165 @@ fn extract_heap_segment_records_entry_points() {
         "first tag byte is at offset 0"
     );
 }
+
+// ── Phase changed event tests ──
+
+#[cfg(feature = "test-utils")]
+#[test]
+fn run_first_pass_emits_phase_changed_events_with_threads() {
+    use hprof_api::ProgressEvent;
+    use crate::test_utils::{HprofTestBuilder, advance_past_header};
+
+    let thread_obj_id = 0xBEEF_u64;
+    let thread_serial = 1_u32;
+    let bytes = HprofTestBuilder::new(
+        "JAVA PROFILE 1.0.2",
+        8,
+    )
+    .add_stack_trace(1, thread_serial, &[])
+    .add_root_thread_obj(
+        thread_obj_id,
+        thread_serial,
+        0,
+    )
+    .add_instance(thread_obj_id, 0, 100, &[1, 2])
+    .build();
+    let start = advance_past_header(&bytes);
+    let (_result, obs) =
+        run_fp_with_test_observer(&bytes[start..], 8);
+
+    // Find the filter-build phase signal
+    let filter_idx = obs
+        .events
+        .iter()
+        .position(|e| matches!(
+            e,
+            ProgressEvent::PhaseChanged(s)
+                if s.starts_with("Building segment")
+        ))
+        .expect(
+            "must emit PhaseChanged for filter build",
+        );
+
+    // At least one round signal must follow
+    let round_indices: Vec<usize> = obs
+        .events
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match e {
+            ProgressEvent::PhaseChanged(s)
+                if s.starts_with(
+                    "Resolving threads",
+                ) =>
+            {
+                Some(i)
+            }
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        !round_indices.is_empty(),
+        "must emit at least one thread round signal"
+    );
+
+    // All round signals must come after filter signal
+    for &ri in &round_indices {
+        assert!(
+            ri > filter_idx,
+            "round signal at {ri} must be after \
+             filter signal at {filter_idx}"
+        );
+    }
+
+    // First round signal must be "round 1/3"
+    assert!(
+        matches!(
+            &obs.events[round_indices[0]],
+            ProgressEvent::PhaseChanged(s)
+                if s.contains("round 1/3")
+        ),
+        "first round must be round 1/3"
+    );
+}
+
+#[cfg(feature = "test-utils")]
+#[test]
+fn phase_events_ordered_on_jvisualvm_dump() {
+    use hprof_api::ProgressEvent;
+
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/heapdump-visualvm.hprof",
+    ));
+    if !path.exists() {
+        eprintln!(
+            "skip: jvisualvm dump not found at \
+             {path:?}"
+        );
+        return;
+    }
+
+    let mut obs = hprof_api::TestObserver::default();
+    let _file =
+        crate::hprof_file::HprofFile::from_path_with_progress(
+            path,
+            &mut obs,
+            hprof_api::MemoryBudget::Unlimited,
+        )
+        .expect("should parse jvisualvm dump");
+
+    let events = &obs.events;
+
+    // (a) Find last SegmentCompleted where done == total
+    let last_seg = events
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match e {
+            ProgressEvent::SegmentCompleted {
+                done,
+                total,
+            } if done == total => Some(i),
+            _ => None,
+        })
+        .next_back()
+        .expect("must have final SegmentCompleted");
+
+    // (b) All PhaseChanged must come after last_seg
+    let phase_indices: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match e {
+            ProgressEvent::PhaseChanged(_) => Some(i),
+            _ => None,
+        })
+        .collect();
+    for &pi in &phase_indices {
+        assert!(
+            pi > last_seg,
+            "PhaseChanged at {pi} must be after \
+             last_seg({last_seg})"
+        );
+    }
+
+    // (c) At least 1 PhaseChanged (filter build always
+    //     emitted)
+    assert!(
+        !phase_indices.is_empty(),
+        "must emit at least 1 PhaseChanged event"
+    );
+
+    // (d) If NamesResolved events exist, all
+    //     PhaseChanged must precede the first one
+    if let Some(first_names) = events.iter().position(
+        |e| matches!(e, ProgressEvent::NamesResolved { .. }),
+    ) {
+        for &pi in &phase_indices {
+            assert!(
+                pi < first_names,
+                "PhaseChanged at {pi} must precede \
+                 first NamesResolved({first_names})"
+            );
+        }
+    }
+}

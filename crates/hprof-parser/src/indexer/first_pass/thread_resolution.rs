@@ -8,6 +8,8 @@ use std::time::Instant;
 
 use byteorder::{BigEndian, ReadBytesExt};
 
+use hprof_api::ProgressNotifier;
+
 use super::FirstPassContext;
 use super::hprof_primitives::value_byte_size;
 use super::offset_lookup::batch_lookup_by_filter;
@@ -38,6 +40,7 @@ pub(super) fn resolve_all(
     ctx: &mut FirstPassContext,
     filters: &[SegmentFilter],
     entry_points: &[super::offset_lookup::SegmentEntryPoint],
+    notifier: &mut ProgressNotifier,
 ) {
     #[cfg(feature = "dev-profiling")]
     let _thread_cache_span =
@@ -146,6 +149,9 @@ pub(super) fn resolve_all(
         .collect();
 
     if !thread_ids.is_empty() {
+        notifier.phase_changed(
+            "Resolving threads (round 1/3)\u{2026}",
+        );
         let (found, warns) = batch_lookup_by_filter(
             filters,
             entry_points,
@@ -209,6 +215,9 @@ pub(super) fn resolve_all(
         }
 
         if !round1_ids.is_empty() {
+            notifier.phase_changed(
+                "Resolving threads (round 2/3)\u{2026}",
+            );
             let (found1, warns1) =
                 batch_lookup_by_filter(
                     filters,
@@ -274,6 +283,10 @@ pub(super) fn resolve_all(
             }
 
             if !round2_ids.is_empty() {
+                notifier.phase_changed(
+                    "Resolving threads (round 3/3)\
+                     \u{2026}",
+                );
                 let (found2, warns2) =
                     batch_lookup_by_filter(
                         filters,

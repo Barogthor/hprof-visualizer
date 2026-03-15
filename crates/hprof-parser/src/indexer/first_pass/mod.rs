@@ -266,6 +266,9 @@ pub fn run_first_pass(
 
     // Build segment filters BEFORE thread resolution
     // (ADR-5). Filters are needed for batched lookups.
+    notifier.phase_changed(
+        "Building segment filters\u{2026}",
+    );
     let (filters, entry_points) =
         ctx.finish_filters_early();
 
@@ -284,7 +287,7 @@ pub fn run_first_pass(
     // Resolve thread objects via batched filter
     // lookups.
     thread_resolution::resolve_all(
-        &mut ctx, &filters, &entry_points,
+        &mut ctx, &filters, &entry_points, notifier,
     );
 
     // Store filters back for finish() to consume.

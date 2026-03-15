@@ -14,6 +14,7 @@ pub struct CliProgressObserver {
     mp: MultiProgress,
     scan_bar: ProgressBar,
     segment_bar: Option<ProgressBar>,
+    phase_bar: Option<ProgressBar>,
     name_bar: Option<ProgressBar>,
     start: Instant,
     total_bytes: u64,
@@ -39,6 +40,7 @@ impl CliProgressObserver {
             mp: mp.clone(),
             scan_bar: pb,
             segment_bar: None,
+            phase_bar: None,
             name_bar: None,
             start: Instant::now(),
             total_bytes,
@@ -48,6 +50,9 @@ impl CliProgressObserver {
     /// Finishes all active bars and prints the elapsed
     /// summary line.
     pub fn finish(&mut self) {
+        if let Some(bar) = self.phase_bar.take() {
+            bar.finish_and_clear();
+        }
         if let Some(bar) = self.name_bar.take() {
             bar.finish_and_clear();
         }
@@ -97,20 +102,58 @@ impl ParseProgressObserver for CliProgressObserver {
         }
     }
 
-    fn on_names_resolved(&mut self, done: usize, total: usize) {
-        let bar = self.name_bar.get_or_insert_with(|| {
-            let pb = self.mp.add(ProgressBar::new(total as u64));
+    fn on_phase_changed(&mut self, phase: &str) {
+        if let Some(pb) = self.phase_bar.take() {
+            pb.finish_and_clear();
+        }
+        if let Some(bar) = &self.segment_bar
+            && bar.position()
+                < bar.length().unwrap_or(0)
+        {
+            bar.finish_and_clear();
+            self.segment_bar = None;
+        }
+        let pb = self.mp.add(ProgressBar::new_spinner());
+        pb.set_style(
+            ProgressStyle::with_template(
+                "[{elapsed_precise}] \
+                 {spinner:.green} {msg}",
+            )
+            .unwrap(),
+        );
+        pb.set_message(phase.to_owned());
+        pb.enable_steady_tick(
+            Duration::from_millis(120),
+        );
+        self.phase_bar = Some(pb);
+    }
+
+    fn on_names_resolved(
+        &mut self,
+        done: usize,
+        total: usize,
+    ) {
+        if self.name_bar.is_none() {
+            if let Some(pb) = self.phase_bar.take() {
+                pb.finish_and_clear();
+            }
+            let pb = self
+                .mp
+                .add(ProgressBar::new(total as u64));
             pb.set_style(
                 ProgressStyle::with_template(
                     "[{elapsed_precise}] \
                      {spinner:.green} Resolving \
-                     thread names… {pos}/{len}",
+                     thread names\u{2026} {pos}/{len}",
                 )
                 .unwrap(),
             );
-            pb.enable_steady_tick(Duration::from_millis(120));
-            pb
-        });
+            pb.enable_steady_tick(
+                Duration::from_millis(120),
+            );
+            self.name_bar = Some(pb);
+        }
+        let bar = self.name_bar.as_ref().unwrap();
         bar.set_length(total as u64);
         bar.set_position(done as u64);
         if done == total {
