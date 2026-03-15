@@ -149,13 +149,29 @@ mod tests {
     }
 
     #[test]
-    fn notifier_delegates_to_observer() {
-        let mut obs = NullProgressObserver;
+    fn notifier_delegates_phase_changed_to_observer() {
+        struct CountingObserver {
+            phase_calls: usize,
+        }
+        impl ParseProgressObserver for CountingObserver {
+            fn on_bytes_scanned(&mut self, _: u64) {}
+            fn on_segment_completed(
+                &mut self, _: usize, _: usize,
+            ) {
+            }
+            fn on_names_resolved(
+                &mut self, _: usize, _: usize,
+            ) {
+            }
+            fn on_phase_changed(&mut self, _: &str) {
+                self.phase_calls += 1;
+            }
+        }
+
+        let mut obs = CountingObserver { phase_calls: 0 };
         let mut notifier = ProgressNotifier::new(&mut obs);
-        notifier.bytes_scanned(100);
-        notifier.segment_completed(1, 5);
-        notifier.names_resolved(2, 4);
-        notifier.phase_changed("test phase");
+        notifier.phase_changed("phase\u{2026}");
+        assert_eq!(obs.phase_calls, 1);
     }
 }
 
@@ -169,7 +185,8 @@ mod test_utils_tests {
         obs.on_bytes_scanned(100);
         obs.on_segment_completed(1, 3);
         obs.on_names_resolved(2, 4);
-        assert_eq!(obs.events.len(), 3);
+        obs.on_phase_changed("phase\u{2026}");
+        assert_eq!(obs.events.len(), 4);
         assert_eq!(obs.events[0], ProgressEvent::BytesScanned(100));
         assert_eq!(
             obs.events[1],
@@ -178,6 +195,10 @@ mod test_utils_tests {
         assert_eq!(
             obs.events[2],
             ProgressEvent::NamesResolved { done: 2, total: 4 }
+        );
+        assert_eq!(
+            obs.events[3],
+            ProgressEvent::PhaseChanged("phase\u{2026}".to_owned())
         );
     }
 

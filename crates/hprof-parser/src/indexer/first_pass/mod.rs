@@ -235,6 +235,8 @@ impl<'a> FirstPassContext<'a> {
 /// Progress is reported via the [`ProgressNotifier`]:
 /// - `bytes_scanned` during sequential record scan
 /// - `segment_completed` during heap extraction
+/// - `phase_changed` at filter build and each thread
+///   resolution round
 ///
 /// ## Parameters
 /// - `data`: raw bytes starting at the first record
@@ -264,8 +266,8 @@ pub fn run_first_pass(
     record_scan::scan_records(&mut ctx, notifier);
     heap_extraction::extract_all(&mut ctx, notifier);
 
-    // Build segment filters BEFORE thread resolution
-    // (ADR-5). Filters are needed for batched lookups.
+    // Build segment filters BEFORE thread resolution.
+    // Filters are needed for batched lookups.
     notifier.phase_changed(
         "Building segment filters\u{2026}",
     );

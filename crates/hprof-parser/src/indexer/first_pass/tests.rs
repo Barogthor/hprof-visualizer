@@ -3348,14 +3348,14 @@ fn run_first_pass_emits_phase_changed_events_with_threads() {
         );
     }
 
-    // First round signal must be "round 1/3"
-    assert!(
-        matches!(
-            &obs.events[round_indices[0]],
-            ProgressEvent::PhaseChanged(s)
-                if s.contains("round 1/3")
+    // First round signal must be the canonical label
+    assert_eq!(
+        obs.events[round_indices[0]],
+        ProgressEvent::PhaseChanged(
+            "Resolving threads (round 1/3)\u{2026}"
+                .to_owned()
         ),
-        "first round must be round 1/3"
+        "first round must use canonical label"
     );
 }
 
