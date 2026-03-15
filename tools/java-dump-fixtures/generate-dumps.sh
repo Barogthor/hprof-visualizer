@@ -10,7 +10,7 @@ Usage:
 Arguments:
   mode           auto | manual | both
   hold_seconds   default: 120
-  profile_set    standard | all | ultra   (default: standard)
+  profile_set    standard | all | ultra | colossal   (default: standard)
   truncate_bytes default: 0
   scenario       01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | 10 | all   (default: 01)
   sanitize       off | on | only   (default: off)
@@ -34,6 +34,7 @@ Examples:
   tools/java-dump-fixtures/generate-dumps.sh auto 120 ultra 2097152 01
   tools/java-dump-fixtures/generate-dumps.sh auto 120 standard 0 all
   tools/java-dump-fixtures/generate-dumps.sh --mode auto --profile-set ultra --scenario 01 --sanitize on --truncate-target both --remove-raw on
+  tools/java-dump-fixtures/generate-dumps.sh --mode auto --profile-set colossal --scenario 05   # WARNING: requires ~24 GB free RAM, produces ~20 GB dump
 EOF
 }
 
@@ -224,9 +225,20 @@ elif [[ "${PROFILE_SET}" == "all" ]]; then
   profiles=(tiny medium large xlarge ultra)
 elif [[ "${PROFILE_SET}" == "ultra" ]]; then
   profiles=(ultra)
+elif [[ "${PROFILE_SET}" == "colossal" ]]; then
+  profiles=(colossal)
 else
-  echo "[heap-fixture] invalid profile_set '${PROFILE_SET}' (expected: standard|all|ultra)" >&2
+  echo "[heap-fixture] invalid profile_set '${PROFILE_SET}' (expected: standard|all|ultra|colossal)" >&2
   exit 1
+fi
+
+if [[ "${PROFILE_SET}" == "colossal" && "${SCENARIO}" != "05" && "${SCENARIO}" != "5" ]]; then
+  echo "[heap-fixture] profile 'colossal' only supports scenario 05 (huge-objects)" >&2
+  exit 1
+fi
+
+if [[ "${PROFILE_SET}" == "colossal" ]]; then
+  echo "[heap-fixture] WARNING: profile 'colossal' requires ~24 GB of free RAM and will produce a ~20 GB dump" >&2
 fi
 
 mkdir -p "${CLASS_DIR}"
@@ -336,6 +348,18 @@ remove_raw_prefix() {
   done
 }
 
+jvm_heap_for_profile() {
+  case "$1" in
+    tiny)     echo "512m" ;;
+    medium)   echo "768m" ;;
+    large)    echo "1g" ;;
+    xlarge)   echo "2g" ;;
+    ultra)    echo "4g" ;;
+    colossal) echo "24g" ;;
+    *)        echo "1g" ;;
+  esac
+}
+
 for profile in "${profiles[@]}"; do
   for scenario in "${scenarios[@]}"; do
     output="${ASSETS_DIR}/fixture-s${scenario}-${profile}-raw.hprof"
@@ -345,8 +369,9 @@ for profile in "${profiles[@]}"; do
         truncate_for_java="0"
       fi
 
-      echo "[heap-fixture] scenario=${scenario} profile=${profile} mode=${MODE} output=${output} truncateBytes=${TRUNCATE_BYTES}"
-      java -cp "${CLASS_DIR}" HeapDumpFixture \
+      xmx="$(jvm_heap_for_profile "${profile}")"
+      echo "[heap-fixture] scenario=${scenario} profile=${profile} mode=${MODE} output=${output} truncateBytes=${TRUNCATE_BYTES} -Xmx${xmx}"
+      java -Xmx"${xmx}" -cp "${CLASS_DIR}" HeapDumpFixture \
         --scenario "${scenario}" \
         --profile "${profile}" \
         --dump-mode "${MODE}" \

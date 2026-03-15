@@ -84,6 +84,12 @@ Generate only ultra profile and create intentionally truncated copies (remove 4 
 tools/java-dump-fixtures/generate-dumps.sh auto 120 ultra 4194304 01
 ```
 
+Generate a ~20 GB dump (requires ~24 GB free RAM):
+
+```bash
+tools/java-dump-fixtures/generate-dumps.sh --mode auto --profile-set colossal --scenario 05
+```
+
 ## Windows
 
 PowerShell:
@@ -152,6 +158,16 @@ CMD sanitize-only mode:
 tools\java-dump-fixtures\generate-dumps.cmd --profile-set all --scenario all --sanitize only
 ```
 
+Generate a ~20 GB dump (requires ~24 GB free RAM):
+
+```powershell
+./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto -ProfileSet colossal -Scenario 05
+```
+
+```cmd
+tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set colossal --scenario 05
+```
+
 Show help explicitly:
 
 ```bash
@@ -192,10 +208,11 @@ Use those commands while the process is waiting.
 
 ## Profiles
 
-- `tiny`, `medium`, `large`, `xlarge`, `ultra`
+- `tiny`, `medium`, `large`, `xlarge`, `ultra`, `colossal`
 - all profiles include 10k+ collections
 - `xlarge` includes one 500k-item wrapper collection
 - `ultra` includes one 1,000,000-item wrapper collection
+- `colossal` is locked to scenario 05 only (requires ~24 GB free RAM, produces ~20 GB dump)
 
 Detailed profile sizing (from `ProfileSpec`):
 
@@ -206,12 +223,14 @@ Detailed profile sizing (from `ProfileSpec`):
 | `large` | 20,480 | 2,048 / 4,096 | 96x96 | 512 | 0 | 1,024 | 12 x 8 |
 | `xlarge` | 30,720 | 4,096 / 8,192 | 128x128 | 768 | 500,000 | 2,048 | 16 x 10 |
 | `ultra` | 65,536 | 16,384 / 32,768 | 256x256 | 2,048 | 1,000,000 | 8,192 | 20 x 12 |
+| `colossal` | 131,072 | 32,768 / 65,536 | 256x256 | 4,096 | 2,000,000 | 16,384 | 256 x 52 |
 
 `profile-set` values in wrapper scripts:
 
 - `standard`: `tiny`, `medium`, `large`, `xlarge`
 - `all`: `tiny`, `medium`, `large`, `xlarge`, `ultra`
 - `ultra`: `ultra` only
+- `colossal`: `colossal` only
 
 Indicative runtime envelope (order of magnitude):
 
@@ -222,6 +241,7 @@ Indicative runtime envelope (order of magnitude):
 | `large` | 1g | ~20-80 MB | ~1 s |
 | `xlarge` | 2g | ~50-250 MB | 1-5 s |
 | `ultra` | 4g+ | ~150 MB to 1+ GB | 5-30 s |
+| `colossal` | 24g+ | ~20 GB (scenario 05) | 1-5 min |
 
 Notes on these estimates:
 

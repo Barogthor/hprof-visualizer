@@ -23,6 +23,7 @@ public final class HeapDumpFixture {
         List<HeapScenario> selectedScenarios = selectScenarios(options.scenarioId);
 
         for (HeapScenario scenario : selectedScenarios) {
+            validateProfileScenario(spec, scenario);
             Path baseOutput = resolveOutputPath(options.outputPath, spec, scenario.id(), selectedScenarios.size() > 1);
             runScenario(options, spec, scenario, baseOutput);
         }
@@ -69,6 +70,17 @@ public final class HeapDumpFixture {
             return "0" + scenarioId;
         }
         return scenarioId;
+    }
+
+    private static void validateProfileScenario(
+            ProfileSpec spec, HeapScenario scenario) {
+        if ("colossal".equals(spec.name)
+                && !"05".equals(scenario.id())) {
+            throw new IllegalArgumentException(
+                "Profile 'colossal' is only supported"
+                    + " with scenario 05 (huge-objects),"
+                    + " got scenario " + scenario.id());
+        }
     }
 
     private static Path resolveOutputPath(Path configuredOutput, ProfileSpec spec, String scenarioId, boolean appendScenarioSuffix) {

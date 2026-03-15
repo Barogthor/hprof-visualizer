@@ -135,10 +135,11 @@ development_status:
   10-2-split-oversized-heap-segments: done
   10-3-memory-guard-budget-bytes-extract-all: done
   10-4-investigate-post-extraction-ram-spike: done
+  10-5-eliminate-all-offsets-filter-lookup: in-progress
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
-  epic-11: backlog
-  11-1-loading-indicator-slow-operations: backlog
+  epic-11: in-progress
+  11-1-loading-indicator-slow-operations: ready-for-dev
   11-2-batch-scan-by-segment: backlog
   11-3-parallel-eager-item-resolution: backlog
   11-4-skip-index-object-array: backlog

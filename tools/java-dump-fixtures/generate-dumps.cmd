@@ -151,6 +151,15 @@ if /I "%REMOVE_RAW%"=="on" if /I not "%SANITIZE%"=="on" (
   goto :help_error
 )
 
+if /I "%PROFILE_SET%"=="colossal" if /I not "%SCENARIO%"=="05" if /I not "%SCENARIO%"=="5" (
+  echo [heap-fixture] profile 'colossal' only supports scenario 05 ^(huge-objects^)
+  exit /b 1
+)
+
+if /I "%PROFILE_SET%"=="colossal" (
+  echo [heap-fixture] WARNING: profile 'colossal' requires ~24 GB of free RAM and will produce a ~20 GB dump
+)
+
 set "SCRIPT_DIR=%~dp0"
 set "CLASS_DIR=%SCRIPT_DIR%out"
 set "ASSETS_DIR=%SCRIPT_DIR%..\..\assets\generated"
@@ -206,6 +215,7 @@ set "PROFILES="
 if /I "%PROFILE_SET%"=="standard" set "PROFILES=tiny medium large xlarge"
 if /I "%PROFILE_SET%"=="all" set "PROFILES=tiny medium large xlarge ultra"
 if /I "%PROFILE_SET%"=="ultra" set "PROFILES=ultra"
+if /I "%PROFILE_SET%"=="colossal" set "PROFILES=colossal"
 
 if "%PROFILES%"=="" (
   echo [heap-fixture] invalid profile_set "%PROFILE_SET%" (expected: standard^|all^|ultra)
@@ -215,11 +225,18 @@ if "%PROFILES%"=="" (
 for %%P in (%PROFILES%) do (
   for %%S in (%SCENARIOS%) do (
     set "OUTPUT=%ASSETS_DIR%\fixture-s%%S-%%P-raw.hprof"
+    set "XMX=1g"
+    if /I "%%P"=="tiny" set "XMX=512m"
+    if /I "%%P"=="medium" set "XMX=768m"
+    if /I "%%P"=="large" set "XMX=1g"
+    if /I "%%P"=="xlarge" set "XMX=2g"
+    if /I "%%P"=="ultra" set "XMX=4g"
+    if /I "%%P"=="colossal" set "XMX=24g"
     if /I not "%SANITIZE%"=="only" (
       set "TRUNCATE_FOR_JAVA=%TRUNCATE_BYTES%"
       if /I "%TRUNCATE_TARGET%"=="sanitized" set "TRUNCATE_FOR_JAVA=0"
-      echo [heap-fixture] scenario=%%S profile=%%P mode=%MODE% output=!OUTPUT! truncateBytes=%TRUNCATE_BYTES%
-      java -cp "%CLASS_DIR%" HeapDumpFixture --scenario %%S --profile %%P --dump-mode %MODE% --hold-seconds %HOLD_SECONDS% --truncate-bytes !TRUNCATE_FOR_JAVA! --output "!OUTPUT!"
+      echo [heap-fixture] scenario=%%S profile=%%P mode=%MODE% output=!OUTPUT! truncateBytes=%TRUNCATE_BYTES% -Xmx!XMX!
+      java -Xmx!XMX! -cp "%CLASS_DIR%" HeapDumpFixture --scenario %%S --profile %%P --dump-mode %MODE% --hold-seconds %HOLD_SECONDS% --truncate-bytes !TRUNCATE_FOR_JAVA! --output "!OUTPUT!"
       if errorlevel 1 exit /b 1
     )
 
@@ -260,7 +277,7 @@ echo.
 echo Arguments:
 echo   mode           auto ^| manual ^| both
 echo   hold_seconds   default: 120
-echo   profile_set    standard ^| all ^| ultra   ^(default: standard^)
+echo   profile_set    standard ^| all ^| ultra ^| colossal   ^(default: standard^)
 echo   truncate_bytes default: 0
 echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
@@ -284,6 +301,7 @@ echo   tools\java-dump-fixtures\generate-dumps.cmd auto 120 ultra 2097152 01
 echo   tools\java-dump-fixtures\generate-dumps.cmd auto 120 standard 0 all
 echo   tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set ultra --scenario 01 --sanitize on --truncate-target both --remove-raw on
 echo   tools\java-dump-fixtures\generate-dumps.cmd --profile-set all --scenario all --sanitize only
+echo   tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set colossal --scenario 05   REM WARNING: requires ~24 GB free RAM, produces ~20 GB dump
 exit /b 0
 
 :help_error
@@ -295,7 +313,7 @@ echo.
 echo Arguments:
 echo   mode           auto ^| manual ^| both
 echo   hold_seconds   default: 120
-echo   profile_set    standard ^| all ^| ultra   ^(default: standard^)
+echo   profile_set    standard ^| all ^| ultra ^| colossal   ^(default: standard^)
 echo   truncate_bytes default: 0
 echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
