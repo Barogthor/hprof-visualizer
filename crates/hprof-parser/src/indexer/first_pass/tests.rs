@@ -10,13 +10,18 @@ use hprof_api::{MemoryBudget, NullProgressObserver, ProgressNotifier};
 use byteorder::ReadBytesExt;
 
 #[cfg(feature = "test-utils")]
-use super::heap_extraction::{compute_batch_ranges, extract_heap_segment, merge_segment_result};
+use super::heap_extraction::{
+    compute_batch_ranges, extract_heap_segment,
+    merge_segment_result,
+};
 #[cfg(feature = "test-utils")]
 use super::hprof_primitives::{
-    PARALLEL_THRESHOLD, PROGRESS_REPORT_INTERVAL, gc_root_skip_size, parse_class_dump,
+    PARALLEL_THRESHOLD, PROGRESS_REPORT_INTERVAL,
+    gc_root_skip_size, parse_class_dump,
     primitive_element_size, skip_n,
 };
-use super::thread_resolution::lookup_offset;
+#[cfg(feature = "test-utils")]
+use super::offset_lookup::SegmentEntryPoint;
 use super::*;
 #[cfg(feature = "test-utils")]
 use crate::tags::HeapSubTag;
@@ -870,55 +875,6 @@ mod thread_resolution_tests {
     }
 
     #[test]
-    fn lookup_offset_finds_all_inserted_entries() {
-        use super::ObjectOffset;
-        let mut vec: Vec<ObjectOffset> = (0..1000)
-            .map(|i| ObjectOffset {
-                object_id: i * 7 + 3,
-                offset: i * 100,
-            })
-            .collect();
-        vec.sort_unstable_by_key(|o| o.object_id);
-        for i in 0..1000u64 {
-            let id = i * 7 + 3;
-            assert_eq!(
-                lookup_offset(&vec, id),
-                Some(i * 100),
-                "lookup failed for id {id}"
-            );
-        }
-    }
-
-    #[test]
-    fn lookup_offset_returns_none_for_missing_id() {
-        use super::ObjectOffset;
-        let vec: Vec<ObjectOffset> = vec![
-            ObjectOffset {
-                object_id: 10,
-                offset: 100,
-            },
-            ObjectOffset {
-                object_id: 20,
-                offset: 200,
-            },
-            ObjectOffset {
-                object_id: 30,
-                offset: 300,
-            },
-        ];
-        assert_eq!(lookup_offset(&vec, 15), None);
-        assert_eq!(lookup_offset(&vec, 0), None);
-        assert_eq!(lookup_offset(&vec, 999), None);
-    }
-
-    #[test]
-    fn lookup_offset_empty_vec_returns_none() {
-        use super::ObjectOffset;
-        let vec: Vec<ObjectOffset> = Vec::new();
-        assert_eq!(lookup_offset(&vec, 42), None);
-    }
-
-    #[test]
     fn scan_records_parse_failure_emits_warning() {
         // STRING record (tag=0x01) with header_length=1 but
         // id_size=4 — parser can't read the 4-byte string ID.
@@ -1399,12 +1355,6 @@ mod builder_tests {
         // Single chunk (no chunking)
         assert_eq!(parsing_result.chunks.len(), 1);
         let result = &parsing_result.chunks[0];
-
-        // all_offsets: INSTANCE_DUMP + PRIM_ARRAY
-        assert_eq!(result.all_offsets.len(), 2);
-        let ids: Vec<u64> = result.all_offsets.iter().map(|o| o.object_id).collect();
-        assert!(ids.contains(&200));
-        assert!(ids.contains(&600));
 
         // filter_ids: INSTANCE + OBJ_ARRAY + PRIM_ARRAY
         assert_eq!(result.filter_ids.len(), 3);
@@ -1945,9 +1895,9 @@ mod chunked_extraction_tests {
         assert_eq!(result.chunks.len(), 3, "6 records / 2 per chunk = 3 chunks");
         for chunk in &result.chunks {
             assert_eq!(
-                chunk.all_offsets.len(),
+                chunk.filter_ids.len(),
                 2,
-                "each chunk should have 2 offsets"
+                "each chunk should have 2 filter IDs"
             );
         }
     }
@@ -1963,7 +1913,7 @@ mod chunked_extraction_tests {
         }
         let single = extract_heap_segment(&payload, 0, id_size, usize::MAX);
         assert_eq!(single.chunks.len(), 1, "large max → single chunk");
-        assert_eq!(single.chunks[0].all_offsets.len(), 6);
+        assert_eq!(single.chunks[0].filter_ids.len(), 6);
     }
 
     /// 5.3: chunk boundary exactly at sub-record end
@@ -1980,8 +1930,8 @@ mod chunked_extraction_tests {
         let max_chunk = 66;
         let result = extract_heap_segment(&payload, 0, id_size, max_chunk);
         assert_eq!(result.chunks.len(), 2);
-        assert_eq!(result.chunks[0].all_offsets.len(), 2);
-        assert_eq!(result.chunks[1].all_offsets.len(), 2);
+        assert_eq!(result.chunks[0].filter_ids.len(), 2);
+        assert_eq!(result.chunks[1].filter_ids.len(), 2);
     }
 
     /// 5.4: mixed sub-records; single vs multi-chunk
@@ -2010,13 +1960,6 @@ mod chunked_extraction_tests {
 
         let mut ctx_m = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
         multi.merge_into(&mut ctx_m);
-
-        // Sort for comparison
-        let mut s_offsets: Vec<u64> = ctx_s.all_offsets.iter().map(|o| o.object_id).collect();
-        s_offsets.sort_unstable();
-        let mut m_offsets: Vec<u64> = ctx_m.all_offsets.iter().map(|o| o.object_id).collect();
-        m_offsets.sort_unstable();
-        assert_eq!(s_offsets, m_offsets, "all_offsets object_ids must match");
 
         let s_frame_roots = ctx_s.raw_frame_roots.len();
         let m_frame_roots = ctx_m.raw_frame_roots.len();
@@ -2082,8 +2025,8 @@ mod chunked_extraction_tests {
         assert_eq!(result_budgeted.records_indexed, result_none.records_indexed,);
         assert_eq!(result_budgeted.warnings.len(), result_none.warnings.len(),);
 
-        // Value-for-value: instance_offsets keys and offsets
-        // (derived from all_offsets — verifies plumbing through
+        // Value-for-value: instance_offsets keys and
+        // offsets (verifies plumbing through
         // FirstPassContext → extract_all → merge_into).
         let mut budgeted_ids: Vec<u64> = result_budgeted
             .index
@@ -2146,8 +2089,8 @@ mod chunked_extraction_tests {
         let unchunked = extract_heap_segment(&payload, 0, id_size, usize::MAX);
 
         // Both must find exactly 2 records (break on 3rd)
-        let c_total: usize = chunked.chunks.iter().map(|c| c.all_offsets.len()).sum();
-        let u_total: usize = unchunked.chunks.iter().map(|c| c.all_offsets.len()).sum();
+        let c_total: usize = chunked.chunks.iter().map(|c| c.filter_ids.len()).sum();
+        let u_total: usize = unchunked.chunks.iter().map(|c| c.filter_ids.len()).sum();
         assert_eq!(c_total, 2);
         assert_eq!(u_total, 2);
     }
@@ -2171,17 +2114,9 @@ mod chunked_extraction_tests {
         let result = extract_heap_segment(&payload, data_offset, id_size, 40);
         assert!(result.chunks.len() > 1, "must produce multiple chunks");
 
-        // Verify every ObjectOffset.offset and
-        // FilterEntry.data_offset uses absolute offsets
+        // Verify every FilterEntry.data_offset uses
+        // absolute offsets
         for chunk in &result.chunks {
-            for o in &chunk.all_offsets {
-                assert!(
-                    o.offset >= data_offset as u64,
-                    "offset {} must be >= data_offset {}",
-                    o.offset,
-                    data_offset,
-                );
-            }
             for f in &chunk.filter_ids {
                 assert!(
                     f.data_offset >= data_offset,
@@ -2221,15 +2156,10 @@ mod chunked_extraction_tests {
             merge_segment_result(&mut ctx_direct, chunk);
         }
 
-        assert_eq!(ctx_wrapper.all_offsets.len(), ctx_direct.all_offsets.len(),);
-        for (w, d) in ctx_wrapper
-            .all_offsets
-            .iter()
-            .zip(ctx_direct.all_offsets.iter())
-        {
-            assert_eq!(w.object_id, d.object_id);
-            assert_eq!(w.offset, d.offset);
-        }
+        assert_eq!(
+            ctx_wrapper.raw_frame_roots.len(),
+            ctx_direct.raw_frame_roots.len(),
+        );
     }
 
     /// 5.10: empty payload → zero chunks
@@ -2244,7 +2174,6 @@ mod chunked_extraction_tests {
         // merge_into is a no-op
         let mut ctx = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
         result.merge_into(&mut ctx);
-        assert!(ctx.all_offsets.is_empty());
         assert!(ctx.raw_frame_roots.is_empty());
     }
 }
@@ -2703,63 +2632,32 @@ mod post_extraction_tests {
         0.0
     }
 
-    /// Coexistence watermark: `all_offsets` capacity + `PreciseIndex`
-    /// heap bytes. `ObjectOffset` = `u64 + u64` = 16 bytes.
-    ///
-    /// Deterministic primary metric — use this for decisions, not RSS.
+    /// Deterministic primary metric — PreciseIndex heap
+    /// size only (no more all_offsets).
     fn theoretical_mem_mb(diag: &DiagnosticInfo) -> f64 {
-        let offsets_bytes = diag.offsets_capacity * 16;
-        (offsets_bytes + diag.precise_index_heap_bytes) as f64
+        diag.precise_index_heap_bytes as f64
             / (1024.0 * 1024.0)
     }
 
     // ------------------------------------------------------------------
-    // Task 3.1 — CI: waste ratio bounded on synthetic dump
+    // DiagnosticInfo fields (updated for story 10.5)
     // ------------------------------------------------------------------
 
-    /// Asserts that Vec doubling never wastes more than 2× capacity
-    /// relative to actual object count on a synthetic 1 000-instance
-    /// dump.
-    ///
-    /// Excludes `s06-tiny` fixtures (low-density, potentially flaky).
-    #[test]
-    fn waste_ratio_bounded_on_synthetic_dump() {
-        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
-        for id in 1u64..=1000 {
-            builder = builder.add_instance(id, 0, 100, &[]);
-        }
-        let bytes = builder.build();
-        let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
-        let diag = &result.diagnostics;
-        assert!(
-            diag.offsets_capacity <= 2 * diag.offsets_len.max(1),
-            "capacity ({}) > 2 * len ({}): waste ratio too high",
-            diag.offsets_capacity,
-            diag.offsets_len
-        );
-    }
-
-    // ------------------------------------------------------------------
-    // Task 3.2 — CI: DiagnosticInfo fields are well-formed
-    // ------------------------------------------------------------------
-
-    /// Asserts that `DiagnosticInfo` is populated with coherent values
-    /// after a minimal first pass (one instance).
+    /// Asserts that `DiagnosticInfo` is populated with
+    /// coherent values after a minimal first pass.
     #[test]
     fn diagnostics_fields_present() {
-        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
-            .add_instance(1, 0, 100, &[])
-            .build();
+        let bytes = HprofTestBuilder::new(
+            "JAVA PROFILE 1.0.2", 8,
+        )
+        .add_instance(1, 0, 100, &[])
+        .build();
         let start = advance_past_header(&bytes);
         let result = run_fp(&bytes[start..], 8);
         let diag = &result.diagnostics;
-        assert!(diag.offsets_len > 0, "offsets_len must be > 0");
         assert!(
-            diag.offsets_capacity >= diag.offsets_len,
-            "capacity ({}) must be >= len ({})",
-            diag.offsets_capacity,
-            diag.offsets_len
+            diag.precise_index_heap_bytes > 0,
+            "precise_index_heap_bytes must be > 0"
         );
     }
 
@@ -2859,11 +2757,8 @@ mod post_extraction_tests {
         );
 
         struct Row {
-            name: String,
-            objects: usize,
-            objects_cap: usize,
-            waste_pct: f64,
-            theo_mb: f64,
+            _name: String,
+            _theo_mb: f64,
         }
         let mut rows: Vec<Row> = Vec::new();
 
@@ -2913,65 +2808,37 @@ mod post_extraction_tests {
             let total_ms = t0.elapsed().as_millis();
             let rss_after = private_rss_mb();
             let diag = &result.diagnostics;
-            let waste_pct = if diag.offsets_capacity > 0 {
-                (diag.offsets_capacity - diag.offsets_len) as f64
-                    / diag.offsets_capacity as f64
-                    * 100.0
-            } else {
-                0.0
-            };
             let theo_mb = theoretical_mem_mb(diag);
             let segments = result.segment_filters.len();
             eprintln!(
-                "[post_extraction] fixture={name} size_mb={size_mb:.1} \
-                 objects={} objects_cap={} waste_pct={waste_pct:.1}% \
-                 theo_mem_mb={theo_mb:.1} segments={segments} \
-                 total_ms={total_ms} rss_before={rss_before:.1}MB \
+                "[post_extraction] fixture={name} \
+                 size_mb={size_mb:.1} \
+                 entry_points={} \
+                 filter_lookup_ms={} \
+                 theo_mem_mb={theo_mb:.1} \
+                 segments={segments} \
+                 total_ms={total_ms} \
+                 rss_before={rss_before:.1}MB \
                  rss_after={rss_after:.1}MB",
-                diag.offsets_len, diag.offsets_capacity
+                diag.entry_point_count,
+                diag.filter_lookup_ms
             );
-            let _ = (segments, total_ms, rss_before, rss_after);
+            let _ = (
+                segments, total_ms,
+                rss_before, rss_after,
+            );
             rows.push(Row {
-                name: name.to_string(),
-                objects: diag.offsets_len,
-                objects_cap: diag.offsets_capacity,
-                waste_pct,
-                theo_mb,
+                _name: name.to_string(),
+                _theo_mb: theo_mb,
             });
         }
 
-        // Scaling summary: check waste_ratio consistency (±10%)
-        if rows.len() >= 2 {
-            let waste_vals: Vec<f64> = rows.iter().map(|r| r.waste_pct).collect();
-            let mean = waste_vals.iter().sum::<f64>() / waste_vals.len() as f64;
-            let consistent = waste_vals.iter().all(|&w| (w - mean).abs() <= 10.0);
+        if !rows.is_empty() {
             eprintln!(
-                "\n[post_extraction] Waste ratio mean={mean:.1}% \
-                 consistent(±10%)={consistent}"
+                "\n[post_extraction] {} fixtures \
+                 profiled",
+                rows.len()
             );
-        }
-
-        // Linear extrapolation to 70 GB from RustRover 1.1 GB baseline
-        let baseline = rows.iter().find(|r| r.name.contains("rustrover"));
-        if let Some(b) = baseline {
-            // objects_per_mb = b.objects / (theo_mb for offsets only)
-            let offsets_mb = b.objects_cap as f64 * 16.0 / (1024.0 * 1024.0);
-            if offsets_mb > 0.0 {
-                let objects_per_mb = b.objects as f64 / offsets_mb;
-                let objects_70gb = (objects_per_mb * 70_000.0) as u64;
-                let theo_70gb_mb = theoretical_mem_mb(&DiagnosticInfo {
-                    offsets_len: objects_70gb as usize,
-                    offsets_capacity: (objects_70gb as f64 * 1.5) as usize,
-                    // Scale index bytes proportionally
-                    precise_index_heap_bytes: (b.theo_mb * 1024.0 * 1024.0
-                        - offsets_mb * 1024.0 * 1024.0)
-                        as usize,
-                });
-                eprintln!(
-                    "[post_extraction] 70 GB extrapolation: \
-                     est_objects={objects_70gb} theo_mem_mb~{theo_70gb_mb:.0}"
-                );
-            }
         }
     }
 
@@ -3045,22 +2912,292 @@ mod post_extraction_tests {
         let total_ms = t0.elapsed().as_millis();
         let rss_after = private_rss_mb();
         let diag = &result.diagnostics;
-        let waste_pct = if diag.offsets_capacity > 0 {
-            (diag.offsets_capacity - diag.offsets_len) as f64
-                / diag.offsets_capacity as f64
-                * 100.0
-        } else {
-            0.0
-        };
         let theo_mb = theoretical_mem_mb(diag);
         let segments = result.segment_filters.len();
         eprintln!(
-            "[post_extraction] fixture={name} size_mb={size_mb:.1} \
-             objects={} objects_cap={} waste_pct={waste_pct:.1}% \
-             theo_mem_mb={theo_mb:.1} segments={segments} \
-             total_ms={total_ms} rss_before={rss_before:.1}MB \
+            "[post_extraction] fixture={name} \
+             size_mb={size_mb:.1} \
+             entry_points={} \
+             filter_lookup_ms={} \
+             theo_mem_mb={theo_mb:.1} \
+             segments={segments} \
+             total_ms={total_ms} \
+             rss_before={rss_before:.1}MB \
              rss_after={rss_after:.1}MB",
-            diag.offsets_len, diag.offsets_capacity
+            diag.entry_point_count,
+            diag.filter_lookup_ms
         );
     }
+}
+
+// ── Task 3.0 / 5.1: filter_lookup correctness ──
+
+/// Verifies that `instance_offsets` from `run_first_pass`
+/// match expected offsets derived from the deterministic
+/// `HprofTestBuilder` layout.
+///
+/// The dump contains: a STACK_TRACE, a ROOT_THREAD_OBJ
+/// linking thread_serial=1 to object 0x100, and an
+/// INSTANCE_DUMP for object 0x100. The test computes the
+/// expected tag-byte offset directly from the known
+/// builder layout and asserts it matches.
+#[cfg(feature = "test-utils")]
+#[test]
+fn filter_lookup_matches_expected() {
+    use crate::test_utils::{
+        HprofTestBuilder, advance_past_header,
+    };
+    let id_size: u32 = 8;
+
+    // Build the dump. Record order matters for
+    // computing expected offsets.
+    //
+    // Records added (each is one top-level record):
+    //  0: STACK_TRACE (tag 0x05)
+    //  1: HEAP_DUMP_SEGMENT containing ROOT_THREAD_OBJ
+    //  2: HEAP_DUMP_SEGMENT containing INSTANCE_DUMP 0x100
+    let bytes = HprofTestBuilder::new(
+        "JAVA PROFILE 1.0.2", id_size,
+    )
+    // record 0: STACK_TRACE for thread_serial=1
+    .add_stack_trace(1, 1, &[])
+    // record 1: ROOT_THREAD_OBJ linking thread 1
+    //   to object 0x100
+    .add_root_thread_obj(0x100, 1, 1)
+    // record 2: INSTANCE_DUMP for object 0x100
+    .add_instance(0x100, 0, 200, &[])
+    .build();
+
+    let header_len = advance_past_header(&bytes);
+    let records_data = &bytes[header_len..];
+
+    // Compute expected offset of object 0x100.
+    //
+    // Record 0 (STACK_TRACE): tag(1) + time(4) +
+    //   length(4) + payload[serial(4) + thread(4) +
+    //   num_frames(4)] = 9 + 12 = 21 bytes
+    let rec0_size = 9 + 4 + 4 + 4; // 21
+
+    // Record 1 (HEAP_DUMP_SEGMENT with
+    //   ROOT_THREAD_OBJ): tag(1) + time(4) +
+    //   length(4) + payload[sub-tag(1) + obj_id(8) +
+    //   thread_serial(4) + stack_trace_serial(4)]
+    //   = 9 + (1 + 8 + 4 + 4) = 9 + 17 = 26
+    let rec1_size = 9 + 1 + id_size as usize + 4 + 4;
+
+    // Record 2 (HEAP_DUMP_SEGMENT with INSTANCE_DUMP):
+    //   tag(1) + time(4) + length(4) = 9 byte header.
+    //   Payload starts at rec0_size + rec1_size + 9.
+    //   First sub-record tag byte is at the payload
+    //   start.
+    let instance_payload_start =
+        rec0_size + rec1_size + 9;
+    // The offset stored is the tag
+    // byte position = sub_record_start - 1 =
+    // payload_start. Because:
+    //   sub_record_start = data_offset + cursor_pos
+    //   After reading tag byte, cursor_pos = 1.
+    //   offset = sub_record_start - 1
+    //          = (payload_start + 1) - 1
+    //          = payload_start
+    let expected_offset = instance_payload_start as u64;
+
+    let result = run_fp(records_data, id_size);
+
+    // Verify thread resolution found the object
+    let actual_offset = result
+        .index
+        .instance_offsets
+        .get(&0x100)
+        .copied();
+    assert_eq!(
+        actual_offset,
+        Some(expected_offset),
+        "instance_offsets[0x100] expected={} actual={:?}",
+        expected_offset,
+        actual_offset,
+    );
+}
+
+// ── Task 1.6: entry points at real SEGMENT_SIZE ──
+
+/// Verifies that entry points are recorded when a
+/// single HEAP_DUMP_SEGMENT payload crosses a real
+/// 64 MiB SEGMENT_SIZE boundary.
+///
+/// Allocates ~65 MB — requires >=128 MB free RAM.
+#[cfg(feature = "test-utils")]
+#[test]
+#[ignore]
+fn entry_points_at_segment_boundary_large() {
+    use crate::indexer::segment::SEGMENT_SIZE;
+    use crate::test_utils::{
+        HprofTestBuilder, advance_past_header,
+    };
+
+    // Build a single HEAP_DUMP_SEGMENT containing:
+    //   1) A large PRIM_ARRAY_DUMP (~64 MiB of zeros)
+    //   2) A small INSTANCE_DUMP after the boundary
+    let id_size: u32 = 8;
+
+    // PRIM_ARRAY sub-record: sub-tag(1) + id(8) +
+    //   stack_serial(4) + num_elements(4) + elem_type(1)
+    //   + data(N)
+    let prim_header = 1 + 8 + 4 + 4 + 1; // 18 bytes
+    // We want the total prim sub-record to push past
+    // SEGMENT_SIZE. We need enough data so that the
+    // INSTANCE_DUMP's tag byte is at or after the
+    // SEGMENT_SIZE boundary in the records data.
+    // The prim array payload fills from the segment
+    // payload start. We need prim_header + data_len to
+    // be >= SEGMENT_SIZE when combined with the
+    // HEAP_DUMP_SEGMENT record header offset.
+    // For simplicity, use data_len = SEGMENT_SIZE.
+    let data_len = SEGMENT_SIZE;
+    let num_elements = data_len as u32; // byte array
+
+    let mut payload = Vec::with_capacity(
+        prim_header + data_len + 50,
+    );
+    // PRIM_ARRAY_DUMP sub-tag
+    payload.push(0x23);
+    payload.extend_from_slice(&100u64.to_be_bytes()); // arr_id
+    payload.extend_from_slice(&0u32.to_be_bytes()); // stack
+    payload.extend_from_slice(&num_elements.to_be_bytes());
+    payload.push(8); // PRIM_TYPE_BYTE
+    payload.resize(prim_header + data_len, 0u8);
+
+    // INSTANCE_DUMP sub-tag after the large array
+    payload.push(0x21); // sub-tag
+    payload.extend_from_slice(&200u64.to_be_bytes()); // obj_id
+    payload.extend_from_slice(&0u32.to_be_bytes()); // stack
+    payload.extend_from_slice(&300u64.to_be_bytes()); // class
+    payload.extend_from_slice(&0u32.to_be_bytes()); // 0 bytes
+
+    let bytes = HprofTestBuilder::new(
+        "JAVA PROFILE 1.0.2",
+        id_size,
+    )
+    .add_raw_heap_segment(&payload)
+    .build();
+
+    let start = advance_past_header(&bytes);
+    let result = run_fp(&bytes[start..], id_size);
+
+    // The INSTANCE_DUMP's tag byte is at
+    // payload_start + prim_header + data_len which
+    // should be >= SEGMENT_SIZE in records data.
+    // We expect entry points for segment 0 (first
+    // sub-record) and segment 1 (the INSTANCE_DUMP).
+    assert!(
+        !result.segment_filters.is_empty(),
+        "must have at least 1 segment filter"
+    );
+    // Entry points are stored in FirstPassContext which
+    // is consumed by finish(). We verify indirectly by
+    // checking that the INSTANCE_DUMP was indexed (its
+    // offset would be found via the filter).
+    // More direct verification: ensure the second
+    // sub-record was found (obj_id 200 in filter).
+    let has_200 = result
+        .segment_filters
+        .iter()
+        .any(|f| f.contains(200));
+    assert!(
+        has_200,
+        "INSTANCE_DUMP obj 200 past boundary must be \
+         in a segment filter"
+    );
+}
+
+// ── Task 1.7: entry points across multiple segments ──
+
+/// Verifies entry points are recorded across multiple
+/// HEAP_DUMP_SEGMENT records.
+#[cfg(feature = "test-utils")]
+#[test]
+fn entry_points_across_multiple_heap_segments() {
+    use crate::test_utils::{
+        HprofTestBuilder, advance_past_header,
+    };
+
+    let bytes = HprofTestBuilder::new(
+        "JAVA PROFILE 1.0.2",
+        8,
+    )
+    .add_instance(1, 0, 100, &[])
+    .add_instance(2, 0, 100, &[])
+    .build();
+
+    let start = advance_past_header(&bytes);
+    let result = run_fp(&bytes[start..], 8);
+
+    // Both instances should be indexed. With small
+    // data they're both in segment 0 but we verify the
+    // extraction worked correctly.
+    assert!(
+        result
+            .segment_filters
+            .iter()
+            .any(|f| f.contains(1)),
+        "instance 1 must be in a filter"
+    );
+    assert!(
+        result
+            .segment_filters
+            .iter()
+            .any(|f| f.contains(2)),
+        "instance 2 must be in a filter"
+    );
+}
+
+/// Direct unit test for `EntryPointTracker` and
+/// `extract_heap_segment` entry point recording.
+#[cfg(feature = "test-utils")]
+#[test]
+fn extract_heap_segment_records_entry_points() {
+    // Build a small payload with two INSTANCE_DUMPs.
+    // Both at segment 0 (since data is tiny).
+    let id_size: u32 = 8;
+    let mut payload = Vec::new();
+
+    // INSTANCE_DUMP #1
+    payload.push(0x21);
+    payload.extend_from_slice(&1u64.to_be_bytes());
+    payload.extend_from_slice(&0u32.to_be_bytes());
+    payload.extend_from_slice(&100u64.to_be_bytes());
+    payload.extend_from_slice(&0u32.to_be_bytes());
+
+    // INSTANCE_DUMP #2
+    payload.push(0x21);
+    payload.extend_from_slice(&2u64.to_be_bytes());
+    payload.extend_from_slice(&0u32.to_be_bytes());
+    payload.extend_from_slice(&100u64.to_be_bytes());
+    payload.extend_from_slice(&0u32.to_be_bytes());
+
+    let parsing_result = extract_heap_segment(
+        &payload, 0, id_size, usize::MAX,
+    );
+
+    // Collect entry points from all chunks
+    let entry_points: Vec<SegmentEntryPoint> =
+        parsing_result
+            .chunks
+            .iter()
+            .flat_map(|c| c.segment_entry_points.iter())
+            .copied()
+            .collect();
+
+    // Both sub-records are in segment 0, so we should
+    // have exactly one entry point for segment 0.
+    assert_eq!(
+        entry_points.len(),
+        1,
+        "expected 1 entry point for segment 0"
+    );
+    assert_eq!(entry_points[0].segment_index, 0);
+    assert_eq!(
+        entry_points[0].scan_offset, 0,
+        "first tag byte is at offset 0"
+    );
 }

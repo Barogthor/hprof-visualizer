@@ -9,10 +9,15 @@ use hprof_api::ProgressNotifier;
 use rayon::prelude::*;
 
 use super::hprof_primitives::{
-    PARALLEL_THRESHOLD, gc_root_skip_size, parse_class_dump, primitive_element_size, skip_n,
+    PARALLEL_THRESHOLD, gc_root_skip_size,
+    parse_class_dump, primitive_element_size, skip_n,
+};
+use super::offset_lookup::{
+    EntryPointTracker, SegmentEntryPoint,
 };
 use super::{
-    ClassDumpEntry, FilterEntry, FirstPassContext, ObjectOffset, RawFrameRoot, RawThreadObject,
+    ClassDumpEntry, FilterEntry, FirstPassContext,
+    RawFrameRoot, RawThreadObject,
 };
 use crate::indexer::HeapRecordRange;
 use crate::read_id;
@@ -20,8 +25,9 @@ use crate::tags::HeapSubTag;
 
 /// Per-worker output from heap segment extraction.
 pub(super) struct HeapSegmentResult {
-    pub(super) all_offsets: Vec<ObjectOffset>,
     pub(super) filter_ids: Vec<FilterEntry>,
+    pub(super) segment_entry_points:
+        Vec<SegmentEntryPoint>,
     pub(super) raw_frame_roots: Vec<RawFrameRoot>,
     pub(super) raw_thread_objects: Vec<RawThreadObject>,
     pub(super) class_dumps: Vec<ClassDumpEntry>,
@@ -30,8 +36,7 @@ pub(super) struct HeapSegmentResult {
 
 impl HeapSegmentResult {
     fn is_empty(&self) -> bool {
-        self.all_offsets.is_empty()
-            && self.filter_ids.is_empty()
+        self.filter_ids.is_empty()
             && self.class_dumps.is_empty()
             && self.raw_frame_roots.is_empty()
             && self.raw_thread_objects.is_empty()
@@ -39,12 +44,13 @@ impl HeapSegmentResult {
     }
 
     /// Creates a result with pre-allocated capacity for
-    /// `all_offsets` and `filter_ids` based on an
-    /// estimated record count.
-    pub(super) fn new_with_capacity(est: usize) -> Self {
+    /// `filter_ids` based on an estimated record count.
+    pub(super) fn new_with_capacity(
+        est: usize,
+    ) -> Self {
         Self {
-            all_offsets: Vec::with_capacity(est),
             filter_ids: Vec::with_capacity(est),
+            segment_entry_points: Vec::new(),
             raw_frame_roots: Vec::new(),
             raw_thread_objects: Vec::new(),
             class_dumps: Vec::new(),
@@ -65,12 +71,17 @@ pub(super) struct HeapSegmentParsingResult {
 }
 
 impl HeapSegmentParsingResult {
-    pub(super) fn new(chunks: Vec<HeapSegmentResult>) -> Self {
+    pub(super) fn new(
+        chunks: Vec<HeapSegmentResult>,
+    ) -> Self {
         Self { chunks }
     }
 
     /// Merges all chunks into the shared context.
-    pub(super) fn merge_into(self, ctx: &mut FirstPassContext) {
+    pub(super) fn merge_into(
+        self,
+        ctx: &mut FirstPassContext,
+    ) {
         for chunk in self.chunks {
             merge_segment_result(ctx, chunk);
         }
@@ -91,18 +102,28 @@ pub(super) fn extract_heap_segment(
     max_chunk_bytes: usize,
 ) -> HeapSegmentParsingResult {
     let mut cursor = Cursor::new(payload);
-    let chunk_est = max_chunk_bytes.min(payload.len()) / 40;
+    let chunk_est =
+        max_chunk_bytes.min(payload.len()) / 40;
     let mut chunks: Vec<HeapSegmentResult> = Vec::new();
-    let mut result = HeapSegmentResult::new_with_capacity(chunk_est);
+    let mut result =
+        HeapSegmentResult::new_with_capacity(chunk_est);
     let mut next_checkpoint = max_chunk_bytes;
+    let mut ep_tracker = EntryPointTracker::new();
 
     while let Ok(raw) = cursor.read_u8() {
+        let tag_pos = data_offset
+            + cursor.position() as usize
+            - 1;
+        ep_tracker.track(tag_pos);
         let sub_tag = HeapSubTag::from(raw);
-        let sub_record_start = data_offset + cursor.position() as usize;
+        let sub_record_start =
+            data_offset + cursor.position() as usize;
 
         let ok = match sub_tag {
             HeapSubTag::GcRootJavaFrame => {
-                let Ok(object_id) = read_id(&mut cursor, id_size) else {
+                let Ok(object_id) =
+                    read_id(&mut cursor, id_size)
+                else {
                     result.warnings.push(format!(
                         "{sub_tag} at offset \
                          {sub_record_start}: truncated \
@@ -110,7 +131,9 @@ pub(super) fn extract_heap_segment(
                     ));
                     break;
                 };
-                let Ok(thread_serial) = cursor.read_u32::<BigEndian>() else {
+                let Ok(thread_serial) =
+                    cursor.read_u32::<BigEndian>()
+                else {
                     result.warnings.push(format!(
                         "{sub_tag} at offset \
                          {sub_record_start}: truncated \
@@ -118,7 +141,9 @@ pub(super) fn extract_heap_segment(
                     ));
                     break;
                 };
-                let Ok(frame_number) = cursor.read_i32::<BigEndian>() else {
+                let Ok(frame_number) =
+                    cursor.read_i32::<BigEndian>()
+                else {
                     result.warnings.push(format!(
                         "{sub_tag} at offset \
                          {sub_record_start}: truncated \
@@ -126,15 +151,19 @@ pub(super) fn extract_heap_segment(
                     ));
                     break;
                 };
-                result.raw_frame_roots.push(RawFrameRoot {
-                    object_id,
-                    thread_serial,
-                    frame_number,
-                });
+                result.raw_frame_roots.push(
+                    RawFrameRoot {
+                        object_id,
+                        thread_serial,
+                        frame_number,
+                    },
+                );
                 true
             }
             HeapSubTag::GcRootThreadObj => {
-                let Ok(object_id) = read_id(&mut cursor, id_size) else {
+                let Ok(object_id) =
+                    read_id(&mut cursor, id_size)
+                else {
                     result.warnings.push(format!(
                         "{sub_tag} at offset \
                          {sub_record_start}: truncated \
@@ -142,7 +171,9 @@ pub(super) fn extract_heap_segment(
                     ));
                     break;
                 };
-                let Ok(thread_serial) = cursor.read_u32::<BigEndian>() else {
+                let Ok(thread_serial) =
+                    cursor.read_u32::<BigEndian>()
+                else {
                     result.warnings.push(format!(
                         "{sub_tag} at offset \
                          {sub_record_start}: truncated \
@@ -150,7 +181,9 @@ pub(super) fn extract_heap_segment(
                     ));
                     break;
                 };
-                let Ok(_stack_trace_serial) = cursor.read_u32::<BigEndian>() else {
+                let Ok(_stack_trace_serial) =
+                    cursor.read_u32::<BigEndian>()
+                else {
                     result.warnings.push(format!(
                         "{sub_tag} at offset \
                          {sub_record_start}: truncated \
@@ -158,123 +191,164 @@ pub(super) fn extract_heap_segment(
                     ));
                     break;
                 };
-                result.raw_thread_objects.push(RawThreadObject {
-                    object_id,
-                    thread_serial,
-                });
+                result.raw_thread_objects.push(
+                    RawThreadObject {
+                        object_id,
+                        thread_serial,
+                    },
+                );
                 true
             }
 
-            HeapSubTag::ClassDump => match parse_class_dump(&mut cursor, id_size) {
-                Some(info) => {
-                    #[cfg(feature = "dev-profiling")]
-                    if !info.static_fields.is_empty() {
-                        tracing::debug!(
-                            "heap_extract class_dump \
+            HeapSubTag::ClassDump => {
+                match parse_class_dump(
+                    &mut cursor,
+                    id_size,
+                ) {
+                    Some(info) => {
+                        #[cfg(feature = "dev-profiling")]
+                        if !info.static_fields.is_empty()
+                        {
+                            tracing::debug!(
+                                "heap_extract \
+                                 class_dump \
                                  class=0x{:X} \
                                  static_fields={} \
                                  at_offset={}",
-                            info.class_object_id,
-                            info.static_fields.len(),
+                                info.class_object_id,
+                                info.static_fields.len(),
+                                sub_record_start
+                            );
+                        }
+                        result.class_dumps.push(
+                            ClassDumpEntry {
+                                class_object_id: info
+                                    .class_object_id,
+                                info,
+                            },
+                        );
+                        true
+                    }
+                    None => {
+                        #[cfg(feature = "dev-profiling")]
+                        tracing::debug!(
+                            "heap_extract class_dump \
+                             parse failed at_offset={}",
                             sub_record_start
                         );
-                    }
-                    result.class_dumps.push(ClassDumpEntry {
-                        class_object_id: info.class_object_id,
-                        info,
-                    });
-                    true
-                }
-                None => {
-                    #[cfg(feature = "dev-profiling")]
-                    tracing::debug!(
-                        "heap_extract class_dump \
-                             parse failed at_offset={}",
-                        sub_record_start
-                    );
-                    result.warnings.push(
-                        "truncated CLASS_DUMP \
+                        result.warnings.push(
+                            "truncated CLASS_DUMP \
                              sub-record — skipping"
-                            .to_string(),
-                    );
-                    false
+                                .to_string(),
+                        );
+                        false
+                    }
                 }
-            },
+            }
 
             HeapSubTag::InstanceDump => {
-                let Ok(obj_id) = read_id(&mut cursor, id_size) else {
+                let Ok(obj_id) =
+                    read_id(&mut cursor, id_size)
+                else {
                     break;
                 };
                 result.filter_ids.push(FilterEntry {
                     data_offset: sub_record_start,
                     object_id: obj_id,
                 });
-                result.all_offsets.push(ObjectOffset {
-                    object_id: obj_id,
-                    offset: (sub_record_start - 1) as u64,
-                });
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
+                let Ok(_) =
+                    cursor.read_u32::<BigEndian>()
+                else {
                     break;
                 };
-                let Ok(_) = read_id(&mut cursor, id_size) else {
+                let Ok(_) =
+                    read_id(&mut cursor, id_size)
+                else {
                     break;
                 };
-                let Ok(num_bytes) = cursor.read_u32::<BigEndian>() else {
+                let Ok(num_bytes) =
+                    cursor.read_u32::<BigEndian>()
+                else {
                     break;
                 };
                 skip_n(&mut cursor, num_bytes as usize)
             }
 
             HeapSubTag::ObjectArrayDump => {
-                let Ok(arr_id) = read_id(&mut cursor, id_size) else {
+                let Ok(arr_id) =
+                    read_id(&mut cursor, id_size)
+                else {
                     break;
                 };
                 result.filter_ids.push(FilterEntry {
                     data_offset: sub_record_start,
                     object_id: arr_id,
                 });
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
+                let Ok(_) =
+                    cursor.read_u32::<BigEndian>()
+                else {
                     break;
                 };
-                let Ok(num_elements) = cursor.read_u32::<BigEndian>() else {
+                let Ok(num_elements) =
+                    cursor.read_u32::<BigEndian>()
+                else {
                     break;
                 };
-                let Ok(_) = read_id(&mut cursor, id_size) else {
+                let Ok(_) =
+                    read_id(&mut cursor, id_size)
+                else {
                     break;
                 };
-                skip_n(&mut cursor, num_elements as usize * id_size as usize)
+                skip_n(
+                    &mut cursor,
+                    num_elements as usize
+                        * id_size as usize,
+                )
             }
 
             HeapSubTag::PrimArrayDump => {
-                let Ok(arr_id) = read_id(&mut cursor, id_size) else {
+                let Ok(arr_id) =
+                    read_id(&mut cursor, id_size)
+                else {
                     break;
                 };
                 result.filter_ids.push(FilterEntry {
                     data_offset: sub_record_start,
                     object_id: arr_id,
                 });
-                result.all_offsets.push(ObjectOffset {
-                    object_id: arr_id,
-                    offset: (sub_record_start - 1) as u64,
-                });
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
+                let Ok(_) =
+                    cursor.read_u32::<BigEndian>()
+                else {
                     break;
                 };
-                let Ok(num_elements) = cursor.read_u32::<BigEndian>() else {
+                let Ok(num_elements) =
+                    cursor.read_u32::<BigEndian>()
+                else {
                     break;
                 };
-                let Ok(elem_type) = cursor.read_u8() else {
+                let Ok(elem_type) = cursor.read_u8()
+                else {
                     break;
                 };
-                let elem_size = primitive_element_size(elem_type);
+                let elem_size =
+                    primitive_element_size(elem_type);
                 if elem_size == 0 {
                     break;
                 }
-                skip_n(&mut cursor, num_elements as usize * elem_size)
+                skip_n(
+                    &mut cursor,
+                    num_elements as usize * elem_size,
+                )
             }
 
-            t if gc_root_skip_size(t, id_size).is_some() => {
-                skip_n(&mut cursor, gc_root_skip_size(t, id_size).unwrap())
+            t if gc_root_skip_size(t, id_size)
+                .is_some() =>
+            {
+                skip_n(
+                    &mut cursor,
+                    gc_root_skip_size(t, id_size)
+                        .unwrap(),
+                )
             }
             _ => break,
         };
@@ -285,9 +359,13 @@ pub(super) fn extract_heap_segment(
 
         // Chunk checkpoint: flush after each complete
         // sub-record when we pass the boundary.
-        if cursor.position() as usize >= next_checkpoint {
+        if cursor.position() as usize >= next_checkpoint
+        {
             chunks.push(result);
-            result = HeapSegmentResult::new_with_capacity(chunk_est);
+            result =
+                HeapSegmentResult::new_with_capacity(
+                    chunk_est,
+                );
             next_checkpoint += max_chunk_bytes;
         }
     }
@@ -295,17 +373,39 @@ pub(super) fn extract_heap_segment(
     if !result.is_empty() {
         chunks.push(result);
     }
+    // Attach entry points to the first chunk (they
+    // span the entire extraction call, not one chunk).
+    let entry_points = ep_tracker.finish();
+    if let Some(first) = chunks.first_mut() {
+        first.segment_entry_points = entry_points;
+    }
     HeapSegmentParsingResult::new(chunks)
 }
 
 /// Merges a per-segment result into the shared context.
-pub(super) fn merge_segment_result(ctx: &mut FirstPassContext, seg_result: HeapSegmentResult) {
-    ctx.all_offsets.extend(seg_result.all_offsets);
+pub(super) fn merge_segment_result(
+    ctx: &mut FirstPassContext,
+    seg_result: HeapSegmentResult,
+) {
     for entry in seg_result.filter_ids {
-        ctx.seg_builder.add(entry.data_offset, entry.object_id);
+        ctx.seg_builder
+            .as_mut()
+            .expect("seg_builder consumed early")
+            .add(entry.data_offset, entry.object_id);
     }
-    ctx.raw_frame_roots.extend(seg_result.raw_frame_roots);
-    ctx.raw_thread_objects.extend(seg_result.raw_thread_objects);
+    for ep in seg_result.segment_entry_points {
+        let already = ctx
+            .segment_entry_points
+            .iter()
+            .any(|e| e.segment_index == ep.segment_index);
+        if !already {
+            ctx.segment_entry_points.push(ep);
+        }
+    }
+    ctx.raw_frame_roots
+        .extend(seg_result.raw_frame_roots);
+    ctx.raw_thread_objects
+        .extend(seg_result.raw_thread_objects);
     for entry in seg_result.class_dumps {
         ctx.result
             .index
@@ -325,7 +425,8 @@ const CHUNK_FLOOR: usize = 64 * 1024 * 1024;
 const BATCH_FLOOR: u64 = 64 * 1024 * 1024;
 
 /// Groups contiguous segments into batches whose
-/// cumulative payload does not exceed `max_batch_payload`.
+/// cumulative payload does not exceed
+/// `max_batch_payload`.
 ///
 /// A single segment exceeding `max_batch_payload` is
 /// placed in its own solo batch (never skipped).
@@ -342,7 +443,10 @@ pub(super) fn compute_batch_ranges(
     let mut batch_payload = 0u64;
 
     for (i, r) in ranges.iter().enumerate() {
-        if batch_payload + r.payload_length > max_batch_payload && batch_start < i {
+        if batch_payload + r.payload_length
+            > max_batch_payload
+            && batch_start < i
+        {
             batches.push(batch_start..i);
             batch_start = i;
             batch_payload = 0;
@@ -360,7 +464,10 @@ pub(super) fn compute_batch_ranges(
 /// Extracts all heap segments — parallel or sequential
 /// depending on total heap size. Reports segment-level
 /// progress via [`ProgressNotifier::segment_completed`].
-pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNotifier) {
+pub(super) fn extract_all(
+    ctx: &mut FirstPassContext,
+    notifier: &mut ProgressNotifier,
+) {
     let total_heap_bytes: u64 = ctx
         .result
         .heap_record_ranges
@@ -368,7 +475,8 @@ pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNot
         .map(|r| r.payload_length)
         .sum();
 
-    let ranges: Vec<_> = ctx.result.heap_record_ranges.clone();
+    let ranges: Vec<_> =
+        ctx.result.heap_record_ranges.clone();
     let data = ctx.data;
     let id_size = ctx.id_size;
     let total_segments = ranges.len();
@@ -377,8 +485,10 @@ pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNot
     // Intra-segment chunk size (story 10.2).
     let max_chunk_bytes = match ctx.budget.bytes() {
         Some(b) => {
-            let b = usize::try_from(b).unwrap_or(usize::MAX);
-            let per_thread = b / rayon::current_num_threads().max(1);
+            let b = usize::try_from(b)
+                .unwrap_or(usize::MAX);
+            let per_thread =
+                b / rayon::current_num_threads().max(1);
             per_thread.max(CHUNK_FLOOR)
         }
         None => usize::MAX,
@@ -393,13 +503,22 @@ pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNot
 
     if total_heap_bytes >= PARALLEL_THRESHOLD {
         #[cfg(feature = "dev-profiling")]
-        let _par_span = tracing::info_span!("parallel_heap_extraction").entered();
+        let _par_span = tracing::info_span!(
+            "parallel_heap_extraction"
+        )
+        .entered();
 
-        let batches = compute_batch_ranges(&ranges, max_batch_payload);
+        let batches = compute_batch_ranges(
+            &ranges,
+            max_batch_payload,
+        );
 
-        for (batch_idx, batch_range) in batches.iter().enumerate() {
+        for (batch_idx, batch_range) in
+            batches.iter().enumerate()
+        {
             let batch = &ranges[batch_range.clone()];
-            let batch_payload: u64 = batch.iter().map(|r| r.payload_length).sum();
+            let batch_payload: u64 =
+                batch.iter().map(|r| r.payload_length).sum();
 
             #[cfg(feature = "dev-profiling")]
             tracing::info!(
@@ -415,33 +534,56 @@ pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNot
             #[cfg(not(feature = "dev-profiling"))]
             let _ = (batch_idx, batch_payload);
 
-            let batch_results: Vec<HeapSegmentParsingResult> = batch
+            let batch_results: Vec<
+                HeapSegmentParsingResult,
+            > = batch
                 .par_iter()
                 .map(|r| {
-                    let start = r.payload_start as usize;
-                    let end = start + r.payload_length as usize;
-                    extract_heap_segment(&data[start..end], start, id_size, max_chunk_bytes)
+                    let start =
+                        r.payload_start as usize;
+                    let end = start
+                        + r.payload_length as usize;
+                    extract_heap_segment(
+                        &data[start..end],
+                        start,
+                        id_size,
+                        max_chunk_bytes,
+                    )
                 })
                 .collect();
 
             for parsing_result in batch_results {
                 parsing_result.merge_into(ctx);
                 segments_done += 1;
-                notifier.segment_completed(segments_done, total_segments);
+                notifier.segment_completed(
+                    segments_done,
+                    total_segments,
+                );
             }
         }
     } else {
         #[cfg(feature = "dev-profiling")]
-        let _seq_span = tracing::info_span!("sequential_heap_extraction").entered();
+        let _seq_span = tracing::info_span!(
+            "sequential_heap_extraction"
+        )
+        .entered();
 
         for r in &ranges {
             let start = r.payload_start as usize;
-            let end = start + r.payload_length as usize;
-            let parsing_result =
-                extract_heap_segment(&data[start..end], start, id_size, max_chunk_bytes);
+            let end =
+                start + r.payload_length as usize;
+            let parsing_result = extract_heap_segment(
+                &data[start..end],
+                start,
+                id_size,
+                max_chunk_bytes,
+            );
             parsing_result.merge_into(ctx);
             segments_done += 1;
-            notifier.segment_completed(segments_done, total_segments);
+            notifier.segment_completed(
+                segments_done,
+                total_segments,
+            );
         }
     }
 }

@@ -28,21 +28,22 @@ pub struct HeapRecordRange {
 
 /// Post-extraction allocation diagnostics.
 ///
-/// Captures `all_offsets` Vec state and `PreciseIndex` heap size
-/// immediately after extraction, before the index is returned.
-/// Used to compute waste ratio and coexistence watermark.
+/// Captures entry point count, filter lookup timing,
+/// and `PreciseIndex` heap size.
 ///
 /// Only available with the `test-utils` feature.
 #[cfg(feature = "test-utils")]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DiagnosticInfo {
-    /// Actual number of object offsets indexed.
-    pub offsets_len: usize,
-    /// Allocated Vec capacity. May exceed `offsets_len` due to
-    /// Vec doubling strategy.
-    pub offsets_capacity: usize,
-    /// Estimated heap bytes of the `PreciseIndex` structures,
-    /// computed via [`hprof_api::MemorySize`].
+    /// Number of segment entry points recorded
+    /// during extraction.
+    pub entry_point_count: usize,
+    /// Time spent in batched filter lookups during
+    /// thread resolution (milliseconds).
+    pub filter_lookup_ms: u64,
+    /// Estimated heap bytes of the `PreciseIndex`
+    /// structures, computed via
+    /// [`hprof_api::MemorySize`].
     pub precise_index_heap_bytes: usize,
 }
 
