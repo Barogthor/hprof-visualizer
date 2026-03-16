@@ -894,3 +894,60 @@ mod helpers {
         assert_eq!(&text[start..end], "@ 0x2A");
     }
 }
+
+mod live_mode_phase_lookup {
+    use super::*;
+    use crate::views::stack_view::{
+        FrameId, NavigationPathBuilder, VarIdx,
+    };
+
+    #[test]
+    fn expanded_var_shows_minus_toggle_in_live_mode() {
+        let vars = vec![make_var(0, 42)];
+        let mut object_fields = HashMap::new();
+        object_fields.insert(
+            42u64,
+            vec![FieldInfo {
+                name: "count".to_string(),
+                value: FieldValue::Int(7),
+            }],
+        );
+
+        let var_path = NavigationPathBuilder::new(
+            FrameId(100),
+            VarIdx(0),
+        )
+        .build();
+        let mut expansion_phases = HashMap::new();
+        expansion_phases
+            .insert(var_path, ExpansionPhase::Expanded);
+
+        let items = render_variable_tree(
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
+            &object_fields,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            RenderOptions {
+                show_object_ids: false,
+                snapshot_mode: false,
+                show_hidden: false,
+            },
+            None,
+            Some(&expansion_phases),
+        );
+        let text = render_items(items);
+        assert!(
+            text.contains("- "),
+            "expected '-' toggle in live mode, got: {text:?}"
+        );
+        assert!(
+            text.contains("count"),
+            "expected field name, got: {text:?}"
+        );
+    }
+}

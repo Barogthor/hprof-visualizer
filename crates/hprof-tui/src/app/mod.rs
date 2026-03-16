@@ -1129,7 +1129,14 @@ impl<E: NavigationEngine> App<E> {
                 if let Some((cid, restore_cursor)) = coll_info {
                     self.pending_pages.retain(|&(id, _), _| id != cid);
                     if let Some(s) = &mut self.stack_state {
+                        let cpath = match s.cursor() {
+                            RenderCursor::At(p) => Some(p.clone()),
+                            _ => None,
+                        };
                         s.expansion.collection_chunks.remove(&cid);
+                        if let Some(p) = &cpath {
+                            s.expansion.collapse_at_path(p);
+                        }
                         s.set_cursor(restore_cursor);
                     }
                     return AppAction::Continue;
@@ -1349,7 +1356,7 @@ impl<E: NavigationEngine> App<E> {
                     CollapseFrame(u64),
                     CollapseObj(u64, NavigationPath),
                     CollapseNestedObj(u64, NavigationPath),
-                    CollapseCollection(u64),
+                    CollapseCollection(u64, NavigationPath),
                     CollapseEntryObj(u64, NavigationPath),
                     NavigateToParent(RenderCursor),
                 }
@@ -1369,7 +1376,10 @@ impl<E: NavigationEngine> App<E> {
                                     return Some(LeftCmd::NavigateToParent(s.parent_cursor()?));
                                 };
                                 if s.expansion.collection_chunks.contains_key(&oid) {
-                                    return Some(LeftCmd::CollapseCollection(oid));
+                                    return Some(LeftCmd::CollapseCollection(
+                                        oid,
+                                        path.clone(),
+                                    ));
                                 }
                                 match s.expansion_state_for_path(path) {
                                     ExpansionPhase::Expanded => {
@@ -1384,7 +1394,10 @@ impl<E: NavigationEngine> App<E> {
                                         if let Some((cid, _)) = s.selected_field_collection_info()
                                             && s.expansion.collection_chunks.contains_key(&cid)
                                         {
-                                            return Some(LeftCmd::CollapseCollection(cid));
+                                            return Some(LeftCmd::CollapseCollection(
+                                                cid,
+                                                path.clone(),
+                                            ));
                                         }
                                         if s.selected_field_ref_id().is_some()
                                             && s.expansion_state_for_path(path)
@@ -1416,7 +1429,10 @@ impl<E: NavigationEngine> App<E> {
                                             s.selected_static_field_collection_info()
                                             && s.expansion.collection_chunks.contains_key(&cid)
                                         {
-                                            return Some(LeftCmd::CollapseCollection(cid));
+                                            return Some(LeftCmd::CollapseCollection(
+                                                cid,
+                                                path.clone(),
+                                            ));
                                         }
                                         if s.selected_static_field_ref_id().is_some()
                                             && s.expansion_state_for_path(path)
@@ -1463,9 +1479,10 @@ impl<E: NavigationEngine> App<E> {
                             s.collapse_object(&path);
                         }
                     }
-                    Some(LeftCmd::CollapseCollection(cid)) => {
+                    Some(LeftCmd::CollapseCollection(cid, path)) => {
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.remove(&cid);
+                            s.expansion.collapse_at_path(&path);
                         }
                         self.pending_pages.retain(|&(id, _), _| id != cid);
                     }
@@ -1492,7 +1509,7 @@ impl<E: NavigationEngine> App<E> {
                     StartNestedObj(u64, NavigationPath),
                     CollapseNestedObj(u64, NavigationPath),
                     StartCollection(u64, u64),
-                    CollapseCollection(u64),
+                    CollapseCollection(u64, NavigationPath),
                     LoadChunk(u64, usize, usize),
                     ToggleChunk(u64, usize),
                     StartEntryObj(u64, NavigationPath),
@@ -1521,7 +1538,10 @@ impl<E: NavigationEngine> App<E> {
                                         return None;
                                     }
                                     if s.expansion.collection_chunks.contains_key(&oid) {
-                                        return Some(Cmd::CollapseCollection(oid));
+                                        return Some(Cmd::CollapseCollection(
+                                            oid,
+                                            path.clone(),
+                                        ));
                                     }
                                     return Some(Cmd::StartCollection(oid, ec));
                                 }
@@ -1542,7 +1562,10 @@ impl<E: NavigationEngine> App<E> {
                                                 return None;
                                             }
                                             if s.expansion.collection_chunks.contains_key(&cid) {
-                                                return Some(Cmd::CollapseCollection(cid));
+                                                return Some(Cmd::CollapseCollection(
+                                                    cid,
+                                                    path.clone(),
+                                                ));
                                             }
                                             return Some(Cmd::StartCollection(cid, ec));
                                         }
@@ -1569,7 +1592,10 @@ impl<E: NavigationEngine> App<E> {
                                                 return None;
                                             }
                                             if s.expansion.collection_chunks.contains_key(&oid) {
-                                                return Some(Cmd::CollapseCollection(oid));
+                                                return Some(Cmd::CollapseCollection(
+                                                    oid,
+                                                    path.clone(),
+                                                ));
                                             }
                                             return Some(Cmd::StartCollection(oid, ec));
                                         }
@@ -1596,7 +1622,10 @@ impl<E: NavigationEngine> App<E> {
                                                 return None;
                                             }
                                             if s.expansion.collection_chunks.contains_key(&cid) {
-                                                return Some(Cmd::CollapseCollection(cid));
+                                                return Some(Cmd::CollapseCollection(
+                                                    cid,
+                                                    path.clone(),
+                                                ));
                                             }
                                             return Some(Cmd::StartCollection(cid, ec));
                                         }
@@ -1710,9 +1739,10 @@ impl<E: NavigationEngine> App<E> {
                             s.collapse_object_recursive(&path);
                         }
                     }
-                    Some(Cmd::CollapseCollection(cid)) => {
+                    Some(Cmd::CollapseCollection(cid, path)) => {
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.remove(&cid);
+                            s.expansion.collapse_at_path(&path);
                         }
                         self.pending_pages.retain(|&(id, _), _| id != cid);
                     }
