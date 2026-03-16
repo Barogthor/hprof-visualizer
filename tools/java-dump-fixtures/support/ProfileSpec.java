@@ -62,16 +62,6 @@ public final class ProfileSpec {
         if ("ultra".equals(lowered)) {
             return new ProfileSpec("ultra", 505, 65_536, 65_536, 16_384, 32_768, 256, 256, 2_048, 1_000_000, 8_192, 20, 12);
         }
-        if ("colossal".equals(lowered)) {
-            return new ProfileSpec(
-                "colossal", 606,
-                131_072, 131_072,
-                32_768, 65_536,
-                256, 256,
-                4_096, 2_000_000,
-                16_384, 256, 52
-            );
-        }
         throw new IllegalArgumentException("Unsupported profile: " + name);
     }
 }

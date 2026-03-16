@@ -151,15 +151,6 @@ if /I "%REMOVE_RAW%"=="on" if /I not "%SANITIZE%"=="on" (
   goto :help_error
 )
 
-if /I "%PROFILE_SET%"=="colossal" if /I not "%SCENARIO%"=="05" if /I not "%SCENARIO%"=="5" (
-  echo [heap-fixture] profile 'colossal' only supports scenario 05 ^(huge-objects^)
-  exit /b 1
-)
-
-if /I "%PROFILE_SET%"=="colossal" (
-  echo [heap-fixture] WARNING: profile 'colossal' requires ~24 GB of free RAM and will produce a ~20 GB dump
-)
-
 set "SCRIPT_DIR=%~dp0"
 set "CLASS_DIR=%SCRIPT_DIR%out"
 set "ASSETS_DIR=%SCRIPT_DIR%..\..\assets\generated"
@@ -174,7 +165,7 @@ if /I not "%SANITIZE%"=="off" if not exist "%REDACT_CMD%" (
 )
 
 set "SCENARIOS="
-if /I "%SCENARIO%"=="all" set "SCENARIOS=01 02 03 04 05 06 07 08 09 10"
+if /I "%SCENARIO%"=="all" set "SCENARIOS=01 02 03 04 05 06 07 08 09 10 11"
 if /I "%SCENARIO%"=="01" set "SCENARIOS=01"
 if /I "%SCENARIO%"=="1" set "SCENARIOS=01"
 if /I "%SCENARIO%"=="02" set "SCENARIOS=02"
@@ -194,9 +185,10 @@ if /I "%SCENARIO%"=="8" set "SCENARIOS=08"
 if /I "%SCENARIO%"=="09" set "SCENARIOS=09"
 if /I "%SCENARIO%"=="9" set "SCENARIOS=09"
 if /I "%SCENARIO%"=="10" set "SCENARIOS=10"
+if /I "%SCENARIO%"=="11" set "SCENARIOS=11"
 
 if "%SCENARIOS%"=="" (
-  echo [heap-fixture] invalid scenario "%SCENARIO%" ^(expected: 01^|02^|03^|04^|05^|06^|07^|08^|09^|10^|all^)
+  echo [heap-fixture] invalid scenario "%SCENARIO%" ^(expected: 01^|02^|03^|04^|05^|06^|07^|08^|09^|10^|11^|all^)
   goto :help_error
 )
 
@@ -214,11 +206,14 @@ if /I not "%SANITIZE%"=="only" (
 set "PROFILES="
 if /I "%PROFILE_SET%"=="standard" set "PROFILES=tiny medium large xlarge"
 if /I "%PROFILE_SET%"=="all" set "PROFILES=tiny medium large xlarge ultra"
+if /I "%PROFILE_SET%"=="tiny" set "PROFILES=tiny"
+if /I "%PROFILE_SET%"=="medium" set "PROFILES=medium"
+if /I "%PROFILE_SET%"=="large" set "PROFILES=large"
+if /I "%PROFILE_SET%"=="xlarge" set "PROFILES=xlarge"
 if /I "%PROFILE_SET%"=="ultra" set "PROFILES=ultra"
-if /I "%PROFILE_SET%"=="colossal" set "PROFILES=colossal"
 
 if "%PROFILES%"=="" (
-  echo [heap-fixture] invalid profile_set "%PROFILE_SET%" (expected: standard^|all^|ultra)
+  echo [heap-fixture] invalid profile_set "%PROFILE_SET%" (expected: standard^|all^|tiny^|medium^|large^|xlarge^|ultra)
   goto :help_error
 )
 
@@ -231,7 +226,6 @@ for %%P in (%PROFILES%) do (
     if /I "%%P"=="large" set "XMX=1g"
     if /I "%%P"=="xlarge" set "XMX=2g"
     if /I "%%P"=="ultra" set "XMX=4g"
-    if /I "%%P"=="colossal" set "XMX=24g"
     if /I not "%SANITIZE%"=="only" (
       set "TRUNCATE_FOR_JAVA=%TRUNCATE_BYTES%"
       if /I "%TRUNCATE_TARGET%"=="sanitized" set "TRUNCATE_FOR_JAVA=0"
@@ -277,9 +271,9 @@ echo.
 echo Arguments:
 echo   mode           auto ^| manual ^| both
 echo   hold_seconds   default: 120
-echo   profile_set    standard ^| all ^| ultra ^| colossal   ^(default: standard^)
+echo   profile_set    standard ^| all ^| tiny ^| medium ^| large ^| xlarge ^| ultra   ^(default: standard^)
 echo   truncate_bytes default: 0
-echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
+echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| 11 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
 echo   truncate_target raw ^| sanitized ^| both   ^(default: raw^)
 echo   remove_raw     off ^| on   ^(default: off, requires sanitize=on^)
@@ -301,7 +295,6 @@ echo   tools\java-dump-fixtures\generate-dumps.cmd auto 120 ultra 2097152 01
 echo   tools\java-dump-fixtures\generate-dumps.cmd auto 120 standard 0 all
 echo   tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set ultra --scenario 01 --sanitize on --truncate-target both --remove-raw on
 echo   tools\java-dump-fixtures\generate-dumps.cmd --profile-set all --scenario all --sanitize only
-echo   tools\java-dump-fixtures\generate-dumps.cmd --mode auto --profile-set colossal --scenario 05   REM WARNING: requires ~24 GB free RAM, produces ~20 GB dump
 exit /b 0
 
 :help_error
@@ -313,9 +306,9 @@ echo.
 echo Arguments:
 echo   mode           auto ^| manual ^| both
 echo   hold_seconds   default: 120
-echo   profile_set    standard ^| all ^| ultra ^| colossal   ^(default: standard^)
+echo   profile_set    standard ^| all ^| tiny ^| medium ^| large ^| xlarge ^| ultra   ^(default: standard^)
 echo   truncate_bytes default: 0
-echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
+echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| 11 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
 echo   truncate_target raw ^| sanitized ^| both   ^(default: raw^)
 echo   remove_raw     off ^| on   ^(default: off^)

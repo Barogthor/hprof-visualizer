@@ -41,6 +41,7 @@ public final class HeapDumpFixture {
         register(scenarios, new Scenario08ClassLoaderRetention());
         register(scenarios, new Scenario09ConcurrentMapHotBuckets());
         register(scenarios, new Scenario10StringExtremes());
+        register(scenarios, new Scenario11StressLoading());
         return scenarios;
     }
 
@@ -74,13 +75,6 @@ public final class HeapDumpFixture {
 
     private static void validateProfileScenario(
             ProfileSpec spec, HeapScenario scenario) {
-        if ("colossal".equals(spec.name)
-                && !"05".equals(scenario.id())) {
-            throw new IllegalArgumentException(
-                "Profile 'colossal' is only supported"
-                    + " with scenario 05 (huge-objects),"
-                    + " got scenario " + scenario.id());
-        }
     }
 
     private static Path resolveOutputPath(Path configuredOutput, ProfileSpec spec, String scenarioId, boolean appendScenarioSuffix) {
@@ -143,7 +137,7 @@ public final class HeapDumpFixture {
 
     private static void printHelp() {
         System.out.println("HeapDumpFixture options:");
-        System.out.println("  --scenario <01|02|03|04|05|06|07|08|09|10|all>");
+        System.out.println("  --scenario <01|02|...|10|11|all>");
         System.out.println("  --profile <tiny|medium|large|xlarge|ultra>");
         System.out.println("  --output <path/to/file.hprof>");
         System.out.println("  --dump-mode <auto|manual|both>");
