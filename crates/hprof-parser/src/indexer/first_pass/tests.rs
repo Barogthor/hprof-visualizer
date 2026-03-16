@@ -1223,10 +1223,10 @@ mod builder_tests {
         let start = advance_past_header(&bytes);
         let result = run_fp(&bytes[start..], 8);
         assert!(
-            result.index.instance_offsets.contains_key(&thread_obj_id),
+            result.index.instance_offsets.contains(&thread_obj_id),
             "thread object must have a recorded offset"
         );
-        let offset = result.index.instance_offsets[&thread_obj_id];
+        let offset = result.index.instance_offsets.get(thread_obj_id).unwrap();
         assert!(
             offset > 0,
             "offset must be > 0 (past the heap \
@@ -2024,14 +2024,9 @@ mod chunked_extraction_tests {
         // Value-for-value: instance_offsets keys and
         // offsets (verifies plumbing through
         // FirstPassContext → extract_all → merge_into).
-        let mut budgeted_ids: Vec<u64> = result_budgeted
-            .index
-            .instance_offsets
-            .keys()
-            .cloned()
-            .collect();
+        let mut budgeted_ids: Vec<u64> = result_budgeted.index.instance_offsets.keys();
         budgeted_ids.sort_unstable();
-        let mut none_ids: Vec<u64> = result_none.index.instance_offsets.keys().cloned().collect();
+        let mut none_ids: Vec<u64> = result_none.index.instance_offsets.keys();
         none_ids.sort_unstable();
         assert_eq!(
             budgeted_ids, none_ids,
@@ -2039,8 +2034,8 @@ mod chunked_extraction_tests {
         );
         for id in &none_ids {
             assert_eq!(
-                result_budgeted.index.instance_offsets.get(id),
-                result_none.index.instance_offsets.get(id),
+                result_budgeted.index.instance_offsets.get(*id),
+                result_none.index.instance_offsets.get(*id),
                 "instance_offset for id {id:#X} must match"
             );
         }
@@ -2371,20 +2366,15 @@ mod budget_batching_tests {
         assert_eq!(result_budget.warnings.len(), result_none.warnings.len());
 
         // Content check: same object IDs and offsets extracted.
-        let mut budget_ids: Vec<u64> = result_budget
-            .index
-            .instance_offsets
-            .keys()
-            .copied()
-            .collect();
-        let mut none_ids: Vec<u64> = result_none.index.instance_offsets.keys().copied().collect();
+        let mut budget_ids: Vec<u64> = result_budget.index.instance_offsets.keys();
+        let mut none_ids: Vec<u64> = result_none.index.instance_offsets.keys();
         budget_ids.sort_unstable();
         none_ids.sort_unstable();
         assert_eq!(budget_ids, none_ids, "extracted IDs must match");
         for id in &budget_ids {
             assert_eq!(
-                result_budget.index.instance_offsets.get(id),
-                result_none.index.instance_offsets.get(id),
+                result_budget.index.instance_offsets.get(*id),
+                result_none.index.instance_offsets.get(*id),
                 "offset for ID {id} must match"
             );
         }
@@ -2964,7 +2954,7 @@ fn filter_lookup_matches_expected() {
     let result = run_fp(records_data, id_size);
 
     // Verify thread resolution found the object
-    let actual_offset = result.index.instance_offsets.get(&0x100).copied();
+    let actual_offset = result.index.instance_offsets.get(0x100);
     assert_eq!(
         actual_offset,
         Some(expected_offset),

@@ -423,6 +423,13 @@ fn extract_linked_list(
 
 /// Paginates a slice of object IDs, resolving each
 /// to a `FieldValue`.
+///
+/// Uses a 3-level cache strategy:
+/// - L1: `instance_offsets` (OffsetCache, O(1) offset)
+/// - L2: `batch_find_instances` (segment scan for
+///   uncached IDs)
+/// - Fallback: single-ID `id_to_field_value` for IDs
+///   not found in batch (arrays, etc.)
 fn paginate_id_slice(
     ids: &[u64],
     total: u64,
@@ -434,6 +441,52 @@ fn paginate_id_slice(
     let remaining = (total - clamped_offset as u64) as usize;
     let actual_limit = limit.min(remaining);
 
+    // Step 1: Collect page IDs.
+    let page_ids: Vec<u64> = (0..actual_limit)
+        .filter_map(|i| {
+            let idx = clamped_offset + i;
+            if idx < ids.len() && ids[idx] != 0 {
+                Some(ids[idx])
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Step 2: Partition — find IDs not yet in
+    // instance_offsets (truly uncached).
+    let uncached: Vec<u64> = page_ids
+        .iter()
+        .copied()
+        .filter(|id| !hfile.index.instance_offsets.contains(id))
+        .collect();
+
+    // Step 3: Batch-resolve uncached IDs.
+    if !uncached.is_empty() {
+        let batch_result = hfile.batch_find_instances(&uncached);
+
+        // Step 4: Insert discovered offsets for future
+        // pages.
+        hfile
+            .index
+            .instance_offsets
+            .insert_batch(&batch_result.offsets);
+
+        let instance_misses = uncached
+            .iter()
+            .filter(|id| !batch_result.instances.contains_key(id))
+            .count();
+        if instance_misses > 0 {
+            dbg_log!(
+                "paginate_id_slice: {} IDs fell back \
+                 to single-ID path",
+                instance_misses
+            );
+        }
+    }
+
+    // Step 5: Resolve all IDs (batch-found now hit
+    // O(1) offset path, arrays use existing paths).
     let mut entries = Vec::with_capacity(actual_limit);
     for i in 0..actual_limit {
         let idx = clamped_offset + i;

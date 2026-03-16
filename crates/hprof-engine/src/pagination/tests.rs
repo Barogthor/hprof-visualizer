@@ -684,4 +684,59 @@ mod map_extractors {
             FieldValue::ObjectRef { id: 0x10, .. }
         ));
     }
+
+    // ── Task 3.4: batch pagination integration ──
+
+    /// Verifies that `get_page` on an Object[] with
+    /// multiple instance references batch-resolves them
+    /// and caches offsets.
+    #[test]
+    fn get_page_object_array_batch_resolves_instances() {
+        let id_size: u32 = 8;
+        let str_cn = 50u64;
+
+        // 5 instances referenced by an Object[]
+        let mut instance_data = Vec::new();
+        instance_data.extend_from_slice(&0u64.to_be_bytes());
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_string(str_cn, "java/lang/Object")
+            .add_class(1, 1000, 0, str_cn)
+            .add_class_dump(1000, 0, 8, &[])
+            .add_instance(0x10, 0, 1000, &[])
+            .add_instance(0x20, 0, 1000, &[])
+            .add_instance(0x30, 0, 1000, &[])
+            .add_instance(0x40, 0, 1000, &[])
+            .add_instance(0x50, 0, 1000, &[])
+            .add_object_array(0xAA, 0, 1000, &[0x10, 0x20, 0x30, 0x40, 0x50])
+            .build();
+
+        let hfile = hfile_from_bytes(&bytes);
+
+        // Before: no offsets cached for these IDs.
+        assert!(!hfile.index.instance_offsets.contains(&0x10));
+
+        let page = get_page(&hfile, 0xAA, 0, 5).unwrap();
+        assert_eq!(page.total_count, 5);
+        assert_eq!(page.entries.len(), 5);
+
+        // All 5 entries must be resolved as ObjectRef
+        // (not Null).
+        for (i, entry) in page.entries.iter().enumerate() {
+            assert!(
+                matches!(entry.value, FieldValue::ObjectRef { .. }),
+                "entry {i} must be ObjectRef, got {:?}",
+                entry.value
+            );
+        }
+
+        // After: offsets cached by batch insert.
+        assert!(
+            hfile.index.instance_offsets.contains(&0x10),
+            "0x10 must be cached after batch"
+        );
+        assert!(
+            hfile.index.instance_offsets.contains(&0x50),
+            "0x50 must be cached after batch"
+        );
+    }
 }

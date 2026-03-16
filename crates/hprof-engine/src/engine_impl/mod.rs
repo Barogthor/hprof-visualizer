@@ -446,7 +446,7 @@ impl Engine {
     /// Reads an instance by offset if available, falling back to
     /// `find_instance`.
     fn read_instance(hfile: &HprofFile, obj_id: u64) -> Option<RawInstance> {
-        if let Some(&off) = hfile.index.instance_offsets.get(&obj_id)
+        if let Some(off) = hfile.index.instance_offsets.get(obj_id)
             && let Some(raw) = hfile.read_instance_at_offset(off)
         {
             return Some(raw);
@@ -457,7 +457,7 @@ impl Engine {
     /// Reads a primitive array by offset if available, falling back to
     /// `find_prim_array`.
     fn read_prim_array(hfile: &HprofFile, arr_id: u64) -> Option<(u8, Vec<u8>)> {
-        if let Some(&off) = hfile.index.instance_offsets.get(&arr_id)
+        if let Some(off) = hfile.index.instance_offsets.get(arr_id)
             && let Some(r) = hfile.read_prim_array_at_offset(off)
         {
             return Some(r);

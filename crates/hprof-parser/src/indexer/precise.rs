@@ -16,11 +16,89 @@
 //! | `thread_object_ids` | `u32` thread serial | `ROOT_THREAD_OBJ` |
 //! | `class_names_by_id` | `u64` class object ID | derived from `LOAD_CLASS` |
 
+use std::sync::RwLock;
+
 use rustc_hash::FxHashMap;
 
 use hprof_api::{MemorySize, fxhashmap_memory_size};
 
 use crate::{ClassDef, ClassDumpInfo, HprofStringRef, HprofThread, StackFrame, StackTrace};
+
+/// Thread-safe wrapper around `FxHashMap<u64, u64>` for
+/// instance offset caching.
+///
+/// Uses `std::sync::RwLock` for interior mutability.
+/// Callers use `.get()`, `.insert()`, `.insert_batch()`
+/// without knowing about the lock.
+#[derive(Debug)]
+pub struct OffsetCache {
+    inner: RwLock<FxHashMap<u64, u64>>,
+}
+
+impl OffsetCache {
+    /// Creates an empty cache.
+    pub fn new() -> Self {
+        Self {
+            inner: RwLock::new(FxHashMap::default()),
+        }
+    }
+
+    /// Returns the offset for `id`, if cached.
+    pub fn get(&self, id: u64) -> Option<u64> {
+        self.inner.read().unwrap().get(&id).copied()
+    }
+
+    /// Inserts a single offset.
+    pub fn insert(&self, id: u64, offset: u64) {
+        self.inner.write().unwrap().insert(id, offset);
+    }
+
+    /// Inserts all entries from `offsets` in a single
+    /// write-lock acquisition.
+    pub fn insert_batch(&self, offsets: &FxHashMap<u64, u64>) {
+        let mut guard = self.inner.write().unwrap();
+        for (&id, &off) in offsets {
+            guard.insert(id, off);
+        }
+    }
+
+    /// Returns the number of cached entries.
+    pub fn len(&self) -> usize {
+        self.inner.read().unwrap().len()
+    }
+
+    /// Returns `true` if the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().unwrap().is_empty()
+    }
+
+    /// Returns `true` if `id` is in the cache.
+    pub fn contains(&self, id: &u64) -> bool {
+        self.inner.read().unwrap().contains_key(id)
+    }
+
+    /// Returns all values as a `Vec`.
+    pub fn values(&self) -> Vec<u64> {
+        self.inner.read().unwrap().values().copied().collect()
+    }
+
+    /// Returns all keys as a `Vec`.
+    pub fn keys(&self) -> Vec<u64> {
+        self.inner.read().unwrap().keys().copied().collect()
+    }
+
+    /// Returns the capacity of the inner map (for
+    /// memory size calculations).
+    pub fn capacity(&self) -> usize {
+        self.inner.read().unwrap().capacity()
+    }
+}
+
+impl Default for OffsetCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// O(1) lookup index populated by a single sequential pass over an hprof file.
 ///
@@ -58,20 +136,13 @@ pub struct PreciseIndex {
     /// dot notation (`java.util.HashMap`).
     pub class_names_by_id: FxHashMap<u64, String>,
     /// Object-ID → byte offset (relative to records section) for
-    /// thread-related heap objects: Thread instances, their `name`
-    /// String instances, the backing `char[]/byte[]` arrays, and
-    /// JDK 19+ `FieldHolder` instances.
+    /// cached instance locations. Initially populated with
+    /// thread-related objects during first pass; later extended
+    /// by batch-scan results at runtime.
     ///
-    /// Populated after the first pass by cross-referencing
-    /// `thread_object_ids` with a temporary offset index, then
-    /// following transitive references (`Thread.name` → `String` →
-    /// `String.value` → `char[]`, `Thread.holder` →
-    /// `FieldHolder`).
-    ///
-    /// Used by the engine for O(1) offset-based reads during thread
-    /// name and state resolution, falling back to linear scan when
-    /// an ID is not present.
-    pub instance_offsets: FxHashMap<u64, u64>,
+    /// Uses interior mutability (`RwLock`) so callers can insert
+    /// offsets without `&mut self` on `HprofFile`.
+    pub instance_offsets: OffsetCache,
 }
 
 impl PreciseIndex {
@@ -87,7 +158,7 @@ impl PreciseIndex {
             class_dumps: FxHashMap::default(),
             thread_object_ids: FxHashMap::default(),
             class_names_by_id: FxHashMap::default(),
-            instance_offsets: FxHashMap::default(),
+            instance_offsets: OffsetCache::new(),
         }
     }
 
@@ -109,7 +180,7 @@ impl PreciseIndex {
             class_dumps: FxHashMap::with_capacity_and_hasher(class_cap, Default::default()),
             thread_object_ids: FxHashMap::default(),
             class_names_by_id: FxHashMap::with_capacity_and_hasher(class_cap, Default::default()),
-            instance_offsets: FxHashMap::default(),
+            instance_offsets: OffsetCache::new(),
         }
     }
 }
@@ -163,6 +234,77 @@ impl Default for PreciseIndex {
 mod tests {
     use super::*;
     use crate::{ClassDef, HprofStringRef, HprofThread, StackFrame, StackTrace};
+
+    // ── Task 2.3: batch-resolve then verify offsets ──
+
+    #[test]
+    fn offset_cache_insert_batch_and_contains() {
+        let cache = OffsetCache::new();
+        let mut batch = FxHashMap::default();
+        batch.insert(0xAA, 100);
+        batch.insert(0xBB, 200);
+        batch.insert(0xCC, 300);
+
+        cache.insert_batch(&batch);
+
+        assert!(cache.contains(&0xAA));
+        assert!(cache.contains(&0xBB));
+        assert!(cache.contains(&0xCC));
+        assert!(!cache.contains(&0xDD));
+        assert_eq!(cache.len(), 3);
+    }
+
+    // ── Task 2.4: cached offset enables O(1) path ──
+
+    #[test]
+    fn offset_cache_get_returns_inserted_offset() {
+        let cache = OffsetCache::new();
+        cache.insert(0xAA, 42);
+
+        assert_eq!(cache.get(0xAA), Some(42));
+        assert_eq!(cache.get(0xBB), None);
+    }
+
+    // ── Task 2.5: concurrent access safety ──
+
+    #[test]
+    fn offset_cache_concurrent_insert_batch_and_read() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(OffsetCache::new());
+        let mut batch = FxHashMap::default();
+        for i in 0..100u64 {
+            batch.insert(i, i * 10);
+        }
+
+        let cache_w = Arc::clone(&cache);
+        let batch_clone = batch.clone();
+        let writer = thread::spawn(move || {
+            cache_w.insert_batch(&batch_clone);
+        });
+
+        let cache_r = Arc::clone(&cache);
+        let reader = thread::spawn(move || {
+            // Spin-read until all entries visible.
+            loop {
+                let count = cache_r.len();
+                if count == 100 {
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+            // Verify all 100 entries.
+            for i in 0..100u64 {
+                assert_eq!(cache_r.get(i), Some(i * 10), "entry {i} must be visible");
+            }
+        });
+
+        writer.join().unwrap();
+        reader.join().unwrap();
+
+        assert_eq!(cache.len(), 100);
+    }
 
     #[test]
     fn memory_size_empty_index_equals_static_size() {

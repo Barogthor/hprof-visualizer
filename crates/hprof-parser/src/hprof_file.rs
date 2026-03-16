@@ -9,15 +9,30 @@
 //! during indexing, or [`HprofFile::from_path`] for a no-op convenience
 //! wrapper.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use byteorder::{BigEndian, ReadBytesExt};
 use hprof_api::{MemoryBudget, NullProgressObserver, ParseProgressObserver, ProgressNotifier};
 use memmap2::Mmap;
+use rustc_hash::FxHashMap;
 
 use crate::indexer::{first_pass::run_first_pass, precise::PreciseIndex, segment::SegmentFilter};
 use crate::tags::HeapSubTag;
 use crate::{HprofError, HprofHeader, RawInstance, open_readonly, parse_header, read_id};
+
+/// Result of a batch instance resolution.
+///
+/// Contains both the parsed instances and their byte
+/// offsets for caching in `OffsetCache`.
+#[derive(Debug)]
+pub struct BatchResult {
+    /// Parsed `INSTANCE_DUMP` results keyed by object ID.
+    pub instances: FxHashMap<u64, RawInstance>,
+    /// Byte offsets (relative to records section) keyed
+    /// by object ID, for cache insertion.
+    pub offsets: FxHashMap<u64, u64>,
+}
 
 /// An open hprof file with a parsed header and populated structural index.
 ///
@@ -356,6 +371,89 @@ impl HprofFile {
 
         None
     }
+
+    /// Resolves multiple object instances in a single
+    /// pass per segment, returning parsed instances and
+    /// their byte offsets.
+    ///
+    /// Groups IDs by candidate segment (via
+    /// `segment_filters.contains()`), then performs ONE
+    /// linear scan per distinct segment collecting all
+    /// matching INSTANCE_DUMP records.
+    ///
+    /// This method is side-effect-free: it does NOT read
+    /// or write `OffsetCache`. The caller pre-partitions
+    /// IDs (cached vs uncached) and inserts offsets after.
+    pub fn batch_find_instances(&self, object_ids: &[u64]) -> BatchResult {
+        use crate::indexer::segment::SEGMENT_SIZE;
+        self.batch_find_instances_inner(object_ids, SEGMENT_SIZE)
+    }
+
+    /// Internal implementation with configurable
+    /// `segment_size` for testability.
+    fn batch_find_instances_inner(&self, object_ids: &[u64], segment_size: usize) -> BatchResult {
+        let mut result = BatchResult {
+            instances: FxHashMap::default(),
+            offsets: FxHashMap::default(),
+        };
+
+        if object_ids.is_empty() {
+            return result;
+        }
+
+        let records = self.records_bytes();
+        let id_size = self.header.id_size;
+
+        // Phase 1 — Group IDs by candidate segment.
+        // An ID may match multiple segment filters
+        // (BinaryFuse8 false positives). Group it into
+        // ALL matching segments.
+        let mut seg_targets: FxHashMap<usize, HashSet<u64>> = FxHashMap::default();
+
+        for &id in object_ids {
+            for filter in &self.segment_filters {
+                if filter.contains(id) {
+                    seg_targets
+                        .entry(filter.segment_index)
+                        .or_default()
+                        .insert(id);
+                }
+            }
+        }
+
+        // Phase 2 — Scan each segment group.
+        for (&seg_idx, targets) in &seg_targets {
+            let seg_start = seg_idx as u64 * segment_size as u64;
+            let seg_end = seg_start + segment_size as u64;
+
+            for r in &self.heap_record_ranges {
+                let payload_end = r.payload_start + r.payload_length;
+
+                let overlaps = r.payload_start < seg_end && payload_end > seg_start;
+
+                if !overlaps {
+                    continue;
+                }
+
+                let start = r.payload_start as usize;
+                let end = (payload_end as usize).min(records.len());
+                if start >= records.len() {
+                    continue;
+                }
+
+                let found = scan_segment_for_instances(&records[start..end], targets, id_size);
+
+                // Phase 3 — Dedup: first-found wins.
+                for (obj_id, raw, offset) in found {
+                    let abs_offset = start as u64 + offset;
+                    result.instances.entry(obj_id).or_insert(raw);
+                    result.offsets.entry(obj_id).or_insert(abs_offset);
+                }
+            }
+        }
+
+        result
+    }
 }
 
 fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<RawInstance> {
@@ -404,6 +502,84 @@ fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<RawIns
             }
         }
     }
+}
+
+// NOTE: scan loop duplicated from scan_for_instance.
+// Sync both if hprof sub-record tag handling changes.
+// Future: extract walk_heap_subrecords() to share
+// the loop (deferred — scan_for_instance has
+// early-return semantics that complicate a callback
+// approach).
+//
+// This scanner only collects INSTANCE_DUMP records.
+// OBJECT_ARRAY_DUMP and PRIMITIVE_ARRAY_DUMP have their
+// own lookup paths (find_object_array, find_prim_array).
+// Story 11.4 adds O(1) arithmetic for OBJECT_ARRAY.
+// CLASS_DUMP records are already indexed in
+// class_definitions (PreciseIndex) during first pass.
+// TODO: full batch-array parsing if a future story
+// needs it.
+fn scan_segment_for_instances(
+    data: &[u8],
+    target_ids: &HashSet<u64>,
+    id_size: u32,
+) -> Vec<(u64, RawInstance, u64)> {
+    use std::io::Cursor;
+
+    let mut cursor = Cursor::new(data);
+    let mut results = Vec::new();
+
+    loop {
+        let tag_pos = cursor.position();
+        let sub_tag = match cursor.read_u8() {
+            Ok(t) => HeapSubTag::from(t),
+            Err(_) => break,
+        };
+        match sub_tag {
+            HeapSubTag::InstanceDump => {
+                let obj_id = match read_id(&mut cursor, id_size) {
+                    Ok(id) => id,
+                    Err(_) => break,
+                };
+                let _stack_serial = match cursor.read_u32::<BigEndian>() {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                let class_object_id = match read_id(&mut cursor, id_size) {
+                    Ok(id) => id,
+                    Err(_) => break,
+                };
+                let num_bytes = match cursor.read_u32::<BigEndian>() {
+                    Ok(n) => n as usize,
+                    Err(_) => break,
+                };
+                let pos = cursor.position() as usize;
+                if pos + num_bytes > data.len() {
+                    // Truncated INSTANCE_DUMP — skip
+                    // and stop scanning this range.
+                    break;
+                }
+                if target_ids.contains(&obj_id) {
+                    results.push((
+                        obj_id,
+                        RawInstance {
+                            class_object_id,
+                            data: data[pos..pos + num_bytes].to_vec(),
+                        },
+                        tag_pos,
+                    ));
+                }
+                cursor.set_position((pos + num_bytes) as u64);
+            }
+            _ => {
+                if !skip_sub_record(&mut cursor, sub_tag, id_size) {
+                    break;
+                }
+            }
+        }
+    }
+
+    results
 }
 
 fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u8, Vec<u8>)> {
@@ -883,16 +1059,173 @@ mod builder_tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
         let hfile = HprofFile::from_path(tmp.path()).unwrap();
-        let offset = *hfile
+        let offset = hfile
             .index
             .instance_offsets
-            .get(&obj_id)
+            .get(obj_id)
             .expect("offset must be recorded");
         let raw = hfile
             .read_instance_at_offset(offset)
             .expect("must read instance");
         assert_eq!(raw.class_object_id, class_id);
         assert_eq!(raw.data, data);
+    }
+
+    // ── Task 1.5: batch 5 instances across 2+ segments ──
+
+    #[test]
+    fn batch_find_five_instances_returns_all_with_correct_data() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0x01, 0, 100, &[0xA1])
+            .add_instance(0x02, 0, 200, &[0xA2])
+            .add_instance(0x03, 0, 300, &[0xA3])
+            .add_instance(0x04, 0, 400, &[0xA4])
+            .add_instance(0x05, 0, 500, &[0xA5])
+            .build();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+
+        let result = hfile.batch_find_instances(&[0x01, 0x02, 0x03, 0x04, 0x05]);
+
+        assert_eq!(result.instances.len(), 5);
+        assert_eq!(result.offsets.len(), 5);
+        assert_eq!(result.instances[&0x01].class_object_id, 100);
+        assert_eq!(result.instances[&0x01].data, vec![0xA1]);
+        assert_eq!(result.instances[&0x03].class_object_id, 300);
+        assert_eq!(result.instances[&0x05].class_object_id, 500);
+        assert_eq!(result.instances[&0x05].data, vec![0xA5]);
+    }
+
+    // ── Task 1.5b: truncated sub-record tolerance ──
+
+    #[test]
+    fn batch_find_tolerates_truncated_sub_record() {
+        // Build a segment with a valid instance followed
+        // by a truncated one, then another valid one in
+        // a separate segment.
+        let id_size = 8u32;
+
+        // Valid INSTANCE_DUMP for 0xAA
+        let mut payload = Vec::new();
+        payload.push(0x21); // INSTANCE_DUMP
+        payload.extend_from_slice(&0xAAu64.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&100u64.to_be_bytes());
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.push(0xFF);
+
+        // Truncated INSTANCE_DUMP: just tag + partial ID
+        payload.push(0x21);
+        payload.extend_from_slice(&[0x00, 0x00]);
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_raw_heap_segment(&payload)
+            .add_instance(0xBB, 0, 200, &[0xCC])
+            .build();
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+
+        let result = hfile.batch_find_instances(&[0xAA, 0xBB]);
+
+        // 0xAA from first segment, 0xBB from second
+        assert!(
+            result.instances.contains_key(&0xAA),
+            "valid instance before truncation must be found"
+        );
+        assert!(
+            result.instances.contains_key(&0xBB),
+            "instance in separate segment must be found"
+        );
+        assert_eq!(result.instances[&0xAA].class_object_id, 100);
+        assert_eq!(result.instances[&0xBB].class_object_id, 200);
+    }
+
+    // ── Task 1.5c: false-positive dedup ──
+
+    #[test]
+    fn batch_find_deduplicates_across_ranges() {
+        // Same ID (0xAA) in a single-segment file.
+        // First heap segment has 0xAA, second does not.
+        // The dedup logic must return 0xAA exactly once.
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xAA, 0, 100, &[0x11])
+            .add_instance(0xBB, 0, 200, &[0x22])
+            .build();
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+
+        let result = hfile.batch_find_instances(&[0xAA]);
+
+        assert_eq!(result.instances.len(), 1, "ID must appear exactly once");
+        assert_eq!(result.instances[&0xAA].class_object_id, 100);
+        assert_eq!(result.instances[&0xAA].data, vec![0x11]);
+    }
+
+    // ── Task 1.6: non-existing IDs → empty map ──
+
+    #[test]
+    fn batch_find_nonexistent_ids_returns_empty() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xDEAD, 0, 100, &[])
+            .build();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+
+        let result = hfile.batch_find_instances(&[0xBEEF, 0xCAFE]);
+
+        assert!(result.instances.is_empty());
+        assert!(result.offsets.is_empty());
+    }
+
+    // ── Task 1.7: mix of existing and non-existing ──
+
+    #[test]
+    fn batch_find_mix_existing_and_nonexistent() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0x01, 0, 100, &[0xAA])
+            .add_instance(0x02, 0, 200, &[0xBB])
+            .build();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+
+        let result = hfile.batch_find_instances(&[0x01, 0xDEAD, 0x02]);
+
+        assert_eq!(result.instances.len(), 2);
+        assert!(result.instances.contains_key(&0x01));
+        assert!(result.instances.contains_key(&0x02));
+        assert!(!result.instances.contains_key(&0xDEAD));
+    }
+
+    // ── Task 1.8: single ID matches find_instance ──
+
+    #[test]
+    fn batch_find_single_id_matches_find_instance() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xCAFE, 0, 42, &[1, 2, 3, 4])
+            .build();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+
+        let single = hfile.find_instance(0xCAFE).unwrap();
+        let batch = hfile.batch_find_instances(&[0xCAFE]);
+        let batch_inst = &batch.instances[&0xCAFE];
+
+        assert_eq!(single.class_object_id, batch_inst.class_object_id,);
+        assert_eq!(single.data, batch_inst.data);
     }
 
     #[test]
