@@ -11,7 +11,7 @@ use ratatui::{
     widgets::Widget,
 };
 
-use crate::theme::THEME;
+use crate::{app::SpinnerState, theme::THEME};
 
 /// Braille spinner characters for the navigation-in-progress indicator.
 pub(crate) const SPINNER_CHARS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -32,9 +32,9 @@ pub struct StatusBar<'a> {
     pub last_warning: Option<&'a str>,
     /// Number of pinned items hidden because terminal is too narrow.
     pub pinned_hidden_count: usize,
-    /// Whether a go-to-pin navigation is in progress (shows spinner).
-    pub navigating_to_pin: bool,
-    /// Spinner frame index, incremented each render tick (`% 10` gives char).
+    /// Consolidated spinner state for the status bar.
+    pub spinner_state: SpinnerState,
+    /// Spinner frame index, incremented each render tick.
     pub spinner_tick: u8,
 }
 
@@ -89,11 +89,16 @@ impl Widget for StatusBar<'_> {
             String::new()
         };
 
-        let nav_part = if self.navigating_to_pin {
-            let ch = SPINNER_CHARS[(self.spinner_tick % 10) as usize];
-            format!("  |  {} Navigating to pin...", ch)
-        } else {
-            String::new()
+        let nav_part = match self.spinner_state {
+            SpinnerState::Idle => String::new(),
+            SpinnerState::Resolving => {
+                let ch = SPINNER_CHARS[(self.spinner_tick / 4) as usize % 10];
+                format!("  |  {ch} Resolving…")
+            }
+            SpinnerState::NavigatingToPin => {
+                let ch = SPINNER_CHARS[(self.spinner_tick / 4) as usize % 10];
+                format!("  |  {ch} Navigating to pin…")
+            }
         };
 
         let main = Span::styled(
@@ -182,7 +187,7 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
             },
             120,
@@ -204,7 +209,7 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
             },
             120,
@@ -226,7 +231,7 @@ mod tests {
                 file_indexed_pct: Some(75.3),
                 last_warning: None,
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
             },
             200,
@@ -248,7 +253,7 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: Some("Object 0xABC not found"),
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
             },
             200,
@@ -270,7 +275,7 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
-                navigating_to_pin: true,
+                spinner_state: SpinnerState::NavigatingToPin,
                 spinner_tick: 0,
             },
             200,
@@ -292,7 +297,7 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
             },
             200,
@@ -315,7 +320,7 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: Some(&long_warning),
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
             },
             300,

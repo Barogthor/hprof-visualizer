@@ -43,7 +43,20 @@ use crate::views::stack_view::{CollectionId, EntryIdx, FieldIdx, StaticFieldIdx,
 
 /// Delay before showing the loading spinner for expansions/page loads.
 /// Operations completing before this threshold show no spinner.
-const EXPANSION_LOADING_THRESHOLD: Duration = Duration::from_secs(1);
+const EXPANSION_LOADING_THRESHOLD: Duration = Duration::from_millis(200);
+
+/// Minimum time the spinner stays visible once shown, preventing
+/// sub-frame flicker for operations that complete shortly after
+/// the threshold.
+const MINIMUM_SPINNER_DURATION: Duration = Duration::from_millis(400);
+
+/// Status bar spinner state — mutual exclusion by construction.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SpinnerState {
+    Idle,
+    Resolving,
+    NavigatingToPin,
+}
 
 struct PendingExpansion {
     rx: Receiver<Option<Vec<FieldInfo>>>,
@@ -161,10 +174,14 @@ pub struct App<E: NavigationEngine> {
     show_object_ids: bool,
     /// In-progress go-to-pin navigation state (async walk deferred).
     pending_navigation: Option<PendingNavigation>,
-    /// True while a go-to-pin walk is deferred; drives spinner in status bar.
-    navigating_to_pin: bool,
+    /// Consolidated spinner state for the status bar.
+    spinner_state: SpinnerState,
     /// Spinner frame counter, incremented via `wrapping_add(1)` each render.
     spinner_tick: u8,
+    /// Earliest instant at which the spinner may be hidden after going
+    /// non-idle. Arms on `Idle → non-Idle`; resets to `None` on return
+    /// to `Idle`.
+    loading_until: Option<Instant>,
 }
 
 impl<E: NavigationEngine> App<E> {
@@ -204,8 +221,9 @@ impl<E: NavigationEngine> App<E> {
             show_help: false,
             show_object_ids: false,
             pending_navigation: None,
-            navigating_to_pin: false,
+            spinner_state: SpinnerState::Idle,
             spinner_tick: 0,
+            loading_until: None,
         }
     }
 
@@ -410,7 +428,7 @@ impl<E: NavigationEngine> App<E> {
         if remaining.is_empty() {
             self.position_cursor_and_scroll(&materialised);
             self.pending_navigation = None;
-            self.navigating_to_pin = false;
+            self.spinner_state = SpinnerState::Idle;
             self.spinner_tick = 0;
             return WalkOutcome::Success(NavigationPath::from_segments(materialised));
         }
@@ -433,7 +451,7 @@ impl<E: NavigationEngine> App<E> {
                     awaited: AwaitedResource::Continue,
                     prereq_expanded,
                 });
-                self.navigating_to_pin = true;
+                self.spinner_state = SpinnerState::NavigatingToPin;
                 return WalkOutcome::PartialAt(partial);
             }
 
@@ -492,7 +510,7 @@ impl<E: NavigationEngine> App<E> {
                             awaited: AwaitedResource::ObjectExpansion(oid),
                             prereq_expanded,
                         });
-                        self.navigating_to_pin = true;
+                        self.spinner_state = SpinnerState::NavigatingToPin;
                         self.position_cursor_and_scroll(&materialised);
                         return WalkOutcome::PartialAt(partial);
                     }
@@ -522,7 +540,7 @@ impl<E: NavigationEngine> App<E> {
                             awaited: AwaitedResource::ObjectExpansion(oid),
                             prereq_expanded,
                         });
-                        self.navigating_to_pin = true;
+                        self.spinner_state = SpinnerState::NavigatingToPin;
                         self.position_cursor_and_scroll(&materialised);
                         return WalkOutcome::PartialAt(partial);
                     }
@@ -571,7 +589,7 @@ impl<E: NavigationEngine> App<E> {
                             awaited: AwaitedResource::CollectionPage(cid.0),
                             prereq_expanded,
                         });
-                        self.navigating_to_pin = true;
+                        self.spinner_state = SpinnerState::NavigatingToPin;
                         self.position_cursor_and_scroll(&materialised);
                         return WalkOutcome::PartialAt(partial);
                     }
@@ -586,7 +604,7 @@ impl<E: NavigationEngine> App<E> {
         let final_path = NavigationPath::from_segments(materialised.clone());
         self.position_cursor_and_scroll(&materialised);
         self.pending_navigation = None;
-        self.navigating_to_pin = false;
+        self.spinner_state = SpinnerState::Idle;
         self.spinner_tick = 0;
         WalkOutcome::Success(final_path)
     }
@@ -925,7 +943,7 @@ impl<E: NavigationEngine> App<E> {
 
                 // Cancel any in-progress navigation before starting a new one (RT-A1).
                 self.pending_navigation = None;
-                self.navigating_to_pin = false;
+                self.spinner_state = SpinnerState::Idle;
                 self.spinner_tick = 0;
                 self.navigate_to_path(thread_id, &nav_path);
                 self.focus = Focus::StackFrames;
@@ -1126,8 +1144,15 @@ impl<E: NavigationEngine> App<E> {
                 // Priority: cancel any in-progress go-to-pin navigation (AC6).
                 if self.pending_navigation.is_some() {
                     self.pending_navigation = None;
-                    self.navigating_to_pin = false;
-                    self.spinner_tick = 0;
+                    // If pending ops have loading_shown, transition
+                    // to Resolving instead of Idle.
+                    let has_loading = self.has_loading_shown_pending();
+                    if has_loading {
+                        self.spinner_state = SpinnerState::Resolving;
+                    } else {
+                        self.spinner_state = SpinnerState::Idle;
+                        self.spinner_tick = 0;
+                    }
                     return AppAction::Continue;
                 }
                 // If inside a collection, collapse it and
@@ -1905,7 +1930,7 @@ impl<E: NavigationEngine> App<E> {
                         .is_some_and(|p| p.awaited == AwaitedResource::CollectionPage(cid))
                     {
                         self.pending_navigation = None;
-                        self.navigating_to_pin = false;
+                        self.spinner_state = SpinnerState::Idle;
                         self.spinner_tick = 0;
                         self.ui_status =
                             Some("Failed to navigate — object not resolvable".to_string());
@@ -2085,7 +2110,7 @@ impl<E: NavigationEngine> App<E> {
                         .is_some_and(|p| p.awaited == AwaitedResource::ObjectExpansion(object_id))
                     {
                         self.pending_navigation = None;
-                        self.navigating_to_pin = false;
+                        self.spinner_state = SpinnerState::Idle;
                         self.spinner_tick = 0;
                         self.ui_status =
                             Some("Failed to navigate — object not resolvable".to_string());
@@ -2133,10 +2158,60 @@ impl<E: NavigationEngine> App<E> {
         }
     }
 
+    /// Returns `true` if any pending operation has crossed the
+    /// loading threshold (`loading_shown == true`).
+    fn has_loading_shown_pending(&self) -> bool {
+        self.pending_expansions.values().any(|pe| pe.loading_shown)
+            || self.pending_pages.values().any(|pp| pp.loading_shown)
+            || self
+                .pending_pinned_pages
+                .values()
+                .any(|pp| pp.loading_shown)
+    }
+
+    /// Recomputes `spinner_state` from all pending operation maps and
+    /// the `loading_until` minimum-display timer. Must be called once
+    /// per tick, after `poll_expansions()` + `poll_pages()`.
+    fn update_spinner_state(&mut self) {
+        let prev = self.spinner_state;
+
+        // NavigatingToPin takes priority over Resolving.
+        let nav_active = self.pending_navigation.is_some();
+        let has_loading = self.has_loading_shown_pending();
+
+        let computed = if nav_active {
+            SpinnerState::NavigatingToPin
+        } else if has_loading {
+            SpinnerState::Resolving
+        } else {
+            SpinnerState::Idle
+        };
+
+        // Minimum display: keep spinner visible until loading_until.
+        let timer_active = self.loading_until.is_some_and(|t| Instant::now() < t);
+
+        if computed != SpinnerState::Idle {
+            // Arm the timer on Idle → non-Idle transition only.
+            if prev == SpinnerState::Idle {
+                self.loading_until = Some(Instant::now() + MINIMUM_SPINNER_DURATION);
+            }
+            self.spinner_state = computed;
+        } else if timer_active {
+            // Operations done but minimum display not expired —
+            // keep the previous non-Idle label visible.
+            // (prev is already non-Idle or we wouldn't have a
+            // timer running)
+        } else {
+            // Both conditions false: clear spinner.
+            self.spinner_state = SpinnerState::Idle;
+            self.loading_until = None;
+        }
+    }
+
     /// Renders the current state into a ratatui `Frame`.
     pub fn render(&mut self, frame: &mut ratatui::Frame) {
-        // Advance spinner when a go-to-pin navigation is in progress.
-        if self.navigating_to_pin {
+        // Advance spinner when any spinner is active.
+        if self.spinner_state != SpinnerState::Idle {
             self.spinner_tick = self.spinner_tick.wrapping_add(1);
         }
         if self.last_memory_log.elapsed() >= Duration::from_secs(20) {
@@ -2289,14 +2364,14 @@ impl<E: NavigationEngine> App<E> {
                 last_warning: last_warning.as_deref(),
                 file_indexed_pct,
                 pinned_hidden_count,
-                navigating_to_pin: self.navigating_to_pin,
+                spinner_state: self.spinner_state,
                 spinner_tick: self.spinner_tick,
             },
             status_area,
         );
 
         if let Some(area) = help_area {
-            let ctx = if self.navigating_to_pin {
+            let ctx = if self.spinner_state != SpinnerState::Idle {
                 HelpContext::Navigating
             } else {
                 match self.focus {
@@ -2411,7 +2486,10 @@ fn run_loop<E: NavigationEngine + Send + Sync + 'static>(
             app.resume_pending_navigation(pending);
         }
 
-        // 4. Render.
+        // 4. Recompute consolidated spinner state once per tick.
+        app.update_spinner_state();
+
+        // 5. Render.
         terminal.draw(|f| app.render(f))?;
     }
 }

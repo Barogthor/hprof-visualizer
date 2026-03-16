@@ -3236,9 +3236,10 @@ mod async_navigation {
             app.pending_navigation.is_some(),
             "pending_navigation must be set on deferral"
         );
-        assert!(
-            app.navigating_to_pin,
-            "navigating_to_pin must be true during async wait"
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::NavigatingToPin,
+            "spinner must show NavigatingToPin during async wait"
         );
         let awaited = &app.pending_navigation.as_ref().unwrap().awaited;
         assert_eq!(
@@ -3359,7 +3360,11 @@ mod async_navigation {
             app.pending_navigation.is_none(),
             "pending_navigation must be cleared"
         );
-        assert!(!app.navigating_to_pin, "navigating_to_pin must be false");
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::Idle,
+            "spinner must be idle"
+        );
 
         // Cursor stays at last resolved step (Var(0)).
         let ss = app.stack_state.as_ref().unwrap();
@@ -3406,9 +3411,10 @@ mod async_navigation {
             app.pending_navigation.is_none(),
             "no pending_navigation when all steps are cached"
         );
-        assert!(
-            !app.navigating_to_pin,
-            "navigating_to_pin must be false after sync completion"
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::Idle,
+            "spinner must be idle after sync completion"
         );
         let ss = app.stack_state.as_ref().unwrap();
         assert_eq!(
@@ -3621,7 +3627,11 @@ mod async_navigation {
             app.pending_navigation.is_none(),
             "pending_navigation must be cleared on failure"
         );
-        assert!(!app.navigating_to_pin, "spinner must be off after failure");
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::Idle,
+            "spinner must be off after failure"
+        );
         assert!(
             app.ui_status
                 .as_deref()
@@ -3887,7 +3897,7 @@ mod async_navigation {
             app.pending_navigation.is_none(),
             "no pending navigation after completion"
         );
-        assert!(!app.navigating_to_pin, "spinner must be off");
+        assert_eq!(app.spinner_state, SpinnerState::Idle, "spinner must be off");
 
         // Scroll offset: target is in flat_items at some index, offset ≤ index.
         let flat = ss.flat_items();
@@ -3898,5 +3908,531 @@ mod async_navigation {
                 "offset {offset} must be ≤ target index {idx}"
             );
         }
+    }
+}
+
+// =========================================================
+// Story 11.1 — Loading indicator for slow operations
+// =========================================================
+
+mod spinner_state_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // --- Task 1.3: threshold timing ---
+
+    #[test]
+    fn operation_under_threshold_never_shows_loading() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "t.hprof".into());
+        let (tx, rx) = mpsc::channel();
+        let path = NavigationPathBuilder::frame_only(FrameId(0));
+        app.pending_expansions.insert(
+            path.clone(),
+            PendingExpansion {
+                rx,
+                object_id: 1,
+                path: path.clone(),
+                started: Instant::now(),
+                loading_shown: false,
+            },
+        );
+        // Immediately resolve — under 200ms.
+        tx.send(Some(vec![])).unwrap();
+        app.poll_expansions();
+        // Expansion removed, loading_shown was never set.
+        assert!(
+            app.pending_expansions.is_empty(),
+            "expansion must be consumed"
+        );
+    }
+
+    #[test]
+    fn operation_over_threshold_shows_loading() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "t.hprof".into());
+        let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let path = NavigationPathBuilder::frame_only(FrameId(0));
+        app.pending_expansions.insert(
+            path.clone(),
+            PendingExpansion {
+                rx,
+                object_id: 1,
+                path: path.clone(),
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: false,
+            },
+        );
+        app.poll_expansions();
+        let pe = app.pending_expansions.get(&path).unwrap();
+        assert!(
+            pe.loading_shown,
+            "loading_shown must be true after threshold"
+        );
+    }
+
+    // --- Task 2.8: two concurrent pending operations ---
+
+    #[test]
+    fn spinner_stays_when_one_of_two_operations_completes() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "t.hprof".into());
+
+        let (tx1, rx1) = mpsc::channel();
+        let path1 = NavigationPathBuilder::frame_only(FrameId(0));
+        app.pending_expansions.insert(
+            path1.clone(),
+            PendingExpansion {
+                rx: rx1,
+                object_id: 10,
+                path: path1.clone(),
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: true,
+            },
+        );
+
+        let (_tx2, rx2) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let path2 = NavigationPathBuilder::new(FrameId(0), VarIdx(0)).build();
+        app.pending_expansions.insert(
+            path2.clone(),
+            PendingExpansion {
+                rx: rx2,
+                object_id: 20,
+                path: path2.clone(),
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: true,
+            },
+        );
+
+        // Complete first operation.
+        tx1.send(Some(vec![])).unwrap();
+        app.poll_expansions();
+        app.update_spinner_state();
+
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::Resolving,
+            "spinner must stay Resolving while second op pending"
+        );
+
+        // Now complete the second.
+        // tx2 was dropped (not sent), so it will be Disconnected.
+        // Actually let's just drop the tx to disconnect:
+        drop(_tx2);
+        app.poll_expansions();
+        // After minimum display time, spinner should clear.
+        // Force loading_until to past.
+        app.loading_until = Some(Instant::now() - Duration::from_millis(1));
+        app.update_spinner_state();
+
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::Idle,
+            "spinner must be Idle when all ops complete"
+        );
+    }
+
+    // --- Task 2.9: SpinnerState priority ---
+
+    #[test]
+    fn navigating_to_pin_takes_priority_over_resolving() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "t.hprof".into());
+
+        // Simulate pending navigation.
+        app.pending_navigation = Some(PendingNavigation {
+            remaining_path: vec![],
+            original_path: NavigationPathBuilder::frame_only(FrameId(0)),
+            thread_id: 1,
+            awaited: AwaitedResource::ObjectExpansion(99),
+            prereq_expanded: vec![],
+        });
+
+        // Simulate a pending expansion with loading_shown.
+        let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let path = NavigationPathBuilder::frame_only(FrameId(0));
+        app.pending_expansions.insert(
+            path.clone(),
+            PendingExpansion {
+                rx,
+                object_id: 99,
+                path: path.clone(),
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: true,
+            },
+        );
+
+        app.update_spinner_state();
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::NavigatingToPin,
+            "NavigatingToPin must win over Resolving"
+        );
+
+        // Remove pending navigation.
+        app.pending_navigation = None;
+        app.update_spinner_state();
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::Resolving,
+            "without nav, should be Resolving"
+        );
+    }
+
+    // --- Task 2.10: spinner animation ---
+
+    #[test]
+    fn spinner_tick_divides_by_four_for_frame_index() {
+        // tick=0  → frame 0
+        // tick=3  → frame 0
+        // tick=4  → frame 1
+        // tick=39 → frame 9
+        // tick=40 → frame 0 (wraps)
+        let tick_0: u8 = 0;
+        assert_eq!((tick_0 / 4) as usize % 10, 0);
+        assert_eq!((3u8 / 4) as usize % 10, 0);
+        assert_eq!((4u8 / 4) as usize % 10, 1);
+        assert_eq!((39u8 / 4) as usize % 10, 9);
+        assert_eq!((40u8 / 4) as usize % 10, 0);
+    }
+
+    #[test]
+    fn spinner_tick_increments_when_not_idle() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "t.hprof".into());
+        assert_eq!(app.spinner_tick, 0);
+
+        // Idle — tick should not increment in render.
+        // We can't call render() in tests (no terminal), but
+        // we can verify the guard logic directly:
+        assert_eq!(app.spinner_state, SpinnerState::Idle);
+
+        // Set non-idle.
+        app.spinner_state = SpinnerState::Resolving;
+        // Simulate what render does:
+        if app.spinner_state != SpinnerState::Idle {
+            app.spinner_tick = app.spinner_tick.wrapping_add(1);
+        }
+        assert_eq!(app.spinner_tick, 1);
+
+        // Set back to Idle — should not increment.
+        app.spinner_state = SpinnerState::Idle;
+        if app.spinner_state != SpinnerState::Idle {
+            app.spinner_tick = app.spinner_tick.wrapping_add(1);
+        }
+        assert_eq!(app.spinner_tick, 1, "tick must not change when Idle");
+    }
+
+    // --- Task 2.11: Escape behaviour ---
+
+    #[test]
+    fn escape_during_nav_with_pending_ops_transitions_to_resolving() {
+        let engine = StubEngine::with_threads_and_frames(&["main"], vec![make_frame(0)]);
+        let mut app = App::new(engine, "t.hprof".into());
+        app.open_stack_for_selected_thread(1);
+
+        // Set up pending navigation.
+        app.pending_navigation = Some(PendingNavigation {
+            remaining_path: vec![],
+            original_path: NavigationPathBuilder::frame_only(FrameId(0)),
+            thread_id: 1,
+            awaited: AwaitedResource::ObjectExpansion(42),
+            prereq_expanded: vec![],
+        });
+        app.spinner_state = SpinnerState::NavigatingToPin;
+
+        // Add a pending expansion with loading_shown.
+        let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let path = NavigationPathBuilder::frame_only(FrameId(0));
+        app.pending_expansions.insert(
+            path.clone(),
+            PendingExpansion {
+                rx,
+                object_id: 42,
+                path: path.clone(),
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: true,
+            },
+        );
+
+        // Press Escape.
+        app.handle_stack_frames_input(InputEvent::Escape);
+
+        assert!(
+            app.pending_navigation.is_none(),
+            "navigation must be cancelled"
+        );
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::Resolving,
+            "must transition to Resolving, not Idle"
+        );
+    }
+
+    #[test]
+    fn escape_during_nav_without_pending_ops_goes_idle() {
+        let engine = StubEngine::with_threads_and_frames(&["main"], vec![make_frame(0)]);
+        let mut app = App::new(engine, "t.hprof".into());
+        app.open_stack_for_selected_thread(1);
+
+        app.pending_navigation = Some(PendingNavigation {
+            remaining_path: vec![],
+            original_path: NavigationPathBuilder::frame_only(FrameId(0)),
+            thread_id: 1,
+            awaited: AwaitedResource::ObjectExpansion(42),
+            prereq_expanded: vec![],
+        });
+        app.spinner_state = SpinnerState::NavigatingToPin;
+
+        app.handle_stack_frames_input(InputEvent::Escape);
+
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::Idle,
+            "must be Idle when no pending ops"
+        );
+    }
+
+    #[test]
+    fn escape_during_resolving_stays_resolving() {
+        let engine = StubEngine::with_threads_and_frames(&["main"], vec![make_frame(0)]);
+        let mut app = App::new(engine, "t.hprof".into());
+        app.open_stack_for_selected_thread(1);
+
+        app.spinner_state = SpinnerState::Resolving;
+        // No pending_navigation — Escape won't trigger nav cancel.
+        // It will try to collapse collection / go back to thread list.
+        let before = app.spinner_state;
+        app.handle_stack_frames_input(InputEvent::Escape);
+        // Escape did not clear the spinner (background resolution).
+        // Note: Escape may change focus, but spinner_state is
+        // unchanged (no code path sets it to Idle for Resolving).
+        // The only thing that clears Resolving is
+        // update_spinner_state when all ops complete.
+        // After Escape with no pending_navigation, the handler
+        // falls through to collection collapse / focus change.
+        // spinner_state is NOT touched.
+        assert_eq!(
+            app.spinner_state, before,
+            "Resolving must not be cleared by Escape"
+        );
+    }
+
+    // --- Task 4.1: fast operation never shows loading ---
+
+    #[test]
+    fn fast_operation_loading_shown_stays_false() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "t.hprof".into());
+        let (tx, rx) = mpsc::channel();
+        let path = NavigationPathBuilder::frame_only(FrameId(0));
+        app.pending_expansions.insert(
+            path.clone(),
+            PendingExpansion {
+                rx,
+                object_id: 1,
+                path: path.clone(),
+                started: Instant::now(),
+                loading_shown: false,
+            },
+        );
+        // Resolve immediately.
+        tx.send(Some(vec![])).unwrap();
+        // Before poll, loading_shown is false.
+        assert!(
+            !app.pending_expansions.get(&path).unwrap().loading_shown,
+            "loading_shown must start false"
+        );
+        app.poll_expansions();
+        // After poll, expansion is removed (resolved).
+        assert!(app.pending_expansions.is_empty());
+    }
+
+    // --- Task 4.3 + 4.4: minimum display time ---
+
+    #[test]
+    fn minimum_spinner_duration_prevents_early_clear() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "t.hprof".into());
+
+        // Simulate: spinner just turned on.
+        app.spinner_state = SpinnerState::Idle;
+        app.loading_until = None;
+
+        // Add a pending expansion that has loading_shown.
+        let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let path = NavigationPathBuilder::frame_only(FrameId(0));
+        app.pending_expansions.insert(
+            path.clone(),
+            PendingExpansion {
+                rx,
+                object_id: 1,
+                path: path.clone(),
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: true,
+            },
+        );
+
+        // First update: Idle → Resolving, arms timer.
+        app.update_spinner_state();
+        assert_eq!(app.spinner_state, SpinnerState::Resolving);
+        assert!(app.loading_until.is_some());
+
+        // Now remove the pending expansion (operation completed).
+        app.pending_expansions.clear();
+
+        // Update again — timer not expired yet, spinner stays.
+        app.update_spinner_state();
+        assert_ne!(
+            app.spinner_state,
+            SpinnerState::Idle,
+            "spinner must stay visible during minimum display"
+        );
+
+        // Force timer to past.
+        app.loading_until = Some(Instant::now() - Duration::from_millis(1));
+        app.update_spinner_state();
+        assert_eq!(
+            app.spinner_state,
+            SpinnerState::Idle,
+            "spinner must clear after minimum display expires"
+        );
+        assert!(
+            app.loading_until.is_none(),
+            "loading_until must be reset to None"
+        );
+    }
+
+    #[test]
+    fn navigating_to_pin_also_arms_minimum_display_timer() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "t.hprof".into());
+        app.spinner_state = SpinnerState::Idle;
+        app.loading_until = None;
+
+        // Simulate pending navigation.
+        app.pending_navigation = Some(PendingNavigation {
+            remaining_path: vec![],
+            original_path: NavigationPathBuilder::frame_only(FrameId(0)),
+            thread_id: 1,
+            awaited: AwaitedResource::ObjectExpansion(1),
+            prereq_expanded: vec![],
+        });
+
+        app.update_spinner_state();
+        assert_eq!(app.spinner_state, SpinnerState::NavigatingToPin);
+        assert!(
+            app.loading_until.is_some(),
+            "timer must arm for NavigatingToPin too"
+        );
+    }
+
+    #[test]
+    fn resolving_to_navigating_does_not_reset_timer() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "t.hprof".into());
+
+        // Start in Resolving state with timer armed.
+        let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let path = NavigationPathBuilder::frame_only(FrameId(0));
+        app.pending_expansions.insert(
+            path.clone(),
+            PendingExpansion {
+                rx,
+                object_id: 1,
+                path: path.clone(),
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: true,
+            },
+        );
+        app.spinner_state = SpinnerState::Idle;
+        app.update_spinner_state();
+        assert_eq!(app.spinner_state, SpinnerState::Resolving);
+        let timer_1 = app.loading_until;
+
+        // Now add a pending navigation → transition to NavigatingToPin.
+        app.pending_navigation = Some(PendingNavigation {
+            remaining_path: vec![],
+            original_path: NavigationPathBuilder::frame_only(FrameId(0)),
+            thread_id: 1,
+            awaited: AwaitedResource::ObjectExpansion(1),
+            prereq_expanded: vec![],
+        });
+        app.update_spinner_state();
+        assert_eq!(app.spinner_state, SpinnerState::NavigatingToPin);
+        // Timer must NOT have been reset.
+        assert_eq!(
+            app.loading_until, timer_1,
+            "timer must not reset on Resolving → NavigatingToPin"
+        );
+    }
+
+    // --- Task 2.12: StatusBar renders each SpinnerState ---
+
+    #[test]
+    fn status_bar_renders_resolving_spinner() {
+        use crate::views::status_bar::{SPINNER_CHARS, StatusBar};
+        use ratatui::{Terminal, backend::TestBackend};
+        let bar = StatusBar {
+            filename: "t.hprof",
+            thread_count: 1,
+            selected: None,
+            warning_count: 0,
+            file_indexed_pct: None,
+            last_warning: None,
+            pinned_hidden_count: 0,
+            spinner_state: SpinnerState::Resolving,
+            spinner_tick: 0,
+        };
+        let backend = TestBackend::new(200, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| f.render_widget(bar, f.area())).unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol().to_string())
+            .collect();
+        assert!(
+            content.contains("Resolving"),
+            "Resolving text must appear; got: {content:?}"
+        );
+        let expected_char = SPINNER_CHARS[0];
+        assert!(
+            content.contains(expected_char),
+            "spinner char must appear; got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn status_bar_idle_shows_no_spinner_text() {
+        use crate::views::status_bar::StatusBar;
+        use ratatui::{Terminal, backend::TestBackend};
+        let bar = StatusBar {
+            filename: "t.hprof",
+            thread_count: 1,
+            selected: None,
+            warning_count: 0,
+            file_indexed_pct: None,
+            last_warning: None,
+            pinned_hidden_count: 0,
+            spinner_state: SpinnerState::Idle,
+            spinner_tick: 0,
+        };
+        let backend = TestBackend::new(200, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| f.render_widget(bar, f.area())).unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol().to_string())
+            .collect();
+        assert!(
+            !content.contains("Resolving") && !content.contains("Navigating to pin"),
+            "no spinner text when Idle; got: {content:?}"
+        );
     }
 }

@@ -150,8 +150,8 @@ development_status:
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
   # Deferred after Epic 12 (Epic 10 retro decision)
-  epic-11: backlog
-  11-1-loading-indicator-slow-operations: ready-for-dev
+  epic-11: in-progress
+  11-1-loading-indicator-slow-operations: review
   11-2-batch-scan-by-segment: ready-for-dev
   11-3-parallel-eager-item-resolution: ready-for-dev
   11-4-skip-index-object-array: ready-for-dev
