@@ -1163,6 +1163,7 @@ impl<E: NavigationEngine> App<E> {
                     } else {
                         self.spinner_state = SpinnerState::Idle;
                         self.spinner_tick = 0;
+                        self.loading_until = None;
                     }
                     return AppAction::Continue;
                 }
@@ -2206,6 +2207,12 @@ impl<E: NavigationEngine> App<E> {
 
     /// Returns `true` if any pending operation has crossed the
     /// loading threshold (`loading_shown == true`).
+    ///
+    /// Scans all three pending HashMaps. With at most ~100 concurrent
+    /// operations the O(n) scan is < 0.01ms. If Epic 11.3 introduces
+    /// concurrency beyond ~1000 entries, replace with an `AtomicUsize`
+    /// counter incremented when `loading_shown` is first set and
+    /// decremented when the pending entry is removed.
     fn has_loading_shown_pending(&self) -> bool {
         self.pending_expansions.values().any(|pe| pe.loading_shown)
             || self.pending_pages.values().any(|pp| pp.loading_shown)
@@ -2244,9 +2251,10 @@ impl<E: NavigationEngine> App<E> {
             self.spinner_state = computed;
         } else if timer_active {
             // Operations done but minimum display not expired —
-            // keep the previous non-Idle label visible.
-            // (prev is already non-Idle or we wouldn't have a
-            // timer running)
+            // keep the current spinner_state visible (it may be
+            // non-Idle from a normal timer arm, or already Idle
+            // if Escape explicitly cleared it — in either case
+            // the render is correct as-is).
         } else {
             // Both conditions false: clear spinner.
             self.spinner_state = SpinnerState::Idle;

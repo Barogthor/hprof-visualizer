@@ -2308,7 +2308,7 @@ mod loading_and_warnings {
     use super::*;
 
     #[test]
-    fn loading_indicator_not_shown_before_1_second() {
+    fn loading_indicator_not_shown_before_threshold() {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
@@ -2408,7 +2408,7 @@ mod loading_and_warnings {
     }
 
     #[test]
-    fn loading_indicator_shown_if_not_yet_complete_after_1_second() {
+    fn loading_indicator_shown_if_not_yet_complete_after_threshold() {
         // Use a slow channel: create the receiver manually without sending a result.
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 99)];
