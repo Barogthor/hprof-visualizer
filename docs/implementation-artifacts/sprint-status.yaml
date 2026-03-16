@@ -115,7 +115,7 @@ development_status:
   epic-7-retrospective: done
 
   # Epic 9: Navigation & Data Fidelity (sourced from user testing 2026-03-10)
-  epic-9: in-progress
+  epic-9: done
   9-1-expand-state-bugs-and-failed-resolve-non-navigable: done
   9-2-collection-data-fidelity: done
   9-3-arrow-expand-unexpand-parent-navigation: done  # post-release fixes 2026-03-12
@@ -142,10 +142,11 @@ development_status:
   # Epic 12: Path-Based Expand State (sourced from Epic 4 retro + G4/G5)
   # Sequencing decision (Epic 10 retro): Epic 12 before Epic 11
   # Story 12.0 added: refactor render_variable_tree before path-based state
-  epic-12: in-progress
+  epic-12: done
   12-0-refactor-render-variable-tree: done
   12-1-path-based-expand-state-isolation: done
   12-2-favorites-path-based-collapse-state: done
+  epic-12-retrospective: done
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
   # Deferred after Epic 12 (Epic 10 retro decision)
