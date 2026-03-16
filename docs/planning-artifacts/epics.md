@@ -206,6 +206,7 @@ From Architecture:
 - FR71: Epic 13 Story 13.6 - Class metadata preload
 - FR72: Epic 13 Story 13.7 - Logo/splash screen
 - FR73: Epic 11 Story 11.1 - Loading indicator (>200ms threshold)
+- FR74: Epic 13 Story 13.8 - Toggle visibility of hidden favorites and object IDs
 
 ### NFR Coverage Map
 
@@ -286,7 +287,7 @@ Expanding or collapsing a node only affects that specific tree path. Other nodes
 
 ### Epic 13: UI Polish & Ergonomie
 Quality-of-life improvements: collapsible static fields section, enhanced favorites navigation, UI separators, attention-drawing colors for warnings, AZERTY/QWERTY keymapping, class metadata preload, and loading splash screen.
-**FRs covered:** FR66, FR67, FR68, FR69, FR70, FR71, FR72
+**FRs covered:** FR66, FR67, FR68, FR69, FR70, FR71, FR72, FR74
 **Source:** Large dump UX observations 2026-03-14 (G1, G2, G3, G6, G7, G8, G10)
 
 ## Epic 1: Open and Validate Heap Files
@@ -1957,7 +1958,8 @@ that use single-path scenarios
 
 Quality-of-life improvements: collapsible static fields, enhanced
 favorites navigation, UI separators, attention-drawing warning colors,
-AZERTY/QWERTY keymapping, class metadata preload, and loading splash.
+AZERTY/QWERTY keymapping, class metadata preload, loading splash, and
+toggle visibility for hidden favorites / object IDs.
 Sourced from large dump UX observations 2026-03-14 (G1, G2, G3, G6,
 G7, G8, G10).
 
@@ -2152,6 +2154,36 @@ the progress bars appear
 **Given** the tool is launched with an invalid file
 **When** an error occurs before TUI initialization
 **Then** the error is displayed cleanly without splash artifacts
+
+### Story 13.8: Toggle Hidden Favorites & Object ID Visibility
+
+As a user,
+I want to toggle the visibility of hidden favorites and of object
+IDs in the display,
+So that I can reduce visual noise when I don't need that information
+and restore it when I do.
+
+**FRs covered:** FR74
+
+**Priority:** P2
+
+**Acceptance Criteria:**
+
+**Given** the favorites panel contains hidden (removed) favorites
+**When** the user presses the "show/hide hidden favorites" keybinding
+**Then** hidden favorites are toggled between visible (greyed out)
+and completely hidden
+
+**Given** the tree view displays nodes with object IDs (e.g.
+`@0x7f3a...`)
+**When** the user presses the "show/hide object ID" keybinding
+**Then** object IDs are toggled between visible and hidden across
+all rendered nodes
+
+**Given** the user toggles either visibility setting
+**When** the TUI re-renders
+**Then** the state persists for the rest of the session and the
+status bar or a visual indicator reflects the current toggle state
 
 ## Backlog (Future Epics)
 

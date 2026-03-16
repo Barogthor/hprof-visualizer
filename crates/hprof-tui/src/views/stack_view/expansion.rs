@@ -1,7 +1,8 @@
 //! Expansion lifecycle state for the stack view.
 //!
-//! [`ExpansionRegistry`] owns all object expansion data (phases, decoded fields,
-//! errors) and collection pagination state, decoupled from cursor and frame logic.
+//! [`ExpansionRegistry`] owns all object expansion data (phases,
+//! decoded fields, errors) and collection pagination state,
+//! decoupled from cursor and frame logic.
 
 use std::collections::HashMap;
 
@@ -11,20 +12,18 @@ use super::types::{ChunkState, CollectionChunks, ExpansionPhase, NavigationPath}
 
 /// Holds expansion state for all objects in the stack view.
 pub struct ExpansionRegistry {
-    /// UI expansion phase keyed by `NavigationPath` — instance-scoped.
+    /// UI expansion phase keyed by `NavigationPath`.
     pub(crate) expansion_phases: HashMap<NavigationPath, ExpansionPhase>,
-    /// Auxiliary phase map keyed by `object_id` — for `tree_render` compatibility.
-    ///
-    /// Kept in sync with `expansion_phases`. When multiple paths point to the
-    /// same object, the last-written phase wins (acceptable for visual styling).
-    pub(crate) object_phases: HashMap<u64, ExpansionPhase>,
-    /// Decoded instance fields keyed by `object_id` — shared data cache.
+    /// Decoded instance fields keyed by `object_id` — shared
+    /// data cache.
     pub(crate) object_fields: HashMap<u64, Vec<FieldInfo>>,
-    /// Decoded static fields keyed by `object_id` — shared data cache.
+    /// Decoded static fields keyed by `object_id` — shared
+    /// data cache.
     pub(crate) object_static_fields: HashMap<u64, Vec<FieldInfo>>,
     /// Expansion errors keyed by `object_id`.
     pub(crate) object_errors: HashMap<u64, String>,
-    /// Collection pagination state keyed by `collection_id` — shared data cache.
+    /// Collection pagination state keyed by `collection_id`
+    /// — shared data cache.
     pub(crate) collection_chunks: HashMap<u64, CollectionChunks>,
 }
 
@@ -33,7 +32,6 @@ impl ExpansionRegistry {
     pub fn new() -> Self {
         Self {
             expansion_phases: HashMap::new(),
-            object_phases: HashMap::new(),
             object_fields: HashMap::new(),
             object_static_fields: HashMap::new(),
             object_errors: HashMap::new(),
@@ -41,7 +39,8 @@ impl ExpansionRegistry {
         }
     }
 
-    /// Returns the expansion phase for the given path (defaults to `Collapsed`).
+    /// Returns the expansion phase for the given path
+    /// (defaults to `Collapsed`).
     pub(crate) fn expansion_state(&self, path: &NavigationPath) -> ExpansionPhase {
         self.expansion_phases
             .get(path)
@@ -51,8 +50,9 @@ impl ExpansionRegistry {
 
     /// Marks a path expansion as complete with decoded fields.
     ///
-    /// Also stores instance fields by object_id for rendering.
-    /// Static fields are stored separately via `set_static_fields`.
+    /// Also stores instance fields by `object_id` for rendering.
+    /// Static fields are stored separately via
+    /// `set_static_fields`.
     pub fn set_expansion_done(
         &mut self,
         path: &NavigationPath,
@@ -62,22 +62,56 @@ impl ExpansionRegistry {
         self.object_fields.insert(object_id, fields);
         self.expansion_phases
             .insert(path.clone(), ExpansionPhase::Expanded);
-        self.object_phases
-            .insert(object_id, ExpansionPhase::Expanded);
     }
 
-    /// Collapses an object by ID only (used in batch collapse operations).
+    /// Collapses at a path and all descendant paths.
     ///
-    /// Removes all expansion phases pointing to this object_id from expansion_phases
-    /// by retaining only entries that don't correspond to this object. This is a
-    /// best-effort path-independent collapse used for recursive collapse.
-    pub fn collapse_object_by_id(&mut self, object_id: u64) {
-        self.object_phases.remove(&object_id);
+    /// Removes the target path and every path whose segments
+    /// start with the target's segments from `expansion_phases`.
+    /// Data cache cleanup is deferred to LRU eviction.
+    pub fn collapse_at_path(&mut self, path: &NavigationPath) {
+        let target_segs = path.segments();
+        let target_len = target_segs.len();
+        self.expansion_phases.retain(|p, _| {
+            let segs = p.segments();
+            if segs.len() < target_len {
+                return true;
+            }
+            segs[..target_len] != *target_segs
+        });
+    }
+
+    /// Clears data caches for a given `object_id`.
+    ///
+    /// Removes instance fields, static fields, and errors.
+    /// Does not touch `expansion_phases` — orphaned phases
+    /// are harmless since they are gated by `object_fields`
+    /// presence in the renderer.
+    pub fn collapse_all_for_object(&mut self, object_id: u64) {
         self.object_fields.remove(&object_id);
         self.object_static_fields.remove(&object_id);
         self.object_errors.remove(&object_id);
-        // Cannot efficiently remove expansion_phases by object_id without scanning.
-        // Orphaned phases are harmless — they are gated by object_fields presence.
+    }
+
+    /// Derives an `object_id → ExpansionPhase` map from data
+    /// caches and `expansion_phases`.
+    ///
+    /// Temporary compatibility bridge for `tree_render` which
+    /// still looks up phases by `object_id`.
+    ///
+    /// - `object_errors` keys → `Failed`
+    /// - `object_fields` keys → `Expanded`
+    /// - Remaining entries are inferred as `Collapsed` by the
+    ///   renderer's default.
+    pub(crate) fn derive_object_phases(&self) -> HashMap<u64, ExpansionPhase> {
+        let mut map = HashMap::new();
+        for &oid in self.object_fields.keys() {
+            map.insert(oid, ExpansionPhase::Expanded);
+        }
+        for &oid in self.object_errors.keys() {
+            map.insert(oid, ExpansionPhase::Failed);
+        }
+        map
     }
 
     /// Returns the [`ChunkState`] for a specific chunk.

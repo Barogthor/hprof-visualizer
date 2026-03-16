@@ -95,10 +95,12 @@ pub struct PinnedItem {
     pub item_label: String,
     /// Frozen snapshot of the pinned data.
     pub snapshot: PinnedSnapshot,
-    /// Objects or collection nodes collapsed by the user inside this snapshot.
+    /// Tree paths collapsed by the user inside this snapshot.
     ///
     /// Default is empty: all captured nodes are expanded in the favorites view.
-    pub local_collapsed: HashSet<u64>,
+    /// Each path identifies a unique position in the snapshot tree, enabling
+    /// independent collapse state for different occurrences of the same object.
+    pub local_collapsed: HashSet<NavigationPath>,
     /// Field/variable rows hidden by the user (`h` key).
     ///
     /// When `show_hidden = false` (default), hidden rows are removed entirely.
@@ -901,7 +903,9 @@ mod tests {
                 },
             }],
         );
-        state.set_expansion_done(
+        let var_path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+        state.set_expansion_done_at_path(
+            &var_path,
             42,
             vec![FieldInfo {
                 name: "x".to_string(),
@@ -929,7 +933,9 @@ mod tests {
                 },
             }],
         );
-        state.set_expansion_done(
+        let var_path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+        state.set_expansion_done_at_path(
+            &var_path,
             10,
             vec![FieldInfo {
                 name: "count".to_string(),
@@ -984,9 +990,18 @@ mod tests {
                 },
             }],
         );
+        // Build chain: the path for each level
+        // deepens by one Field(0) segment
+        let mut field_indices: Vec<usize> = Vec::new();
         for i in 0..n {
             let next_id = (i + 1) as u64;
-            state.set_expansion_done(
+            let mut b = NavigationPathBuilder::new(FrameId(1), VarIdx(0));
+            for &fi in &field_indices {
+                b = b.field(FieldIdx(fi));
+            }
+            let path = b.build();
+            state.set_expansion_done_at_path(
+                &path,
                 i as u64,
                 vec![FieldInfo {
                     name: "next".to_string(),
@@ -998,6 +1013,7 @@ mod tests {
                     },
                 }],
             );
+            field_indices.push(0);
         }
         let cursor = make_cursor_at(1);
         let item = snapshot_from_cursor(&cursor, &state, "main", thread_id()).unwrap();
@@ -1034,7 +1050,9 @@ mod tests {
                 },
             }],
         );
-        state.set_expansion_done(
+        let var_path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+        state.set_expansion_done_at_path(
+            &var_path,
             10,
             vec![FieldInfo {
                 name: "items".to_string(),

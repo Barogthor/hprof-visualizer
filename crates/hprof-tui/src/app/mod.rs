@@ -39,7 +39,7 @@ use crate::{
 };
 
 #[cfg(test)]
-use crate::views::stack_view::{CollectionId, EntryIdx, FieldIdx, VarIdx};
+use crate::views::stack_view::{CollectionId, EntryIdx, FieldIdx, StaticFieldIdx, VarIdx};
 
 /// Delay before showing the loading spinner for expansions/page loads.
 /// Operations completing before this threshold show no spinner.
@@ -47,6 +47,9 @@ const EXPANSION_LOADING_THRESHOLD: Duration = Duration::from_secs(1);
 
 struct PendingExpansion {
     rx: Receiver<Option<Vec<FieldInfo>>>,
+    object_id: u64,
+    #[allow(dead_code)]
+    path: NavigationPath,
     pub(super) started: Instant,
     loading_shown: bool,
 }
@@ -113,7 +116,7 @@ struct PendingNavigation {
     ///
     /// Checked on resume: if any is no longer `Expanded`, the context is
     /// stale and the walk restarts from `original_path`.
-    prereq_expanded: Vec<u64>,
+    prereq_expanded: Vec<NavigationPath>,
 }
 
 /// Top-level TUI application state.
@@ -130,8 +133,8 @@ pub struct App<E: NavigationEngine> {
     preview_stack_state: StackState,
     /// Stack frame state — `Some` when a thread is entered, `None` otherwise.
     stack_state: Option<StackState>,
-    /// In-flight object expansion receivers keyed by `object_id`.
-    pending_expansions: HashMap<u64, PendingExpansion>,
+    /// In-flight object expansion receivers keyed by `NavigationPath`.
+    pending_expansions: HashMap<NavigationPath, PendingExpansion>,
     /// In-flight collection page load receivers keyed by
     /// `(collection_id, chunk_offset)`.
     pending_pages: HashMap<(u64, usize), PendingPage>,
@@ -216,7 +219,7 @@ impl<E: NavigationEngine> App<E> {
     }
 
     #[allow(dead_code)]
-    fn expand_object_sync(&mut self, object_id: u64) -> bool {
+    fn expand_object_sync(&mut self, object_id: u64, path: &NavigationPath) -> bool {
         let Some(fields) = self.engine.expand_object(object_id) else {
             return false;
         };
@@ -228,7 +231,7 @@ impl<E: NavigationEngine> App<E> {
         let Some(stack_state) = &mut self.stack_state else {
             return false;
         };
-        stack_state.set_expansion_done(object_id, fields);
+        stack_state.set_expansion_done_at_path(path, object_id, fields);
         stack_state.set_static_fields(object_id, static_fields);
         true
     }
@@ -417,7 +420,7 @@ impl<E: NavigationEngine> App<E> {
 
         let mut materialised = materialised;
         let mut step_count = in_frame_steps;
-        let mut prereq_expanded: Vec<u64> = Vec::new();
+        let mut prereq_expanded: Vec<NavigationPath> = Vec::new();
 
         for (i, seg) in remaining.iter().enumerate() {
             if step_count >= 10 {
@@ -473,12 +476,13 @@ impl<E: NavigationEngine> App<E> {
                     let Some(oid) = current_object_id else {
                         break;
                     };
-                    let expanded = self
-                        .stack_state
-                        .as_ref()
-                        .is_some_and(|s| s.expansion_state(oid) == ExpansionPhase::Expanded);
+                    let mat_path = NavigationPath::from_segments(materialised.clone());
+                    let expanded = self.stack_state.as_ref().is_some_and(|s| {
+                        s.expansion_state_for_path(&mat_path) == ExpansionPhase::Expanded
+                    });
                     if !expanded {
-                        self.start_object_expansion(oid);
+                        let exp_path = NavigationPath::from_segments(materialised.clone());
+                        self.start_object_expansion(oid, exp_path);
                         let new_remaining = remaining[i..].to_vec();
                         let partial = NavigationPath::from_segments(materialised.clone());
                         self.pending_navigation = Some(PendingNavigation {
@@ -492,7 +496,7 @@ impl<E: NavigationEngine> App<E> {
                         self.position_cursor_and_scroll(&materialised);
                         return WalkOutcome::PartialAt(partial);
                     }
-                    prereq_expanded.push(oid);
+                    prereq_expanded.push(mat_path);
                     materialised.push(seg.clone());
                     current_object_id = self.child_object_id_at(oid, fi.0);
                     self.position_cursor_and_scroll(&materialised);
@@ -502,12 +506,13 @@ impl<E: NavigationEngine> App<E> {
                     let Some(oid) = current_object_id else {
                         break;
                     };
-                    let expanded = self
-                        .stack_state
-                        .as_ref()
-                        .is_some_and(|s| s.expansion_state(oid) == ExpansionPhase::Expanded);
+                    let mat_path = NavigationPath::from_segments(materialised.clone());
+                    let expanded = self.stack_state.as_ref().is_some_and(|s| {
+                        s.expansion_state_for_path(&mat_path) == ExpansionPhase::Expanded
+                    });
                     if !expanded {
-                        self.start_object_expansion(oid);
+                        let exp_path = NavigationPath::from_segments(materialised.clone());
+                        self.start_object_expansion(oid, exp_path);
                         let new_remaining = remaining[i..].to_vec();
                         let partial = NavigationPath::from_segments(materialised.clone());
                         self.pending_navigation = Some(PendingNavigation {
@@ -528,7 +533,7 @@ impl<E: NavigationEngine> App<E> {
                     {
                         break;
                     }
-                    prereq_expanded.push(oid);
+                    prereq_expanded.push(mat_path);
                     materialised.push(seg.clone());
                     current_object_id = self.stack_state.as_ref().and_then(|s| {
                         let fields = s.object_static_fields().get(&oid)?;
@@ -595,10 +600,10 @@ impl<E: NavigationEngine> App<E> {
         E: Send + Sync + 'static,
     {
         // Stale context check: prerequisites must still be Expanded (AC9).
-        let stale = pending.prereq_expanded.iter().any(|&oid| {
+        let stale = pending.prereq_expanded.iter().any(|p| {
             self.stack_state
                 .as_ref()
-                .is_some_and(|s| s.expansion_state(oid) != ExpansionPhase::Expanded)
+                .is_some_and(|s| s.expansion_state_for_path(p) != ExpansionPhase::Expanded)
         });
         if stale {
             self.ui_status = Some("Pin context changed, retrying...".to_string());
@@ -832,31 +837,41 @@ impl<E: NavigationEngine> App<E> {
             }
             InputEvent::Right | InputEvent::Enter => {
                 if !self.pinned.is_empty()
-                    && let Some((object_id, is_collapsed)) =
-                        self.favorites_list_state.current_toggleable_object()
-                    && is_collapsed
+                    && self
+                        .favorites_list_state
+                        .current_toggleable_object()
+                        .is_some()
+                    && let Some(path) = self.favorites_list_state.current_toggleable_path()
                 {
                     let idx = self
                         .favorites_list_state
                         .selected_index()
                         .min(self.pinned.len().saturating_sub(1));
-                    if let Some(item) = self.pinned.get_mut(idx) {
-                        item.local_collapsed.remove(&object_id);
+                    let path = path.clone();
+                    if let Some(item) = self.pinned.get_mut(idx)
+                        && item.local_collapsed.contains(&path)
+                    {
+                        item.local_collapsed.remove(&path);
                     }
                 }
             }
             InputEvent::Left => {
                 if !self.pinned.is_empty()
-                    && let Some((object_id, is_collapsed)) =
-                        self.favorites_list_state.current_toggleable_object()
-                    && !is_collapsed
+                    && self
+                        .favorites_list_state
+                        .current_toggleable_object()
+                        .is_some()
+                    && let Some(path) = self.favorites_list_state.current_toggleable_path()
                 {
                     let idx = self
                         .favorites_list_state
                         .selected_index()
                         .min(self.pinned.len().saturating_sub(1));
-                    if let Some(item) = self.pinned.get_mut(idx) {
-                        item.local_collapsed.insert(object_id);
+                    let path = path.clone();
+                    if let Some(item) = self.pinned.get_mut(idx)
+                        && !item.local_collapsed.contains(&path)
+                    {
+                        item.local_collapsed.insert(path);
                     }
                     self.favorites_list_state.clamp_sub_row();
                 }
@@ -1124,20 +1139,31 @@ impl<E: NavigationEngine> App<E> {
                 if let Some((cid, restore_cursor)) = coll_info {
                     self.pending_pages.retain(|&(id, _), _| id != cid);
                     if let Some(s) = &mut self.stack_state {
+                        let cpath = match s.cursor() {
+                            RenderCursor::At(p) => Some(p.clone()),
+                            _ => None,
+                        };
                         s.expansion.collection_chunks.remove(&cid);
+                        if let Some(p) = &cpath {
+                            s.expansion.collapse_at_path(p);
+                        }
                         s.set_cursor(restore_cursor);
                     }
                     return AppAction::Continue;
                 }
                 // If cursor is on a loading node, cancel.
-                let loading_id = self
-                    .stack_state
-                    .as_ref()
-                    .and_then(|s| s.selected_loading_object_id());
-                if let Some(oid) = loading_id {
-                    self.pending_expansions.remove(&oid);
+                let loading_info = self.stack_state.as_ref().and_then(|s| {
+                    let oid = s.selected_loading_object_id()?;
+                    let path = match s.cursor() {
+                        RenderCursor::LoadingNode(p) | RenderCursor::FailedNode(p) => p.clone(),
+                        _ => return None,
+                    };
+                    Some((oid, path))
+                });
+                if let Some((oid, path)) = loading_info {
+                    self.pending_expansions.retain(|_, pe| pe.object_id != oid);
                     if let Some(s) = &mut self.stack_state {
-                        s.cancel_expansion(oid);
+                        s.cancel_expansion(&path);
                     }
                 } else {
                     self.stack_state = None;
@@ -1193,9 +1219,9 @@ impl<E: NavigationEngine> App<E> {
             InputEvent::Right => {
                 enum RightCmd {
                     ExpandFrame(u64),
-                    StartObj(u64),
+                    StartObj(u64, NavigationPath),
                     StartCollection(u64, u64),
-                    StartEntryObj(u64),
+                    StartEntryObj(u64, NavigationPath),
                     LoadChunk(u64, usize, usize),
                 }
                 let cmd = self.stack_state.as_ref().and_then(|s| {
@@ -1203,14 +1229,12 @@ impl<E: NavigationEngine> App<E> {
                         RenderCursor::At(ref path) => {
                             let segs = path.segments();
                             if segs.len() == 1 {
-                                // Frame row
                                 let fid = s.selected_frame_id()?;
                                 if s.is_expanded(fid) {
                                     return None;
                                 }
                                 RightCmd::ExpandFrame(fid)
                             } else if segs.len() == 2 {
-                                // Var row
                                 let oid = s.selected_object_id()?;
                                 if let Some(ec) = s.selected_var_entry_count() {
                                     if ec == 0 || s.expansion.collection_chunks.contains_key(&oid) {
@@ -1218,8 +1242,10 @@ impl<E: NavigationEngine> App<E> {
                                     }
                                     return Some(RightCmd::StartCollection(oid, ec));
                                 }
-                                match s.expansion_state(oid) {
-                                    ExpansionPhase::Collapsed => RightCmd::StartObj(oid),
+                                match s.expansion_state_for_path(path) {
+                                    ExpansionPhase::Collapsed => {
+                                        RightCmd::StartObj(oid, path.clone())
+                                    }
                                     _ => return None,
                                 }
                             } else {
@@ -1236,9 +1262,9 @@ impl<E: NavigationEngine> App<E> {
                                             return Some(RightCmd::StartCollection(cid, ec));
                                         }
                                         let nested_id = s.selected_field_ref_id()?;
-                                        match s.expansion_state(nested_id) {
+                                        match s.expansion_state_for_path(path) {
                                             ExpansionPhase::Collapsed => {
-                                                RightCmd::StartObj(nested_id)
+                                                RightCmd::StartObj(nested_id, path.clone())
                                             }
                                             _ => return None,
                                         }
@@ -1253,9 +1279,9 @@ impl<E: NavigationEngine> App<E> {
                                             }
                                             return Some(RightCmd::StartCollection(oid, ec));
                                         }
-                                        match s.expansion_state(oid) {
+                                        match s.expansion_state_for_path(path) {
                                             ExpansionPhase::Collapsed => {
-                                                RightCmd::StartEntryObj(oid)
+                                                RightCmd::StartEntryObj(oid, path.clone())
                                             }
                                             _ => return None,
                                         }
@@ -1272,9 +1298,9 @@ impl<E: NavigationEngine> App<E> {
                                             return Some(RightCmd::StartCollection(cid, ec));
                                         }
                                         let nested_id = s.selected_static_field_ref_id()?;
-                                        match s.expansion_state(nested_id) {
+                                        match s.expansion_state_for_path(path) {
                                             ExpansionPhase::Collapsed => {
-                                                RightCmd::StartObj(nested_id)
+                                                RightCmd::StartObj(nested_id, path.clone())
                                             }
                                             _ => return None,
                                         }
@@ -1303,8 +1329,8 @@ impl<E: NavigationEngine> App<E> {
                             s.toggle_expand(fid, vars);
                         }
                     }
-                    Some(RightCmd::StartObj(oid)) => {
-                        self.start_object_expansion(oid);
+                    Some(RightCmd::StartObj(oid, path)) => {
+                        self.start_object_expansion(oid, path);
                     }
                     Some(RightCmd::StartCollection(cid, ec)) => {
                         let limit = (ec as usize).min(100);
@@ -1318,7 +1344,6 @@ impl<E: NavigationEngine> App<E> {
                         };
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.insert(cid, chunks);
-                            // Mark expansion phase so flat_items() renders entries.
                             if let RenderCursor::At(path) = s.cursor().clone() {
                                 s.expansion
                                     .expansion_phases
@@ -1327,8 +1352,8 @@ impl<E: NavigationEngine> App<E> {
                         }
                         self.start_collection_page_load(cid, 0, limit);
                     }
-                    Some(RightCmd::StartEntryObj(oid)) => {
-                        self.start_object_expansion(oid);
+                    Some(RightCmd::StartEntryObj(oid, path)) => {
+                        self.start_object_expansion(oid, path);
                     }
                     Some(RightCmd::LoadChunk(cid, offset, limit)) => {
                         self.start_collection_page_load(cid, offset, limit);
@@ -1339,10 +1364,10 @@ impl<E: NavigationEngine> App<E> {
             InputEvent::Left => {
                 enum LeftCmd {
                     CollapseFrame(u64),
-                    CollapseObj(u64),
-                    CollapseNestedObj(u64),
-                    CollapseCollection(u64),
-                    CollapseEntryObj(u64),
+                    CollapseObj(u64, NavigationPath),
+                    CollapseNestedObj(u64, NavigationPath),
+                    CollapseCollection(u64, NavigationPath),
+                    CollapseEntryObj(u64, NavigationPath),
                     NavigateToParent(RenderCursor),
                 }
                 let cmd = self.stack_state.as_ref().and_then(|s| {
@@ -1350,7 +1375,6 @@ impl<E: NavigationEngine> App<E> {
                         RenderCursor::At(ref path) => {
                             let segs = path.segments();
                             if segs.len() == 1 {
-                                // Frame row
                                 let fid = s.selected_frame_id()?;
                                 if s.is_expanded(fid) {
                                     LeftCmd::CollapseFrame(fid)
@@ -1358,15 +1382,16 @@ impl<E: NavigationEngine> App<E> {
                                     return None;
                                 }
                             } else if segs.len() == 2 {
-                                // Var row
                                 let Some(oid) = s.selected_object_id() else {
                                     return Some(LeftCmd::NavigateToParent(s.parent_cursor()?));
                                 };
                                 if s.expansion.collection_chunks.contains_key(&oid) {
-                                    return Some(LeftCmd::CollapseCollection(oid));
+                                    return Some(LeftCmd::CollapseCollection(oid, path.clone()));
                                 }
-                                match s.expansion_state(oid) {
-                                    ExpansionPhase::Expanded => LeftCmd::CollapseObj(oid),
+                                match s.expansion_state_for_path(path) {
+                                    ExpansionPhase::Expanded => {
+                                        LeftCmd::CollapseObj(oid, path.clone())
+                                    }
                                     _ => LeftCmd::NavigateToParent(s.parent_cursor()?),
                                 }
                             } else {
@@ -1376,21 +1401,33 @@ impl<E: NavigationEngine> App<E> {
                                         if let Some((cid, _)) = s.selected_field_collection_info()
                                             && s.expansion.collection_chunks.contains_key(&cid)
                                         {
-                                            return Some(LeftCmd::CollapseCollection(cid));
+                                            return Some(LeftCmd::CollapseCollection(
+                                                cid,
+                                                path.clone(),
+                                            ));
                                         }
-                                        if let Some(nested_id) = s.selected_field_ref_id()
-                                            && s.expansion_state(nested_id)
+                                        if s.selected_field_ref_id().is_some()
+                                            && s.expansion_state_for_path(path)
                                                 == ExpansionPhase::Expanded
                                         {
-                                            return Some(LeftCmd::CollapseNestedObj(nested_id));
+                                            let nid = s.selected_field_ref_id().unwrap();
+                                            return Some(LeftCmd::CollapseNestedObj(
+                                                nid,
+                                                path.clone(),
+                                            ));
                                         }
                                         LeftCmd::NavigateToParent(s.parent_cursor()?)
                                     }
                                     PathSegment::CollectionEntry(_, _) => {
-                                        if let Some(oid) = s.selected_collection_entry_ref_id()
-                                            && s.expansion_state(oid) == ExpansionPhase::Expanded
+                                        if s.selected_collection_entry_ref_id().is_some()
+                                            && s.expansion_state_for_path(path)
+                                                == ExpansionPhase::Expanded
                                         {
-                                            return Some(LeftCmd::CollapseEntryObj(oid));
+                                            let oid = s.selected_collection_entry_ref_id().unwrap();
+                                            return Some(LeftCmd::CollapseEntryObj(
+                                                oid,
+                                                path.clone(),
+                                            ));
                                         }
                                         LeftCmd::NavigateToParent(s.parent_cursor()?)
                                     }
@@ -1399,13 +1436,20 @@ impl<E: NavigationEngine> App<E> {
                                             s.selected_static_field_collection_info()
                                             && s.expansion.collection_chunks.contains_key(&cid)
                                         {
-                                            return Some(LeftCmd::CollapseCollection(cid));
+                                            return Some(LeftCmd::CollapseCollection(
+                                                cid,
+                                                path.clone(),
+                                            ));
                                         }
-                                        if let Some(nested_id) = s.selected_static_field_ref_id()
-                                            && s.expansion_state(nested_id)
+                                        if s.selected_static_field_ref_id().is_some()
+                                            && s.expansion_state_for_path(path)
                                                 == ExpansionPhase::Expanded
                                         {
-                                            return Some(LeftCmd::CollapseNestedObj(nested_id));
+                                            let nid = s.selected_static_field_ref_id().unwrap();
+                                            return Some(LeftCmd::CollapseNestedObj(
+                                                nid,
+                                                path.clone(),
+                                            ));
                                         }
                                         LeftCmd::NavigateToParent(s.parent_cursor()?)
                                     }
@@ -1430,28 +1474,29 @@ impl<E: NavigationEngine> App<E> {
                             s.toggle_expand(fid, vec![]);
                         }
                     }
-                    Some(LeftCmd::CollapseObj(oid)) => {
-                        self.pending_expansions.remove(&oid);
+                    Some(LeftCmd::CollapseObj(oid, path)) => {
+                        self.pending_expansions.retain(|_, pe| pe.object_id != oid);
                         if let Some(s) = &mut self.stack_state {
-                            s.collapse_object_recursive(oid);
+                            s.collapse_object_recursive(&path);
                         }
                     }
-                    Some(LeftCmd::CollapseNestedObj(oid)) => {
-                        self.pending_expansions.remove(&oid);
+                    Some(LeftCmd::CollapseNestedObj(oid, path)) => {
+                        self.pending_expansions.retain(|_, pe| pe.object_id != oid);
                         if let Some(s) = &mut self.stack_state {
-                            s.collapse_object(oid);
+                            s.collapse_object(&path);
                         }
                     }
-                    Some(LeftCmd::CollapseCollection(cid)) => {
+                    Some(LeftCmd::CollapseCollection(cid, path)) => {
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.remove(&cid);
+                            s.expansion.collapse_at_path(&path);
                         }
                         self.pending_pages.retain(|&(id, _), _| id != cid);
                     }
-                    Some(LeftCmd::CollapseEntryObj(oid)) => {
-                        self.pending_expansions.remove(&oid);
+                    Some(LeftCmd::CollapseEntryObj(oid, path)) => {
+                        self.pending_expansions.retain(|_, pe| pe.object_id != oid);
                         if let Some(s) = &mut self.stack_state {
-                            s.collapse_object_recursive(oid);
+                            s.collapse_object_recursive(&path);
                         }
                     }
                     Some(LeftCmd::NavigateToParent(parent)) => {
@@ -1463,27 +1508,25 @@ impl<E: NavigationEngine> App<E> {
                 }
             }
             InputEvent::Enter => {
-                // Collect the intended command from an immutable borrow, then act on it.
                 enum Cmd {
                     CollapseFrame(u64),
                     ExpandFrame(u64),
-                    StartObj(u64),
-                    CollapseObj(u64),
-                    StartNestedObj(u64),
-                    CollapseNestedObj(u64),
+                    StartObj(u64, NavigationPath),
+                    CollapseObj(u64, NavigationPath),
+                    StartNestedObj(u64, NavigationPath),
+                    CollapseNestedObj(u64, NavigationPath),
                     StartCollection(u64, u64),
-                    CollapseCollection(u64),
+                    CollapseCollection(u64, NavigationPath),
                     LoadChunk(u64, usize, usize),
                     ToggleChunk(u64, usize),
-                    StartEntryObj(u64),
-                    CollapseEntryObj(u64),
+                    StartEntryObj(u64, NavigationPath),
+                    CollapseEntryObj(u64, NavigationPath),
                 }
                 let cmd = self.stack_state.as_ref().and_then(|s| {
                     Some(match s.cursor().clone() {
                         RenderCursor::At(ref path) => {
                             let segs = path.segments();
                             if segs.len() == 1 {
-                                // Frame row
                                 let fid = s.selected_frame_id()?;
                                 if s.is_expanded(fid) {
                                     Cmd::CollapseFrame(fid)
@@ -1491,26 +1534,25 @@ impl<E: NavigationEngine> App<E> {
                                     Cmd::ExpandFrame(fid)
                                 }
                             } else if segs.len() == 2 {
-                                // Var row
                                 let oid = s.selected_object_id()?;
                                 dbg_log!(
                                     "Var Enter: oid=0x{:X} phase={:?}",
                                     oid,
-                                    s.expansion_state(oid)
+                                    s.expansion_state_for_path(path)
                                 );
                                 if let Some(ec) = s.selected_var_entry_count() {
                                     if ec == 0 {
                                         return None;
                                     }
                                     if s.expansion.collection_chunks.contains_key(&oid) {
-                                        return Some(Cmd::CollapseCollection(oid));
+                                        return Some(Cmd::CollapseCollection(oid, path.clone()));
                                     }
                                     return Some(Cmd::StartCollection(oid, ec));
                                 }
-                                match s.expansion_state(oid) {
-                                    ExpansionPhase::Collapsed => Cmd::StartObj(oid),
+                                match s.expansion_state_for_path(path) {
+                                    ExpansionPhase::Collapsed => Cmd::StartObj(oid, path.clone()),
                                     ExpansionPhase::Failed => return None,
-                                    ExpansionPhase::Expanded => Cmd::CollapseObj(oid),
+                                    ExpansionPhase::Expanded => Cmd::CollapseObj(oid, path.clone()),
                                     ExpansionPhase::Loading => return None,
                                 }
                             } else {
@@ -1524,20 +1566,27 @@ impl<E: NavigationEngine> App<E> {
                                                 return None;
                                             }
                                             if s.expansion.collection_chunks.contains_key(&cid) {
-                                                return Some(Cmd::CollapseCollection(cid));
+                                                return Some(Cmd::CollapseCollection(
+                                                    cid,
+                                                    path.clone(),
+                                                ));
                                             }
                                             return Some(Cmd::StartCollection(cid, ec));
                                         }
                                         let nested_id = s.selected_field_ref_id()?;
-                                        match s.expansion_state(nested_id) {
+                                        match s.expansion_state_for_path(path) {
                                             ExpansionPhase::Collapsed => {
-                                                Cmd::StartNestedObj(nested_id)
+                                                Cmd::StartNestedObj(nested_id, path.clone())
                                             }
-                                            ExpansionPhase::Failed => return None,
+                                            ExpansionPhase::Failed => {
+                                                return None;
+                                            }
                                             ExpansionPhase::Expanded => {
-                                                Cmd::CollapseNestedObj(nested_id)
+                                                Cmd::CollapseNestedObj(nested_id, path.clone())
                                             }
-                                            ExpansionPhase::Loading => return None,
+                                            ExpansionPhase::Loading => {
+                                                return None;
+                                            }
                                         }
                                     }
                                     PathSegment::CollectionEntry(_, _) => {
@@ -1547,15 +1596,26 @@ impl<E: NavigationEngine> App<E> {
                                                 return None;
                                             }
                                             if s.expansion.collection_chunks.contains_key(&oid) {
-                                                return Some(Cmd::CollapseCollection(oid));
+                                                return Some(Cmd::CollapseCollection(
+                                                    oid,
+                                                    path.clone(),
+                                                ));
                                             }
                                             return Some(Cmd::StartCollection(oid, ec));
                                         }
-                                        match s.expansion_state(oid) {
-                                            ExpansionPhase::Collapsed => Cmd::StartEntryObj(oid),
-                                            ExpansionPhase::Failed => return None,
-                                            ExpansionPhase::Expanded => Cmd::CollapseEntryObj(oid),
-                                            ExpansionPhase::Loading => return None,
+                                        match s.expansion_state_for_path(path) {
+                                            ExpansionPhase::Collapsed => {
+                                                Cmd::StartEntryObj(oid, path.clone())
+                                            }
+                                            ExpansionPhase::Failed => {
+                                                return None;
+                                            }
+                                            ExpansionPhase::Expanded => {
+                                                Cmd::CollapseEntryObj(oid, path.clone())
+                                            }
+                                            ExpansionPhase::Loading => {
+                                                return None;
+                                            }
                                         }
                                     }
                                     PathSegment::StaticField(_) => {
@@ -1566,20 +1626,27 @@ impl<E: NavigationEngine> App<E> {
                                                 return None;
                                             }
                                             if s.expansion.collection_chunks.contains_key(&cid) {
-                                                return Some(Cmd::CollapseCollection(cid));
+                                                return Some(Cmd::CollapseCollection(
+                                                    cid,
+                                                    path.clone(),
+                                                ));
                                             }
                                             return Some(Cmd::StartCollection(cid, ec));
                                         }
                                         let nested_id = s.selected_static_field_ref_id()?;
-                                        match s.expansion_state(nested_id) {
+                                        match s.expansion_state_for_path(path) {
                                             ExpansionPhase::Collapsed => {
-                                                Cmd::StartNestedObj(nested_id)
+                                                Cmd::StartNestedObj(nested_id, path.clone())
                                             }
-                                            ExpansionPhase::Failed => return None,
+                                            ExpansionPhase::Failed => {
+                                                return None;
+                                            }
                                             ExpansionPhase::Expanded => {
-                                                Cmd::CollapseNestedObj(nested_id)
+                                                Cmd::CollapseNestedObj(nested_id, path.clone())
                                             }
-                                            ExpansionPhase::Loading => return None,
+                                            ExpansionPhase::Loading => {
+                                                return None;
+                                            }
                                         }
                                     }
                                     _ => return None,
@@ -1618,18 +1685,22 @@ impl<E: NavigationEngine> App<E> {
                             s.toggle_expand(fid, vars);
                         }
                     }
-                    Some(Cmd::StartObj(oid)) => self.start_object_expansion(oid),
-                    Some(Cmd::CollapseObj(oid)) => {
-                        self.pending_expansions.remove(&oid);
+                    Some(Cmd::StartObj(oid, path)) => {
+                        self.start_object_expansion(oid, path);
+                    }
+                    Some(Cmd::CollapseObj(oid, path)) => {
+                        self.pending_expansions.retain(|_, pe| pe.object_id != oid);
                         if let Some(s) = &mut self.stack_state {
-                            s.collapse_object_recursive(oid);
+                            s.collapse_object_recursive(&path);
                         }
                     }
-                    Some(Cmd::StartNestedObj(oid)) => self.start_object_expansion(oid),
-                    Some(Cmd::CollapseNestedObj(oid)) => {
-                        self.pending_expansions.remove(&oid);
+                    Some(Cmd::StartNestedObj(oid, path)) => {
+                        self.start_object_expansion(oid, path);
+                    }
+                    Some(Cmd::CollapseNestedObj(oid, path)) => {
+                        self.pending_expansions.retain(|_, pe| pe.object_id != oid);
                         if let Some(s) = &mut self.stack_state {
-                            s.collapse_object(oid);
+                            s.collapse_object(&path);
                         }
                     }
                     Some(Cmd::StartCollection(cid, ec)) => {
@@ -1645,7 +1716,6 @@ impl<E: NavigationEngine> App<E> {
                         };
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.insert(cid, chunks);
-                            // Mark expansion phase so flat_items() renders entries.
                             if let RenderCursor::At(path) = s.cursor().clone() {
                                 s.expansion
                                     .expansion_phases
@@ -1664,16 +1734,19 @@ impl<E: NavigationEngine> App<E> {
                             cc.chunk_pages.insert(offset, ChunkState::Collapsed);
                         }
                     }
-                    Some(Cmd::StartEntryObj(oid)) => self.start_object_expansion(oid),
-                    Some(Cmd::CollapseEntryObj(oid)) => {
-                        self.pending_expansions.remove(&oid);
+                    Some(Cmd::StartEntryObj(oid, path)) => {
+                        self.start_object_expansion(oid, path);
+                    }
+                    Some(Cmd::CollapseEntryObj(oid, path)) => {
+                        self.pending_expansions.retain(|_, pe| pe.object_id != oid);
                         if let Some(s) = &mut self.stack_state {
-                            s.collapse_object_recursive(oid);
+                            s.collapse_object_recursive(&path);
                         }
                     }
-                    Some(Cmd::CollapseCollection(cid)) => {
+                    Some(Cmd::CollapseCollection(cid, path)) => {
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.remove(&cid);
+                            s.expansion.collapse_at_path(&path);
                         }
                         self.pending_pages.retain(|&(id, _), _| id != cid);
                     }
@@ -1713,14 +1786,13 @@ impl<E: NavigationEngine> App<E> {
 
     /// Spawns a worker thread to expand `object_id` and registers a receiver.
     ///
-    /// If `object_id` is already pending, this is a no-op. The loading spinner
-    /// is deferred until [`EXPANSION_LOADING_THRESHOLD`] has elapsed without
-    /// the operation completing.
-    fn start_object_expansion(&mut self, object_id: u64)
+    /// If the same path is already pending, this is a no-op. Keyed by path
+    /// so the same object can be expanded at different paths concurrently.
+    fn start_object_expansion(&mut self, object_id: u64, path: NavigationPath)
     where
         E: Send + Sync + 'static,
     {
-        if self.pending_expansions.contains_key(&object_id) {
+        if self.pending_expansions.contains_key(&path) {
             return;
         }
         let (tx, rx) = mpsc::channel();
@@ -1730,9 +1802,11 @@ impl<E: NavigationEngine> App<E> {
             let _ = tx.send(result);
         });
         self.pending_expansions.insert(
-            object_id,
+            path.clone(),
             PendingExpansion {
                 rx,
+                object_id,
+                path,
                 started: Instant::now(),
                 loading_shown: false,
             },
@@ -1801,7 +1875,7 @@ impl<E: NavigationEngine> App<E> {
                                     .collect();
                             }
                             cc.eager_page = Some(page);
-                            s.collapse_object(cid);
+                            s.collapse_object_by_id(cid);
                         } else {
                             cc.chunk_pages.insert(offset, ChunkState::Loaded(page));
                         }
@@ -1821,7 +1895,7 @@ impl<E: NavigationEngine> App<E> {
                     if let Some(s) = &mut self.stack_state {
                         s.expansion.collection_chunks.remove(&cid);
                         if offset == 0 {
-                            s.collapse_object(cid);
+                            s.collapse_object_by_id(cid);
                         }
                     }
                     // Async failure: clear pending nav with failure message (AC8).
@@ -1842,9 +1916,8 @@ impl<E: NavigationEngine> App<E> {
                 Err(mpsc::TryRecvError::Empty) => {
                     if !pp.loading_shown && pp.started.elapsed() >= EXPANSION_LOADING_THRESHOLD {
                         if offset == 0 {
-                            if let Some(s) = &mut self.stack_state {
-                                s.set_expansion_loading(cid);
-                            }
+                            // Collection loading uses ChunkState::Loading,
+                            // not ExpansionPhase; no-op here.
                         } else if let Some(s) = &mut self.stack_state
                             && let Some(cc) = s.expansion.collection_chunks.get_mut(&cid)
                         {
@@ -1857,7 +1930,7 @@ impl<E: NavigationEngine> App<E> {
                     if let Some(s) = &mut self.stack_state {
                         s.expansion.collection_chunks.remove(&cid);
                         if offset == 0 {
-                            s.collapse_object(cid);
+                            s.collapse_object_by_id(cid);
                         }
                     }
                     done.push((cid, offset));
@@ -1881,7 +1954,15 @@ impl<E: NavigationEngine> App<E> {
         }
 
         for cid in fallback {
-            self.start_object_expansion(cid);
+            // Fallback: collection page failed, try regular expand.
+            // Use current cursor path if available.
+            let path = self.stack_state.as_ref().and_then(|s| match s.cursor() {
+                RenderCursor::At(p) => Some(p.clone()),
+                _ => None,
+            });
+            if let Some(p) = path {
+                self.start_object_expansion(cid, p);
+            }
         }
 
         let mut pinned_done = Vec::new();
@@ -1955,9 +2036,10 @@ impl<E: NavigationEngine> App<E> {
     where
         E: Send + Sync + 'static,
     {
-        let mut done = Vec::new();
+        let mut done: Vec<NavigationPath> = Vec::new();
         let mut nav_resume_oid: Option<u64> = None;
-        for (&object_id, pe) in self.pending_expansions.iter_mut() {
+        for (path, pe) in self.pending_expansions.iter_mut() {
+            let object_id = pe.object_id;
             match pe.rx.try_recv() {
                 Ok(Some(fields)) => {
                     let class_id = self.engine.class_of_object(object_id);
@@ -1980,10 +2062,9 @@ impl<E: NavigationEngine> App<E> {
                         ),
                     }
                     if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_done(object_id, fields);
+                        s.set_expansion_done_at_path(path, object_id, fields);
                         s.set_static_fields(object_id, static_fields);
                     }
-                    // Check if pending nav is waiting for this expansion.
                     if self
                         .pending_navigation
                         .as_ref()
@@ -1991,14 +2072,13 @@ impl<E: NavigationEngine> App<E> {
                     {
                         nav_resume_oid = Some(object_id);
                     }
-                    done.push(object_id);
+                    done.push(path.clone());
                 }
                 Ok(None) => {
                     dbg_log!("expand_object(0x{:X}) → None", object_id);
                     if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_failed(object_id, "Failed to resolve object".to_string());
+                        s.set_expansion_failed(path, object_id, "Failed to resolve object".into());
                     }
-                    // Async failure: clear pending nav with failure message (AC8).
                     if self
                         .pending_navigation
                         .as_ref()
@@ -2012,28 +2092,32 @@ impl<E: NavigationEngine> App<E> {
                     }
                     self.warnings
                         .add(format!("Object 0x{object_id:X} could not be resolved"));
-                    done.push(object_id);
+                    done.push(path.clone());
                 }
                 Err(mpsc::TryRecvError::Empty) => {
                     if !pe.loading_shown && pe.started.elapsed() >= EXPANSION_LOADING_THRESHOLD {
                         if let Some(s) = &mut self.stack_state {
-                            s.set_expansion_loading(object_id);
+                            s.set_expansion_loading(path);
                         }
                         pe.loading_shown = true;
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_failed(object_id, "Worker thread disconnected".to_string());
+                        s.set_expansion_failed(
+                            path,
+                            object_id,
+                            "Worker thread disconnected".into(),
+                        );
                     }
                     self.warnings
                         .add(format!("Worker disconnected for object 0x{object_id:X}"));
-                    done.push(object_id);
+                    done.push(path.clone());
                 }
             }
         }
-        for id in done {
-            self.pending_expansions.remove(&id);
+        for path in &done {
+            self.pending_expansions.remove(path);
         }
 
         // Resume navigation after expansion completed (1.7).
