@@ -1142,10 +1142,18 @@ impl<E: NavigationEngine> App<E> {
         match event {
             InputEvent::Escape => {
                 // Priority: cancel any in-progress go-to-pin navigation (AC6).
-                if self.pending_navigation.is_some() {
-                    self.pending_navigation = None;
-                    // If pending ops have loading_shown, transition
-                    // to Resolving instead of Idle.
+                if let Some(nav) = self.pending_navigation.take() {
+                    // Remove the awaited async op so its result
+                    // is discarded (the node won't expand).
+                    match nav.awaited {
+                        AwaitedResource::ObjectExpansion(oid) => {
+                            self.pending_expansions.retain(|_, pe| pe.object_id != oid);
+                        }
+                        AwaitedResource::CollectionPage(cid) => {
+                            self.pending_pages.retain(|&(id, _), _| id != cid);
+                        }
+                        AwaitedResource::Continue => {}
+                    }
                     let has_loading = self.has_loading_shown_pending();
                     if has_loading {
                         self.spinner_state = SpinnerState::Resolving;

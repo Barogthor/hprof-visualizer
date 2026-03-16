@@ -4126,12 +4126,11 @@ mod spinner_state_tests {
     // --- Task 2.11: Escape behaviour ---
 
     #[test]
-    fn escape_during_nav_with_pending_ops_transitions_to_resolving() {
+    fn escape_during_nav_removes_awaited_expansion() {
         let engine = StubEngine::with_threads_and_frames(&["main"], vec![make_frame(0)]);
         let mut app = App::new(engine, "t.hprof".into());
         app.open_stack_for_selected_thread(1);
 
-        // Set up pending navigation.
         app.pending_navigation = Some(PendingNavigation {
             remaining_path: vec![],
             original_path: NavigationPathBuilder::frame_only(FrameId(0)),
@@ -4141,31 +4140,89 @@ mod spinner_state_tests {
         });
         app.spinner_state = SpinnerState::NavigatingToPin;
 
-        // Add a pending expansion with loading_shown.
-        let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
-        let path = NavigationPathBuilder::frame_only(FrameId(0));
+        // Awaited expansion (oid=42) — will be removed on Escape.
+        let (_tx1, rx1) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let path1 = NavigationPathBuilder::frame_only(FrameId(0));
         app.pending_expansions.insert(
-            path.clone(),
+            path1.clone(),
             PendingExpansion {
-                rx,
+                rx: rx1,
                 object_id: 42,
-                path: path.clone(),
+                path: path1.clone(),
                 started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
                 loading_shown: true,
             },
         );
 
-        // Press Escape.
         app.handle_stack_frames_input(InputEvent::Escape);
 
+        assert!(app.pending_navigation.is_none());
         assert!(
-            app.pending_navigation.is_none(),
-            "navigation must be cancelled"
+            !app.pending_expansions.values().any(|pe| pe.object_id == 42),
+            "awaited expansion must be removed on cancel"
+        );
+        // No other pending ops → Idle.
+        assert_eq!(app.spinner_state, SpinnerState::Idle);
+    }
+
+    #[test]
+    fn escape_during_nav_with_unrelated_ops_transitions_to_resolving() {
+        let engine = StubEngine::with_threads_and_frames(&["main"], vec![make_frame(0)]);
+        let mut app = App::new(engine, "t.hprof".into());
+        app.open_stack_for_selected_thread(1);
+
+        app.pending_navigation = Some(PendingNavigation {
+            remaining_path: vec![],
+            original_path: NavigationPathBuilder::frame_only(FrameId(0)),
+            thread_id: 1,
+            awaited: AwaitedResource::ObjectExpansion(42),
+            prereq_expanded: vec![],
+        });
+        app.spinner_state = SpinnerState::NavigatingToPin;
+
+        // Awaited expansion (removed on Escape).
+        let (_tx1, rx1) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let path1 = NavigationPathBuilder::frame_only(FrameId(0));
+        app.pending_expansions.insert(
+            path1.clone(),
+            PendingExpansion {
+                rx: rx1,
+                object_id: 42,
+                path: path1.clone(),
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: true,
+            },
+        );
+
+        // Unrelated expansion (oid=99) — survives Escape.
+        let (_tx2, rx2) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let path2 = NavigationPathBuilder::new(FrameId(0), VarIdx(0)).build();
+        app.pending_expansions.insert(
+            path2.clone(),
+            PendingExpansion {
+                rx: rx2,
+                object_id: 99,
+                path: path2.clone(),
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
+                loading_shown: true,
+            },
+        );
+
+        app.handle_stack_frames_input(InputEvent::Escape);
+
+        assert!(app.pending_navigation.is_none());
+        assert!(
+            !app.pending_expansions.values().any(|pe| pe.object_id == 42),
+            "awaited expansion must be removed"
+        );
+        assert!(
+            app.pending_expansions.values().any(|pe| pe.object_id == 99),
+            "unrelated expansion must survive"
         );
         assert_eq!(
             app.spinner_state,
             SpinnerState::Resolving,
-            "must transition to Resolving, not Idle"
+            "unrelated pending op → Resolving"
         );
     }
 
