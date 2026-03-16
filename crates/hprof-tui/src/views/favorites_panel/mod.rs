@@ -18,8 +18,9 @@ use crate::{
     theme::THEME,
     views::{
         stack_view::{
-            ChunkState, CollectionChunks, ExpansionPhase, STATIC_FIELDS_RENDER_LIMIT,
-            compute_chunk_ranges,
+            ChunkState, CollectionChunks, CollectionId, EntryIdx, ExpansionPhase, FieldIdx,
+            FrameId, NavigationPath, NavigationPathBuilder, STATIC_FIELDS_RENDER_LIMIT,
+            StaticFieldIdx, VarIdx, compute_chunk_ranges,
         },
         tree_render::{RenderOptions, TreeRoot, render_variable_tree},
     },
@@ -28,7 +29,8 @@ use crate::{
 type RowKindMap = HashMap<usize, (u64, bool)>;
 type ChunkSentinelMap = HashMap<usize, (u64, usize)>;
 type FieldRowMap = HashMap<usize, (HideKey, bool)>;
-type RowMetadata = (usize, RowKindMap, ChunkSentinelMap, FieldRowMap);
+type PathMap = Vec<Option<NavigationPath>>;
+type RowMetadata = (usize, RowKindMap, ChunkSentinelMap, FieldRowMap, PathMap);
 
 /// Render-time data for the favorites panel (non-mutable).
 pub struct FavoritesPanel<'a> {
@@ -56,6 +58,8 @@ pub struct FavoritesPanelState {
     chunk_sentinel_maps: Vec<ChunkSentinelMap>,
     /// Per-item field-row map: sub_row -> (HideKey, is_hidden).
     field_row_maps: Vec<FieldRowMap>,
+    /// Per-item path map: sub_row -> NavigationPath for toggleable rows.
+    path_maps: Vec<Vec<Option<crate::views::stack_view::NavigationPath>>>,
     /// ratatui list state — selected index is the absolute flat-row position.
     list_state: ListState,
 }
@@ -76,6 +80,7 @@ impl FavoritesPanelState {
             self.row_kind_maps.clear();
             self.chunk_sentinel_maps.clear();
             self.field_row_maps.clear();
+            self.path_maps.clear();
             self.list_state.select(None);
             return;
         }
@@ -85,6 +90,7 @@ impl FavoritesPanelState {
         self.row_kind_maps.resize_with(len, HashMap::new);
         self.chunk_sentinel_maps.resize_with(len, HashMap::new);
         self.field_row_maps.resize_with(len, HashMap::new);
+        self.path_maps.resize_with(len, Vec::new);
         self.clamp_sub_row();
     }
 
@@ -120,6 +126,7 @@ impl FavoritesPanelState {
         row_kind_maps: Vec<RowKindMap>,
         chunk_sentinel_maps: Vec<ChunkSentinelMap>,
         field_row_maps: Vec<FieldRowMap>,
+        path_maps: Vec<PathMap>,
     ) {
         debug_assert_eq!(
             row_counts.len(),
@@ -141,11 +148,13 @@ impl FavoritesPanelState {
             self.items_len,
             "field_row_maps length mismatch"
         );
+        debug_assert_eq!(path_maps.len(), self.items_len, "path_maps length mismatch");
 
         self.row_counts = row_counts;
         self.row_kind_maps = row_kind_maps;
         self.chunk_sentinel_maps = chunk_sentinel_maps;
         self.field_row_maps = field_row_maps;
+        self.path_maps = path_maps;
         self.clamp_sub_row();
     }
 
@@ -205,6 +214,15 @@ impl FavoritesPanelState {
             .copied()
     }
 
+    /// Returns the `NavigationPath` for the row under the cursor,
+    /// or `None` if on a non-toggleable row (header/separator).
+    pub fn current_toggleable_path(&self) -> Option<&crate::views::stack_view::NavigationPath> {
+        self.path_maps
+            .get(self.selected_item)?
+            .get(self.sub_row)?
+            .as_ref()
+    }
+
     pub fn current_chunk_sentinel(&self) -> Option<(u64, usize)> {
         self.chunk_sentinel_maps
             .get(self.selected_item)?
@@ -232,24 +250,15 @@ impl FavoritesPanelState {
     }
 }
 
-fn get_phase(object_id: u64, object_phases: &HashMap<u64, ExpansionPhase>) -> ExpansionPhase {
-    object_phases
-        .get(&object_id)
-        .cloned()
-        .unwrap_or(ExpansionPhase::Collapsed)
-}
-
 fn object_phases_for_item(
     object_fields: &HashMap<u64, Vec<FieldInfo>>,
     object_static_fields: &HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &HashMap<u64, CollectionChunks>,
-    local_collapsed: &HashSet<u64>,
 ) -> HashMap<u64, ExpansionPhase> {
     object_fields
         .keys()
         .chain(object_static_fields.keys())
         .chain(collection_chunks.keys())
-        .filter(|id| !local_collapsed.contains(id))
         .map(|&id| (id, ExpansionPhase::Expanded))
         .collect()
 }
@@ -258,13 +267,14 @@ struct MetadataCollector<'a> {
     object_fields: &'a HashMap<u64, Vec<FieldInfo>>,
     object_static_fields: &'a HashMap<u64, Vec<FieldInfo>>,
     collection_chunks: &'a HashMap<u64, CollectionChunks>,
-    object_phases: &'a HashMap<u64, ExpansionPhase>,
+    local_collapsed: &'a HashSet<NavigationPath>,
     hidden_fields: &'a HashSet<HideKey>,
     show_hidden: bool,
     row_count: usize,
     kind_map: RowKindMap,
     sentinel_map: ChunkSentinelMap,
     field_row_map: FieldRowMap,
+    path_map: PathMap,
 }
 
 impl<'a> MetadataCollector<'a> {
@@ -272,7 +282,7 @@ impl<'a> MetadataCollector<'a> {
         object_fields: &'a HashMap<u64, Vec<FieldInfo>>,
         object_static_fields: &'a HashMap<u64, Vec<FieldInfo>>,
         collection_chunks: &'a HashMap<u64, CollectionChunks>,
-        object_phases: &'a HashMap<u64, ExpansionPhase>,
+        local_collapsed: &'a HashSet<NavigationPath>,
         row_count: usize,
         hidden_fields: &'a HashSet<HideKey>,
         show_hidden: bool,
@@ -281,13 +291,14 @@ impl<'a> MetadataCollector<'a> {
             object_fields,
             object_static_fields,
             collection_chunks,
-            object_phases,
+            local_collapsed,
             hidden_fields,
             show_hidden,
             row_count,
             kind_map: HashMap::new(),
             sentinel_map: HashMap::new(),
             field_row_map: HashMap::new(),
+            path_map: Vec::new(),
         }
     }
 
@@ -297,36 +308,35 @@ impl<'a> MetadataCollector<'a> {
             self.kind_map,
             self.sentinel_map,
             self.field_row_map,
+            self.path_map,
         )
     }
 
-    fn push_row(&mut self) -> usize {
+    fn push_row(&mut self, path: Option<NavigationPath>) -> usize {
         let row = self.row_count;
         self.row_count += 1;
+        self.path_map.push(path);
         row
     }
 
-    fn resolve_object_ref_state(
-        &self,
-        object_id: u64,
-        entry_count: Option<u64>,
-    ) -> (ExpansionPhase, bool, bool) {
-        let is_collection =
-            entry_count.is_some() && self.collection_chunks.contains_key(&object_id);
-        if is_collection {
-            return (get_phase(object_id, self.object_phases), true, true);
+    fn phase_for_path(&self, object_id: u64, path: &NavigationPath) -> ExpansionPhase {
+        if self.local_collapsed.contains(path) {
+            return ExpansionPhase::Collapsed;
         }
-
-        let has_object_data = self.object_fields.contains_key(&object_id)
-            || self.object_static_fields.contains_key(&object_id);
-        if has_object_data {
-            (get_phase(object_id, self.object_phases), true, false)
+        if self.has_data(object_id) {
+            ExpansionPhase::Expanded
         } else {
-            (ExpansionPhase::Collapsed, false, false)
+            ExpansionPhase::Collapsed
         }
     }
 
-    fn collect_static_rows(&mut self, object_id: u64, depth: usize) {
+    fn has_data(&self, object_id: u64) -> bool {
+        self.object_fields.contains_key(&object_id)
+            || self.object_static_fields.contains_key(&object_id)
+            || self.collection_chunks.contains_key(&object_id)
+    }
+
+    fn collect_static_rows(&mut self, object_id: u64, parent_path: &NavigationPath, depth: usize) {
         let Some(static_fields) = self.object_static_fields.get(&object_id) else {
             return;
         };
@@ -334,72 +344,71 @@ impl<'a> MetadataCollector<'a> {
             return;
         }
 
-        self.push_row(); // [static]
+        self.push_row(None); // [static]
         let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
-        for field in static_fields.iter().take(shown) {
+        for (si, field) in static_fields.iter().take(shown).enumerate() {
+            let static_path = NavigationPathBuilder::extend(parent_path.clone())
+                .static_field(StaticFieldIdx(si))
+                .build();
+
             let (child_phase, toggleable, is_collection) =
                 if let FieldValue::ObjectRef {
                     id, entry_count, ..
                 } = field.value
                 {
-                    self.resolve_object_ref_state(id, entry_count)
+                    self.resolve_at_path(id, entry_count, &static_path)
                 } else {
                     (ExpansionPhase::Collapsed, false, false)
                 };
 
-            let row = self.push_row();
-            if toggleable
-                && let FieldValue::ObjectRef { id, .. } = field.value
-                && !matches!(
-                    child_phase,
-                    ExpansionPhase::Failed | ExpansionPhase::Loading
-                )
-            {
+            let row = self.push_row(if toggleable {
+                Some(static_path.clone())
+            } else {
+                None
+            });
+            if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
                 self.kind_map
                     .insert(row, (id, matches!(child_phase, ExpansionPhase::Collapsed)));
             }
 
             if is_collection {
-                if matches!(
-                    child_phase,
-                    ExpansionPhase::Expanded | ExpansionPhase::Loading
-                ) && let FieldValue::ObjectRef {
-                    id,
-                    entry_count: Some(_),
-                    ..
-                } = field.value
+                if matches!(child_phase, ExpansionPhase::Expanded)
+                    && let FieldValue::ObjectRef {
+                        id,
+                        entry_count: Some(_),
+                        ..
+                    } = field.value
                     && let Some(cc) = self.collection_chunks.get(&id)
                 {
-                    self.collect_collection_rows(id, cc);
+                    self.collect_collection_rows(id, cc, &static_path);
                 }
                 continue;
             }
 
             if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
                 let mut visited = HashSet::new();
-                self.collect_static_object_rows(id, &mut visited, depth + 1);
+                self.collect_static_object_rows(id, &static_path, &mut visited, depth + 1);
             }
         }
 
         if static_fields.len() > shown {
-            self.push_row(); // [+N more static fields]
+            self.push_row(None); // [+N more static fields]
         }
     }
 
     fn collect_static_object_rows(
         &mut self,
         obj_id: u64,
+        path: &NavigationPath,
         visited: &mut HashSet<u64>,
         depth: usize,
     ) {
         if depth >= 16 {
             return;
         }
-        match get_phase(obj_id, self.object_phases) {
+        match self.phase_for_path(obj_id, path) {
             ExpansionPhase::Collapsed | ExpansionPhase::Failed => {}
-            ExpansionPhase::Loading => {
-                self.push_row();
-            }
+            ExpansionPhase::Loading => unreachable!("frozen snapshot"),
             ExpansionPhase::Expanded => {
                 let field_list = self
                     .object_fields
@@ -407,59 +416,59 @@ impl<'a> MetadataCollector<'a> {
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
                 if field_list.is_empty() {
-                    self.push_row();
+                    self.push_row(None);
                     return;
                 }
 
                 visited.insert(obj_id);
-                for field in field_list {
+                for (fi, field) in field_list.iter().enumerate() {
                     if let FieldValue::ObjectRef { id, .. } = &field.value
                         && visited.contains(id)
                     {
-                        self.push_row();
+                        self.push_row(None);
                         continue;
                     }
+
+                    let child_path = NavigationPathBuilder::extend(path.clone())
+                        .field(FieldIdx(fi))
+                        .build();
 
                     let (child_phase, toggleable, is_collection) =
                         if let FieldValue::ObjectRef {
                             id, entry_count, ..
                         } = field.value
                         {
-                            self.resolve_object_ref_state(id, entry_count)
+                            self.resolve_at_path(id, entry_count, &child_path)
                         } else {
                             (ExpansionPhase::Collapsed, false, false)
                         };
 
-                    let row = self.push_row();
-                    if toggleable
-                        && let FieldValue::ObjectRef { id, .. } = field.value
-                        && !matches!(
-                            child_phase,
-                            ExpansionPhase::Failed | ExpansionPhase::Loading
-                        )
-                    {
+                    let row = self.push_row(if toggleable {
+                        Some(child_path.clone())
+                    } else {
+                        None
+                    });
+                    if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
                         self.kind_map
                             .insert(row, (id, matches!(child_phase, ExpansionPhase::Collapsed)));
                     }
 
                     if is_collection {
-                        if matches!(
-                            child_phase,
-                            ExpansionPhase::Expanded | ExpansionPhase::Loading
-                        ) && let FieldValue::ObjectRef {
-                            id,
-                            entry_count: Some(_),
-                            ..
-                        } = field.value
+                        if matches!(child_phase, ExpansionPhase::Expanded)
+                            && let FieldValue::ObjectRef {
+                                id,
+                                entry_count: Some(_),
+                                ..
+                            } = field.value
                             && let Some(cc) = self.collection_chunks.get(&id)
                         {
-                            self.collect_collection_rows(id, cc);
+                            self.collect_collection_rows(id, cc, &child_path);
                         }
                         continue;
                     }
 
                     if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
-                        self.collect_static_object_rows(id, visited, depth + 1);
+                        self.collect_static_object_rows(id, &child_path, visited, depth + 1);
                     }
                 }
                 visited.remove(&obj_id);
@@ -467,9 +476,9 @@ impl<'a> MetadataCollector<'a> {
         }
     }
 
-    fn collect_frame_rows(&mut self, vars: &[VariableInfo]) {
+    fn collect_frame_rows(&mut self, vars: &[VariableInfo], frame_id: u64) {
         if vars.is_empty() {
-            self.push_row(); // (no locals)
+            self.push_row(None); // (no locals)
             return;
         }
         for (var_idx, var) in vars.iter().enumerate() {
@@ -477,39 +486,40 @@ impl<'a> MetadataCollector<'a> {
             let is_hidden = self.hidden_fields.contains(&key);
             if is_hidden {
                 if self.show_hidden {
-                    let row = self.push_row();
+                    let row = self.push_row(None);
                     self.field_row_map.insert(row, (key, true));
                 }
                 continue;
             }
             let var_row = self.row_count;
             self.field_row_map.insert(var_row, (key, false));
-            self.collect_var_row(var);
+            let path = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx)).build();
+            self.collect_var_row(var, path);
         }
     }
 
-    fn collect_var_row(&mut self, var: &VariableInfo) {
+    fn collect_var_row(&mut self, var: &VariableInfo, path: NavigationPath) {
         let VariableValue::ObjectRef {
             id, entry_count, ..
         } = var.value
         else {
-            self.push_row();
+            self.push_row(None);
             return;
         };
 
-        let (phase, toggleable, is_collection) = self.resolve_object_ref_state(id, entry_count);
+        let (phase, toggleable, is_collection) = self.resolve_at_path(id, entry_count, &path);
 
-        let row = self.push_row();
-        if toggleable && !matches!(phase, ExpansionPhase::Failed | ExpansionPhase::Loading) {
+        let row = self.push_row(if toggleable { Some(path.clone()) } else { None });
+        if toggleable {
             self.kind_map
                 .insert(row, (id, matches!(phase, ExpansionPhase::Collapsed)));
         }
 
         if is_collection {
-            if matches!(phase, ExpansionPhase::Expanded | ExpansionPhase::Loading)
+            if matches!(phase, ExpansionPhase::Expanded)
                 && let Some(cc) = self.collection_chunks.get(&id)
             {
-                self.collect_collection_rows(id, cc);
+                self.collect_collection_rows(id, cc, &path);
             }
             return;
         }
@@ -519,23 +529,22 @@ impl<'a> MetadataCollector<'a> {
         }
 
         let mut visited = HashSet::new();
-        self.collect_object_children_rows(id, &mut visited, 0);
+        self.collect_object_children_rows(id, &path, &mut visited, 0);
     }
 
     fn collect_object_children_rows(
         &mut self,
         object_id: u64,
+        path: &NavigationPath,
         visited: &mut HashSet<u64>,
         depth: usize,
     ) {
         if depth >= 16 {
             return;
         }
-        match get_phase(object_id, self.object_phases) {
+        match self.phase_for_path(object_id, path) {
             ExpansionPhase::Collapsed | ExpansionPhase::Failed => {}
-            ExpansionPhase::Loading => {
-                self.push_row();
-            }
+            ExpansionPhase::Loading => unreachable!("frozen snapshot"),
             ExpansionPhase::Expanded => {
                 visited.insert(object_id);
                 let field_list = self
@@ -544,7 +553,7 @@ impl<'a> MetadataCollector<'a> {
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
                 if field_list.is_empty() {
-                    self.push_row();
+                    self.push_row(None);
                 } else {
                     for (field_idx, field) in field_list.iter().enumerate() {
                         let hide_key = HideKey::Field {
@@ -554,7 +563,7 @@ impl<'a> MetadataCollector<'a> {
                         let is_hidden = self.hidden_fields.contains(&hide_key);
                         if is_hidden {
                             if self.show_hidden {
-                                let row = self.push_row();
+                                let row = self.push_row(None);
                                 self.field_row_map.insert(row, (hide_key, true));
                             }
                             continue;
@@ -563,29 +572,31 @@ impl<'a> MetadataCollector<'a> {
                         if let FieldValue::ObjectRef { id, .. } = &field.value
                             && visited.contains(id)
                         {
-                            self.push_row();
+                            self.push_row(None);
                             continue;
                         }
+
+                        let child_path = NavigationPathBuilder::extend(path.clone())
+                            .field(FieldIdx(field_idx))
+                            .build();
 
                         let (child_phase, toggleable, is_collection) =
                             if let FieldValue::ObjectRef {
                                 id, entry_count, ..
                             } = field.value
                             {
-                                self.resolve_object_ref_state(id, entry_count)
+                                self.resolve_at_path(id, entry_count, &child_path)
                             } else {
                                 (ExpansionPhase::Collapsed, false, false)
                             };
 
-                        let row = self.push_row();
+                        let row = self.push_row(if toggleable {
+                            Some(child_path.clone())
+                        } else {
+                            None
+                        });
                         self.field_row_map.insert(row, (hide_key, false));
-                        if toggleable
-                            && let FieldValue::ObjectRef { id, .. } = field.value
-                            && !matches!(
-                                child_phase,
-                                ExpansionPhase::Failed | ExpansionPhase::Loading
-                            )
-                        {
+                        if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
                             self.kind_map.insert(
                                 row,
                                 (id, matches!(child_phase, ExpansionPhase::Collapsed)),
@@ -593,74 +604,85 @@ impl<'a> MetadataCollector<'a> {
                         }
 
                         if is_collection {
-                            if matches!(
-                                child_phase,
-                                ExpansionPhase::Expanded | ExpansionPhase::Loading
-                            ) && let FieldValue::ObjectRef {
-                                id,
-                                entry_count: Some(_),
-                                ..
-                            } = field.value
+                            if matches!(child_phase, ExpansionPhase::Expanded)
+                                && let FieldValue::ObjectRef {
+                                    id,
+                                    entry_count: Some(_),
+                                    ..
+                                } = field.value
                                 && let Some(cc) = self.collection_chunks.get(&id)
                             {
-                                self.collect_collection_rows(id, cc);
+                                self.collect_collection_rows(id, cc, &child_path);
                             }
                             continue;
                         }
 
                         if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
-                            self.collect_object_children_rows(id, visited, depth + 1);
+                            self.collect_object_children_rows(id, &child_path, visited, depth + 1);
                         }
                     }
                 }
-                self.collect_static_rows(object_id, depth);
+                self.collect_static_rows(object_id, path, depth);
                 visited.remove(&object_id);
             }
         }
     }
 
-    fn collect_collection_rows(&mut self, collection_id: u64, cc: &CollectionChunks) {
+    fn collect_collection_rows(
+        &mut self,
+        collection_id: u64,
+        cc: &CollectionChunks,
+        parent_path: &NavigationPath,
+    ) {
         if let Some(page) = &cc.eager_page {
             for entry in &page.entries {
-                self.collect_collection_entry_row(collection_id, entry);
+                self.collect_collection_entry_row(collection_id, entry, parent_path);
             }
         }
 
-        // Only show loaded chunks — snapshots are frozen and
-        // cannot fetch new pages, so unloaded chunks are hidden.
         for (offset, _) in compute_chunk_ranges(cc.total_count) {
             if let Some(ChunkState::Loaded(page)) = cc.chunk_pages.get(&offset) {
-                // Push one row for the chunk header ([offset...end]) to keep
-                // metadata row indices in sync with the renderer. The row index
-                // itself is not used here since loaded chunks have no sentinel.
-                let _row = self.push_row();
+                let _row = self.push_row(None);
                 for entry in &page.entries {
-                    self.collect_collection_entry_row(collection_id, entry);
+                    self.collect_collection_entry_row(collection_id, entry, parent_path);
                 }
             }
         }
     }
 
-    fn collect_collection_entry_row(&mut self, collection_id: u64, entry: &EntryInfo) {
-        let row = self.push_row();
+    fn collect_collection_entry_row(
+        &mut self,
+        collection_id: u64,
+        entry: &EntryInfo,
+        parent_path: &NavigationPath,
+    ) {
+        let entry_path = NavigationPathBuilder::extend(parent_path.clone())
+            .collection_entry(CollectionId(collection_id), EntryIdx(entry.index))
+            .build();
 
         if let FieldValue::ObjectRef {
             id, entry_count, ..
         } = &entry.value
         {
             let (phase, toggleable, is_collection) =
-                self.resolve_object_ref_state(*id, *entry_count);
-            if toggleable && !matches!(phase, ExpansionPhase::Failed | ExpansionPhase::Loading) {
+                self.resolve_at_path(*id, *entry_count, &entry_path);
+
+            let row = self.push_row(if toggleable {
+                Some(entry_path.clone())
+            } else {
+                None
+            });
+            if toggleable {
                 self.kind_map
                     .insert(row, (*id, matches!(phase, ExpansionPhase::Collapsed)));
             }
 
             if is_collection {
-                if matches!(phase, ExpansionPhase::Expanded | ExpansionPhase::Loading)
+                if matches!(phase, ExpansionPhase::Expanded)
                     && *id != collection_id
                     && let Some(nested) = self.collection_chunks.get(id)
                 {
-                    self.collect_collection_rows(*id, nested);
+                    self.collect_collection_rows(*id, nested, &entry_path);
                 }
                 return;
             }
@@ -670,24 +692,25 @@ impl<'a> MetadataCollector<'a> {
             }
 
             let mut visited = HashSet::new();
-            self.collect_collection_entry_obj_rows(*id, &mut visited, 0);
+            self.collect_collection_entry_obj_rows(*id, &entry_path, &mut visited, 0);
+        } else {
+            self.push_row(None);
         }
     }
 
     fn collect_collection_entry_obj_rows(
         &mut self,
         obj_id: u64,
+        path: &NavigationPath,
         visited: &mut HashSet<u64>,
         depth: usize,
     ) {
         if depth >= 16 {
             return;
         }
-        match get_phase(obj_id, self.object_phases) {
+        match self.phase_for_path(obj_id, path) {
             ExpansionPhase::Collapsed | ExpansionPhase::Failed => {}
-            ExpansionPhase::Loading => {
-                self.push_row();
-            }
+            ExpansionPhase::Loading => unreachable!("frozen snapshot"),
             ExpansionPhase::Expanded => {
                 let field_list = self
                     .object_fields
@@ -695,35 +718,37 @@ impl<'a> MetadataCollector<'a> {
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
                 if field_list.is_empty() {
-                    self.push_row();
+                    self.push_row(None);
                 } else {
                     visited.insert(obj_id);
-                    for field in field_list {
+                    for (fi, field) in field_list.iter().enumerate() {
                         if let FieldValue::ObjectRef { id, .. } = &field.value
                             && visited.contains(id)
                         {
-                            self.push_row();
+                            self.push_row(None);
                             continue;
                         }
+
+                        let child_path = NavigationPathBuilder::extend(path.clone())
+                            .field(FieldIdx(fi))
+                            .build();
 
                         let (child_phase, toggleable, is_collection) =
                             if let FieldValue::ObjectRef {
                                 id, entry_count, ..
                             } = field.value
                             {
-                                self.resolve_object_ref_state(id, entry_count)
+                                self.resolve_at_path(id, entry_count, &child_path)
                             } else {
                                 (ExpansionPhase::Collapsed, false, false)
                             };
 
-                        let row = self.push_row();
-                        if toggleable
-                            && let FieldValue::ObjectRef { id, .. } = field.value
-                            && !matches!(
-                                child_phase,
-                                ExpansionPhase::Failed | ExpansionPhase::Loading
-                            )
-                        {
+                        let row = self.push_row(if toggleable {
+                            Some(child_path.clone())
+                        } else {
+                            None
+                        });
+                        if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
                             self.kind_map.insert(
                                 row,
                                 (id, matches!(child_phase, ExpansionPhase::Collapsed)),
@@ -731,29 +756,55 @@ impl<'a> MetadataCollector<'a> {
                         }
 
                         if is_collection {
-                            if matches!(
-                                child_phase,
-                                ExpansionPhase::Expanded | ExpansionPhase::Loading
-                            ) && let FieldValue::ObjectRef {
-                                id,
-                                entry_count: Some(_),
-                                ..
-                            } = field.value
+                            if matches!(child_phase, ExpansionPhase::Expanded)
+                                && let FieldValue::ObjectRef {
+                                    id,
+                                    entry_count: Some(_),
+                                    ..
+                                } = field.value
                                 && let Some(cc) = self.collection_chunks.get(&id)
                             {
-                                self.collect_collection_rows(id, cc);
+                                self.collect_collection_rows(id, cc, &child_path);
                             }
                             continue;
                         }
 
                         if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
-                            self.collect_collection_entry_obj_rows(id, visited, depth + 1);
+                            self.collect_collection_entry_obj_rows(
+                                id,
+                                &child_path,
+                                visited,
+                                depth + 1,
+                            );
                         }
                     }
                     visited.remove(&obj_id);
                 }
-                self.collect_static_rows(obj_id, depth);
+                self.collect_static_rows(obj_id, path, depth);
             }
+        }
+    }
+
+    /// Resolves phase, toggleable, and is_collection for an object at a path.
+    fn resolve_at_path(
+        &self,
+        object_id: u64,
+        entry_count: Option<u64>,
+        path: &NavigationPath,
+    ) -> (ExpansionPhase, bool, bool) {
+        let is_collection =
+            entry_count.is_some() && self.collection_chunks.contains_key(&object_id);
+        if is_collection {
+            let phase = self.phase_for_path(object_id, path);
+            return (phase, true, true);
+        }
+        let has_data = self.object_fields.contains_key(&object_id)
+            || self.object_static_fields.contains_key(&object_id);
+        if has_data {
+            let phase = self.phase_for_path(object_id, path);
+            (phase, true, false)
+        } else {
+            (ExpansionPhase::Collapsed, false, false)
         }
     }
 }
@@ -763,6 +814,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
     let mut kind_map = HashMap::new();
     let mut sentinel_map = HashMap::new();
     let mut field_row_map = FieldRowMap::new();
+    let mut path_map = PathMap::new();
 
     match &item.snapshot {
         PinnedSnapshot::Frame {
@@ -773,23 +825,28 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
             truncated,
         } => {
             let start_count = row_count + usize::from(*truncated);
-            let object_phases = object_phases_for_item(
-                object_fields,
-                object_static_fields,
-                collection_chunks,
-                &item.local_collapsed,
-            );
+            let object_phases =
+                object_phases_for_item(object_fields, object_static_fields, collection_chunks);
             let mut collector = MetadataCollector::new(
                 object_fields,
                 object_static_fields,
                 collection_chunks,
-                &object_phases,
+                &item.local_collapsed,
                 start_count,
                 &item.hidden_fields,
                 item.show_hidden,
             );
-            collector.collect_frame_rows(variables);
-            (row_count, kind_map, sentinel_map, field_row_map) = collector.into_parts();
+            collector.collect_frame_rows(variables, 0);
+            let (rc, km, sm, fm, mut pm) = collector.into_parts();
+            // Prefix path_map with None entries for header + truncated
+            // so that path_map[sub_row] aligns with kind_map[sub_row].
+            let mut aligned = vec![None; start_count];
+            aligned.append(&mut pm);
+            row_count = rc;
+            kind_map = km;
+            sentinel_map = sm;
+            field_row_map = fm;
+            path_map = aligned;
 
             debug_assert_eq!(
                 row_count,
@@ -810,6 +867,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                     },
                     Some(&item.hidden_fields),
                     None,
+                    Some(&item.local_collapsed),
                 )
                 .len()
                     + 1
@@ -826,28 +884,33 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
             truncated,
         } => {
             let start_count = row_count + usize::from(*truncated);
-            let object_phases = object_phases_for_item(
-                object_fields,
-                object_static_fields,
-                collection_chunks,
-                &item.local_collapsed,
-            );
+            let object_phases =
+                object_phases_for_item(object_fields, object_static_fields, collection_chunks);
+            // Synthetic root path for subtree snapshots.
+            let root_path = NavigationPathBuilder::new(FrameId(*root_id), VarIdx(0)).build();
             let mut collector = MetadataCollector::new(
                 object_fields,
                 object_static_fields,
                 collection_chunks,
-                &object_phases,
+                &item.local_collapsed,
                 start_count,
                 &item.hidden_fields,
                 item.show_hidden,
             );
             if let Some(root_chunks) = collection_chunks.get(root_id) {
-                collector.collect_collection_rows(*root_id, root_chunks);
+                collector.collect_collection_rows(*root_id, root_chunks, &root_path);
             } else {
                 let mut visited = HashSet::new();
-                collector.collect_object_children_rows(*root_id, &mut visited, 0);
+                collector.collect_object_children_rows(*root_id, &root_path, &mut visited, 0);
             }
-            (row_count, kind_map, sentinel_map, field_row_map) = collector.into_parts();
+            let (rc, km, sm, fm, mut pm) = collector.into_parts();
+            let mut aligned = vec![None; start_count];
+            aligned.append(&mut pm);
+            row_count = rc;
+            kind_map = km;
+            sentinel_map = sm;
+            field_row_map = fm;
+            path_map = aligned;
 
             debug_assert_eq!(
                 row_count,
@@ -865,6 +928,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                     },
                     Some(&item.hidden_fields),
                     None,
+                    Some(&item.local_collapsed),
                 )
                 .len()
                     + 1
@@ -875,11 +939,14 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
         }
         PinnedSnapshot::Primitive { .. } | PinnedSnapshot::UnexpandedRef { .. } => {
             row_count += 1;
+            path_map.push(None); // header
+            path_map.push(None); // content
         }
     }
 
     row_count += 1; // Separator row.
-    (row_count, kind_map, sentinel_map, field_row_map)
+    path_map.push(None); // Separator has no path.
+    (row_count, kind_map, sentinel_map, field_row_map, path_map)
 }
 
 impl StatefulWidget for FavoritesPanel<'_> {
@@ -891,18 +958,21 @@ impl StatefulWidget for FavoritesPanel<'_> {
         let mut all_row_kind_maps = Vec::with_capacity(self.pinned.len());
         let mut all_chunk_sentinel_maps = Vec::with_capacity(self.pinned.len());
         let mut all_field_row_maps = Vec::with_capacity(self.pinned.len());
+        let mut all_path_maps = Vec::with_capacity(self.pinned.len());
         for item in self.pinned {
-            let (row_count, kind_map, sentinel_map, field_row_map) = collect_row_metadata(item);
-            all_row_counts.push(row_count);
-            all_row_kind_maps.push(kind_map);
-            all_chunk_sentinel_maps.push(sentinel_map);
-            all_field_row_maps.push(field_row_map);
+            let (rc, km, sm, fm, pm) = collect_row_metadata(item);
+            all_row_counts.push(rc);
+            all_row_kind_maps.push(km);
+            all_chunk_sentinel_maps.push(sm);
+            all_field_row_maps.push(fm);
+            all_path_maps.push(pm);
         }
         state.update_row_metadata(
             all_row_counts,
             all_row_kind_maps,
             all_chunk_sentinel_maps,
             all_field_row_maps,
+            all_path_maps,
         );
 
         let border_style = if self.focused {
@@ -955,7 +1025,6 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         object_fields,
                         object_static_fields,
                         collection_chunks,
-                        &item.local_collapsed,
                     );
                     let tree = render_variable_tree(
                         TreeRoot::Frame {
@@ -974,6 +1043,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         },
                         Some(&item.hidden_fields),
                         None,
+                        Some(&item.local_collapsed),
                     );
                     items.extend(tree);
                 }
@@ -994,7 +1064,6 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         object_fields,
                         object_static_fields,
                         collection_chunks,
-                        &item.local_collapsed,
                     );
                     let tree = render_variable_tree(
                         TreeRoot::Subtree { root_id: *root_id },
@@ -1010,6 +1079,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         },
                         Some(&item.hidden_fields),
                         None,
+                        Some(&item.local_collapsed),
                     );
                     items.extend(tree);
                 }

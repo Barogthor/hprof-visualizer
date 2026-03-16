@@ -837,31 +837,41 @@ impl<E: NavigationEngine> App<E> {
             }
             InputEvent::Right | InputEvent::Enter => {
                 if !self.pinned.is_empty()
-                    && let Some((object_id, is_collapsed)) =
-                        self.favorites_list_state.current_toggleable_object()
-                    && is_collapsed
+                    && self
+                        .favorites_list_state
+                        .current_toggleable_object()
+                        .is_some()
+                    && let Some(path) = self.favorites_list_state.current_toggleable_path()
                 {
                     let idx = self
                         .favorites_list_state
                         .selected_index()
                         .min(self.pinned.len().saturating_sub(1));
-                    if let Some(item) = self.pinned.get_mut(idx) {
-                        item.local_collapsed.remove(&object_id);
+                    let path = path.clone();
+                    if let Some(item) = self.pinned.get_mut(idx)
+                        && item.local_collapsed.contains(&path)
+                    {
+                        item.local_collapsed.remove(&path);
                     }
                 }
             }
             InputEvent::Left => {
                 if !self.pinned.is_empty()
-                    && let Some((object_id, is_collapsed)) =
-                        self.favorites_list_state.current_toggleable_object()
-                    && !is_collapsed
+                    && self
+                        .favorites_list_state
+                        .current_toggleable_object()
+                        .is_some()
+                    && let Some(path) = self.favorites_list_state.current_toggleable_path()
                 {
                     let idx = self
                         .favorites_list_state
                         .selected_index()
                         .min(self.pinned.len().saturating_sub(1));
-                    if let Some(item) = self.pinned.get_mut(idx) {
-                        item.local_collapsed.insert(object_id);
+                    let path = path.clone();
+                    if let Some(item) = self.pinned.get_mut(idx)
+                        && !item.local_collapsed.contains(&path)
+                    {
+                        item.local_collapsed.insert(path);
                     }
                     self.favorites_list_state.clamp_sub_row();
                 }
@@ -1376,10 +1386,7 @@ impl<E: NavigationEngine> App<E> {
                                     return Some(LeftCmd::NavigateToParent(s.parent_cursor()?));
                                 };
                                 if s.expansion.collection_chunks.contains_key(&oid) {
-                                    return Some(LeftCmd::CollapseCollection(
-                                        oid,
-                                        path.clone(),
-                                    ));
+                                    return Some(LeftCmd::CollapseCollection(oid, path.clone()));
                                 }
                                 match s.expansion_state_for_path(path) {
                                     ExpansionPhase::Expanded => {
@@ -1538,10 +1545,7 @@ impl<E: NavigationEngine> App<E> {
                                         return None;
                                     }
                                     if s.expansion.collection_chunks.contains_key(&oid) {
-                                        return Some(Cmd::CollapseCollection(
-                                            oid,
-                                            path.clone(),
-                                        ));
+                                        return Some(Cmd::CollapseCollection(oid, path.clone()));
                                     }
                                     return Some(Cmd::StartCollection(oid, ec));
                                 }

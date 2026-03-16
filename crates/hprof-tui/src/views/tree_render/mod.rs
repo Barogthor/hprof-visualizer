@@ -64,6 +64,9 @@ pub(super) struct RenderCtx<'a> {
     /// Path-keyed phases for live stack view mode.
     /// `None` in snapshot mode (favorites panel).
     expansion_phases: Option<&'a HashMap<NavigationPath, ExpansionPhase>>,
+    /// Path-keyed collapsed set for favorites snapshot mode.
+    /// `None` in live stack view mode.
+    local_collapsed: Option<&'a HashSet<NavigationPath>>,
     show_object_ids: bool,
     snapshot_mode: bool,
     /// Row-level hide overlay — `None` means hiding not applicable.
@@ -73,28 +76,43 @@ pub(super) struct RenderCtx<'a> {
 }
 
 impl<'a> RenderCtx<'a> {
-    /// Returns the expansion phase for a node, using path-based
-    /// lookup when available (live mode), falling back to
-    /// object_id-based lookup (snapshot mode).
+    /// Returns the expansion phase for a node.
+    ///
+    /// Branch priority:
+    /// 1. Live mode (expansion_phases + path) → path-based lookup
+    /// 2. Snapshot collapse (local_collapsed + path) → path in set?
+    ///    Collapsed : data-present? Expanded : Collapsed
+    /// 3. Snapshot collapse (local_collapsed + no path) → object_phases
+    ///    fallback for non-toggleable rows (sentinels, labels)
+    /// 4. Otherwise → object_phases fallback (stack view / legacy)
     pub(super) fn phase_for(
         &self,
         object_id: u64,
         path: Option<&NavigationPath>,
     ) -> ExpansionPhase {
-        if let (Some(ep), Some(p)) =
-            (&self.expansion_phases, path)
-        {
-            // Live mode: path-based lookup only.
-            // No fallback to object_phases — that would leak
-            // expansion state from other paths sharing the
-            // same object_id.
-            return ep
-                .get(p)
-                .cloned()
-                .unwrap_or(ExpansionPhase::Collapsed);
+        // Branch 1: live mode path-based lookup.
+        if let (Some(ep), Some(p)) = (&self.expansion_phases, path) {
+            return ep.get(p).cloned().unwrap_or(ExpansionPhase::Collapsed);
         }
-        // Snapshot mode: object_id-based fallback.
+        // Branch 2: snapshot collapse with path.
+        if let (Some(lc), Some(p)) = (&self.local_collapsed, path) {
+            if lc.contains(p) {
+                return ExpansionPhase::Collapsed;
+            }
+            return if self.has_snapshot_data(object_id) {
+                ExpansionPhase::Expanded
+            } else {
+                ExpansionPhase::Collapsed
+            };
+        }
+        // Branch 3 & 4: object_phases fallback.
         helpers::get_phase(object_id, self.object_phases)
+    }
+
+    fn has_snapshot_data(&self, object_id: u64) -> bool {
+        self.object_fields.contains_key(&object_id)
+            || self.object_static_fields.contains_key(&object_id)
+            || self.collection_chunks.contains_key(&object_id)
     }
 }
 
@@ -119,6 +137,7 @@ pub(crate) fn render_variable_tree(
     options: RenderOptions,
     hidden_fields: Option<&HashSet<HideKey>>,
     expansion_phases: Option<&HashMap<NavigationPath, ExpansionPhase>>,
+    local_collapsed: Option<&HashSet<NavigationPath>>,
 ) -> Vec<ListItem<'static>> {
     let ctx = RenderCtx {
         object_fields,
@@ -127,11 +146,13 @@ pub(crate) fn render_variable_tree(
         object_phases,
         object_errors,
         expansion_phases,
+        local_collapsed,
         show_object_ids: options.show_object_ids,
         snapshot_mode: options.snapshot_mode,
         hidden_fields,
         show_hidden: options.show_hidden,
     };
+    let build_paths = expansion_phases.is_some() || local_collapsed.is_some();
     let mut items = Vec::new();
     match root {
         TreeRoot::Frame { vars, frame_id } => {
@@ -153,7 +174,7 @@ pub(crate) fn render_variable_tree(
                         }
                         continue;
                     }
-                    let path = if expansion_phases.is_some() {
+                    let path = if build_paths {
                         Some(NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx)).build())
                     } else {
                         None
@@ -163,8 +184,13 @@ pub(crate) fn render_variable_tree(
             }
         }
         TreeRoot::Subtree { root_id } => {
+            let subtree_path = if build_paths {
+                Some(NavigationPathBuilder::new(FrameId(root_id), VarIdx(0)).build())
+            } else {
+                None
+            };
             if let Some(chunks) = ctx.collection_chunks.get(&root_id) {
-                append_collection_items(root_id, chunks, "  ", 0, &ctx, &mut items, None);
+                append_collection_items(root_id, chunks, "  ", 0, &ctx, &mut items, subtree_path);
             } else {
                 let mut visited = HashSet::new();
                 append_fields_expanded(
@@ -175,7 +201,7 @@ pub(crate) fn render_variable_tree(
                     &mut visited,
                     &mut items,
                     false,
-                    None,
+                    subtree_path,
                 );
             }
         }

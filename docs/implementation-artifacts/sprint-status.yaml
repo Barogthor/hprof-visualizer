@@ -145,6 +145,7 @@ development_status:
   epic-12: in-progress
   12-0-refactor-render-variable-tree: done
   12-1-path-based-expand-state-isolation: review
+  12-2-favorites-path-based-collapse-state: review
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
   # Deferred after Epic 12 (Epic 10 retro decision)

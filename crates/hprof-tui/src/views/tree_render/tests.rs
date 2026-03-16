@@ -69,6 +69,7 @@ mod frame_rendering {
             },
             None,
             None,
+            None,
         );
         let text = render_items(items);
         assert!(text.contains("(no locals)"), "got: {text:?}");
@@ -94,6 +95,7 @@ mod frame_rendering {
             },
             None,
             None,
+            None,
         );
         let text = render_items(items);
         assert!(text.contains("[0] null"), "got: {text:?}");
@@ -117,6 +119,7 @@ mod frame_rendering {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
             None,
         );
@@ -156,6 +159,7 @@ mod frame_rendering {
             },
             None,
             None,
+            None,
         );
         let text = render_items(items);
         assert!(text.contains("-"), "expected - toggle, got: {text:?}");
@@ -187,6 +191,7 @@ mod snapshot_mode {
                 snapshot_mode: true,
                 show_hidden: false,
             },
+            None,
             None,
             None,
         );
@@ -258,6 +263,7 @@ mod snapshot_mode {
             },
             None,
             None,
+            None,
         );
         let text = render_items(items);
 
@@ -318,6 +324,7 @@ mod object_display {
             },
             None,
             None,
+            None,
         );
         let with_ids_text = render_items(with_ids);
         assert!(
@@ -341,6 +348,7 @@ mod object_display {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
             None,
         );
@@ -388,6 +396,7 @@ mod object_display {
             },
             None,
             None,
+            None,
         );
         let text = render_items(items);
         assert!(
@@ -419,6 +428,7 @@ mod object_display {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
             None,
         );
@@ -464,6 +474,7 @@ mod subtree_root {
             },
             None,
             None,
+            None,
         );
         let text = render_items(items);
         assert!(text.contains("x"), "expected field name, got: {text:?}");
@@ -505,6 +516,7 @@ mod subtree_root {
                 snapshot_mode: true,
                 show_hidden: false,
             },
+            None,
             None,
             None,
         );
@@ -591,6 +603,7 @@ mod subtree_root {
             },
             None,
             None,
+            None,
         );
         let text = render_items(items);
         assert!(
@@ -640,6 +653,7 @@ mod hidden_fields_tests {
             },
             Some(&hidden),
             None,
+            None,
         );
         assert_eq!(items.len(), 1, "hidden var → 1 placeholder row");
         let text = render_items(items);
@@ -669,6 +683,7 @@ mod hidden_fields_tests {
             empty_options(),
             Some(&hidden),
             None,
+            None,
         );
         assert_eq!(items.len(), 0, "hidden var with show_hidden=false → no row");
     }
@@ -690,6 +705,7 @@ mod hidden_fields_tests {
             &HashMap::new(),
             &HashMap::new(),
             empty_options(),
+            None,
             None,
             None,
         );
@@ -741,6 +757,7 @@ mod hidden_fields_tests {
             empty_options(),
             None,
             None,
+            None,
         );
         assert_eq!(baseline.len(), 3, "baseline: 1 field + 2 children");
 
@@ -765,6 +782,7 @@ mod hidden_fields_tests {
             },
             Some(&hidden),
             None,
+            None,
         );
         assert_eq!(hidden_items.len(), 1, "hidden: only 1 placeholder row");
         let text = render_items(hidden_items);
@@ -781,6 +799,7 @@ mod hidden_fields_tests {
             &HashMap::new(),
             empty_options(),
             Some(&hidden),
+            None,
             None,
         );
         assert_eq!(hidden_absent.len(), 0, "show_hidden=false → no rows");
@@ -817,6 +836,7 @@ mod empty_collections {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
             None,
         );
@@ -868,6 +888,7 @@ mod empty_collections {
             },
             None,
             None,
+            None,
         );
         let text = render_items(items);
         assert!(
@@ -897,9 +918,7 @@ mod helpers {
 
 mod live_mode_phase_lookup {
     use super::*;
-    use crate::views::stack_view::{
-        FrameId, NavigationPathBuilder, VarIdx,
-    };
+    use crate::views::stack_view::{FrameId, NavigationPathBuilder, VarIdx};
 
     #[test]
     fn expanded_var_shows_minus_toggle_in_live_mode() {
@@ -913,14 +932,9 @@ mod live_mode_phase_lookup {
             }],
         );
 
-        let var_path = NavigationPathBuilder::new(
-            FrameId(100),
-            VarIdx(0),
-        )
-        .build();
+        let var_path = NavigationPathBuilder::new(FrameId(100), VarIdx(0)).build();
         let mut expansion_phases = HashMap::new();
-        expansion_phases
-            .insert(var_path, ExpansionPhase::Expanded);
+        expansion_phases.insert(var_path, ExpansionPhase::Expanded);
 
         let items = render_variable_tree(
             TreeRoot::Frame {
@@ -939,15 +953,13 @@ mod live_mode_phase_lookup {
             },
             None,
             Some(&expansion_phases),
+            None,
         );
         let text = render_items(items);
         assert!(
             text.contains("- "),
             "expected '-' toggle in live mode, got: {text:?}"
         );
-        assert!(
-            text.contains("count"),
-            "expected field name, got: {text:?}"
-        );
+        assert!(text.contains("count"), "expected field name, got: {text:?}");
     }
 }

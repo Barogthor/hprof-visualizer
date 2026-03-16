@@ -1771,6 +1771,7 @@ impl StackState {
                     },
                     None,
                     Some(&self.expansion.expansion_phases),
+                    None,
                 );
                 items.extend(tree_items);
             }

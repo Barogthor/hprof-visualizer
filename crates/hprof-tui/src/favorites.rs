@@ -95,10 +95,12 @@ pub struct PinnedItem {
     pub item_label: String,
     /// Frozen snapshot of the pinned data.
     pub snapshot: PinnedSnapshot,
-    /// Objects or collection nodes collapsed by the user inside this snapshot.
+    /// Tree paths collapsed by the user inside this snapshot.
     ///
     /// Default is empty: all captured nodes are expanded in the favorites view.
-    pub local_collapsed: HashSet<u64>,
+    /// Each path identifies a unique position in the snapshot tree, enabling
+    /// independent collapse state for different occurrences of the same object.
+    pub local_collapsed: HashSet<NavigationPath>,
     /// Field/variable rows hidden by the user (`h` key).
     ///
     /// When `show_hidden = false` (default), hidden rows are removed entirely.
