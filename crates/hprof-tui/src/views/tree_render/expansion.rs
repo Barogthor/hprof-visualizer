@@ -53,6 +53,8 @@ pub(super) fn render_single_field(
         THEME.null_value
     } else if matches!(child_phase, Some(ExpansionPhase::Failed)) {
         THEME.error_indicator
+    } else if matches!(child_phase, Some(ExpansionPhase::Loading)) {
+        THEME.loading_indicator
     } else {
         field_value_style(&field.value)
     };
