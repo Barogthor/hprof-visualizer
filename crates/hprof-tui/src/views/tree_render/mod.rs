@@ -81,11 +81,19 @@ impl<'a> RenderCtx<'a> {
         object_id: u64,
         path: Option<&NavigationPath>,
     ) -> ExpansionPhase {
-        if let (Some(ep), Some(p)) = (&self.expansion_phases, path)
-            && let Some(phase) = ep.get(p)
+        if let (Some(ep), Some(p)) =
+            (&self.expansion_phases, path)
         {
-            return phase.clone();
+            // Live mode: path-based lookup only.
+            // No fallback to object_phases — that would leak
+            // expansion state from other paths sharing the
+            // same object_id.
+            return ep
+                .get(p)
+                .cloned()
+                .unwrap_or(ExpansionPhase::Collapsed);
         }
+        // Snapshot mode: object_id-based fallback.
         helpers::get_phase(object_id, self.object_phases)
     }
 }
