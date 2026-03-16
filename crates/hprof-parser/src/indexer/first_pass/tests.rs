@@ -10,14 +10,10 @@ use hprof_api::{MemoryBudget, NullProgressObserver, ProgressNotifier};
 use byteorder::ReadBytesExt;
 
 #[cfg(feature = "test-utils")]
-use super::heap_extraction::{
-    compute_batch_ranges, extract_heap_segment,
-    merge_segment_result,
-};
+use super::heap_extraction::{compute_batch_ranges, extract_heap_segment, merge_segment_result};
 #[cfg(feature = "test-utils")]
 use super::hprof_primitives::{
-    PARALLEL_THRESHOLD, PROGRESS_REPORT_INTERVAL,
-    gc_root_skip_size, parse_class_dump,
+    PARALLEL_THRESHOLD, PROGRESS_REPORT_INTERVAL, gc_root_skip_size, parse_class_dump,
     primitive_element_size, skip_n,
 };
 #[cfg(feature = "test-utils")]
@@ -2360,10 +2356,8 @@ mod budget_batching_tests {
         let bytes = builder.build();
         let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (result_budget, _) =
-            run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(128));
-        let (result_none, _) =
-            run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
+        let (result_budget, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(128));
+        let (result_none, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
 
         assert_eq!(
             result_budget.segment_filters.len(),
@@ -2383,8 +2377,7 @@ mod budget_batching_tests {
             .keys()
             .copied()
             .collect();
-        let mut none_ids: Vec<u64> =
-            result_none.index.instance_offsets.keys().copied().collect();
+        let mut none_ids: Vec<u64> = result_none.index.instance_offsets.keys().copied().collect();
         budget_ids.sort_unstable();
         none_ids.sort_unstable();
         assert_eq!(budget_ids, none_ids, "extracted IDs must match");
@@ -2564,8 +2557,7 @@ mod budget_batching_tests {
             .build();
         let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (result, obs) =
-            run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
+        let (result, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
 
         // Two HEAP_DUMP_SEGMENT records correctly indexed.
         // Both fall in the same 64 MB SegmentFilter bucket
@@ -2578,9 +2570,7 @@ mod budget_batching_tests {
             .events
             .iter()
             .filter_map(|e| match e {
-                ProgressEvent::SegmentCompleted { done, total } => {
-                    Some((*done, *total))
-                }
+                ProgressEvent::SegmentCompleted { done, total } => Some((*done, *total)),
                 _ => None,
             })
             .collect();
@@ -2621,13 +2611,10 @@ mod post_extraction_tests {
         #[cfg(target_os = "linux")]
         if let Ok(s) = std::fs::read_to_string("/proc/self/statm") {
             let mut parts = s.split_whitespace();
-            let resident: u64 =
-                parts.nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
-            let shared: u64 =
-                parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            let resident: u64 = parts.nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+            let shared: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
             // Assume 4 KiB pages (standard on Linux/WSL2 x86-64)
-            return (resident.saturating_sub(shared) * 4096) as f64
-                / (1024.0 * 1024.0);
+            return (resident.saturating_sub(shared) * 4096) as f64 / (1024.0 * 1024.0);
         }
         0.0
     }
@@ -2635,8 +2622,7 @@ mod post_extraction_tests {
     /// Deterministic primary metric — PreciseIndex heap
     /// size only (no more all_offsets).
     fn theoretical_mem_mb(diag: &DiagnosticInfo) -> f64 {
-        diag.precise_index_heap_bytes as f64
-            / (1024.0 * 1024.0)
+        diag.precise_index_heap_bytes as f64 / (1024.0 * 1024.0)
     }
 
     // ------------------------------------------------------------------
@@ -2647,11 +2633,9 @@ mod post_extraction_tests {
     /// coherent values after a minimal first pass.
     #[test]
     fn diagnostics_fields_present() {
-        let bytes = HprofTestBuilder::new(
-            "JAVA PROFILE 1.0.2", 8,
-        )
-        .add_instance(1, 0, 100, &[])
-        .build();
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(1, 0, 100, &[])
+            .build();
         let start = advance_past_header(&bytes);
         let result = run_fp(&bytes[start..], 8);
         let diag = &result.diagnostics;
@@ -2678,10 +2662,7 @@ mod post_extraction_tests {
     #[test]
     #[ignore]
     fn all_fixtures_profiling() {
-        let assets_gen = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../assets/generated"
-        );
+        let assets_gen = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/generated");
         let real_dumps: &[&str] = &[
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -2697,10 +2678,7 @@ mod post_extraction_tests {
         if let Ok(entries) = std::fs::read_dir(assets_gen) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if name.ends_with("-san.hprof") && !name.contains("truncated") {
                     fixtures.push(path);
                 }
@@ -2726,14 +2704,13 @@ mod post_extraction_tests {
             let mut scenario_sizes: std::collections::HashMap<String, Vec<u64>> =
                 std::collections::HashMap::new();
             for p in &fixtures {
-                let name =
-                    p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if let Some(seg) = name
-                    .split('-')
-                    .find(|s| s.len() == 3 && s.starts_with('s'))
-                {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if let Some(seg) = name.split('-').find(|s| s.len() == 3 && s.starts_with('s')) {
                     let size = p.metadata().map(|m| m.len()).unwrap_or(0);
-                    scenario_sizes.entry(seg.to_string()).or_default().push(size);
+                    scenario_sizes
+                        .entry(seg.to_string())
+                        .or_default()
+                        .push(size);
                 }
             }
             let uniform: std::collections::HashSet<_> = scenario_sizes
@@ -2744,17 +2721,13 @@ mod post_extraction_tests {
             fixtures
                 .into_iter()
                 .filter(|p| {
-                    let name =
-                        p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     !name.split('-').any(|s| uniform.contains(s))
                 })
                 .collect::<Vec<_>>()
         };
 
-        eprintln!(
-            "[post_extraction] profiling {} fixtures\n",
-            fixtures.len()
-        );
+        eprintln!("[post_extraction] profiling {} fixtures\n", fixtures.len());
 
         struct Row {
             _name: String,
@@ -2767,9 +2740,7 @@ mod post_extraction_tests {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown");
-            let size_mb =
-                path.metadata().map(|m| m.len()).unwrap_or(0) as f64
-                    / (1024.0 * 1024.0);
+            let size_mb = path.metadata().map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0);
             let raw = match std::fs::read(path) {
                 Ok(b) => b,
                 Err(e) => {
@@ -2820,13 +2791,9 @@ mod post_extraction_tests {
                  total_ms={total_ms} \
                  rss_before={rss_before:.1}MB \
                  rss_after={rss_after:.1}MB",
-                diag.entry_point_count,
-                diag.filter_lookup_ms
+                diag.entry_point_count, diag.filter_lookup_ms
             );
-            let _ = (
-                segments, total_ms,
-                rss_before, rss_after,
-            );
+            let _ = (segments, total_ms, rss_before, rss_after);
             rows.push(Row {
                 _name: name.to_string(),
                 _theo_mb: theo_mb,
@@ -2862,18 +2829,16 @@ mod post_extraction_tests {
         let path_str = match std::env::var("HPROF_BENCH_FILE") {
             Ok(p) => p,
             Err(_) => {
-                eprintln!(
-                    "[post_extraction] HPROF_BENCH_FILE not set — skipping"
-                );
+                eprintln!("[post_extraction] HPROF_BENCH_FILE not set — skipping");
                 return;
             }
         };
         let path = std::path::Path::new(&path_str);
-        let name =
-            path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
-        let size_mb =
-            path.metadata().map(|m| m.len()).unwrap_or(0) as f64
-                / (1024.0 * 1024.0);
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let size_mb = path.metadata().map(|m| m.len()).unwrap_or(0) as f64 / (1024.0 * 1024.0);
         let raw = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
@@ -2924,8 +2889,7 @@ mod post_extraction_tests {
              total_ms={total_ms} \
              rss_before={rss_before:.1}MB \
              rss_after={rss_after:.1}MB",
-            diag.entry_point_count,
-            diag.filter_lookup_ms
+            diag.entry_point_count, diag.filter_lookup_ms
         );
     }
 }
@@ -2944,9 +2908,7 @@ mod post_extraction_tests {
 #[cfg(feature = "test-utils")]
 #[test]
 fn filter_lookup_matches_expected() {
-    use crate::test_utils::{
-        HprofTestBuilder, advance_past_header,
-    };
+    use crate::test_utils::{HprofTestBuilder, advance_past_header};
     let id_size: u32 = 8;
 
     // Build the dump. Record order matters for
@@ -2956,17 +2918,15 @@ fn filter_lookup_matches_expected() {
     //  0: STACK_TRACE (tag 0x05)
     //  1: HEAP_DUMP_SEGMENT containing ROOT_THREAD_OBJ
     //  2: HEAP_DUMP_SEGMENT containing INSTANCE_DUMP 0x100
-    let bytes = HprofTestBuilder::new(
-        "JAVA PROFILE 1.0.2", id_size,
-    )
-    // record 0: STACK_TRACE for thread_serial=1
-    .add_stack_trace(1, 1, &[])
-    // record 1: ROOT_THREAD_OBJ linking thread 1
-    //   to object 0x100
-    .add_root_thread_obj(0x100, 1, 1)
-    // record 2: INSTANCE_DUMP for object 0x100
-    .add_instance(0x100, 0, 200, &[])
-    .build();
+    let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+        // record 0: STACK_TRACE for thread_serial=1
+        .add_stack_trace(1, 1, &[])
+        // record 1: ROOT_THREAD_OBJ linking thread 1
+        //   to object 0x100
+        .add_root_thread_obj(0x100, 1, 1)
+        // record 2: INSTANCE_DUMP for object 0x100
+        .add_instance(0x100, 0, 200, &[])
+        .build();
 
     let header_len = advance_past_header(&bytes);
     let records_data = &bytes[header_len..];
@@ -2990,8 +2950,7 @@ fn filter_lookup_matches_expected() {
     //   Payload starts at rec0_size + rec1_size + 9.
     //   First sub-record tag byte is at the payload
     //   start.
-    let instance_payload_start =
-        rec0_size + rec1_size + 9;
+    let instance_payload_start = rec0_size + rec1_size + 9;
     // The offset stored is the tag
     // byte position = sub_record_start - 1 =
     // payload_start. Because:
@@ -3005,11 +2964,7 @@ fn filter_lookup_matches_expected() {
     let result = run_fp(records_data, id_size);
 
     // Verify thread resolution found the object
-    let actual_offset = result
-        .index
-        .instance_offsets
-        .get(&0x100)
-        .copied();
+    let actual_offset = result.index.instance_offsets.get(&0x100).copied();
     assert_eq!(
         actual_offset,
         Some(expected_offset),
@@ -3031,9 +2986,7 @@ fn filter_lookup_matches_expected() {
 #[ignore]
 fn entry_points_at_segment_boundary_large() {
     use crate::indexer::segment::SEGMENT_SIZE;
-    use crate::test_utils::{
-        HprofTestBuilder, advance_past_header,
-    };
+    use crate::test_utils::{HprofTestBuilder, advance_past_header};
 
     // Build a single HEAP_DUMP_SEGMENT containing:
     //   1) A large PRIM_ARRAY_DUMP (~64 MiB of zeros)
@@ -3056,9 +3009,7 @@ fn entry_points_at_segment_boundary_large() {
     let data_len = SEGMENT_SIZE;
     let num_elements = data_len as u32; // byte array
 
-    let mut payload = Vec::with_capacity(
-        prim_header + data_len + 50,
-    );
+    let mut payload = Vec::with_capacity(prim_header + data_len + 50);
     // PRIM_ARRAY_DUMP sub-tag
     payload.push(0x23);
     payload.extend_from_slice(&100u64.to_be_bytes()); // arr_id
@@ -3074,12 +3025,9 @@ fn entry_points_at_segment_boundary_large() {
     payload.extend_from_slice(&300u64.to_be_bytes()); // class
     payload.extend_from_slice(&0u32.to_be_bytes()); // 0 bytes
 
-    let bytes = HprofTestBuilder::new(
-        "JAVA PROFILE 1.0.2",
-        id_size,
-    )
-    .add_raw_heap_segment(&payload)
-    .build();
+    let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+        .add_raw_heap_segment(&payload)
+        .build();
 
     let start = advance_past_header(&bytes);
     let result = run_fp(&bytes[start..], id_size);
@@ -3099,10 +3047,7 @@ fn entry_points_at_segment_boundary_large() {
     // offset would be found via the filter).
     // More direct verification: ensure the second
     // sub-record was found (obj_id 200 in filter).
-    let has_200 = result
-        .segment_filters
-        .iter()
-        .any(|f| f.contains(200));
+    let has_200 = result.segment_filters.iter().any(|f| f.contains(200));
     assert!(
         has_200,
         "INSTANCE_DUMP obj 200 past boundary must be \
@@ -3118,33 +3063,22 @@ fn entry_points_at_segment_boundary_large() {
 #[cfg(feature = "test-utils")]
 #[test]
 fn entry_points_across_multiple_heap_segments() {
-    use crate::test_utils::{
-        HprofTestBuilder, advance_past_header,
-    };
+    use crate::test_utils::{HprofTestBuilder, advance_past_header};
 
-    let bytes = HprofTestBuilder::new(
-        "JAVA PROFILE 1.0.2",
-        8,
-    )
-    .add_instance(1, 0, 100, &[])
-    .add_instance(2, 0, 100, &[])
-    .build();
+    let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+        .add_instance(1, 0, 100, &[])
+        .add_instance(2, 0, 100, &[])
+        .build();
 
     let start = advance_past_header(&bytes);
     let result = run_fp(&bytes[start..], 8);
 
     assert!(
-        result
-            .segment_filters
-            .iter()
-            .any(|f| f.contains(1)),
+        result.segment_filters.iter().any(|f| f.contains(1)),
         "instance 1 must be in a filter"
     );
     assert!(
-        result
-            .segment_filters
-            .iter()
-            .any(|f| f.contains(2)),
+        result.segment_filters.iter().any(|f| f.contains(2)),
         "instance 2 must be in a filter"
     );
     assert!(
@@ -3176,9 +3110,7 @@ fn extract_heap_segment_cross_segment_entry_points() {
         payload.push(0x21); // InstanceDump sub-tag
         payload.extend_from_slice(&obj_id.to_be_bytes());
         payload.extend_from_slice(&0u32.to_be_bytes());
-        payload.extend_from_slice(
-            &100u64.to_be_bytes(),
-        );
+        payload.extend_from_slice(&100u64.to_be_bytes());
         payload.extend_from_slice(&0u32.to_be_bytes());
     }
 
@@ -3186,20 +3118,14 @@ fn extract_heap_segment_cross_segment_entry_points() {
     // (segment 0) and tag #2 at SEGMENT_SIZE + 20
     // (segment 1).
     let data_offset = SEGMENT_SIZE - 5;
-    let parsing_result = extract_heap_segment(
-        &payload,
-        data_offset,
-        id_size,
-        usize::MAX,
-    );
+    let parsing_result = extract_heap_segment(&payload, data_offset, id_size, usize::MAX);
 
-    let entry_points: Vec<SegmentEntryPoint> =
-        parsing_result
-            .chunks
-            .iter()
-            .flat_map(|c| c.segment_entry_points.iter())
-            .copied()
-            .collect();
+    let entry_points: Vec<SegmentEntryPoint> = parsing_result
+        .chunks
+        .iter()
+        .flat_map(|c| c.segment_entry_points.iter())
+        .copied()
+        .collect();
 
     assert_eq!(
         entry_points.len(),
@@ -3212,8 +3138,7 @@ fn extract_heap_segment_cross_segment_entry_points() {
         "first entry point must be segment 0"
     );
     assert_eq!(
-        entry_points[0].scan_offset,
-        data_offset,
+        entry_points[0].scan_offset, data_offset,
         "segment 0 entry at tag byte of sub-record 1"
     );
     assert_eq!(
@@ -3251,18 +3176,15 @@ fn extract_heap_segment_records_entry_points() {
     payload.extend_from_slice(&100u64.to_be_bytes());
     payload.extend_from_slice(&0u32.to_be_bytes());
 
-    let parsing_result = extract_heap_segment(
-        &payload, 0, id_size, usize::MAX,
-    );
+    let parsing_result = extract_heap_segment(&payload, 0, id_size, usize::MAX);
 
     // Collect entry points from all chunks
-    let entry_points: Vec<SegmentEntryPoint> =
-        parsing_result
-            .chunks
-            .iter()
-            .flat_map(|c| c.segment_entry_points.iter())
-            .copied()
-            .collect();
+    let entry_points: Vec<SegmentEntryPoint> = parsing_result
+        .chunks
+        .iter()
+        .flat_map(|c| c.segment_entry_points.iter())
+        .copied()
+        .collect();
 
     // Both sub-records are in segment 0, so we should
     // have exactly one entry point for segment 0.
@@ -3283,39 +3205,31 @@ fn extract_heap_segment_records_entry_points() {
 #[cfg(feature = "test-utils")]
 #[test]
 fn run_first_pass_emits_phase_changed_events_with_threads() {
-    use hprof_api::ProgressEvent;
     use crate::test_utils::{HprofTestBuilder, advance_past_header};
+    use hprof_api::ProgressEvent;
 
     let thread_obj_id = 0xBEEF_u64;
     let thread_serial = 1_u32;
-    let bytes = HprofTestBuilder::new(
-        "JAVA PROFILE 1.0.2",
-        8,
-    )
-    .add_stack_trace(1, thread_serial, &[])
-    .add_root_thread_obj(
-        thread_obj_id,
-        thread_serial,
-        0,
-    )
-    .add_instance(thread_obj_id, 0, 100, &[1, 2])
-    .build();
+    let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+        .add_stack_trace(1, thread_serial, &[])
+        .add_root_thread_obj(thread_obj_id, thread_serial, 0)
+        .add_instance(thread_obj_id, 0, 100, &[1, 2])
+        .build();
     let start = advance_past_header(&bytes);
-    let (_result, obs) =
-        run_fp_with_test_observer(&bytes[start..], 8);
+    let (_result, obs) = run_fp_with_test_observer(&bytes[start..], 8);
 
     // Find the filter-build phase signal
     let filter_idx = obs
         .events
         .iter()
-        .position(|e| matches!(
-            e,
-            ProgressEvent::PhaseChanged(s)
-                if s.starts_with("Building segment")
-        ))
-        .expect(
-            "must emit PhaseChanged for filter build",
-        );
+        .position(|e| {
+            matches!(
+                e,
+                ProgressEvent::PhaseChanged(s)
+                    if s.starts_with("Building segment")
+            )
+        })
+        .expect("must emit PhaseChanged for filter build");
 
     // At least one round signal must follow
     let round_indices: Vec<usize> = obs
@@ -3323,13 +3237,7 @@ fn run_first_pass_emits_phase_changed_events_with_threads() {
         .iter()
         .enumerate()
         .filter_map(|(i, e)| match e {
-            ProgressEvent::PhaseChanged(s)
-                if s.starts_with(
-                    "Resolving threads",
-                ) =>
-            {
-                Some(i)
-            }
+            ProgressEvent::PhaseChanged(s) if s.starts_with("Resolving threads") => Some(i),
             _ => None,
         })
         .collect();
@@ -3351,10 +3259,7 @@ fn run_first_pass_emits_phase_changed_events_with_threads() {
     // First round signal must be the canonical label
     assert_eq!(
         obs.events[round_indices[0]],
-        ProgressEvent::PhaseChanged(
-            "Resolving threads (round 1/3)\u{2026}"
-                .to_owned()
-        ),
+        ProgressEvent::PhaseChanged("Resolving threads (round 1/3)\u{2026}".to_owned()),
         "first round must use canonical label"
     );
 }
@@ -3377,13 +3282,12 @@ fn phase_events_ordered_on_jvisualvm_dump() {
     }
 
     let mut obs = hprof_api::TestObserver::default();
-    let _file =
-        crate::hprof_file::HprofFile::from_path_with_progress(
-            path,
-            &mut obs,
-            hprof_api::MemoryBudget::Unlimited,
-        )
-        .expect("should parse jvisualvm dump");
+    let _file = crate::hprof_file::HprofFile::from_path_with_progress(
+        path,
+        &mut obs,
+        hprof_api::MemoryBudget::Unlimited,
+    )
+    .expect("should parse jvisualvm dump");
 
     let events = &obs.events;
 
@@ -3392,10 +3296,7 @@ fn phase_events_ordered_on_jvisualvm_dump() {
         .iter()
         .enumerate()
         .filter_map(|(i, e)| match e {
-            ProgressEvent::SegmentCompleted {
-                done,
-                total,
-            } if done == total => Some(i),
+            ProgressEvent::SegmentCompleted { done, total } if done == total => Some(i),
             _ => None,
         })
         .next_back()
@@ -3427,9 +3328,10 @@ fn phase_events_ordered_on_jvisualvm_dump() {
 
     // (d) If NamesResolved events exist, all
     //     PhaseChanged must precede the first one
-    if let Some(first_names) = events.iter().position(
-        |e| matches!(e, ProgressEvent::NamesResolved { .. }),
-    ) {
+    if let Some(first_names) = events
+        .iter()
+        .position(|e| matches!(e, ProgressEvent::NamesResolved { .. }))
+    {
         for &pi in &phase_indices {
             assert!(
                 pi < first_names,

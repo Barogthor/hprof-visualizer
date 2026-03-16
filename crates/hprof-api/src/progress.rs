@@ -129,9 +129,7 @@ impl ParseProgressObserver for TestObserver {
     }
     fn on_phase_changed(&mut self, phase: &str) {
         self.events
-            .push(ProgressEvent::PhaseChanged(
-                phase.to_owned(),
-            ));
+            .push(ProgressEvent::PhaseChanged(phase.to_owned()));
     }
 }
 
@@ -155,14 +153,8 @@ mod tests {
         }
         impl ParseProgressObserver for CountingObserver {
             fn on_bytes_scanned(&mut self, _: u64) {}
-            fn on_segment_completed(
-                &mut self, _: usize, _: usize,
-            ) {
-            }
-            fn on_names_resolved(
-                &mut self, _: usize, _: usize,
-            ) {
-            }
+            fn on_segment_completed(&mut self, _: usize, _: usize) {}
+            fn on_names_resolved(&mut self, _: usize, _: usize) {}
             fn on_phase_changed(&mut self, _: &str) {
                 self.phase_calls += 1;
             }
@@ -205,26 +197,16 @@ mod test_utils_tests {
     #[test]
     fn test_observer_captures_phase_changed() {
         let mut obs = TestObserver::default();
-        obs.on_phase_changed(
-            "Building segment filters\u{2026}",
-        );
-        obs.on_phase_changed(
-            "Resolving threads (round 1/3)\u{2026}",
-        );
+        obs.on_phase_changed("Building segment filters\u{2026}");
+        obs.on_phase_changed("Resolving threads (round 1/3)\u{2026}");
         assert_eq!(obs.events.len(), 2);
         assert_eq!(
             obs.events[0],
-            ProgressEvent::PhaseChanged(
-                "Building segment filters\u{2026}"
-                    .to_owned()
-            )
+            ProgressEvent::PhaseChanged("Building segment filters\u{2026}".to_owned())
         );
         assert_eq!(
             obs.events[1],
-            ProgressEvent::PhaseChanged(
-                "Resolving threads (round 1/3)\u{2026}"
-                    .to_owned()
-            )
+            ProgressEvent::PhaseChanged("Resolving threads (round 1/3)\u{2026}".to_owned())
         );
     }
 }

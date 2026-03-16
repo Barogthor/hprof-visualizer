@@ -43,9 +43,7 @@ pub(super) fn resolve_all(
     notifier: &mut ProgressNotifier,
 ) {
     #[cfg(feature = "dev-profiling")]
-    let _thread_cache_span =
-        tracing::info_span!("thread_cache_build")
-            .entered();
+    let _thread_cache_span = tracing::info_span!("thread_cache_build").entered();
 
     // Synthesise thread entries from STACK_TRACE
     // records when the file has no START_THREAD (0x06).
@@ -55,9 +53,7 @@ pub(super) fn resolve_all(
         .stack_traces
         .values()
         .filter(|t| t.thread_serial > 0)
-        .map(|t| {
-            (t.thread_serial, t.stack_trace_serial)
-        })
+        .map(|t| (t.thread_serial, t.stack_trace_serial))
         .collect();
     for (thread_serial, stack_trace_serial) in traces {
         ctx.result
@@ -76,17 +72,12 @@ pub(super) fn resolve_all(
 
     // Populate thread_object_ids from ROOT_THREAD_OBJ
     // sub-records and update synthetic threads.
-    for rto in std::mem::take(&mut ctx.raw_thread_objects)
-    {
+    for rto in std::mem::take(&mut ctx.raw_thread_objects) {
         ctx.result
             .index
             .thread_object_ids
             .insert(rto.thread_serial, rto.object_id);
-        if let Some(thread) = ctx
-            .result
-            .index
-            .threads
-            .get_mut(&rto.thread_serial)
+        if let Some(thread) = ctx.result.index.threads.get_mut(&rto.thread_serial)
             && thread.object_id == 0
         {
             thread.object_id = rto.object_id;
@@ -95,18 +86,11 @@ pub(super) fn resolve_all(
 
     // Correlate GC_ROOT_JAVA_FRAME roots with stack
     // traces.
-    for root in
-        std::mem::take(&mut ctx.raw_frame_roots)
-    {
+    for root in std::mem::take(&mut ctx.raw_frame_roots) {
         if root.frame_number < 0 {
             continue;
         }
-        let Some(thread) = ctx
-            .result
-            .index
-            .threads
-            .get(&root.thread_serial)
-        else {
+        let Some(thread) = ctx.result.index.threads.get(&root.thread_serial) else {
             continue;
         };
         let Some(trace) = ctx
@@ -118,9 +102,7 @@ pub(super) fn resolve_all(
             continue;
         };
         let idx = root.frame_number as usize;
-        let Some(&frame_id) =
-            trace.frame_ids.get(idx)
-        else {
+        let Some(&frame_id) = trace.frame_ids.get(idx) else {
             continue;
         };
         ctx.result
@@ -149,9 +131,7 @@ pub(super) fn resolve_all(
         .collect();
 
     if !thread_ids.is_empty() {
-        notifier.phase_changed(
-            "Resolving threads (round 1/3)\u{2026}",
-        );
+        notifier.phase_changed("Resolving threads (round 1/3)\u{2026}");
         let (found, warns) = batch_lookup_by_filter(
             filters,
             entry_points,
@@ -164,15 +144,11 @@ pub(super) fn resolve_all(
             ctx.push_warning(w);
         }
         for (id, offset) in &found {
-            ctx.result
-                .index
-                .instance_offsets
-                .insert(*id, *offset);
+            ctx.result.index.instance_offsets.insert(*id, *offset);
         }
 
         // Round 1: transitive refs (name, holder)
-        let mut round1_ids: HashSet<u64> =
-            HashSet::new();
+        let mut round1_ids: HashSet<u64> = HashSet::new();
         let thread_offsets: Vec<u64> = ctx
             .result
             .index
@@ -181,13 +157,10 @@ pub(super) fn resolve_all(
             .copied()
             .collect();
 
-        let mut string_offsets: Vec<(u64, u64)> =
-            Vec::new();
+        let mut string_offsets: Vec<(u64, u64)> = Vec::new();
 
         for offset in thread_offsets {
-            let Some(inst) = read_raw_instance_at(
-                data, offset, id_size,
-            ) else {
+            let Some(inst) = read_raw_instance_at(data, offset, id_size) else {
                 continue;
             };
             let refs = extract_obj_refs(
@@ -199,67 +172,47 @@ pub(super) fn resolve_all(
                 data,
             );
             for r in &refs {
-                if !ctx
-                    .result
-                    .index
-                    .instance_offsets
-                    .contains_key(&r.ref_id)
-                {
+                if !ctx.result.index.instance_offsets.contains_key(&r.ref_id) {
                     round1_ids.insert(r.ref_id);
                     if r.field_name == "name" {
-                        string_offsets
-                            .push((r.ref_id, 0));
+                        string_offsets.push((r.ref_id, 0));
                     }
                 }
             }
         }
 
         if !round1_ids.is_empty() {
-            notifier.phase_changed(
-                "Resolving threads (round 2/3)\u{2026}",
+            notifier.phase_changed("Resolving threads (round 2/3)\u{2026}");
+            let (found1, warns1) = batch_lookup_by_filter(
+                filters,
+                entry_points,
+                data,
+                id_size,
+                &round1_ids,
+                &ctx.result.heap_record_ranges,
             );
-            let (found1, warns1) =
-                batch_lookup_by_filter(
-                    filters,
-                    entry_points,
-                    data,
-                    id_size,
-                    &round1_ids,
-                    &ctx.result.heap_record_ranges,
-                );
             for w in warns1 {
                 ctx.push_warning(w);
             }
             for (id, offset) in &found1 {
-                ctx.result
-                    .index
-                    .instance_offsets
-                    .insert(*id, *offset);
+                ctx.result.index.instance_offsets.insert(*id, *offset);
             }
 
             // Update string_offsets with resolved
             // offsets for round 2
             for (id, off) in &mut string_offsets {
-                if let Some(&resolved) = found1.get(id)
-                {
+                if let Some(&resolved) = found1.get(id) {
                     *off = resolved;
                 }
             }
 
             // Round 2: value refs from String instances
-            let mut round2_ids: HashSet<u64> =
-                HashSet::new();
+            let mut round2_ids: HashSet<u64> = HashSet::new();
             for (_, str_offset) in &string_offsets {
                 if *str_offset == 0 {
                     continue;
                 }
-                let Some(str_inst) =
-                    read_raw_instance_at(
-                        data,
-                        *str_offset,
-                        id_size,
-                    )
-                else {
+                let Some(str_inst) = read_raw_instance_at(data, *str_offset, id_size) else {
                     continue;
                 };
                 let refs = extract_obj_refs(
@@ -271,12 +224,7 @@ pub(super) fn resolve_all(
                     data,
                 );
                 for r in &refs {
-                    if !ctx
-                        .result
-                        .index
-                        .instance_offsets
-                        .contains_key(&r.ref_id)
-                    {
+                    if !ctx.result.index.instance_offsets.contains_key(&r.ref_id) {
                         round2_ids.insert(r.ref_id);
                     }
                 }
@@ -287,23 +235,19 @@ pub(super) fn resolve_all(
                     "Resolving threads (round 3/3)\
                      \u{2026}",
                 );
-                let (found2, warns2) =
-                    batch_lookup_by_filter(
-                        filters,
-                        entry_points,
-                        data,
-                        id_size,
-                        &round2_ids,
-                        &ctx.result.heap_record_ranges,
-                    );
+                let (found2, warns2) = batch_lookup_by_filter(
+                    filters,
+                    entry_points,
+                    data,
+                    id_size,
+                    &round2_ids,
+                    &ctx.result.heap_record_ranges,
+                );
                 for w in warns2 {
                     ctx.push_warning(w);
                 }
                 for (id, offset) in found2 {
-                    ctx.result
-                        .index
-                        .instance_offsets
-                        .insert(id, offset);
+                    ctx.result.index.instance_offsets.insert(id, offset);
                 }
             }
         }
@@ -311,36 +255,26 @@ pub(super) fn resolve_all(
 
     #[cfg(feature = "test-utils")]
     {
-        ctx.result.diagnostics.filter_lookup_ms =
-            t0.elapsed().as_millis() as u64;
+        ctx.result.diagnostics.filter_lookup_ms = t0.elapsed().as_millis() as u64;
     }
 }
 
 /// Reads an `INSTANCE_DUMP` sub-record at `offset` in
 /// `data`.
-fn read_raw_instance_at<'a>(
-    data: &'a [u8],
-    offset: u64,
-    id_size: u32,
-) -> Option<RawInstance<'a>> {
+fn read_raw_instance_at<'a>(data: &'a [u8], offset: u64, id_size: u32) -> Option<RawInstance<'a>> {
     let start = offset as usize;
     if start >= data.len() {
         return None;
     }
     let slice = &data[start..];
     let mut cursor = Cursor::new(slice);
-    if HeapSubTag::from(cursor.read_u8().ok()?)
-        != HeapSubTag::InstanceDump
-    {
+    if HeapSubTag::from(cursor.read_u8().ok()?) != HeapSubTag::InstanceDump {
         return None;
     }
     let _obj_id = read_id(&mut cursor, id_size).ok()?;
-    let _stack_serial =
-        cursor.read_u32::<BigEndian>().ok()?;
-    let class_object_id =
-        read_id(&mut cursor, id_size).ok()?;
-    let num_bytes =
-        cursor.read_u32::<BigEndian>().ok()? as usize;
+    let _stack_serial = cursor.read_u32::<BigEndian>().ok()?;
+    let class_object_id = read_id(&mut cursor, id_size).ok()?;
+    let num_bytes = cursor.read_u32::<BigEndian>().ok()? as usize;
     let pos = cursor.position() as usize;
     if pos + num_bytes > slice.len() {
         return None;
@@ -368,9 +302,7 @@ fn extract_obj_refs(
         if !visited.insert(current) {
             break;
         }
-        let Some(info) =
-            index.class_dumps.get(&current)
-        else {
+        let Some(info) = index.class_dumps.get(&current) else {
             break;
         };
         chain.push(current);
@@ -384,35 +316,25 @@ fn extract_obj_refs(
     let mut results = Vec::new();
 
     for &cid in &chain {
-        let Some(info) = index.class_dumps.get(&cid)
-        else {
+        let Some(info) = index.class_dumps.get(&cid) else {
             continue;
         };
         for field in &info.instance_fields {
-            let field_size = value_byte_size(
-                field.field_type,
-                id_size,
-            );
+            let field_size = value_byte_size(field.field_type, id_size);
             if field_size == 0 {
                 return results;
             }
             if field.field_type == PRIM_TYPE_OBJECT_REF {
-                let Ok(ref_id) =
-                    read_id(&mut cursor, id_size)
-                else {
+                let Ok(ref_id) = read_id(&mut cursor, id_size) else {
                     return results;
                 };
                 if ref_id != 0 {
                     let name: String = index
                         .strings
                         .get(&field.name_string_id)
-                        .map(|sref| {
-                            sref.resolve(records_data)
-                        })
+                        .map(|sref| sref.resolve(records_data))
                         .unwrap_or_default();
-                    if target_names
-                        .contains(&name.as_str())
-                    {
+                    if target_names.contains(&name.as_str()) {
                         results.push(ObjRef {
                             field_name: name,
                             ref_id,
@@ -420,9 +342,7 @@ fn extract_obj_refs(
                     }
                 }
             } else {
-                let pos =
-                    cursor.position() as usize
-                        + field_size;
+                let pos = cursor.position() as usize + field_size;
                 if pos > field_data.len() {
                     return results;
                 }

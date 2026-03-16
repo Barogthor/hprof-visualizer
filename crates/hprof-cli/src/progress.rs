@@ -105,8 +105,7 @@ impl ParseProgressObserver for CliProgressObserver {
 
     fn on_phase_changed(&mut self, phase: &str) {
         if let Some(bar) = &self.segment_bar
-            && bar.position()
-                < bar.length().unwrap_or(0)
+            && bar.position() < bar.length().unwrap_or(0)
         {
             bar.finish_and_clear();
             self.segment_bar = None;
@@ -114,8 +113,7 @@ impl ParseProgressObserver for CliProgressObserver {
         if let Some(pb) = &self.phase_bar {
             pb.set_message(phase.to_owned());
         } else {
-            let pb =
-                self.mp.add(ProgressBar::new_spinner());
+            let pb = self.mp.add(ProgressBar::new_spinner());
             pb.set_style(
                 ProgressStyle::with_template(
                     "[{elapsed_precise}] \
@@ -124,25 +122,17 @@ impl ParseProgressObserver for CliProgressObserver {
                 .unwrap(),
             );
             pb.set_message(phase.to_owned());
-            pb.enable_steady_tick(
-                Duration::from_millis(120),
-            );
+            pb.enable_steady_tick(Duration::from_millis(120));
             self.phase_bar = Some(pb);
         }
     }
 
-    fn on_names_resolved(
-        &mut self,
-        done: usize,
-        total: usize,
-    ) {
+    fn on_names_resolved(&mut self, done: usize, total: usize) {
         if self.name_bar.is_none() {
             if let Some(pb) = self.phase_bar.take() {
                 pb.finish_and_clear();
             }
-            let pb = self
-                .mp
-                .add(ProgressBar::new(total as u64));
+            let pb = self.mp.add(ProgressBar::new(total as u64));
             pb.set_style(
                 ProgressStyle::with_template(
                     "[{elapsed_precise}] \
@@ -151,9 +141,7 @@ impl ParseProgressObserver for CliProgressObserver {
                 )
                 .unwrap(),
             );
-            pb.enable_steady_tick(
-                Duration::from_millis(120),
-            );
+            pb.enable_steady_tick(Duration::from_millis(120));
             self.name_bar = Some(pb);
         }
         let bar = self.name_bar.as_ref().unwrap();
@@ -194,9 +182,7 @@ mod tests {
     fn on_phase_changed_creates_spinner_without_panic() {
         let mp = MultiProgress::new();
         let mut obs = CliProgressObserver::new(&mp, 1024);
-        obs.on_phase_changed(
-            "Building segment filters\u{2026}",
-        );
+        obs.on_phase_changed("Building segment filters\u{2026}");
         assert!(obs.phase_bar.is_some());
     }
 
@@ -204,12 +190,8 @@ mod tests {
     fn on_phase_changed_reuses_spinner_and_updates_msg() {
         let mp = MultiProgress::new();
         let mut obs = CliProgressObserver::new(&mp, 1024);
-        obs.on_phase_changed(
-            "Building segment filters\u{2026}",
-        );
-        obs.on_phase_changed(
-            "Resolving threads (round 1/3)\u{2026}",
-        );
+        obs.on_phase_changed("Building segment filters\u{2026}");
+        obs.on_phase_changed("Resolving threads (round 1/3)\u{2026}");
         // Same spinner reused — elapsed accumulates.
         assert!(obs.phase_bar.is_some());
     }
@@ -218,9 +200,7 @@ mod tests {
     fn on_names_resolved_clears_phase_bar_on_first_call() {
         let mp = MultiProgress::new();
         let mut obs = CliProgressObserver::new(&mp, 1024);
-        obs.on_phase_changed(
-            "Building segment filters\u{2026}",
-        );
+        obs.on_phase_changed("Building segment filters\u{2026}");
         assert!(obs.phase_bar.is_some());
         obs.on_names_resolved(5, 32);
         // phase_bar consumed by on_names_resolved
@@ -243,9 +223,7 @@ mod tests {
         let mp = MultiProgress::new();
         let mut obs = CliProgressObserver::new(&mp, 1024);
         obs.on_segment_completed(1, 5);
-        obs.on_phase_changed(
-            "Building segment filters\u{2026}",
-        );
+        obs.on_phase_changed("Building segment filters\u{2026}");
         obs.on_names_resolved(5, 32);
         obs.finish();
         assert!(obs.phase_bar.is_none());

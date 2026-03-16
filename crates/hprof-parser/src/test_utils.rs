@@ -332,12 +332,8 @@ impl HprofTestBuilder {
     ///
     /// Use this when you need a single segment containing
     /// multiple sub-records or custom binary layouts.
-    pub fn add_raw_heap_segment(
-        mut self,
-        payload: &[u8],
-    ) -> Self {
-        self.records
-            .push(Self::make_record(0x1C, payload));
+    pub fn add_raw_heap_segment(mut self, payload: &[u8]) -> Self {
+        self.records.push(Self::make_record(0x1C, payload));
         self
     }
 
