@@ -143,7 +143,7 @@ development_status:
   # Sequencing decision (Epic 10 retro): Epic 12 before Epic 11
   # Story 12.0 added: refactor render_variable_tree before path-based state
   epic-12: in-progress
-  12-0-refactor-render-variable-tree: backlog
+  12-0-refactor-render-variable-tree: done
   12-1-path-based-expand-state-isolation: ready-for-dev
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
