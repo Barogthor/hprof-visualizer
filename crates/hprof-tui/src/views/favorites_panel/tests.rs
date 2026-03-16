@@ -190,7 +190,10 @@ mod rendering_tests {
             20,
         );
 
-        assert!(text.contains("+ "), "expected + marker for collapsed var[0], got: {text:?}");
+        assert!(
+            text.contains("+ "),
+            "expected + marker for collapsed var[0], got: {text:?}"
+        );
         assert!(
             !text.contains("child"),
             "collapsed var[0] must hide child field, got: {text:?}"
@@ -1236,7 +1239,6 @@ mod hide_field_tests {
         assert_eq!(field_row_map.get(&3), Some(&(HideKey::Var(1), false)));
         assert_eq!(field_row_map.get(&1), None);
     }
-
 }
 
 // ── Story 12.2: path-based collapse state ──────────────────────
