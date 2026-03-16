@@ -1348,6 +1348,7 @@ mod collection_paging {
                 rx,
                 started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
                 loading_shown: false,
+                parent_path: None,
             },
         );
         // Before polling: loading_shown must be false.
@@ -2983,6 +2984,7 @@ mod favorites {
                 rx,
                 started: Instant::now(),
                 loading_shown: false,
+                parent_path: None,
             },
         );
 

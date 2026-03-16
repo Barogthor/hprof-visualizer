@@ -71,6 +71,9 @@ struct PendingPage {
     rx: Receiver<Option<CollectionPage>>,
     pub(super) started: Instant,
     loading_shown: bool,
+    /// Path of the collection node (set for offset-0 eager loads
+    /// so the node can be marked Loading after threshold).
+    parent_path: Option<NavigationPath>,
 }
 
 /// Minimum terminal width to show the favorites panel.
@@ -1375,15 +1378,25 @@ impl<E: NavigationEngine> App<E> {
                                 .map(|(o, _)| (o, ChunkState::Collapsed))
                                 .collect(),
                         };
+                        let cursor_path =
+                            self.stack_state.as_ref().and_then(|s| match s.cursor() {
+                                RenderCursor::At(p) => Some(p.clone()),
+                                _ => None,
+                            });
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.insert(cid, chunks);
-                            if let RenderCursor::At(path) = s.cursor().clone() {
+                            if let Some(ref path) = cursor_path {
                                 s.expansion
                                     .expansion_phases
-                                    .insert(path, ExpansionPhase::Expanded);
+                                    .insert(path.clone(), ExpansionPhase::Expanded);
                             }
                         }
                         self.start_collection_page_load(cid, 0, limit);
+                        if let Some(path) = cursor_path
+                            && let Some(pp) = self.pending_pages.get_mut(&(cid, 0))
+                        {
+                            pp.parent_path = Some(path);
+                        }
                     }
                     Some(RightCmd::StartEntryObj(oid, path)) => {
                         self.start_object_expansion(oid, path);
@@ -1747,15 +1760,25 @@ impl<E: NavigationEngine> App<E> {
                                 .map(|(o, _)| (o, ChunkState::Collapsed))
                                 .collect(),
                         };
+                        let cursor_path =
+                            self.stack_state.as_ref().and_then(|s| match s.cursor() {
+                                RenderCursor::At(p) => Some(p.clone()),
+                                _ => None,
+                            });
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.insert(cid, chunks);
-                            if let RenderCursor::At(path) = s.cursor().clone() {
+                            if let Some(ref path) = cursor_path {
                                 s.expansion
                                     .expansion_phases
-                                    .insert(path, ExpansionPhase::Expanded);
+                                    .insert(path.clone(), ExpansionPhase::Expanded);
                             }
                         }
                         self.start_collection_page_load(cid, 0, limit);
+                        if let Some(path) = cursor_path
+                            && let Some(pp) = self.pending_pages.get_mut(&(cid, 0))
+                        {
+                            pp.parent_path = Some(path);
+                        }
                     }
                     Some(Cmd::LoadChunk(cid, offset, limit)) => {
                         self.start_collection_page_load(cid, offset, limit);
@@ -1871,6 +1894,7 @@ impl<E: NavigationEngine> App<E> {
                 rx,
                 started: Instant::now(),
                 loading_shown: false,
+                parent_path: None,
             },
         );
     }
@@ -1895,11 +1919,20 @@ impl<E: NavigationEngine> App<E> {
                         offset,
                         page.entries.len()
                     );
+                    // Restore parent node to Expanded if it was
+                    // set to Loading during the threshold wait.
+                    if offset == 0
+                        && let Some(ref path) = pp.parent_path
+                        && let Some(s) = &mut self.stack_state
+                    {
+                        s.expansion
+                            .expansion_phases
+                            .insert(path.clone(), ExpansionPhase::Expanded);
+                    }
                     if let Some(s) = &mut self.stack_state
                         && let Some(cc) = s.expansion.collection_chunks.get_mut(&cid)
                     {
                         if offset == 0 {
-                            // Update total_count/chunk_pages if initialised async.
                             if cc.total_count == 0 {
                                 cc.total_count = page.total_count;
                                 cc.chunk_pages = compute_chunk_ranges(page.total_count)
@@ -1949,8 +1982,13 @@ impl<E: NavigationEngine> App<E> {
                 Err(mpsc::TryRecvError::Empty) => {
                     if !pp.loading_shown && pp.started.elapsed() >= EXPANSION_LOADING_THRESHOLD {
                         if offset == 0 {
-                            // Collection loading uses ChunkState::Loading,
-                            // not ExpansionPhase; no-op here.
+                            // Mark the collection node as Loading so it
+                            // renders with the loading indicator color.
+                            if let Some(ref path) = pp.parent_path
+                                && let Some(s) = &mut self.stack_state
+                            {
+                                s.set_expansion_loading(path);
+                            }
                         } else if let Some(s) = &mut self.stack_state
                             && let Some(cc) = s.expansion.collection_chunks.get_mut(&cid)
                         {
