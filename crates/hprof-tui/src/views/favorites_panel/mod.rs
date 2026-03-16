@@ -59,7 +59,7 @@ pub struct FavoritesPanelState {
     /// Per-item field-row map: sub_row -> (HideKey, is_hidden).
     field_row_maps: Vec<FieldRowMap>,
     /// Per-item path map: sub_row -> NavigationPath for toggleable rows.
-    path_maps: Vec<Vec<Option<crate::views::stack_view::NavigationPath>>>,
+    path_maps: Vec<Vec<Option<NavigationPath>>>,
     /// ratatui list state — selected index is the absolute flat-row position.
     list_state: ListState,
 }
@@ -216,7 +216,7 @@ impl FavoritesPanelState {
 
     /// Returns the `NavigationPath` for the row under the cursor,
     /// or `None` if on a non-toggleable row (header/separator).
-    pub fn current_toggleable_path(&self) -> Option<&crate::views::stack_view::NavigationPath> {
+    pub fn current_toggleable_path(&self) -> Option<&NavigationPath> {
         self.path_maps
             .get(self.selected_item)?
             .get(self.sub_row)?

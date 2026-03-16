@@ -144,15 +144,15 @@ development_status:
   # Story 12.0 added: refactor render_variable_tree before path-based state
   epic-12: in-progress
   12-0-refactor-render-variable-tree: done
-  12-1-path-based-expand-state-isolation: review
-  12-2-favorites-path-based-collapse-state: review
+  12-1-path-based-expand-state-isolation: done
+  12-2-favorites-path-based-collapse-state: done
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
   # Deferred after Epic 12 (Epic 10 retro decision)
   epic-11: backlog
-  11-1-loading-indicator-slow-operations: backlog
-  11-2-batch-scan-by-segment: backlog
-  11-3-parallel-eager-item-resolution: backlog
+  11-1-loading-indicator-slow-operations: ready-for-dev
+  11-2-batch-scan-by-segment: ready-for-dev
+  11-3-parallel-eager-item-resolution: ready-for-dev
   11-4-skip-index-object-array: ready-for-dev
   11-5-skip-index-variable-size: ready-for-dev
   11-6-investigate-non-array-item-slowness: backlog

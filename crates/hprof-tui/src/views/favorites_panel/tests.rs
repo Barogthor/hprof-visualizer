@@ -176,9 +176,6 @@ mod rendering_tests {
 
     #[test]
     fn favorites_panel_renders_with_local_collapsed_shows_plus() {
-        // This test will be fully validated in Task 5 once path-based
-        // collapse is wired through RenderCtx. For now, verify that
-        // local_collapsed accepts NavigationPath and the item renders.
         let mut item = make_frame_with_nested_objects();
         let path = NavigationPathBuilder::new(FrameId(0), VarIdx(0)).build();
         item.local_collapsed.insert(path);
@@ -193,9 +190,11 @@ mod rendering_tests {
             20,
         );
 
-        // Item renders without panic — path-based collapse rendering
-        // verified in Task 5 tests.
-        assert!(text.contains("[F]"), "expected header, got: {text:?}");
+        assert!(text.contains("+ "), "expected + marker for collapsed var[0], got: {text:?}");
+        assert!(
+            !text.contains("child"),
+            "collapsed var[0] must hide child field, got: {text:?}"
+        );
     }
 
     #[test]
@@ -261,9 +260,6 @@ mod rendering_tests {
 
     #[test]
     fn favorites_panel_collapsed_collection_row_shows_plus_not_question() {
-        // This test will be fully validated in Task 5 once path-based
-        // collapse is wired through RenderCtx. For now, verify that
-        // local_collapsed accepts NavigationPath and the item renders.
         let mut object_fields = HashMap::new();
         object_fields.insert(
             1,
@@ -341,9 +337,14 @@ mod rendering_tests {
             30,
         );
 
-        // Item renders without panic — path-based collapse rendering
-        // verified in Task 5 tests.
-        assert!(text.contains("[F]"), "expected header, got: {text:?}");
+        assert!(
+            text.contains("+ "),
+            "collapsed collection field must show +, got: {text:?}"
+        );
+        assert!(
+            !text.contains("? "),
+            "collapsed collection must show + not ?, got: {text:?}"
+        );
     }
 
     #[test]
@@ -1235,6 +1236,7 @@ mod hide_field_tests {
         assert_eq!(field_row_map.get(&3), Some(&(HideKey::Var(1), false)));
         assert_eq!(field_row_map.get(&1), None);
     }
+
 }
 
 // ── Story 12.2: path-based collapse state ──────────────────────
