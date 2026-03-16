@@ -1603,10 +1603,12 @@ So that I can determine if it needs optimization or is acceptable.
 
 **Priority:** P1
 
-**Root cause (suspected):** `ctx.sort_offsets()` on tens of millions
-of `ObjectOffset` entries (sort_unstable may allocate internal
-buffers) + `seg_builder.finish()` which constructs BinaryFuse8 filters
-for all segments simultaneously.
+**Root cause (confirmed, 2026-03-15):** Vec doubling in `all_offsets`
+via sequential `extend()` in `merge_segment_result()`. Pre-alloc
+heuristic `data.len()/80` caps at 8 M entries for dumps > 640 MB;
+RustRover 1.1 GB triggers one doubling (8 M → 16 M), giving 24.8%
+waste (ACCEPTABLE). `sort_unstable` is in-place O(log n) stack — NOT
+a spike source. BinaryFuse8 filters are ~9 bits/object — negligible.
 
 **Acceptance Criteria:**
 
@@ -1625,6 +1627,43 @@ budget_bytes, or (b) accept if spike is bounded and temporary
 **Then** a new story is created in this epic for the fix
 
 **Localisation:** `crates/hprof-parser/src/indexer/first_pass/mod.rs:198-203`
+
+### Story 10.5: Eliminate all_offsets via Filter-Based Lookup
+
+As a user,
+I want thread resolution to use segment filters and batched targeted
+re-scans instead of accumulating all object offsets in memory,
+So that I can load 70 GB+ heap dumps without exhausting system memory.
+
+**Priority:** P0
+
+**Root cause:** `all_offsets: Vec<ObjectOffset>` accumulates the offset
+of every heap object. For 70 GB (~700M objects × 16 bytes = ~11.2 GB),
+this exceeds any 8 GB budget. The Vec serves only `thread_resolution`
+(~128 lookups for ~32 threads + transitive refs). Solution: eliminate
+`all_offsets` entirely, use existing segment filters (BinaryFuse8) +
+lightweight entry points (18 KB) for targeted 64 MiB re-scans.
+
+**Acceptance Criteria:**
+
+**Given** a 70 GB heap dump and `--memory-limit 8G`
+**When** the first pass completes
+**Then** no `all_offsets` Vec is built — no allocation failure
+
+**Given** the filter-based lookup
+**When** `thread_resolution` resolves thread objects and transitive refs
+**Then** `instance_offsets` map is identical to former Vec implementation
+
+**Given** any dump (small or large)
+**When** the first pass runs
+**Then** there is one code path — `all_offsets` removed entirely
+
+**Given** ~128 target IDs across 3 resolution rounds
+**When** filter-based lookups execute
+**Then** each candidate segment is scanned at most once per round
+
+**Localisation:** `crates/hprof-parser/src/indexer/first_pass/`
+(mod.rs, heap_extraction.rs, thread_resolution.rs, segment.rs)
 
 ## Epic 11: Navigation Performance
 

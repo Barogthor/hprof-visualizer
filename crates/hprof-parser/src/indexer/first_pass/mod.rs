@@ -18,20 +18,16 @@
 
 use std::time::Instant;
 
-use hprof_api::ProgressNotifier;
+#[cfg(feature = "test-utils")]
+use hprof_api::MemorySize;
+use hprof_api::{MemoryBudget, ProgressNotifier};
 
 use crate::ClassDumpInfo;
+#[cfg(feature = "test-utils")]
+use crate::indexer::DiagnosticInfo;
 use crate::indexer::IndexResult;
 use crate::indexer::precise::PreciseIndex;
-use crate::indexer::segment::SegmentFilterBuilder;
-
-/// Object ID mapped to its byte offset in the records
-/// section. Used for binary-search lookups after sorting.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ObjectOffset {
-    pub(super) object_id: u64,
-    pub(super) offset: u64,
-}
+use crate::indexer::segment::{SegmentFilter, SegmentFilterBuilder};
 
 /// `GC_ROOT_JAVA_FRAME` sub-record: links a heap object
 /// to a specific frame in a thread's stack trace.
@@ -68,6 +64,7 @@ pub(super) struct ClassDumpEntry {
 
 mod heap_extraction;
 mod hprof_primitives;
+pub(crate) mod offset_lookup;
 mod record_scan;
 mod thread_resolution;
 
@@ -83,18 +80,23 @@ struct FirstPassContext<'a> {
     id_size: u32,
     base_offset: u64,
     result: IndexResult,
-    seg_builder: SegmentFilterBuilder,
-    all_offsets: Vec<ObjectOffset>,
+    seg_builder: Option<SegmentFilterBuilder>,
+    /// Pre-built filters + warnings from early
+    /// `seg_builder.finish()` call.
+    built_filters: Option<(Vec<SegmentFilter>, Vec<String>)>,
+    segment_entry_points: Vec<offset_lookup::SegmentEntryPoint>,
     raw_frame_roots: Vec<RawFrameRoot>,
     raw_thread_objects: Vec<RawThreadObject>,
     suppressed_warnings: u64,
     last_progress_bytes: usize,
     last_progress_at: Instant,
     cursor_position: u64,
+    /// Memory budget for chunked heap extraction.
+    budget: MemoryBudget,
 }
 
 impl<'a> FirstPassContext<'a> {
-    fn new(data: &'a [u8], id_size: u32, base_offset: u64) -> Self {
+    fn new(data: &'a [u8], id_size: u32, base_offset: u64, budget: MemoryBudget) -> Self {
         Self {
             data,
             id_size,
@@ -106,15 +108,19 @@ impl<'a> FirstPassContext<'a> {
                 records_indexed: 0,
                 segment_filters: Vec::new(),
                 heap_record_ranges: Vec::new(),
+                #[cfg(feature = "test-utils")]
+                diagnostics: DiagnosticInfo::default(),
             },
-            seg_builder: SegmentFilterBuilder::new(),
-            all_offsets: Vec::with_capacity((data.len() / 80).min(8_000_000)),
+            seg_builder: Some(SegmentFilterBuilder::new()),
+            built_filters: None,
+            segment_entry_points: Vec::new(),
             raw_frame_roots: Vec::new(),
             raw_thread_objects: Vec::new(),
             suppressed_warnings: 0,
             last_progress_bytes: 0,
             last_progress_at: Instant::now(),
             cursor_position: 0,
+            budget,
         }
     }
 
@@ -148,13 +154,43 @@ impl<'a> FirstPassContext<'a> {
         }
     }
 
-    fn sort_offsets(&mut self) {
-        self.all_offsets.sort_unstable_by_key(|o| o.object_id);
+    /// Finishes the segment filter builder early,
+    /// returning `(filters, entry_points)` for immediate
+    /// use in thread resolution.
+    ///
+    /// Any filter-build warnings are pushed directly into
+    /// `self.result.warnings` so they are never lost.
+    fn finish_filters_early(
+        &mut self,
+    ) -> (Vec<SegmentFilter>, Vec<offset_lookup::SegmentEntryPoint>) {
+        let (filters, warnings) = self
+            .seg_builder
+            .take()
+            .expect("seg_builder already consumed")
+            .finish();
+        for w in warnings {
+            self.push_warning(w);
+        }
+        self.built_filters = Some((Vec::new(), Vec::new()));
+        let entry_points = std::mem::take(&mut self.segment_entry_points);
+        (filters, entry_points)
     }
 
     fn finish(mut self) -> IndexResult {
         self.push_suppressed_summary();
-        let (filters, filter_warnings) = self.seg_builder.finish();
+
+        let (filters, filter_warnings) = if let Some(builder) = self.seg_builder.take() {
+            #[cfg(feature = "dev-profiling")]
+            tracing::debug!(
+                completed_segments = builder.completed_count(),
+                pending_ids = builder.pending_id_count(),
+                "segment_filter_build: pre-finish"
+            );
+            builder.finish()
+        } else {
+            self.built_filters.take().unwrap_or_default()
+        };
+
         self.result.segment_filters = filters;
         self.result.warnings.extend(filter_warnings);
         self.result
@@ -173,6 +209,8 @@ impl<'a> FirstPassContext<'a> {
 /// Progress is reported via the [`ProgressNotifier`]:
 /// - `bytes_scanned` during sequential record scan
 /// - `segment_completed` during heap extraction
+/// - `phase_changed` at filter build and each thread
+///   resolution round
 ///
 /// ## Parameters
 /// - `data`: raw bytes starting at the first record
@@ -183,23 +221,46 @@ impl<'a> FirstPassContext<'a> {
 ///   (i.e. `records_start`), added to relative scan
 ///   positions before reporting.
 /// - `notifier`: progress observer wrapper.
+/// - `budget`: memory budget for chunked heap
+///   extraction.
 pub fn run_first_pass(
     data: &[u8],
     id_size: u32,
     base_offset: u64,
     notifier: &mut ProgressNotifier,
+    budget: MemoryBudget,
 ) -> IndexResult {
     #[cfg(feature = "dev-profiling")]
     let _first_pass_span = tracing::info_span!("first_pass").entered();
 
-    let mut ctx = FirstPassContext::new(data, id_size, base_offset);
+    let mut ctx = FirstPassContext::new(data, id_size, base_offset, budget);
     record_scan::scan_records(&mut ctx, notifier);
     heap_extraction::extract_all(&mut ctx, notifier);
-    ctx.sort_offsets();
-    thread_resolution::resolve_all(&mut ctx);
 
-    #[cfg(feature = "dev-profiling")]
-    let _seg_filter_span = tracing::info_span!("segment_filter_build").entered();
+    // Build segment filters BEFORE thread resolution.
+    // Filters are needed for batched lookups.
+    notifier.phase_changed("Building segment filters\u{2026}");
+    let (filters, entry_points) = ctx.finish_filters_early();
 
-    ctx.finish()
+    #[cfg(feature = "test-utils")]
+    {
+        ctx.result.diagnostics = DiagnosticInfo {
+            entry_point_count: entry_points.len(),
+            filter_lookup_ms: 0,
+            precise_index_heap_bytes: ctx.result.index.memory_size(),
+        };
+    }
+
+    // Resolve thread objects via batched filter
+    // lookups.
+    thread_resolution::resolve_all(&mut ctx, &filters, &entry_points, notifier);
+
+    // Store filters back for finish() to consume.
+    ctx.built_filters = Some((filters, Vec::new()));
+
+    {
+        #[cfg(feature = "dev-profiling")]
+        let _seg_filter_span = tracing::info_span!("segment_filter_build").entered();
+        ctx.finish()
+    }
 }

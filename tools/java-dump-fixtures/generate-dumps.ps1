@@ -6,23 +6,23 @@ param(
     [Alias("H")]
     [int]$HoldSeconds = 120,
 
-    [ValidateSet("standard", "all", "ultra")]
+    [ValidateSet("standard", "all", "tiny", "medium", "large", "xlarge", "ultra")]
     [Alias("p")]
     [string]$ProfileSet = "standard",
 
     [Alias("t")]
     [long]$TruncateBytes = 0,
 
-    [ValidateSet("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "all")]
-    [Alias("s")]
+    [ValidateSet("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "all")]
+    [Alias("sc")]
     [string]$Scenario = "01",
 
     [ValidateSet("off", "on", "only")]
-    [Alias("S")]
+    [Alias("San")]
     [string]$Sanitize = "off",
 
     [ValidateSet("raw", "sanitized", "both")]
-    [Alias("T")]
+    [Alias("tt")]
     [string]$TruncateTarget = "raw",
 
     [ValidateSet("off", "on")]
@@ -41,9 +41,9 @@ function Show-Usage {
     Write-Host "Arguments:"
     Write-Host "  Mode          auto | manual | both"
     Write-Host "  HoldSeconds   default: 120"
-    Write-Host "  ProfileSet    standard | all | ultra   (default: standard)"
+    Write-Host "  ProfileSet    standard | all | tiny | medium | large | xlarge | ultra   (default: standard)"
     Write-Host "  TruncateBytes default: 0"
-    Write-Host "  Scenario      01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | 10 | all   (default: 01)"
+    Write-Host "  Scenario      01 | 02 | ... | 10 | 11 | all   (default: 01)"
     Write-Host "  Sanitize      off | on | only   (default: off)"
     Write-Host "  TruncateTarget raw | sanitized | both   (default: raw)"
     Write-Host "  RemoveRaw     off | on   (default: off; requires Sanitize=on)"
@@ -52,7 +52,7 @@ function Show-Usage {
     Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto"
     Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode both -HoldSeconds 180 -ProfileSet all -TruncateBytes 4194304"
     Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -Mode auto -ProfileSet standard -Scenario all"
-    Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -m auto -p ultra -s 01 -S on -T both -R on"
+    Write-Host "  ./tools/java-dump-fixtures/generate-dumps.ps1 -m auto -p ultra -sc 01 -San on -tt both -R on"
 }
 
 if ($Help.IsPresent) {
@@ -197,13 +197,21 @@ function Remove-RawForPrefix {
 switch ($ProfileSet) {
     "standard" { $profiles = @("tiny", "medium", "large", "xlarge") }
     "all" { $profiles = @("tiny", "medium", "large", "xlarge", "ultra") }
-    "ultra" { $profiles = @("ultra") }
-    default { throw "Unexpected ProfileSet: $ProfileSet" }
+    default { $profiles = @($ProfileSet) }
 }
 
 switch ($Scenario) {
-    "all" { $scenarios = @("01", "02", "03", "04", "05", "06", "07", "08", "09", "10") }
+    "all" { $scenarios = @("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11") }
     default { $scenarios = @($Scenario) }
+}
+
+if ($Scenario -eq "11") {
+    if ($profiles -contains "xlarge") {
+        Write-Warning "S11 xlarge requires ~20 GB free RAM, produces ~12 GB dump"
+    }
+    if ($profiles -contains "ultra") {
+        Write-Warning "S11 ultra requires ~28 GB free RAM, produces ~20 GB dump"
+    }
 }
 
 $sources = @(
@@ -216,18 +224,42 @@ if ($Sanitize -ne "only") {
     javac -d $ClassDir $sources
 }
 
+function Get-JvmHeapForProfile {
+    param([string]$Profile, [string]$ScenarioId = "")
+    if ($ScenarioId -eq "11") {
+        switch ($Profile) {
+            "tiny"   { "2g" }
+            "medium" { "4g" }
+            "large"  { "10g" }
+            "xlarge" { "20g" }
+            "ultra"  { "28g" }
+            default  { "4g" }
+        }
+        return
+    }
+    switch ($Profile) {
+        "tiny"     { "512m" }
+        "medium"   { "768m" }
+        "large"    { "1g" }
+        "xlarge"   { "2g" }
+        "ultra"    { "4g" }
+        default    { "1g" }
+    }
+}
+
 foreach ($profile in $profiles) {
     foreach ($scenarioId in $scenarios) {
         $output = Join-Path $AssetsDir ("fixture-s{0}-{1}-raw.hprof" -f $scenarioId, $profile)
         if ($Sanitize -ne "only") {
-            Write-Host "[heap-fixture] scenario=$scenarioId profile=$profile mode=$Mode output=$output truncateBytes=$TruncateBytes"
+            $xmx = Get-JvmHeapForProfile $profile $scenarioId
+            Write-Host "[heap-fixture] scenario=$scenarioId profile=$profile mode=$Mode output=$output truncateBytes=$TruncateBytes -Xmx$xmx"
 
             $truncateForJava = $TruncateBytes
             if ($TruncateTarget -eq "sanitized") {
                 $truncateForJava = 0
             }
 
-            java -cp $ClassDir HeapDumpFixture `
+            java "-Xmx$xmx" -cp $ClassDir HeapDumpFixture `
                 --scenario $scenarioId `
                 --profile $profile `
                 --dump-mode $Mode `

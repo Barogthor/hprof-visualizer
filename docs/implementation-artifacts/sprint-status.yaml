@@ -130,13 +130,24 @@ development_status:
   epic-9-retrospective: done
 
   # Epic 10: Large Dump Loading (sourced from large dump UX observations 2026-03-14)
-  epic-10: in-progress
-  10-1-progress-fidelity-heap-segment-scan: ready-for-dev
-  10-2-split-oversized-heap-segments: ready-for-dev
-  10-3-memory-guard-budget-bytes-extract-all: ready-for-dev
-  10-4-investigate-post-extraction-ram-spike: backlog
+  epic-10: done
+  10-1-progress-fidelity-heap-segment-scan: done
+  10-2-split-oversized-heap-segments: done
+  10-3-memory-guard-budget-bytes-extract-all: done
+  10-4-investigate-post-extraction-ram-spike: done
+  10-5-eliminate-all-offsets-filter-lookup: done
+  10-6-post-extraction-progress-visibility: done
+  epic-10-retrospective: done
+
+  # Epic 12: Path-Based Expand State (sourced from Epic 4 retro + G4/G5)
+  # Sequencing decision (Epic 10 retro): Epic 12 before Epic 11
+  # Story 12.0 added: refactor render_variable_tree before path-based state
+  epic-12: in-progress
+  12-0-refactor-render-variable-tree: backlog
+  12-1-path-based-expand-state-isolation: ready-for-dev
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
+  # Deferred after Epic 12 (Epic 10 retro decision)
   epic-11: backlog
   11-1-loading-indicator-slow-operations: backlog
   11-2-batch-scan-by-segment: backlog
@@ -144,10 +155,6 @@ development_status:
   11-4-skip-index-object-array: backlog
   11-5-skip-index-variable-size: backlog
   11-6-investigate-non-array-item-slowness: backlog
-
-  # Epic 12: Path-Based Expand State (sourced from Epic 4 retro + G4/G5)
-  epic-12: backlog
-  12-1-path-based-expand-state-isolation: backlog
 
   # Epic 13: UI Polish & Ergonomie (sourced from large dump UX observations 2026-03-14)
   epic-13: backlog

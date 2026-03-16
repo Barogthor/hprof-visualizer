@@ -165,7 +165,7 @@ if /I not "%SANITIZE%"=="off" if not exist "%REDACT_CMD%" (
 )
 
 set "SCENARIOS="
-if /I "%SCENARIO%"=="all" set "SCENARIOS=01 02 03 04 05 06 07 08 09 10"
+if /I "%SCENARIO%"=="all" set "SCENARIOS=01 02 03 04 05 06 07 08 09 10 11"
 if /I "%SCENARIO%"=="01" set "SCENARIOS=01"
 if /I "%SCENARIO%"=="1" set "SCENARIOS=01"
 if /I "%SCENARIO%"=="02" set "SCENARIOS=02"
@@ -185,9 +185,10 @@ if /I "%SCENARIO%"=="8" set "SCENARIOS=08"
 if /I "%SCENARIO%"=="09" set "SCENARIOS=09"
 if /I "%SCENARIO%"=="9" set "SCENARIOS=09"
 if /I "%SCENARIO%"=="10" set "SCENARIOS=10"
+if /I "%SCENARIO%"=="11" set "SCENARIOS=11"
 
 if "%SCENARIOS%"=="" (
-  echo [heap-fixture] invalid scenario "%SCENARIO%" ^(expected: 01^|02^|03^|04^|05^|06^|07^|08^|09^|10^|all^)
+  echo [heap-fixture] invalid scenario "%SCENARIO%" ^(expected: 01^|02^|03^|04^|05^|06^|07^|08^|09^|10^|11^|all^)
   goto :help_error
 )
 
@@ -205,21 +206,31 @@ if /I not "%SANITIZE%"=="only" (
 set "PROFILES="
 if /I "%PROFILE_SET%"=="standard" set "PROFILES=tiny medium large xlarge"
 if /I "%PROFILE_SET%"=="all" set "PROFILES=tiny medium large xlarge ultra"
+if /I "%PROFILE_SET%"=="tiny" set "PROFILES=tiny"
+if /I "%PROFILE_SET%"=="medium" set "PROFILES=medium"
+if /I "%PROFILE_SET%"=="large" set "PROFILES=large"
+if /I "%PROFILE_SET%"=="xlarge" set "PROFILES=xlarge"
 if /I "%PROFILE_SET%"=="ultra" set "PROFILES=ultra"
 
 if "%PROFILES%"=="" (
-  echo [heap-fixture] invalid profile_set "%PROFILE_SET%" (expected: standard^|all^|ultra)
+  echo [heap-fixture] invalid profile_set "%PROFILE_SET%" (expected: standard^|all^|tiny^|medium^|large^|xlarge^|ultra)
   goto :help_error
 )
 
 for %%P in (%PROFILES%) do (
   for %%S in (%SCENARIOS%) do (
     set "OUTPUT=%ASSETS_DIR%\fixture-s%%S-%%P-raw.hprof"
+    set "XMX=1g"
+    if /I "%%P"=="tiny" set "XMX=512m"
+    if /I "%%P"=="medium" set "XMX=768m"
+    if /I "%%P"=="large" set "XMX=1g"
+    if /I "%%P"=="xlarge" set "XMX=2g"
+    if /I "%%P"=="ultra" set "XMX=4g"
     if /I not "%SANITIZE%"=="only" (
       set "TRUNCATE_FOR_JAVA=%TRUNCATE_BYTES%"
       if /I "%TRUNCATE_TARGET%"=="sanitized" set "TRUNCATE_FOR_JAVA=0"
-      echo [heap-fixture] scenario=%%S profile=%%P mode=%MODE% output=!OUTPUT! truncateBytes=%TRUNCATE_BYTES%
-      java -cp "%CLASS_DIR%" HeapDumpFixture --scenario %%S --profile %%P --dump-mode %MODE% --hold-seconds %HOLD_SECONDS% --truncate-bytes !TRUNCATE_FOR_JAVA! --output "!OUTPUT!"
+      echo [heap-fixture] scenario=%%S profile=%%P mode=%MODE% output=!OUTPUT! truncateBytes=%TRUNCATE_BYTES% -Xmx!XMX!
+      java -Xmx!XMX! -cp "%CLASS_DIR%" HeapDumpFixture --scenario %%S --profile %%P --dump-mode %MODE% --hold-seconds %HOLD_SECONDS% --truncate-bytes !TRUNCATE_FOR_JAVA! --output "!OUTPUT!"
       if errorlevel 1 exit /b 1
     )
 
@@ -260,9 +271,9 @@ echo.
 echo Arguments:
 echo   mode           auto ^| manual ^| both
 echo   hold_seconds   default: 120
-echo   profile_set    standard ^| all ^| ultra   ^(default: standard^)
+echo   profile_set    standard ^| all ^| tiny ^| medium ^| large ^| xlarge ^| ultra   ^(default: standard^)
 echo   truncate_bytes default: 0
-echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
+echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| 11 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
 echo   truncate_target raw ^| sanitized ^| both   ^(default: raw^)
 echo   remove_raw     off ^| on   ^(default: off, requires sanitize=on^)
@@ -295,9 +306,9 @@ echo.
 echo Arguments:
 echo   mode           auto ^| manual ^| both
 echo   hold_seconds   default: 120
-echo   profile_set    standard ^| all ^| ultra   ^(default: standard^)
+echo   profile_set    standard ^| all ^| tiny ^| medium ^| large ^| xlarge ^| ultra   ^(default: standard^)
 echo   truncate_bytes default: 0
-echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| all   ^(default: 01^)
+echo   scenario       01 ^| 02 ^| 03 ^| 04 ^| 05 ^| 06 ^| 07 ^| 08 ^| 09 ^| 10 ^| 11 ^| all   ^(default: 01^)
 echo   sanitize       off ^| on ^| only   ^(default: off^)
 echo   truncate_target raw ^| sanitized ^| both   ^(default: raw^)
 echo   remove_raw     off ^| on   ^(default: off^)

@@ -23,6 +23,7 @@ public final class HeapDumpFixture {
         List<HeapScenario> selectedScenarios = selectScenarios(options.scenarioId);
 
         for (HeapScenario scenario : selectedScenarios) {
+            validateProfileScenario(spec, scenario);
             Path baseOutput = resolveOutputPath(options.outputPath, spec, scenario.id(), selectedScenarios.size() > 1);
             runScenario(options, spec, scenario, baseOutput);
         }
@@ -40,6 +41,7 @@ public final class HeapDumpFixture {
         register(scenarios, new Scenario08ClassLoaderRetention());
         register(scenarios, new Scenario09ConcurrentMapHotBuckets());
         register(scenarios, new Scenario10StringExtremes());
+        register(scenarios, new Scenario11StressLoading());
         return scenarios;
     }
 
@@ -69,6 +71,10 @@ public final class HeapDumpFixture {
             return "0" + scenarioId;
         }
         return scenarioId;
+    }
+
+    private static void validateProfileScenario(
+            ProfileSpec spec, HeapScenario scenario) {
     }
 
     private static Path resolveOutputPath(Path configuredOutput, ProfileSpec spec, String scenarioId, boolean appendScenarioSuffix) {
@@ -131,7 +137,7 @@ public final class HeapDumpFixture {
 
     private static void printHelp() {
         System.out.println("HeapDumpFixture options:");
-        System.out.println("  --scenario <01|02|03|04|05|06|07|08|09|10|all>");
+        System.out.println("  --scenario <01|02|...|10|11|all>");
         System.out.println("  --profile <tiny|medium|large|xlarge|ultra>");
         System.out.println("  --output <path/to/file.hprof>");
         System.out.println("  --dump-mode <auto|manual|both>");

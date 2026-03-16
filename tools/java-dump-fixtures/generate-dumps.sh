@@ -10,9 +10,9 @@ Usage:
 Arguments:
   mode           auto | manual | both
   hold_seconds   default: 120
-  profile_set    standard | all | ultra   (default: standard)
+  profile_set    standard | all | tiny | medium | large | xlarge | ultra   (default: standard)
   truncate_bytes default: 0
-  scenario       01 | 02 | 03 | 04 | 05 | 06 | 07 | 08 | 09 | 10 | all   (default: 01)
+  scenario       01 | 02 | ... | 10 | 11 | all   (default: 01)
   sanitize       off | on | only   (default: off)
   truncate_target raw | sanitized | both   (default: raw)
   remove_raw     off | on   (default: off)
@@ -192,7 +192,7 @@ if [[ "${SANITIZE}" != "off" && ! -x "${REDACT_SCRIPT}" ]]; then
 fi
 
 if [[ "${SCENARIO}" == "all" ]]; then
-  scenarios=(01 02 03 04 05 06 07 08 09 10)
+  scenarios=(01 02 03 04 05 06 07 08 09 10 11)
 elif [[ "${SCENARIO}" == "1" || "${SCENARIO}" == "01" ]]; then
   scenarios=(01)
 elif [[ "${SCENARIO}" == "2" || "${SCENARIO}" == "02" ]]; then
@@ -213,20 +213,34 @@ elif [[ "${SCENARIO}" == "9" || "${SCENARIO}" == "09" ]]; then
   scenarios=(09)
 elif [[ "${SCENARIO}" == "10" ]]; then
   scenarios=(10)
+elif [[ "${SCENARIO}" == "11" ]]; then
+  scenarios=(11)
 else
-  echo "[heap-fixture] invalid scenario '${SCENARIO}' (expected: 01|02|03|04|05|06|07|08|09|10|all)" >&2
+  echo "[heap-fixture] invalid scenario '${SCENARIO}' (expected: 01|02|...|10|11|all)" >&2
   exit 1
 fi
 
-if [[ "${PROFILE_SET}" == "standard" ]]; then
-  profiles=(tiny medium large xlarge)
-elif [[ "${PROFILE_SET}" == "all" ]]; then
-  profiles=(tiny medium large xlarge ultra)
-elif [[ "${PROFILE_SET}" == "ultra" ]]; then
-  profiles=(ultra)
-else
-  echo "[heap-fixture] invalid profile_set '${PROFILE_SET}' (expected: standard|all|ultra)" >&2
-  exit 1
+case "${PROFILE_SET}" in
+  standard) profiles=(tiny medium large xlarge) ;;
+  all)      profiles=(tiny medium large xlarge ultra) ;;
+  tiny)     profiles=(tiny) ;;
+  medium)   profiles=(medium) ;;
+  large)    profiles=(large) ;;
+  xlarge)   profiles=(xlarge) ;;
+  ultra)    profiles=(ultra) ;;
+  *)
+    echo "[heap-fixture] invalid profile_set '${PROFILE_SET}' (expected: standard|all|tiny|medium|large|xlarge|ultra)" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "${SCENARIO}" == "11" ]]; then
+  for p in "${profiles[@]}"; do
+    case "${p}" in
+      xlarge) echo "[heap-fixture] WARNING: S11 xlarge requires ~20 GB free RAM, produces ~12 GB dump" >&2 ;;
+      ultra)  echo "[heap-fixture] WARNING: S11 ultra requires ~28 GB free RAM, produces ~20 GB dump" >&2 ;;
+    esac
+  done
 fi
 
 mkdir -p "${CLASS_DIR}"
@@ -336,6 +350,30 @@ remove_raw_prefix() {
   done
 }
 
+jvm_heap_for_profile() {
+  local profile="$1"
+  local scenario="${2:-}"
+  if [[ "${scenario}" == "11" ]]; then
+    case "${profile}" in
+      tiny)   echo "2g" ;;
+      medium) echo "4g" ;;
+      large)  echo "10g" ;;
+      xlarge) echo "20g" ;;
+      ultra)  echo "28g" ;;
+      *)      echo "4g" ;;
+    esac
+    return
+  fi
+  case "${profile}" in
+    tiny)     echo "512m" ;;
+    medium)   echo "768m" ;;
+    large)    echo "1g" ;;
+    xlarge)   echo "2g" ;;
+    ultra)    echo "4g" ;;
+    *)        echo "1g" ;;
+  esac
+}
+
 for profile in "${profiles[@]}"; do
   for scenario in "${scenarios[@]}"; do
     output="${ASSETS_DIR}/fixture-s${scenario}-${profile}-raw.hprof"
@@ -345,8 +383,9 @@ for profile in "${profiles[@]}"; do
         truncate_for_java="0"
       fi
 
-      echo "[heap-fixture] scenario=${scenario} profile=${profile} mode=${MODE} output=${output} truncateBytes=${TRUNCATE_BYTES}"
-      java -cp "${CLASS_DIR}" HeapDumpFixture \
+      xmx="$(jvm_heap_for_profile "${profile}" "${scenario}")"
+      echo "[heap-fixture] scenario=${scenario} profile=${profile} mode=${MODE} output=${output} truncateBytes=${TRUNCATE_BYTES} -Xmx${xmx}"
+      java -Xmx"${xmx}" -cp "${CLASS_DIR}" HeapDumpFixture \
         --scenario "${scenario}" \
         --profile "${profile}" \
         --dump-mode "${MODE}" \

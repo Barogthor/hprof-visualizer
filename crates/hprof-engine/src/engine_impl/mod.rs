@@ -228,7 +228,11 @@ impl Engine {
     /// - [`HprofError::TruncatedRecord`] — file header is truncated.
     pub fn from_file(path: &Path, config: &EngineConfig) -> Result<Self, HprofError> {
         let mut null_obs = NullProgressObserver;
-        let hfile = Arc::new(HprofFile::from_path(path)?);
+        let hfile = Arc::new(HprofFile::from_path_with_progress(
+            path,
+            &mut null_obs,
+            config.memory_budget(),
+        )?);
         let mut notifier = ProgressNotifier::new(&mut null_obs);
         let thread_cache = Self::build_thread_cache(&hfile, &mut notifier);
         let budget = config.effective_budget();
@@ -256,7 +260,11 @@ impl Engine {
         config: &EngineConfig,
         observer: &mut dyn ParseProgressObserver,
     ) -> Result<Self, HprofError> {
-        let hfile = Arc::new(HprofFile::from_path_with_progress(path, observer)?);
+        let hfile = Arc::new(HprofFile::from_path_with_progress(
+            path,
+            observer,
+            config.memory_budget(),
+        )?);
         let mut notifier = ProgressNotifier::new(observer);
         let thread_cache = Self::build_thread_cache(&hfile, &mut notifier);
         let budget = config.effective_budget();

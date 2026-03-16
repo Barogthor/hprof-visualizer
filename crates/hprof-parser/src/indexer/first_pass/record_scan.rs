@@ -133,6 +133,14 @@ pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNo
                 payload_length: header.length as u64,
             });
             cursor.set_position(payload_end as u64);
+            let pos = cursor.position() as usize;
+            reported_any |= maybe_report_progress(
+                pos,
+                ctx.base_offset,
+                &mut ctx.last_progress_bytes,
+                &mut ctx.last_progress_at,
+                notifier,
+            );
             continue;
         }
 

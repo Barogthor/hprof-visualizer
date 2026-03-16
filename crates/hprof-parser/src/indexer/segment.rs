@@ -14,21 +14,18 @@ use xorf::{BinaryFuse8, Filter};
 /// Size of one file segment in bytes (64 MiB).
 pub const SEGMENT_SIZE: usize = 64 * 1024 * 1024;
 
-/// A BinaryFuse8 filter covering one 64 MiB slice of the hprof file.
-// `filter` and `contains` are used only in tests today; the engine (Story 3.4+)
-// will call `contains` in production. Suppress false dead_code warnings.
-#[allow(dead_code)]
+/// A BinaryFuse8 filter covering one 64 MiB slice of
+/// the hprof file.
 pub(crate) struct SegmentFilter {
-    /// Zero-based index of the segment this filter covers.
+    /// Zero-based index of the segment this filter
+    /// covers.
     pub segment_index: usize,
     filter: BinaryFuse8,
 }
 
 impl SegmentFilter {
-    /// Returns `true` if `id` was in the construction set (or is a false
-    /// positive, ~0.4 % chance).
-    // Used by the engine (Story 3.4+); suppress dead_code until then.
-    #[allow(dead_code)]
+    /// Returns `true` if `id` was in the construction
+    /// set (or is a false positive, ~0.4 % chance).
     pub(crate) fn contains(&self, id: u64) -> bool {
         self.filter.contains(&id)
     }

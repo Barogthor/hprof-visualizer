@@ -26,6 +26,27 @@ pub struct HeapRecordRange {
     pub payload_length: u64,
 }
 
+/// Post-extraction allocation diagnostics.
+///
+/// Captures entry point count, filter lookup timing,
+/// and `PreciseIndex` heap size.
+///
+/// Only available with the `test-utils` feature.
+#[cfg(feature = "test-utils")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DiagnosticInfo {
+    /// Number of segment entry points recorded
+    /// during extraction.
+    pub entry_point_count: usize,
+    /// Time spent in batched filter lookups during
+    /// thread resolution (milliseconds).
+    pub filter_lookup_ms: u64,
+    /// Estimated heap bytes of the `PreciseIndex`
+    /// structures, computed via
+    /// [`hprof_api::MemorySize`].
+    pub precise_index_heap_bytes: usize,
+}
+
 /// Result of a tolerant first-pass index run.
 ///
 /// All non-fatal errors are collected in `warnings` rather than propagated.
@@ -48,6 +69,11 @@ pub struct IndexResult {
     /// Location of every `HEAP_DUMP` (0x0C) and
     /// `HEAP_DUMP_SEGMENT` (0x1C) record.
     pub heap_record_ranges: Vec<HeapRecordRange>,
+    /// Post-extraction allocation diagnostics.
+    ///
+    /// Only populated with the `test-utils` feature.
+    #[cfg(feature = "test-utils")]
+    pub diagnostics: DiagnosticInfo,
 }
 
 impl IndexResult {
@@ -74,6 +100,8 @@ mod tests {
             records_indexed: indexed,
             segment_filters: Vec::new(),
             heap_record_ranges: Vec::new(),
+            #[cfg(feature = "test-utils")]
+            diagnostics: DiagnosticInfo::default(),
         }
     }
 

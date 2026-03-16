@@ -42,6 +42,13 @@ pub trait ParseProgressObserver {
     /// `on_segment_completed`, this does NOT increment
     /// by 1. Never called when `total == 0`.
     fn on_names_resolved(&mut self, done: usize, total: usize);
+
+    /// A named loading phase has started.
+    ///
+    /// `phase` is the full spinner label including
+    /// trailing "…". Called once per phase transition.
+    /// Default no-op so existing impls don't break.
+    fn on_phase_changed(&mut self, _phase: &str) {}
 }
 
 /// No-op observer for callers that don't need progress.
@@ -85,6 +92,11 @@ impl<'a> ProgressNotifier<'a> {
     pub fn names_resolved(&mut self, done: usize, total: usize) {
         self.0.on_names_resolved(done, total);
     }
+
+    /// Reports a loading phase transition.
+    pub fn phase_changed(&mut self, phase: &str) {
+        self.0.on_phase_changed(phase);
+    }
 }
 
 #[cfg(feature = "test-utils")]
@@ -93,6 +105,7 @@ pub enum ProgressEvent {
     BytesScanned(u64),
     SegmentCompleted { done: usize, total: usize },
     NamesResolved { done: usize, total: usize },
+    PhaseChanged(String),
 }
 
 #[cfg(feature = "test-utils")]
@@ -114,6 +127,10 @@ impl ParseProgressObserver for TestObserver {
         self.events
             .push(ProgressEvent::NamesResolved { done, total });
     }
+    fn on_phase_changed(&mut self, phase: &str) {
+        self.events
+            .push(ProgressEvent::PhaseChanged(phase.to_owned()));
+    }
 }
 
 #[cfg(test)]
@@ -126,15 +143,27 @@ mod tests {
         obs.on_bytes_scanned(42);
         obs.on_segment_completed(1, 10);
         obs.on_names_resolved(5, 10);
+        obs.on_phase_changed("test phase");
     }
 
     #[test]
-    fn notifier_delegates_to_observer() {
-        let mut obs = NullProgressObserver;
+    fn notifier_delegates_phase_changed_to_observer() {
+        struct CountingObserver {
+            phase_calls: usize,
+        }
+        impl ParseProgressObserver for CountingObserver {
+            fn on_bytes_scanned(&mut self, _: u64) {}
+            fn on_segment_completed(&mut self, _: usize, _: usize) {}
+            fn on_names_resolved(&mut self, _: usize, _: usize) {}
+            fn on_phase_changed(&mut self, _: &str) {
+                self.phase_calls += 1;
+            }
+        }
+
+        let mut obs = CountingObserver { phase_calls: 0 };
         let mut notifier = ProgressNotifier::new(&mut obs);
-        notifier.bytes_scanned(100);
-        notifier.segment_completed(1, 5);
-        notifier.names_resolved(2, 4);
+        notifier.phase_changed("phase\u{2026}");
+        assert_eq!(obs.phase_calls, 1);
     }
 }
 
@@ -148,7 +177,8 @@ mod test_utils_tests {
         obs.on_bytes_scanned(100);
         obs.on_segment_completed(1, 3);
         obs.on_names_resolved(2, 4);
-        assert_eq!(obs.events.len(), 3);
+        obs.on_phase_changed("phase\u{2026}");
+        assert_eq!(obs.events.len(), 4);
         assert_eq!(obs.events[0], ProgressEvent::BytesScanned(100));
         assert_eq!(
             obs.events[1],
@@ -157,6 +187,26 @@ mod test_utils_tests {
         assert_eq!(
             obs.events[2],
             ProgressEvent::NamesResolved { done: 2, total: 4 }
+        );
+        assert_eq!(
+            obs.events[3],
+            ProgressEvent::PhaseChanged("phase\u{2026}".to_owned())
+        );
+    }
+
+    #[test]
+    fn test_observer_captures_phase_changed() {
+        let mut obs = TestObserver::default();
+        obs.on_phase_changed("Building segment filters\u{2026}");
+        obs.on_phase_changed("Resolving threads (round 1/3)\u{2026}");
+        assert_eq!(obs.events.len(), 2);
+        assert_eq!(
+            obs.events[0],
+            ProgressEvent::PhaseChanged("Building segment filters\u{2026}".to_owned())
+        );
+        assert_eq!(
+            obs.events[1],
+            ProgressEvent::PhaseChanged("Resolving threads (round 1/3)\u{2026}".to_owned())
         );
     }
 }

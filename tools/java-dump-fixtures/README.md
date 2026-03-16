@@ -27,6 +27,7 @@ Multi-scenario Java generator to produce `.hprof` dumps with:
 - `tools/java-dump-fixtures/scenarios/Scenario08ClassLoaderRetention.java`
 - `tools/java-dump-fixtures/scenarios/Scenario09ConcurrentMapHotBuckets.java`
 - `tools/java-dump-fixtures/scenarios/Scenario10StringExtremes.java`
+- `tools/java-dump-fixtures/scenarios/Scenario11StressLoading.java`
 - `tools/java-dump-fixtures/support/*.java`
 - `tools/java-dump-fixtures/generate-dumps.sh`
 - `tools/java-dump-fixtures/generate-dumps.ps1`
@@ -206,13 +207,11 @@ Detailed profile sizing (from `ProfileSpec`):
 | `large` | 20,480 | 2,048 / 4,096 | 96x96 | 512 | 0 | 1,024 | 12 x 8 |
 | `xlarge` | 30,720 | 4,096 / 8,192 | 128x128 | 768 | 500,000 | 2,048 | 16 x 10 |
 | `ultra` | 65,536 | 16,384 / 32,768 | 256x256 | 2,048 | 1,000,000 | 8,192 | 20 x 12 |
-
 `profile-set` values in wrapper scripts:
 
 - `standard`: `tiny`, `medium`, `large`, `xlarge`
 - `all`: `tiny`, `medium`, `large`, `xlarge`, `ultra`
-- `ultra`: `ultra` only
-
+- `tiny`, `medium`, `large`, `xlarge`, `ultra`: single profile
 Indicative runtime envelope (order of magnitude):
 
 | Profile | Suggested JVM heap (`-Xmx`) | Typical generated dump size (single scenario) | Typical auto dump time |
@@ -222,7 +221,6 @@ Indicative runtime envelope (order of magnitude):
 | `large` | 1g | ~20-80 MB | ~1 s |
 | `xlarge` | 2g | ~50-250 MB | 1-5 s |
 | `ultra` | 4g+ | ~150 MB to 1+ GB | 5-30 s |
-
 Notes on these estimates:
 
 - They are highly dependent on JDK version, GC, machine speed, and selected scenario.
@@ -241,6 +239,7 @@ Notes on these estimates:
 - `08`: classloader retention through static cache
 - `09`: concurrent hash map with hot collision buckets
 - `10`: string extremes (very long, utf variants, similar prefixes)
+- `11`: stress-loading (enterprise app simulation with 200 threads, millions of entities, thread-local caches)
 
 ## Notes
 
