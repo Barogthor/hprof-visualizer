@@ -12,8 +12,9 @@ use ratatui::{
 use crate::theme::THEME;
 
 use super::super::stack_view::{
-    ChunkState, CollectionChunks, ExpansionPhase, StackState, compute_chunk_ranges,
-    field_value_style, format_entry_value_text,
+    ChunkState, CollectionChunks, CollectionId, EntryIdx, ExpansionPhase, NavigationPath,
+    NavigationPathBuilder, StackState, compute_chunk_ranges, field_value_style,
+    format_entry_value_text,
 };
 use super::RenderCtx;
 use super::expansion::append_fields_expanded;
@@ -27,6 +28,7 @@ pub(super) fn append_collection_items(
     depth: usize,
     ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
+    parent_path: Option<NavigationPath>,
 ) {
     let mut visited_collections = HashSet::new();
     append_collection_items_inner(
@@ -37,9 +39,11 @@ pub(super) fn append_collection_items(
         ctx,
         items,
         &mut visited_collections,
+        parent_path,
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_collection_items_inner(
     collection_id: u64,
     cc: &CollectionChunks,
@@ -48,6 +52,7 @@ fn append_collection_items_inner(
     ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
     visited_collections: &mut HashSet<u64>,
+    parent_path: Option<NavigationPath>,
 ) {
     if depth >= 16 {
         return;
@@ -58,6 +63,11 @@ fn append_collection_items_inner(
 
     if let Some(page) = &cc.eager_page {
         for entry in &page.entries {
+            let entry_path = parent_path.as_ref().map(|pp| {
+                NavigationPathBuilder::extend(pp.clone())
+                    .collection_entry(CollectionId(collection_id), EntryIdx(entry.index))
+                    .build()
+            });
             append_collection_entry_item(
                 collection_id,
                 entry,
@@ -66,6 +76,7 @@ fn append_collection_items_inner(
                 ctx,
                 items,
                 visited_collections,
+                entry_path,
             );
         }
     }
@@ -75,8 +86,6 @@ fn append_collection_items_inner(
         let end = offset + limit - 1;
         let chunk_state = cc.chunk_pages.get(offset);
 
-        // In snapshot mode, skip unloaded chunks entirely —
-        // snapshots are frozen and cannot fetch new pages.
         if ctx.snapshot_mode && !matches!(chunk_state, Some(ChunkState::Loaded(_))) {
             continue;
         }
@@ -95,6 +104,11 @@ fn append_collection_items_inner(
         items.push(ListItem::new(Line::from(Span::styled(text, row_style))));
         if let Some(ChunkState::Loaded(page)) = chunk_state {
             for entry in &page.entries {
+                let entry_path = parent_path.as_ref().map(|pp| {
+                    NavigationPathBuilder::extend(pp.clone())
+                        .collection_entry(CollectionId(collection_id), EntryIdx(entry.index))
+                        .build()
+                });
                 append_collection_entry_item(
                     collection_id,
                     entry,
@@ -103,6 +117,7 @@ fn append_collection_items_inner(
                     ctx,
                     items,
                     visited_collections,
+                    entry_path,
                 );
             }
         }
@@ -111,6 +126,7 @@ fn append_collection_items_inner(
     visited_collections.remove(&collection_id);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_collection_entry_item(
     collection_id: u64,
     entry: &EntryInfo,
@@ -119,12 +135,13 @@ fn append_collection_entry_item(
     ctx: &RenderCtx<'_>,
     items: &mut Vec<ListItem<'static>>,
     visited_collections: &mut HashSet<u64>,
+    entry_path: Option<NavigationPath>,
 ) {
     let (value_phase, value_unavailable) = if let FieldValue::ObjectRef {
         id, entry_count, ..
     } = &entry.value
     {
-        object_ref_state(*id, *entry_count, ctx)
+        object_ref_state(*id, *entry_count, ctx, entry_path.as_ref())
     } else {
         (None, false)
     };
@@ -184,6 +201,7 @@ fn append_collection_entry_item(
                 ctx,
                 items,
                 visited_collections,
+                entry_path,
             );
         }
         return;
@@ -199,6 +217,7 @@ fn append_collection_entry_item(
             &mut visited,
             items,
             false,
+            entry_path,
         );
     }
 }

@@ -747,11 +747,15 @@ mod object_expansion {
         app.handle_input(InputEvent::Down); // → OnVar{0,0} (ObjectRef 42)
         app.handle_input(InputEvent::Enter); // start_object_expansion(42), loading indicator is NOT shown yet.
         assert!(
-            app.pending_expansions.contains_key(&42),
+            app.pending_expansions.values().any(|pe| pe.object_id == 42),
             "pending expansion must be registered"
         );
+        let p = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(42),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p),
             ExpansionPhase::Collapsed,
             "loading must not be shown before threshold"
         );
@@ -772,8 +776,12 @@ mod object_expansion {
             app.poll_expansions();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        let p = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(42),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p),
             ExpansionPhase::Expanded
         );
     }
@@ -795,8 +803,12 @@ mod object_expansion {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         // Object 42 expanded, has "child" field (ObjectRef 999) at index 1
+        let p42 = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(42),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p42),
             ExpansionPhase::Expanded
         );
         // Navigate down to the "child" field (index 1 in flat list: field_path=[1])
@@ -804,11 +816,19 @@ mod object_expansion {
         app.handle_input(InputEvent::Down); // → OnObjectField{0,0,[1]} (field "child" = ObjectRef 999)
         app.handle_input(InputEvent::Enter); // start nested expansion of 999; loading not shown before threshold.
         assert!(
-            app.pending_expansions.contains_key(&999),
+            app.pending_expansions
+                .values()
+                .any(|pe| pe.object_id == 999),
             "pending expansion for 999 must be registered"
         );
+        let p999 = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+            .field(FieldIdx(1))
+            .build();
         assert_ne!(
-            app.stack_state.as_ref().unwrap().expansion_state(999),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p999),
             ExpansionPhase::Loading,
             "loading must not be shown before threshold"
         );
@@ -831,8 +851,12 @@ mod object_expansion {
         }
         // Now collapse via Enter on OnVar (expanded state)
         app.handle_input(InputEvent::Enter); // CollapseObj(42)
+        let p = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(42),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p),
             ExpansionPhase::Collapsed
         );
     }
@@ -862,14 +886,23 @@ mod object_expansion {
             app.poll_expansions();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        let p999 = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+            .field(FieldIdx(1))
+            .build();
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(999),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p999),
             ExpansionPhase::Expanded
         );
         // Enter again on the same field → CollapseNestedObj(999)
         app.handle_input(InputEvent::Enter);
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(999),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p999),
             ExpansionPhase::Collapsed
         );
     }
@@ -931,7 +964,9 @@ mod object_expansion {
 
         app.handle_input(InputEvent::Enter); // expand static object ref 777
         assert!(
-            app.pending_expansions.contains_key(&777),
+            app.pending_expansions
+                .values()
+                .any(|pe| pe.object_id == 777),
             "pending expansion for static object 777 must be registered"
         );
 
@@ -941,14 +976,23 @@ mod object_expansion {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
+        let p777 = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+            .static_field(StaticFieldIdx(0))
+            .build();
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(777),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p777),
             ExpansionPhase::Expanded
         );
 
         app.handle_input(InputEvent::Enter); // collapse static object ref 777
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(777),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p777),
             ExpansionPhase::Collapsed
         );
     }
@@ -964,24 +1008,34 @@ mod object_expansion {
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
         // Inject a still-pending expansion to avoid races with fast worker completion.
         let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let exp_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         app.pending_expansions.insert(
-            42,
+            exp_path.clone(),
             PendingExpansion {
                 rx,
+                object_id: 42,
+                path: exp_path,
                 started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
                 loading_shown: false,
             },
         );
         // Poll once — this triggers the Loading state deterministically.
         app.poll_expansions();
+        let p = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(42),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p),
             ExpansionPhase::Loading
         );
         app.handle_input(InputEvent::Down); // → OnObjectLoadingNode{0,0}
         app.handle_input(InputEvent::Escape); // cancel expansion (not go-back)
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(42),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p),
             ExpansionPhase::Collapsed
         );
         // Focus must remain in StackFrames.
@@ -1148,7 +1202,9 @@ mod collection_paging {
             "collection load should be pending"
         );
         assert!(
-            !app.pending_expansions.contains_key(&888),
+            !app.pending_expansions
+                .values()
+                .any(|pe| pe.object_id == 888),
             "should NOT use expand_object for collection"
         );
     }
@@ -1294,22 +1350,18 @@ mod collection_paging {
                 loading_shown: false,
             },
         );
-        // Before polling: expansion_state must not be Loading yet.
-        {
-            let ss = app.stack_state.as_ref().unwrap();
-            assert_eq!(
-                ss.expansion_state(888),
-                ExpansionPhase::Collapsed,
-                "before poll, collection must not show loading"
-            );
-        }
-        // One poll — threshold exceeded → set_expansion_loading(888).
+        // Before polling: loading_shown must be false.
+        assert!(
+            !app.pending_pages.get(&(888, 0)).unwrap().loading_shown,
+            "before poll, loading_shown must be false"
+        );
+        // One poll — threshold exceeded → loading_shown set.
+        // Collections at offset 0 use ChunkState, not
+        // ExpansionPhase, for the loading indicator.
         app.poll_pages();
-        let ss = app.stack_state.as_ref().unwrap();
-        assert_eq!(
-            ss.expansion_state(888),
-            ExpansionPhase::Loading,
-            "after threshold, eager page load must show loading"
+        assert!(
+            app.pending_pages.get(&(888, 0)).unwrap().loading_shown,
+            "after threshold, loading_shown must be true"
         );
     }
 
@@ -1411,7 +1463,9 @@ mod collection_paging {
             "prim array var with entry_count must trigger collection paging"
         );
         assert!(
-            !app.pending_expansions.contains_key(&888),
+            !app.pending_expansions
+                .values()
+                .any(|pe| pe.object_id == 888),
             "prim array var must not call expand_object"
         );
         poll_all_pages(&mut app);
@@ -1492,7 +1546,10 @@ mod collection_paging {
         assert!(!ss.expansion.collection_chunks.contains_key(&777));
         // Should have fallen back to expand_object →
         // expansion state should be Expanded.
-        assert_eq!(ss.expansion_state(777), ExpansionPhase::Expanded);
+        let p777 = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+            .field(FieldIdx(0))
+            .build();
+        assert_eq!(ss.expansion_state_for_path(&p777), ExpansionPhase::Expanded,);
     }
 
     #[test]
@@ -1617,7 +1674,9 @@ mod collection_paging {
         app.handle_input(InputEvent::Enter);
         // pending_expansions should contain ObjectRef id 700 (entry 0's value).
         assert!(
-            app.pending_expansions.contains_key(&700),
+            app.pending_expansions
+                .values()
+                .any(|pe| pe.object_id == 700),
             "entering on ObjectRef entry should start expansion of id 700"
         );
     }
@@ -1674,7 +1733,9 @@ mod collection_paging {
             "nested collection field must trigger collection paging"
         );
         assert!(
-            !app.pending_expansions.contains_key(&888),
+            !app.pending_expansions
+                .values()
+                .any(|pe| pe.object_id == 888),
             "nested collection field must not call expand_object on collection id"
         );
 
@@ -1727,7 +1788,9 @@ mod collection_paging {
             "nested collection entry must trigger collection paging"
         );
         assert!(
-            !app.pending_expansions.contains_key(&888),
+            !app.pending_expansions
+                .values()
+                .any(|pe| pe.object_id == 888),
             "nested collection entry must not call expand_object on collection id"
         );
 
@@ -1772,7 +1835,9 @@ mod collection_paging {
             "Right on nested collection entry must trigger collection paging"
         );
         assert!(
-            !app.pending_expansions.contains_key(&888),
+            !app.pending_expansions
+                .values()
+                .any(|pe| pe.object_id == 888),
             "Right on nested collection entry must not call expand_object on collection id"
         );
     }
@@ -1796,7 +1861,9 @@ mod collection_paging {
             "Right on collection-entry object field must trigger collection paging"
         );
         assert!(
-            !app.pending_expansions.contains_key(&888),
+            !app.pending_expansions
+                .values()
+                .any(|pe| pe.object_id == 888),
             "Right on collection-entry object field must not call expand_object on collection id"
         );
     }
@@ -2256,10 +2323,15 @@ mod loading_and_warnings {
             std::thread::sleep(Duration::from_millis(1));
         }
         // Expansion completed without ever setting Loading state.
+        let p = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         assert_eq!(
-            app.stack_state.as_ref().unwrap().expansion_state(42),
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&p),
             ExpansionPhase::Expanded,
-            "fast expansion must complete as Expanded without ever showing Loading"
+            "fast expansion must complete as Expanded \
+             without ever showing Loading"
         );
     }
 
@@ -2297,10 +2369,13 @@ mod loading_and_warnings {
         // Manually inject a disconnected pending expansion (tx dropped immediately).
         let (tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
         drop(tx); // disconnect
+        let exp_path = NavigationPathBuilder::new(FrameId(100), VarIdx(0)).build();
         app.pending_expansions.insert(
-            77,
+            exp_path.clone(),
             PendingExpansion {
                 rx,
+                object_id: 77,
+                path: exp_path,
                 started: Instant::now(),
                 loading_shown: false,
             },
@@ -2343,10 +2418,13 @@ mod loading_and_warnings {
         app.handle_input(InputEvent::Down);
         // Manually insert a PendingExpansion with an unsent channel and past started time.
         let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let exp_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         app.pending_expansions.insert(
-            99,
+            exp_path.clone(),
             PendingExpansion {
                 rx,
+                object_id: 99,
+                path: exp_path.clone(),
                 started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
                 loading_shown: false,
             },
@@ -2354,7 +2432,7 @@ mod loading_and_warnings {
         // Poll once — threshold exceeded, loading_shown transitions to true.
         app.poll_expansions();
         // Verify loading_shown was set.
-        let pe = app.pending_expansions.get(&99).unwrap();
+        let pe = app.pending_expansions.get(&exp_path).unwrap();
         assert!(
             pe.loading_shown,
             "loading_shown must be set after threshold"
@@ -3311,7 +3389,8 @@ mod async_navigation {
         // Navigate to StackFrames to open stack, then pre-expand object 42.
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Enter); // expand frame
-        app.start_object_expansion(42);
+        let exp_path_42 = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        app.start_object_expansion(42, exp_path_42);
         poll_all_expansions(&mut app);
 
         // Object 42 is now Expanded — walk should complete without deferral.
@@ -3358,10 +3437,29 @@ mod async_navigation {
         // Open stack + pre-expand 42 and 999 so all Field hops are cached.
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Enter); // expand frame 10
-        app.start_object_expansion(42);
+        let exp_path_42 = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        app.start_object_expansion(42, exp_path_42);
         poll_all_expansions(&mut app);
-        app.start_object_expansion(999);
+        let exp_path_999 = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+            .field(FieldIdx(1))
+            .build();
+        app.start_object_expansion(999, exp_path_999);
         poll_all_expansions(&mut app);
+        // Path-based expansion: 999 must be marked Expanded
+        // at each intermediate depth so the walk can proceed
+        // without deferring for async expansion.
+        {
+            let ss = app.stack_state.as_mut().unwrap();
+            for depth in 2..=8 {
+                let mut b = NavigationPathBuilder::new(FrameId(10), VarIdx(0));
+                for _ in 0..depth {
+                    b = b.field(FieldIdx(1));
+                }
+                ss.expansion
+                    .expansion_phases
+                    .insert(b.build(), ExpansionPhase::Expanded);
+            }
+        }
 
         // Build path: Frame(10) → Var(0) → Field(1) × 9 = 11 segments total.
         // Steps: Frame=1, Var=2, then 9 Fields → step_count=10 before Field[9].
@@ -3459,7 +3557,9 @@ mod async_navigation {
         // then hits Field(0) on 999 → defers waiting for ObjectExpansion(999).
         // Poll only until 42's expansion completes (not 999).
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while app.pending_expansions.contains_key(&42) && std::time::Instant::now() < deadline {
+        while app.pending_expansions.values().any(|pe| pe.object_id == 42)
+            && std::time::Instant::now() < deadline
+        {
             app.poll_expansions();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -3472,18 +3572,19 @@ mod async_navigation {
             "must await expansion of 999 at second step; pending={:?}",
             app.pending_navigation.as_ref().map(|p| &p.awaited)
         );
-        // prereq_expanded must contain 42 (the already-processed hop).
+        // prereq_expanded must contain path for 42.
+        let p42 = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         assert!(
             app.pending_navigation
                 .as_ref()
                 .unwrap()
                 .prereq_expanded
-                .contains(&42),
-            "prereq_expanded must include 42"
+                .contains(&p42),
+            "prereq_expanded must include path for 42"
         );
 
         // Step 3: Simulate stale context — collapse object 42.
-        app.stack_state.as_mut().unwrap().collapse_object(42);
+        app.stack_state.as_mut().unwrap().collapse_object(&p42);
 
         // Step 4: 999 expands → resume detects 42 is no longer Expanded → stale.
         poll_all_expansions(&mut app);

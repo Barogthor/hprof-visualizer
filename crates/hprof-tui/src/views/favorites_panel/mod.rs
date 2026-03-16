@@ -794,7 +794,10 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
             debug_assert_eq!(
                 row_count,
                 render_variable_tree(
-                    TreeRoot::Frame { vars: variables },
+                    TreeRoot::Frame {
+                        vars: variables,
+                        frame_id: 0
+                    },
                     object_fields,
                     object_static_fields,
                     collection_chunks,
@@ -806,6 +809,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                         show_hidden: item.show_hidden,
                     },
                     Some(&item.hidden_fields),
+                    None,
                 )
                 .len()
                     + 1
@@ -860,6 +864,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                         show_hidden: item.show_hidden,
                     },
                     Some(&item.hidden_fields),
+                    None,
                 )
                 .len()
                     + 1
@@ -953,7 +958,10 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         &item.local_collapsed,
                     );
                     let tree = render_variable_tree(
-                        TreeRoot::Frame { vars: variables },
+                        TreeRoot::Frame {
+                            vars: variables,
+                            frame_id: 0,
+                        },
                         object_fields,
                         object_static_fields,
                         collection_chunks,
@@ -965,6 +973,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                             show_hidden: item.show_hidden,
                         },
                         Some(&item.hidden_fields),
+                        None,
                     );
                     items.extend(tree);
                 }
@@ -1000,6 +1009,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                             show_hidden: item.show_hidden,
                         },
                         Some(&item.hidden_fields),
+                        None,
                     );
                     items.extend(tree);
                 }

@@ -411,22 +411,34 @@ mod expansion_lifecycle_tests {
     #[test]
     fn set_expansion_loading_changes_phase_to_loading() {
         let mut state = StackState::new(vec![make_frame(1)]);
-        state.set_expansion_loading(42);
-        assert_eq!(state.expansion_state(42), ExpansionPhase::Loading);
+        let path = path_field(1, 0, &[]);
+        state.set_expansion_loading(&path);
+        assert_eq!(
+            state.expansion_state_for_path(&path),
+            ExpansionPhase::Loading
+        );
     }
 
     #[test]
     fn set_expansion_done_changes_phase_to_expanded() {
         let mut state = StackState::new(vec![make_frame(1)]);
-        state.set_expansion_done(42, vec![]);
-        assert_eq!(state.expansion_state(42), ExpansionPhase::Expanded);
+        let path = path_field(1, 0, &[]);
+        state.set_expansion_done_at_path(&path, 42, vec![]);
+        assert_eq!(
+            state.expansion_state_for_path(&path),
+            ExpansionPhase::Expanded
+        );
     }
 
     #[test]
     fn set_expansion_failed_changes_phase_to_failed() {
         let mut state = StackState::new(vec![make_frame(1)]);
-        state.set_expansion_failed(42, "err".to_string());
-        assert_eq!(state.expansion_state(42), ExpansionPhase::Failed);
+        let path = path_field(1, 0, &[]);
+        state.set_expansion_failed(&path, 42, "err".to_string());
+        assert_eq!(
+            state.expansion_state_for_path(&path),
+            ExpansionPhase::Failed
+        );
     }
 
     #[test]
@@ -435,14 +447,15 @@ mod expansion_lifecycle_tests {
         let mut state = StackState::new(frames);
         let vars = vec![make_var_object_ref(0, 99)];
         state.toggle_expand(10, vars);
-        state.set_expansion_loading(99);
+        let var_path = path_field(10, 0, &[]);
+        state.set_expansion_loading(&var_path);
         state.move_down(); // → rc_var(10,0)
         state.move_down(); // → LoadingNode
         assert!(
             matches!(state.cursor(), RenderCursor::LoadingNode(_)),
             "precondition: cursor is on loading node"
         );
-        state.set_expansion_failed(99, "err".to_string());
+        state.set_expansion_failed(&var_path, 99, "err".to_string());
         assert_eq!(
             state.cursor(),
             &rc_var(10, 0),
@@ -468,8 +481,10 @@ mod expansion_lifecycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(100, fields);
-        state.set_expansion_loading(200);
+        let var_path = path_field(10, 0, &[]);
+        state.set_expansion_done_at_path(&var_path, 100, fields);
+        let child_path = path_field(10, 0, &[0]);
+        state.set_expansion_loading(&child_path);
         state.move_down(); // → rc_var(10,0)
         state.move_down(); // → rc_field(10,0,[0])
         state.move_down(); // → LoadingNode
@@ -477,7 +492,7 @@ mod expansion_lifecycle_tests {
             matches!(state.cursor(), RenderCursor::LoadingNode(_)),
             "precondition: cursor is on nested loading node"
         );
-        state.set_expansion_failed(200, "boom".to_string());
+        state.set_expansion_failed(&child_path, 200, "boom".to_string());
         assert_eq!(
             state.cursor(),
             &rc_field(10, 0, &[0]),
@@ -488,9 +503,13 @@ mod expansion_lifecycle_tests {
     #[test]
     fn cancel_expansion_on_loading_reverts_to_collapsed() {
         let mut state = StackState::new(vec![make_frame(1)]);
-        state.set_expansion_loading(42);
-        state.cancel_expansion(42);
-        assert_eq!(state.expansion_state(42), ExpansionPhase::Collapsed);
+        let path = path_field(1, 0, &[]);
+        state.set_expansion_loading(&path);
+        state.cancel_expansion(&path);
+        assert_eq!(
+            state.expansion_state_for_path(&path),
+            ExpansionPhase::Collapsed
+        );
     }
 }
 
@@ -504,7 +523,8 @@ mod flat_items_tests {
         let mut state = StackState::new(frames);
         let vars = vec![make_var_object_ref(0, 99)];
         state.toggle_expand(10, vars);
-        state.set_expansion_loading(99);
+        let var_path = path_field(10, 0, &[]);
+        state.set_expansion_loading(&var_path);
         let flat = state.flat_items();
         assert!(flat.contains(&rc_loading(10, 0, &[])));
     }
@@ -526,7 +546,7 @@ mod flat_items_tests {
                 value: FieldValue::Int(2),
             },
         ];
-        state.set_expansion_done(99, fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 99, fields);
         let flat = state.flat_items();
         assert!(flat.contains(&rc_field(10, 0, &[0])));
         assert!(flat.contains(&rc_field(10, 0, &[1])));
@@ -543,7 +563,7 @@ mod flat_items_tests {
             name: "x".to_string(),
             value: FieldValue::Int(7),
         }];
-        state.set_expansion_done(99, fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 99, fields);
         state.move_down();
         assert_eq!(state.cursor(), &rc_var(10, 0));
         state.move_down();
@@ -561,7 +581,7 @@ mod flat_items_tests {
             name: "x".to_string(),
             value: FieldValue::Int(7),
         }];
-        state.set_expansion_done(99, fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 99, fields);
         state.move_down(); // Frame → Var
         state.move_down(); // Var → Field
         state.move_down(); // Field → Frame(20)
@@ -574,7 +594,8 @@ mod flat_items_tests {
         let mut state = StackState::new(frames);
         let vars = vec![make_var_object_ref(0, 42)];
         state.toggle_expand(10, vars);
-        state.set_expansion_loading(42);
+        let var_path = path_field(10, 0, &[]);
+        state.set_expansion_loading(&var_path);
         state.move_down(); // → rc_var(10,0)
         state.move_down(); // → LoadingNode
         assert_eq!(state.selected_loading_object_id(), Some(42));
@@ -598,12 +619,12 @@ mod flat_items_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(100, fields_100);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields_100);
         let fields_200 = vec![FieldInfo {
             name: "val".to_string(),
             value: FieldValue::Int(7),
         }];
-        state.set_expansion_done(200, fields_200);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[0]), 200, fields_200);
         let flat = state.flat_items();
         assert!(flat.contains(&rc_field(10, 0, &[0])));
         assert!(flat.contains(&rc_field(10, 0, &[0, 0])));
@@ -625,7 +646,7 @@ mod flat_items_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(100, fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields);
         state.set_cursor(rc_field(10, 0, &[0]));
         assert_eq!(state.selected_field_ref_id(), Some(200));
     }
@@ -641,7 +662,7 @@ mod flat_items_tests {
             name: "x".to_string(),
             value: FieldValue::Int(42),
         }];
-        state.set_expansion_done(100, fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields);
         state.set_cursor(rc_field(10, 0, &[0]));
         assert_eq!(state.selected_field_ref_id(), None);
     }
@@ -657,7 +678,7 @@ mod flat_items_tests {
             name: "count".to_string(),
             value: FieldValue::Int(5),
         }];
-        state.set_expansion_done(99, fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 99, fields);
         let items = state.build_items();
         assert_eq!(items.len(), 3);
         let text = item_text(items[2].clone());
@@ -683,12 +704,12 @@ mod flat_items_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(99, fields_99);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 99, fields_99);
         let fields_200 = vec![FieldInfo {
             name: "val".to_string(),
             value: FieldValue::Int(7),
         }];
-        state.set_expansion_done(200, fields_200);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[0]), 200, fields_200);
         let items = state.build_items();
         assert_eq!(items.len(), 4);
         let depth1 = item_text(items[2].clone());
@@ -709,7 +730,8 @@ mod flat_items_tests {
         let mut state = StackState::new(frames);
         let vars = vec![make_var_object_ref(0, 99)];
         state.toggle_expand(10, vars);
-        state.set_expansion_failed(99, "object not found".to_string());
+        let var_path = path_field(10, 0, &[]);
+        state.set_expansion_failed(&var_path, 99, "object not found".to_string());
         let items = state.build_items();
         assert_eq!(
             items.len(),
@@ -734,8 +756,12 @@ mod flat_items_tests {
         let mut state = StackState::new(frames);
         let vars = vec![make_var_object_ref(0, 42)];
         state.toggle_expand(10, vars);
-        state.set_expansion_failed(42, "object absent".to_string());
-        assert_eq!(state.expansion_state(42), ExpansionPhase::Failed);
+        let var_path = path_field(10, 0, &[]);
+        state.set_expansion_failed(&var_path, 42, "object absent".to_string());
+        assert_eq!(
+            state.expansion_state_for_path(&var_path),
+            ExpansionPhase::Failed,
+        );
         let flat = state.flat_items();
         assert!(
             flat.contains(&rc_var(10, 0)),
@@ -756,7 +782,8 @@ mod flat_items_tests {
         let mut state = StackState::new(frames);
         let vars = vec![make_var_object_ref(0, 99)];
         state.toggle_expand(10, vars);
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_field(10, 0, &[]),
             99,
             vec![FieldInfo {
                 name: "items".to_string(),
@@ -796,8 +823,12 @@ mod flat_items_tests {
                 chunk_pages: std::collections::HashMap::new(),
             },
         );
-        state.set_expansion_failed(entry_obj_id, "not found".to_string());
-        assert_eq!(state.expansion_state(entry_obj_id), ExpansionPhase::Failed);
+        let entry_path = path_coll_entry(10, 0, &[0], 200, 0);
+        state.set_expansion_failed(&entry_path, entry_obj_id, "not found".to_string());
+        assert_eq!(
+            state.expansion_state_for_path(&entry_path),
+            ExpansionPhase::Failed,
+        );
         let flat = state.flat_items();
         assert!(
             flat.iter().any(|c| {
@@ -821,7 +852,8 @@ mod flat_items_tests {
         let mut state = StackState::new(frames);
         let vars = vec![make_var_object_ref(0, 99)];
         state.toggle_expand(10, vars);
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_field(10, 0, &[]),
             99,
             vec![FieldInfo {
                 name: "items".to_string(),
@@ -860,7 +892,8 @@ mod flat_items_tests {
                 chunk_pages: std::collections::HashMap::new(),
             },
         );
-        state.set_expansion_failed(300, "not found".to_string());
+        let entry_path = path_coll_entry(10, 0, &[0], 200, 0);
+        state.set_expansion_failed(&entry_path, 300, "not found".to_string());
         assert_eq!(
             state.flat_items().len(),
             state.build_items().len(),
@@ -885,7 +918,7 @@ mod flat_items_tests {
         let mut state = StackState::new(frames);
         let vars = vec![make_var_object_ref(0, 99)];
         state.toggle_expand(10, vars);
-        state.set_expansion_failed(99, "boom".to_string());
+        state.set_expansion_failed(&path_field(10, 0, &[]), 99, "boom".to_string());
         let items = state.build_items();
         assert_eq!(
             items.len(),
@@ -910,7 +943,7 @@ mod flat_items_tests {
         let mut state = StackState::new(frames);
         let vars = vec![make_var_object_ref(0, 99)];
         state.toggle_expand(10, vars);
-        state.set_expansion_failed(99, "err".to_string());
+        state.set_expansion_failed(&path_field(10, 0, &[]), 99, "err".to_string());
         let items = state.build_items();
         let fg = rendered_fg_at(items[1].clone(), 4);
         assert_eq!(fg, Color::Red, "Failed var value must have Red fg");
@@ -932,7 +965,7 @@ mod flat_items_tests {
             let mut state = StackState::new(frames);
             let vars = vec![make_var_object_ref(0, 99)];
             state.toggle_expand(10, vars);
-            state.set_expansion_failed(99, "err".to_string());
+            state.set_expansion_failed(&path_field(10, 0, &[]), 99, "err".to_string());
             assert_eq!(
                 state.flat_items().len(),
                 state.build_items().len(),
@@ -944,7 +977,8 @@ mod flat_items_tests {
             let mut state = StackState::new(frames);
             let vars = vec![make_var_object_ref(0, 99)];
             state.toggle_expand(10, vars);
-            state.set_expansion_done(
+            state.set_expansion_done_at_path(
+                &path_field(10, 0, &[]),
                 99,
                 vec![FieldInfo {
                     name: "x".to_string(),
@@ -963,7 +997,8 @@ mod flat_items_tests {
             let vars = vec![make_var_object_ref(0, 100)];
             state.toggle_expand(10, vars);
             let nested_id = 200u64;
-            state.set_expansion_done(
+            state.set_expansion_done_at_path(
+                &path_field(10, 0, &[]),
                 100,
                 vec![FieldInfo {
                     name: "child".to_string(),
@@ -975,7 +1010,7 @@ mod flat_items_tests {
                     },
                 }],
             );
-            state.set_expansion_failed(nested_id, "missing".to_string());
+            state.set_expansion_failed(&path_field(10, 0, &[0]), nested_id, "missing".to_string());
             assert_eq!(
                 state.flat_items().len(),
                 state.build_items().len(),
@@ -1007,7 +1042,7 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(100, fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields);
         let flat = state.flat_items();
         let cyclic_count = flat
             .iter()
@@ -1055,7 +1090,7 @@ mod cycle_tests {
                 },
             },
         ];
-        state.set_expansion_done(100, fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields);
         let flat = state.flat_items();
         let cyclic_count = flat
             .iter()
@@ -1080,7 +1115,7 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(100, fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields);
         let items = state.build_items();
         let text = item_text(items[2].clone());
         assert!(text.contains("\u{21BB}"), "must contain ↻, got: {text:?}");
@@ -1114,7 +1149,7 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(100, fields_a);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields_a);
         let fields_b = vec![FieldInfo {
             name: "parent".to_string(),
             value: FieldValue::ObjectRef {
@@ -1124,7 +1159,7 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(200, fields_b);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[0]), 200, fields_b);
         let flat = state.flat_items();
         let cyclic_count = flat
             .iter()
@@ -1161,7 +1196,7 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(100, fields_a);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields_a);
         let fields_b = vec![FieldInfo {
             name: "parent".to_string(),
             value: FieldValue::ObjectRef {
@@ -1171,7 +1206,7 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(200, fields_b);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[0]), 200, fields_b);
         let items = state.build_items();
         let all_text: Vec<String> = items.into_iter().map(item_text).collect();
         let cyclic_line = all_text.iter().find(|t| t.contains("[cyclic]"));
@@ -1213,7 +1248,7 @@ mod cycle_tests {
                 value: FieldValue::Int(3),
             },
         ];
-        state.set_expansion_done(100, fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields);
         state.move_down(); // Frame → Var
         state.move_down(); // Var → Field[0]
         assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
@@ -1243,7 +1278,7 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(100, fields_a);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields_a);
         let fields_b = vec![FieldInfo {
             name: "c".to_string(),
             value: FieldValue::ObjectRef {
@@ -1253,12 +1288,12 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(200, fields_b);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[0]), 200, fields_b);
         let fields_c = vec![FieldInfo {
             name: "val".to_string(),
             value: FieldValue::Int(42),
         }];
-        state.set_expansion_done(300, fields_c);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[0, 0]), 300, fields_c);
         let flat = state.flat_items();
         let cyclic_count = flat
             .iter()
@@ -1297,12 +1332,19 @@ mod cycle_tests {
                 },
             },
         ];
-        state.set_expansion_done(100, fields_a);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 100, fields_a);
         let fields_c = vec![FieldInfo {
             name: "val".to_string(),
             value: FieldValue::Int(42),
         }];
-        state.set_expansion_done(300, fields_c);
+        // Expand 300 at the "left" path.
+        state.set_expansion_done_at_path(&path_field(10, 0, &[0]), 300, fields_c);
+        // Also expand 300 at the "right" path — path-based
+        // expansion requires each location independently.
+        state
+            .expansion
+            .expansion_phases
+            .insert(path_field(10, 0, &[1]), ExpansionPhase::Expanded);
         let flat = state.flat_items();
         let cyclic_count = flat
             .iter()
@@ -1332,17 +1374,31 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(100, fields_100);
+        let path_100 = path_field(10, 0, &[]);
+        let path_200 = path_field(10, 0, &[0]);
+        state.set_expansion_done_at_path(&path_100, 100, fields_100);
         let fields_200 = vec![FieldInfo {
             name: "val".to_string(),
             value: FieldValue::Int(1),
         }];
-        state.set_expansion_done(200, fields_200);
-        assert_eq!(state.expansion_state(100), ExpansionPhase::Expanded);
-        assert_eq!(state.expansion_state(200), ExpansionPhase::Expanded);
-        state.collapse_object_recursive(100);
-        assert_eq!(state.expansion_state(100), ExpansionPhase::Collapsed);
-        assert_eq!(state.expansion_state(200), ExpansionPhase::Collapsed);
+        state.set_expansion_done_at_path(&path_200, 200, fields_200);
+        assert_eq!(
+            state.expansion_state_for_path(&path_100),
+            ExpansionPhase::Expanded,
+        );
+        assert_eq!(
+            state.expansion_state_for_path(&path_200),
+            ExpansionPhase::Expanded,
+        );
+        state.collapse_object_recursive(&path_100);
+        assert_eq!(
+            state.expansion_state_for_path(&path_100),
+            ExpansionPhase::Collapsed,
+        );
+        assert_eq!(
+            state.expansion_state_for_path(&path_200),
+            ExpansionPhase::Collapsed,
+        );
     }
 
     #[test]
@@ -1359,7 +1415,9 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(100, fields_100);
+        let path_100 = path_field(10, 0, &[]);
+        let path_200 = path_field(10, 0, &[0]);
+        state.set_expansion_done_at_path(&path_100, 100, fields_100);
         let fields_200 = vec![FieldInfo {
             name: "c".to_string(),
             value: FieldValue::ObjectRef {
@@ -1369,10 +1427,16 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(200, fields_200);
-        state.collapse_object_recursive(100);
-        assert_eq!(state.expansion_state(100), ExpansionPhase::Collapsed);
-        assert_eq!(state.expansion_state(200), ExpansionPhase::Collapsed);
+        state.set_expansion_done_at_path(&path_200, 200, fields_200);
+        state.collapse_object_recursive(&path_100);
+        assert_eq!(
+            state.expansion_state_for_path(&path_100),
+            ExpansionPhase::Collapsed,
+        );
+        assert_eq!(
+            state.expansion_state_for_path(&path_200),
+            ExpansionPhase::Collapsed,
+        );
     }
 
     // --- Task 8.2: frame collapse clears nested expansion ---
@@ -1388,10 +1452,14 @@ mod cycle_tests {
             name: "x".to_string(),
             value: FieldValue::Int(1),
         }];
-        state.set_expansion_done(100, fields_100);
-        assert_eq!(state.expansion_state(100), ExpansionPhase::Expanded);
+        let var_path = path_field(10, 0, &[]);
+        state.set_expansion_done_at_path(&var_path, 100, fields_100);
+        assert_eq!(
+            state.expansion_state_for_path(&var_path),
+            ExpansionPhase::Expanded,
+        );
         state.toggle_expand(10, vec![]);
-        assert!(state.expansion.object_phases.is_empty());
+        assert!(state.expansion.expansion_phases.is_empty());
     }
 
     #[test]
@@ -1410,7 +1478,7 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(1000, thread_fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 1000, thread_fields);
         let coroutine_fields = vec![FieldInfo {
             name: "blockedThread".to_string(),
             value: FieldValue::ObjectRef {
@@ -1420,25 +1488,31 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(2000, coroutine_fields);
+        state.set_expansion_done_at_path(&path_field(10, 0, &[0]), 2000, coroutine_fields);
         state.set_cursor(rc_field(10, 0, &[0]));
-        state.collapse_object_recursive(2000);
+        state.collapse_object_recursive(&path_field(10, 0, &[0]));
         let flat = state.flat_items();
         assert!(
             flat.contains(state.cursor()),
             "cursor must be in flat_items after collapse, got: {:?}",
             state.cursor(),
         );
+        // With path-based collapse, the parent's field row
+        // (parkBlocker) still exists — cursor stays on the
+        // now-collapsed field (3 segments).
         assert!(
-            matches!(state.cursor(), RenderCursor::At(p) if p.segments().len() == 2),
-            "cursor should fall back to OnVar, got: {:?}",
+            matches!(
+                state.cursor(),
+                RenderCursor::At(p) if p.segments().len() == 3
+            ),
+            "cursor should stay on collapsed field, got: {:?}",
             state.cursor(),
         );
         state.move_down();
         assert_ne!(
             state.cursor(),
-            &rc_var(10, 0),
-            "move_down must move away from OnVar"
+            &rc_field(10, 0, &[0]),
+            "move_down must move away from field"
         );
     }
 
@@ -1458,7 +1532,9 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(1000, thread_fields);
+        let path_1000 = path_field(10, 0, &[]);
+        let path_2000 = path_field(10, 0, &[0]);
+        state.set_expansion_done_at_path(&path_1000, 1000, thread_fields);
         let coroutine_fields = vec![FieldInfo {
             name: "blockedThread".to_string(),
             value: FieldValue::ObjectRef {
@@ -1468,15 +1544,18 @@ mod cycle_tests {
                 inline_value: None,
             },
         }];
-        state.set_expansion_done(2000, coroutine_fields);
+        state.set_expansion_done_at_path(&path_2000, 2000, coroutine_fields);
         state.set_cursor(rc_field(10, 0, &[0]));
-        state.collapse_object(2000);
+        state.collapse_object(&path_2000);
         assert_eq!(
-            state.expansion_state(1000),
+            state.expansion_state_for_path(&path_1000),
             ExpansionPhase::Expanded,
             "parent must remain expanded"
         );
-        assert_eq!(state.expansion_state(2000), ExpansionPhase::Collapsed);
+        assert_eq!(
+            state.expansion_state_for_path(&path_2000),
+            ExpansionPhase::Collapsed,
+        );
         let flat = state.flat_items();
         assert!(flat.contains(state.cursor()), "cursor must still be valid");
         assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
@@ -1654,7 +1733,8 @@ mod collection_tests {
         let frames = vec![make_frame(10)];
         let mut state = StackState::new(frames);
         state.toggle_expand(10, vec![make_var_object_ref(0, 99)]);
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_field(10, 0, &[]),
             99,
             vec![FieldInfo {
                 name: "items".to_string(),
@@ -1666,7 +1746,7 @@ mod collection_tests {
                 },
             }],
         );
-        // collection 200 is at field[0] of var[0] (frame 10); set expansion_phases so it renders
+        // collection 200 is at field[0] of var[0] (frame 10)
         state
             .expansion
             .expansion_phases
@@ -1693,7 +1773,8 @@ mod collection_tests {
                 chunk_pages: std::collections::HashMap::new(),
             },
         );
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_coll_entry(10, 0, &[0], 200, 0),
             700,
             vec![FieldInfo {
                 name: "self".to_string(),
@@ -1929,7 +2010,8 @@ mod collection_tests {
                 chunk_pages: std::collections::HashMap::new(),
             },
         );
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_coll_entry(10, 0, &[], coll_id, 0),
             0x700,
             vec![FieldInfo {
                 name: "arr".to_string(),
@@ -1976,7 +2058,8 @@ mod collection_tests {
                 chunk_pages: std::collections::HashMap::new(),
             },
         );
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_coll_entry(10, 0, &[], coll_id, 0),
             0x701,
             vec![FieldInfo {
                 name: "child".to_string(),
@@ -2140,7 +2223,8 @@ mod collection_tests {
             },
         };
         state.toggle_expand(10, vec![obj_var]);
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_field(10, 0, &[]),
             100,
             vec![
                 FieldInfo {
@@ -2251,7 +2335,8 @@ mod collection_tests {
                 chunk_pages: std::collections::HashMap::new(),
             },
         );
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_coll_entry(10, 0, &[], 0xAA, 0),
             200,
             vec![
                 FieldInfo {
@@ -2513,7 +2598,8 @@ mod static_fields_rendering_tests {
         let frames = vec![make_frame(10)];
         let mut state = StackState::new(frames);
         state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_field(10, 0, &[]),
             0xA00,
             vec![FieldInfo {
                 name: "items".to_string(),
@@ -2551,7 +2637,8 @@ mod static_fields_rendering_tests {
                 chunk_pages: std::collections::HashMap::new(),
             },
         );
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_coll_entry(10, 0, &[0], 0xC00, 0),
             0x700,
             vec![FieldInfo {
                 name: "value".to_string(),
@@ -2582,7 +2669,8 @@ mod static_fields_rendering_tests {
         let frames = vec![make_frame(10), make_frame(20)];
         let mut state = StackState::new(frames);
         state.toggle_expand(10, vec![make_var_object_ref(0, 0xB00)]);
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_field(10, 0, &[]),
             0xB00,
             vec![FieldInfo {
                 name: "items".to_string(),
@@ -2620,7 +2708,8 @@ mod static_fields_rendering_tests {
                 chunk_pages: std::collections::HashMap::new(),
             },
         );
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_coll_entry(10, 0, &[0], 0xC10, 0),
             0x710,
             vec![FieldInfo {
                 name: "v".to_string(),
@@ -2688,7 +2777,8 @@ mod static_fields_rendering_tests {
         let frames = vec![make_frame(10), make_frame(20)];
         let mut state = StackState::new(frames);
         state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_field(10, 0, &[]),
             0xA00,
             vec![FieldInfo {
                 name: "instance".to_string(),
@@ -2726,7 +2816,8 @@ mod static_fields_rendering_tests {
         let frames = vec![make_frame(10), make_frame(20)];
         let mut state = StackState::new(frames);
         state.toggle_expand(10, vec![make_var_object_ref(0, 0xB00)]);
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_field(10, 0, &[]),
             0xB00,
             vec![FieldInfo {
                 name: "instance".to_string(),
@@ -2773,7 +2864,8 @@ mod static_fields_rendering_tests {
         let frames = vec![make_frame(10), make_frame(20)];
         let mut state = StackState::new(frames);
         state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_field(10, 0, &[]),
             0xA00,
             vec![FieldInfo {
                 name: "instance".to_string(),
@@ -2792,7 +2884,15 @@ mod static_fields_rendering_tests {
                 },
             }],
         );
-        state.set_expansion_done(
+        // Expand 0xB00 at the *static* field path, not a
+        // regular field path — `emit_static_object_children`
+        // looks up `expansion_state_for_path` using
+        // `StaticField(0)`, not `Field(0)`.
+        let static_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+            .static_field(StaticFieldIdx(0))
+            .build();
+        state.set_expansion_done_at_path(
+            &static_path,
             0xB00,
             vec![FieldInfo {
                 name: "leaf".to_string(),
@@ -2835,7 +2935,8 @@ mod static_fields_rendering_tests {
         let frames = vec![make_frame(10), make_frame(20)];
         let mut state = StackState::new(frames);
         state.toggle_expand(10, vec![make_var_object_ref(0, 0xC00)]);
-        state.set_expansion_done(
+        state.set_expansion_done_at_path(
+            &path_field(10, 0, &[]),
             0xC00,
             vec![FieldInfo {
                 name: "items".to_string(),
@@ -2873,7 +2974,9 @@ mod static_fields_rendering_tests {
                 chunk_pages: std::collections::HashMap::new(),
             },
         );
-        state.set_expansion_done(
+        let entry_path = path_coll_entry(10, 0, &[0], 0xD00, 0);
+        state.set_expansion_done_at_path(
+            &entry_path,
             0x710,
             vec![FieldInfo {
                 name: "v".to_string(),
@@ -2892,7 +2995,12 @@ mod static_fields_rendering_tests {
                 },
             }],
         );
-        state.set_expansion_done(
+        // 0x720 is accessed via static field[0] of 0x710
+        let static_path = NavigationPathBuilder::extend(entry_path)
+            .static_field(StaticFieldIdx(0))
+            .build();
+        state.set_expansion_done_at_path(
+            &static_path,
             0x720,
             vec![FieldInfo {
                 name: "x".to_string(),
@@ -3031,11 +3139,18 @@ mod navigation_path_tests {
         let frames = vec![make_frame(10)];
         let mut state = StackState::new(frames);
         state.toggle_expand(10, vec![make_var_object_ref(0, 99)]);
-        state.set_expansion_done(99, vec![]);
+        let var_path = path_field(10, 0, &[]);
+        state.set_expansion_done_at_path(&var_path, 99, vec![]);
         state.set_cursor(rc_var(10, 0));
-        assert_eq!(state.expansion_state(99), ExpansionPhase::Expanded);
+        assert_eq!(
+            state.expansion_state_for_path(&var_path),
+            ExpansionPhase::Expanded,
+        );
         assert_eq!(state.parent_cursor(), Some(rc_frame(10)));
-        assert_eq!(state.expansion_state(99), ExpansionPhase::Expanded);
+        assert_eq!(
+            state.expansion_state_for_path(&var_path),
+            ExpansionPhase::Expanded,
+        );
     }
 
     #[test]
@@ -3141,5 +3256,272 @@ mod navigation_path_tests {
             ExpansionPhase::Collapsed,
             "expansion at path A must not affect path B"
         );
+    }
+}
+
+/// Path-based expand state isolation tests (Story 12.1, Task 6).
+mod path_isolation_tests {
+    use super::*;
+    use hprof_engine::{FieldInfo, FieldValue};
+
+    fn path_var(frame_id: u64, var_idx: usize) -> NavigationPath {
+        NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx)).build()
+    }
+
+    fn path_field(frame_id: u64, var_idx: usize, field_indices: &[usize]) -> NavigationPath {
+        let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+        for &fi in field_indices {
+            b = b.field(FieldIdx(fi));
+        }
+        b.build()
+    }
+
+    fn path_static_field(
+        frame_id: u64,
+        var_idx: usize,
+        field_indices: &[usize],
+        static_idx: usize,
+    ) -> NavigationPath {
+        let mut b = NavigationPathBuilder::new(FrameId(frame_id), VarIdx(var_idx));
+        for &fi in field_indices {
+            b = b.field(FieldIdx(fi));
+        }
+        b.static_field(StaticFieldIdx(static_idx)).build()
+    }
+
+    fn simple_fields() -> Vec<FieldInfo> {
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(42),
+        }]
+    }
+
+    // 6.1: Phase isolation — expand at path A, path B
+    // stays collapsed.
+    #[test]
+    fn phase_isolation_expand_a_b_stays_collapsed() {
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 0x100)];
+        state.toggle_expand(10, vars);
+
+        // Path A: Frame(10)/Var(0)/Field(0)
+        let path_a = path_field(10, 0, &[0]);
+        // Path B: Frame(10)/Var(0)/Field(1)
+        let path_b = path_field(10, 0, &[1]);
+
+        state.set_expansion_done_at_path(&path_a, 0x100, simple_fields());
+
+        assert_eq!(
+            state.expansion_state_for_path(&path_a),
+            ExpansionPhase::Expanded,
+            "path A must be Expanded"
+        );
+        assert_eq!(
+            state.expansion_state_for_path(&path_b),
+            ExpansionPhase::Collapsed,
+            "path B must remain Collapsed"
+        );
+    }
+
+    // 6.2: Data sharing — same object at paths A and B
+    // share object_fields cache.
+    #[test]
+    fn data_sharing_same_object_shares_cache() {
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 0x100), make_var_object_ref(1, 0x100)];
+        state.toggle_expand(10, vars);
+
+        let path_a = path_var(10, 0);
+        let fields = vec![
+            FieldInfo {
+                name: "a".to_string(),
+                value: FieldValue::Int(1),
+            },
+            FieldInfo {
+                name: "b".to_string(),
+                value: FieldValue::Int(2),
+            },
+        ];
+        state.set_expansion_done_at_path(&path_a, 0x100, fields);
+
+        // Data cache is keyed by object_id, not path.
+        let cached = state.expansion.object_fields.get(&0x100);
+        assert!(cached.is_some(), "object_fields must contain 0x100");
+        assert_eq!(cached.unwrap().len(), 2);
+
+        // Expanding path B for the same object reuses
+        // the same cache slot.
+        let path_b = path_var(10, 1);
+        state.set_expansion_done_at_path(
+            &path_b,
+            0x100,
+            vec![FieldInfo {
+                name: "replaced".to_string(),
+                value: FieldValue::Int(99),
+            }],
+        );
+
+        // Cache is shared — last write wins.
+        let cached = state.expansion.object_fields.get(&0x100);
+        assert_eq!(
+            cached.unwrap().len(),
+            1,
+            "cache must be overwritten (shared by object_id)"
+        );
+    }
+
+    // 6.3: Enum self-reference — collapse static field,
+    // parent remains expanded.
+    #[test]
+    fn collapse_static_field_parent_stays_expanded() {
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 0x200)];
+        state.toggle_expand(10, vars);
+
+        // Expand object 0x200 at the var-level path.
+        let parent_path = path_var(10, 0);
+        let fields = vec![FieldInfo {
+            name: "value".to_string(),
+            value: FieldValue::Int(1),
+        }];
+        state.set_expansion_done_at_path(&parent_path, 0x200, fields);
+
+        // Expand the static field referencing the same
+        // object (self-ref) at StaticField(0).
+        let static_path = path_static_field(10, 0, &[], 0);
+        state.set_expansion_done_at_path(&static_path, 0x200, simple_fields());
+
+        assert_eq!(
+            state.expansion_state_for_path(&static_path),
+            ExpansionPhase::Expanded,
+            "static field path must be Expanded"
+        );
+        assert_eq!(
+            state.expansion_state_for_path(&parent_path),
+            ExpansionPhase::Expanded,
+            "parent path must be Expanded"
+        );
+
+        // Collapse the static field path only.
+        state.collapse_object(&static_path);
+
+        assert_eq!(
+            state.expansion_state_for_path(&static_path),
+            ExpansionPhase::Collapsed,
+            "static field path must be Collapsed"
+        );
+        assert_eq!(
+            state.expansion_state_for_path(&parent_path),
+            ExpansionPhase::Expanded,
+            "parent path must remain Expanded"
+        );
+    }
+
+    // 6.4: Collapse at path removes only that path's
+    // phase.
+    #[test]
+    fn collapse_at_path_removes_only_that_path() {
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 0x100), make_var_object_ref(1, 0x200)];
+        state.toggle_expand(10, vars);
+
+        let path_a = path_var(10, 0);
+        let path_b = path_var(10, 1);
+
+        state.set_expansion_done_at_path(&path_a, 0x100, simple_fields());
+        state.set_expansion_done_at_path(&path_b, 0x200, simple_fields());
+
+        assert_eq!(
+            state.expansion_state_for_path(&path_a),
+            ExpansionPhase::Expanded,
+        );
+        assert_eq!(
+            state.expansion_state_for_path(&path_b),
+            ExpansionPhase::Expanded,
+        );
+
+        // Collapse only path A.
+        state.collapse_object(&path_a);
+
+        assert_eq!(
+            state.expansion_state_for_path(&path_a),
+            ExpansionPhase::Collapsed,
+            "path A must be Collapsed after collapse"
+        );
+        assert_eq!(
+            state.expansion_state_for_path(&path_b),
+            ExpansionPhase::Expanded,
+            "path B must remain Expanded"
+        );
+    }
+
+    // 6.5: Collapse last path for object_id — phase is
+    // Collapsed; data cache cleanup is deferred.
+    #[test]
+    fn collapse_last_path_phase_collapsed_data_deferred() {
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 0x100)];
+        state.toggle_expand(10, vars);
+
+        let path_a = path_var(10, 0);
+        state.set_expansion_done_at_path(&path_a, 0x100, simple_fields());
+
+        // Collapse the only expanded path for 0x100.
+        state.collapse_object(&path_a);
+
+        assert_eq!(
+            state.expansion_state_for_path(&path_a),
+            ExpansionPhase::Collapsed,
+            "phase must be Collapsed"
+        );
+
+        // Data cache cleanup is deferred to LRU — the
+        // object_fields entry may still be present.
+        // We only assert that the phase is Collapsed.
+        // (Current impl does NOT eagerly remove data.)
+        let data_still_cached = state.expansion.object_fields.contains_key(&0x100);
+        assert!(
+            data_still_cached,
+            "data cache is deferred (LRU), so entry stays"
+        );
+    }
+
+    // 6.6: poll_expansions with stale path — must not
+    // panic. We simulate by calling
+    // set_expansion_done_at_path on a path that no
+    // longer exists in the current frame tree.
+    #[test]
+    fn stale_path_expansion_does_not_panic() {
+        // Start with frame 10, expand a var.
+        let frames = vec![make_frame(10)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 0x300)];
+        state.toggle_expand(10, vars);
+
+        let stale_path = path_var(10, 0);
+
+        // Simulate thread switch: replace frames entirely.
+        let new_frames = vec![make_frame(20)];
+        state = StackState::new(new_frames);
+
+        // The stale_path references frame 10 which no
+        // longer exists. Applying an expansion result
+        // to it must not panic.
+        state.set_expansion_done_at_path(&stale_path, 0x300, simple_fields());
+
+        // The phase is recorded (orphaned but harmless).
+        assert_eq!(
+            state.expansion_state_for_path(&stale_path),
+            ExpansionPhase::Expanded,
+            "stale path expansion must not panic"
+        );
+
+        // The data cache is populated regardless.
+        assert!(state.expansion.object_fields.contains_key(&0x300),);
     }
 }

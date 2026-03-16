@@ -850,20 +850,12 @@ impl StackState {
         self.expansion.expansion_state(path)
     }
 
-    /// Returns the expansion phase for an `object_id` (for app compatibility).
-    pub fn expansion_state(&self, object_id: u64) -> ExpansionPhase {
+    /// Marks a path as loading (called by App on expansion
+    /// start).
+    pub fn set_expansion_loading(&mut self, path: &NavigationPath) {
         self.expansion
-            .object_phases
-            .get(&object_id)
-            .cloned()
-            .unwrap_or(ExpansionPhase::Collapsed)
-    }
-
-    /// Marks an object as loading (called by App on expansion start).
-    pub fn set_expansion_loading(&mut self, object_id: u64) {
-        self.expansion
-            .object_phases
-            .insert(object_id, ExpansionPhase::Loading);
+            .expansion_phases
+            .insert(path.clone(), ExpansionPhase::Loading);
     }
 
     /// Marks a path+object expansion as complete.
@@ -874,15 +866,6 @@ impl StackState {
         fields: Vec<FieldInfo>,
     ) {
         self.expansion.set_expansion_done(path, object_id, fields);
-        self.expansion.object_static_fields.remove(&object_id);
-    }
-
-    /// Marks an object expansion as complete with decoded fields.
-    pub fn set_expansion_done(&mut self, object_id: u64, fields: Vec<FieldInfo>) {
-        self.expansion.object_fields.insert(object_id, fields);
-        self.expansion
-            .object_phases
-            .insert(object_id, ExpansionPhase::Expanded);
         self.expansion.object_static_fields.remove(&object_id);
     }
 
@@ -905,13 +888,16 @@ impl StackState {
         self.nav.sync(&self.flat_items());
     }
 
-    /// Marks an object expansion as failed with an error message.
-    pub fn set_expansion_failed(&mut self, object_id: u64, error: String) {
+    /// Marks an expansion as failed with an error message.
+    ///
+    /// Stores the error by `object_id` (data cache) and sets the
+    /// phase by `path`.
+    pub fn set_expansion_failed(&mut self, path: &NavigationPath, object_id: u64, error: String) {
         self.expansion.object_errors.insert(object_id, error);
         self.expansion.object_static_fields.remove(&object_id);
         self.expansion
-            .object_phases
-            .insert(object_id, ExpansionPhase::Failed);
+            .expansion_phases
+            .insert(path.clone(), ExpansionPhase::Failed);
         // The cursor may be on a LoadingNode — recover it.
         let flat = self.flat_items();
         if !flat.iter().any(|c| c == self.nav.cursor()) {
@@ -934,28 +920,31 @@ impl StackState {
     }
 
     /// Cancels a loading expansion — reverts to `Collapsed`.
-    pub fn cancel_expansion(&mut self, object_id: u64) {
-        self.expansion.collapse_object_by_id(object_id);
+    pub fn cancel_expansion(&mut self, path: &NavigationPath) {
+        self.expansion.collapse_at_path(path);
     }
 
-    /// Collapses an expanded object.
-    pub fn collapse_object(&mut self, object_id: u64) {
-        self.expansion.collapse_object_by_id(object_id);
+    /// Collapses an expanded object at a given path.
+    pub fn collapse_object(&mut self, path: &NavigationPath) {
+        self.expansion.collapse_at_path(path);
     }
 
-    /// Recursively collapses `object_id` and all nested expanded descendants.
-    pub fn collapse_object_recursive(&mut self, object_id: u64) {
-        let mut to_remove: Vec<u64> = Vec::new();
-        let mut visited: HashSet<u64> = HashSet::new();
-        collect_descendants(
-            object_id,
-            &self.expansion.object_fields,
-            &mut visited,
-            &mut to_remove,
-        );
-        for id in to_remove {
-            self.collapse_object(id);
-        }
+    /// Collapses an object by ID — clears data caches.
+    ///
+    /// Does not remove `expansion_phases` entries (orphaned
+    /// phases are harmless since they are gated by
+    /// `object_fields` presence in the renderer).
+    pub fn collapse_object_by_id(&mut self, object_id: u64) {
+        self.expansion.collapse_all_for_object(object_id);
+    }
+
+    /// Recursively collapses the target path and all
+    /// descendant paths.
+    ///
+    /// Data cache entries become orphaned and will be
+    /// cleaned by LRU eviction.
+    pub fn collapse_object_recursive(&mut self, path: &NavigationPath) {
+        self.expansion.collapse_at_path(path);
         self.resync_cursor_after_collapse();
     }
 
@@ -1006,10 +995,15 @@ impl StackState {
                         &mut to_remove,
                     );
                     for id in to_remove {
-                        self.collapse_object(id);
+                        self.collapse_object_by_id(id);
                     }
                 }
             }
+            // Clear path-based expansion phases for this frame.
+            let fid = FrameId(frame_id);
+            self.expansion
+                .expansion_phases
+                .retain(|p, _| p.segments().first() != Some(&PathSegment::Frame(fid)));
             let flat = self.flat_items();
             // Reset cursor to frame row when collapsing from
             // inside.
@@ -1349,7 +1343,7 @@ impl StackState {
         if parent_path.segments().len() >= 18 {
             return;
         }
-        match self.expansion_state(object_id) {
+        match self.expansion_state_for_path(&parent_path) {
             ExpansionPhase::Collapsed => {}
             ExpansionPhase::Loading => {
                 out.push(RenderCursor::LoadingNode(parent_path));
@@ -1442,7 +1436,7 @@ impl StackState {
         if static_field_path.segments().len() >= 18 {
             return;
         }
-        match self.expansion_state(obj_id) {
+        match self.expansion_state_for_path(static_field_path) {
             ExpansionPhase::Collapsed => {}
             ExpansionPhase::Loading => {
                 out.push(RenderCursor::LoadingNode(static_field_path.clone()));
@@ -1585,7 +1579,7 @@ impl StackState {
         if entry_path.segments().len() >= 18 {
             return;
         }
-        match self.expansion_state(obj_id) {
+        match self.expansion_state_for_path(entry_path) {
             ExpansionPhase::Collapsed => {}
             ExpansionPhase::Loading => {
                 out.push(RenderCursor::LoadingNode(entry_path.clone()));
@@ -1683,7 +1677,7 @@ impl StackState {
         if static_path.segments().len() >= 18 {
             return;
         }
-        match self.expansion_state(obj_id) {
+        match self.expansion_state_for_path(static_path) {
             ExpansionPhase::Collapsed => {}
             ExpansionPhase::Loading => {
                 out.push(RenderCursor::LoadingNode(static_path.clone()));
@@ -1759,12 +1753,16 @@ impl StackState {
             if is_expanded {
                 let empty = vec![];
                 let vars = self.vars.get(&frame.frame_id).unwrap_or(&empty);
+                let derived_phases = self.expansion.derive_object_phases();
                 let tree_items = render_variable_tree(
-                    TreeRoot::Frame { vars },
+                    TreeRoot::Frame {
+                        vars,
+                        frame_id: frame.frame_id,
+                    },
                     &self.expansion.object_fields,
                     &self.expansion.object_static_fields,
                     &self.expansion.collection_chunks,
-                    &self.expansion.object_phases,
+                    &derived_phases,
                     &self.expansion.object_errors,
                     RenderOptions {
                         show_object_ids,
@@ -1772,6 +1770,7 @@ impl StackState {
                         show_hidden: false,
                     },
                     None,
+                    Some(&self.expansion.expansion_phases),
                 );
                 items.extend(tree_items);
             }

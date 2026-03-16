@@ -144,7 +144,7 @@ development_status:
   # Story 12.0 added: refactor render_variable_tree before path-based state
   epic-12: in-progress
   12-0-refactor-render-variable-tree: done
-  12-1-path-based-expand-state-isolation: ready-for-dev
+  12-1-path-based-expand-state-isolation: review
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
   # Deferred after Epic 12 (Epic 10 retro decision)
@@ -152,8 +152,8 @@ development_status:
   11-1-loading-indicator-slow-operations: backlog
   11-2-batch-scan-by-segment: backlog
   11-3-parallel-eager-item-resolution: backlog
-  11-4-skip-index-object-array: backlog
-  11-5-skip-index-variable-size: backlog
+  11-4-skip-index-object-array: ready-for-dev
+  11-5-skip-index-variable-size: ready-for-dev
   11-6-investigate-non-array-item-slowness: backlog
 
   # Epic 13: UI Polish & Ergonomie (sourced from large dump UX observations 2026-03-14)
@@ -165,3 +165,12 @@ development_status:
   13-5-azerty-qwerty-keymapping: backlog
   13-6-class-metadata-preload: backlog
   13-7-logo-splash-screen: backlog
+
+  # BACKLOG IDEAS (not yet scoped into epics/stories):
+  # - Custom collection recognition: detect collections by
+  #   structure/inheritance (e.g., fields first/next/item) instead
+  #   of hardcoded JDK class names. Would enable pagination for
+  #   Guava, Eclipse Collections, custom LinkedList-like types.
+  #   Current match_extractor (pagination/mod.rs:68) only matches
+  #   exact short names (ArrayList, HashMap, LinkedList, etc.).
+  #   Discovered during Story 11.5 analysis (2026-03-16).

@@ -53,7 +53,10 @@ mod frame_rendering {
     #[test]
     fn frame_with_no_vars_renders_no_locals() {
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &[] },
+            TreeRoot::Frame {
+                vars: &[],
+                frame_id: 100,
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -64,6 +67,7 @@ mod frame_rendering {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);
@@ -74,7 +78,10 @@ mod frame_rendering {
     fn frame_with_null_var_renders_null() {
         let vars = vec![make_var(0, 0)];
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -86,6 +93,7 @@ mod frame_rendering {
                 show_hidden: false,
             },
             None,
+            None,
         );
         let text = render_items(items);
         assert!(text.contains("[0] null"), "got: {text:?}");
@@ -95,7 +103,10 @@ mod frame_rendering {
     fn frame_with_collapsed_object_ref_shows_plus() {
         let vars = vec![make_var(0, 42)];
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -106,6 +117,7 @@ mod frame_rendering {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);
@@ -128,7 +140,10 @@ mod frame_rendering {
         object_phases.insert(42u64, ExpansionPhase::Expanded);
 
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &object_fields,
             &HashMap::new(),
             &HashMap::new(),
@@ -139,6 +154,7 @@ mod frame_rendering {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);
@@ -157,7 +173,10 @@ mod snapshot_mode {
     fn snapshot_mode_unavailable_var_shows_question_toggle() {
         let vars = vec![make_var(0, 42)];
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -168,6 +187,7 @@ mod snapshot_mode {
                 snapshot_mode: true,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);
@@ -222,7 +242,10 @@ mod snapshot_mode {
         object_phases.insert(1u64, ExpansionPhase::Expanded);
 
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &object_fields,
             &HashMap::new(),
             &collection_chunks,
@@ -233,6 +256,7 @@ mod snapshot_mode {
                 snapshot_mode: true,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);
@@ -278,7 +302,10 @@ mod object_display {
         object_phases.insert(42u64, ExpansionPhase::Expanded);
 
         let with_ids = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &object_fields,
             &HashMap::new(),
             &HashMap::new(),
@@ -290,6 +317,7 @@ mod object_display {
                 show_hidden: false,
             },
             None,
+            None,
         );
         let with_ids_text = render_items(with_ids);
         assert!(
@@ -299,7 +327,10 @@ mod object_display {
         );
 
         let without_ids = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &object_fields,
             &HashMap::new(),
             &HashMap::new(),
@@ -310,6 +341,7 @@ mod object_display {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let without_ids_text = render_items(without_ids);
@@ -340,7 +372,10 @@ mod object_display {
         object_phases.insert(1u64, ExpansionPhase::Expanded);
 
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &object_fields,
             &HashMap::new(),
             &HashMap::new(),
@@ -351,6 +386,7 @@ mod object_display {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);
@@ -369,7 +405,10 @@ mod object_display {
         object_errors.insert(42u64, "boom".to_string());
 
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -380,6 +419,7 @@ mod object_display {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);
@@ -423,6 +463,7 @@ mod subtree_root {
                 show_hidden: false,
             },
             None,
+            None,
         );
         let text = render_items(items);
         assert!(text.contains("x"), "expected field name, got: {text:?}");
@@ -464,6 +505,7 @@ mod subtree_root {
                 snapshot_mode: true,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);
@@ -533,7 +575,10 @@ mod subtree_root {
         object_errors.insert(300u64, "entry missing".to_string());
 
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &object_fields,
             &HashMap::new(),
             &collection_chunks,
@@ -544,6 +589,7 @@ mod subtree_root {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);
@@ -578,7 +624,10 @@ mod hidden_fields_tests {
         let mut hidden = HashSet::new();
         hidden.insert(HideKey::Var(0));
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -590,6 +639,7 @@ mod hidden_fields_tests {
                 show_hidden: true,
             },
             Some(&hidden),
+            None,
         );
         assert_eq!(items.len(), 1, "hidden var → 1 placeholder row");
         let text = render_items(items);
@@ -607,7 +657,10 @@ mod hidden_fields_tests {
         let mut hidden = HashSet::new();
         hidden.insert(HideKey::Var(0));
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -615,6 +668,7 @@ mod hidden_fields_tests {
             &HashMap::new(),
             empty_options(),
             Some(&hidden),
+            None,
         );
         assert_eq!(items.len(), 0, "hidden var with show_hidden=false → no row");
     }
@@ -626,13 +680,17 @@ mod hidden_fields_tests {
             value: VariableValue::Null,
         }];
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             empty_options(),
+            None,
             None,
         );
         let text = render_items(items);
@@ -682,6 +740,7 @@ mod hidden_fields_tests {
             &HashMap::new(),
             empty_options(),
             None,
+            None,
         );
         assert_eq!(baseline.len(), 3, "baseline: 1 field + 2 children");
 
@@ -705,6 +764,7 @@ mod hidden_fields_tests {
                 show_hidden: true,
             },
             Some(&hidden),
+            None,
         );
         assert_eq!(hidden_items.len(), 1, "hidden: only 1 placeholder row");
         let text = render_items(hidden_items);
@@ -721,6 +781,7 @@ mod hidden_fields_tests {
             &HashMap::new(),
             empty_options(),
             Some(&hidden),
+            None,
         );
         assert_eq!(hidden_absent.len(), 0, "show_hidden=false → no rows");
     }
@@ -742,7 +803,10 @@ mod empty_collections {
             },
         }];
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -753,6 +817,7 @@ mod empty_collections {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);
@@ -787,7 +852,10 @@ mod empty_collections {
         object_phases.insert(42u64, ExpansionPhase::Expanded);
 
         let items = render_variable_tree(
-            TreeRoot::Frame { vars: &vars },
+            TreeRoot::Frame {
+                vars: &vars,
+                frame_id: 100,
+            },
             &object_fields,
             &HashMap::new(),
             &HashMap::new(),
@@ -798,6 +866,7 @@ mod empty_collections {
                 snapshot_mode: false,
                 show_hidden: false,
             },
+            None,
             None,
         );
         let text = render_items(items);

@@ -8,17 +8,22 @@ use ratatui::style::Style;
 
 use crate::theme::THEME;
 
-use super::super::stack_view::{ExpansionPhase, format_object_ref_collapsed};
+use super::super::stack_view::{ExpansionPhase, NavigationPath, format_object_ref_collapsed};
 use super::RenderCtx;
 use super::collection::append_collection_items;
 use super::expansion::append_fields_expanded;
 use super::helpers::{format_failed_label, object_ref_state, push_field_row};
 
+/// Renders a single variable row and its expanded children.
+///
+/// `path` is `Some` in live stack view mode (for path-based
+/// phase lookup), `None` in snapshot mode.
 pub(super) fn append_var(
     var: &VariableInfo,
     indent: &str,
     ctx: &RenderCtx<'_>,
     items: &mut Vec<ratatui::widgets::ListItem<'static>>,
+    path: Option<NavigationPath>,
 ) {
     let VariableValue::ObjectRef {
         id,
@@ -36,7 +41,7 @@ pub(super) fn append_var(
         return;
     };
 
-    let (phase, unavailable) = object_ref_state(*id, *entry_count, ctx);
+    let (phase, unavailable) = object_ref_state(*id, *entry_count, ctx, path.as_ref());
 
     let (toggle, val_str, val_style): (&str, String, Style) = if unavailable {
         let label = format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
@@ -88,7 +93,7 @@ pub(super) fn append_var(
             Some(ExpansionPhase::Expanded | ExpansionPhase::Loading)
         ) && let Some(cc) = ctx.collection_chunks.get(id)
         {
-            append_collection_items(*id, cc, &format!("{indent}  "), 0, ctx, items);
+            append_collection_items(*id, cc, &format!("{indent}  "), 0, ctx, items, path);
         }
         return;
     }
@@ -101,5 +106,6 @@ pub(super) fn append_var(
         &mut visited,
         items,
         false,
+        path,
     );
 }

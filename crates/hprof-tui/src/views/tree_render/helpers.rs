@@ -11,20 +11,27 @@ use ratatui::{
 
 use crate::theme::THEME;
 
-use super::super::stack_view::{ExpansionPhase, FAILED_LABEL_SEP};
+use super::super::stack_view::{ExpansionPhase, FAILED_LABEL_SEP, NavigationPath};
 use super::RenderCtx;
 
+/// Determines the expansion phase and availability of an object
+/// reference for rendering.
+///
+/// When `path` is `Some` and `ctx.expansion_phases` is available
+/// (live stack view mode), phase is looked up by path. Otherwise
+/// falls back to `ctx.object_phases` (snapshot mode).
 pub(super) fn object_ref_state(
     object_id: u64,
     entry_count: Option<u64>,
     ctx: &RenderCtx<'_>,
+    path: Option<&NavigationPath>,
 ) -> (Option<ExpansionPhase>, bool) {
     if entry_count == Some(0) {
         return (None, false);
     }
     if entry_count.is_some() && ctx.collection_chunks.contains_key(&object_id) {
         if ctx.snapshot_mode {
-            return (Some(get_phase(object_id, ctx.object_phases)), false);
+            return (Some(ctx.phase_for(object_id, path)), false);
         }
         return (Some(ExpansionPhase::Expanded), false);
     }
@@ -34,7 +41,7 @@ pub(super) fn object_ref_state(
         || ctx.object_phases.contains_key(&object_id);
 
     if has_snapshot_data || !ctx.snapshot_mode {
-        (Some(get_phase(object_id, ctx.object_phases)), false)
+        (Some(ctx.phase_for(object_id, path)), false)
     } else {
         (None, true)
     }

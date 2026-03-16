@@ -542,7 +542,10 @@ mod row_metadata_tests {
             &item.local_collapsed,
         );
         let rendered = render_variable_tree(
-            TreeRoot::Frame { vars: variables },
+            TreeRoot::Frame {
+                vars: variables,
+                frame_id: 100,
+            },
             object_fields,
             &HashMap::new(),
             collection_chunks,
@@ -553,6 +556,7 @@ mod row_metadata_tests {
                 snapshot_mode: true,
                 show_hidden: false,
             },
+            None,
             None,
         );
 
@@ -672,6 +676,7 @@ mod row_metadata_tests {
                     PinnedSnapshot::Frame { variables, .. } => variables,
                     _ => unreachable!(),
                 },
+                frame_id: 100,
             },
             &object_fields,
             &HashMap::new(),
@@ -683,6 +688,7 @@ mod row_metadata_tests {
                 snapshot_mode: true,
                 show_hidden: false,
             },
+            None,
             None,
         );
 
@@ -797,6 +803,7 @@ mod row_metadata_tests {
                 snapshot_mode: true,
                 show_hidden: false,
             },
+            None,
             None,
         );
 
@@ -1084,6 +1091,7 @@ mod hide_field_tests {
                 show_hidden: false,
             },
             None,
+            None,
         );
         // header=1, ObjectRef row=1, 2 child primitives=2, separator=1 → row_count=5
         assert_eq!(row_count_base, 5);
@@ -1124,6 +1132,7 @@ mod hide_field_tests {
                 show_hidden: false,
             },
             Some(&hide_set),
+            None,
         );
         assert_eq!(
             row_count_hidden, 2,
@@ -1165,6 +1174,7 @@ mod hide_field_tests {
                 show_hidden: true,
             },
             Some(&item_revealed.hidden_fields),
+            None,
         );
         assert_eq!(
             row_count_revealed, 3,
