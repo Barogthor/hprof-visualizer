@@ -155,8 +155,24 @@ development_status:
   11-2-batch-scan-by-segment: done
   11-3-parallel-eager-item-resolution: done
   11-4-skip-index-object-array: done
-  11-5-skip-index-variable-size: ready-for-dev
+  11-5-skip-index-variable-size: review
   11-6-investigate-non-array-item-slowness: backlog
+  # ACTION (11.5 manual test 2026-03-17): HashMap/LinkedList page 0
+  #   opening is very slow on large dumps. Root cause: each
+  #   HashMap$Node / LinkedList$Node triggers an individual
+  #   find_instance segment scan (not in instance_offsets).
+  #   Object[] is fast thanks to batch_find_instances (Story 11.2).
+  #   Fix: apply batch pre-resolution to extract_hash_map and
+  #   extract_linked_list — collect node IDs first, then one
+  #   batch_find_instances call before resolving fields.
+  #   This is the primary scope for Story 11.6.
+
+  # BUG (2026-03-17): Pressing Esc on a field showing "Resolving..."
+  #   causes the field to display "no field" instead of reverting to
+  #   its unexpanded state. User must collapse the parent and re-expand
+  #   to see the field again. Likely the cancel/abort path clears the
+  #   field data without restoring the pre-expansion state.
+  #   Scope: hprof-tui expand/cancel logic.
 
   # Epic 13: UI Polish & Ergonomie (sourced from large dump UX observations 2026-03-14)
   epic-13: backlog

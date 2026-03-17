@@ -4,6 +4,9 @@
 //! navigation API. Parser internals are fully encapsulated — callers only
 //! depend on `hprof-engine`.
 
+use std::collections::HashMap as StdHashMap;
+use std::sync::Mutex;
+
 use rustc_hash::FxHashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -216,6 +219,9 @@ pub struct Engine {
     memory_counter: Arc<crate::cache::MemoryCounter>,
     /// LRU cache for expanded object fields.
     object_cache: crate::cache::ObjectCache,
+    /// Skip-indexes for variable-size collection pagination.
+    /// Lazily created when `offset > 0` is requested.
+    skip_indexes: Mutex<StdHashMap<u64, crate::pagination::SkipIndex>>,
 }
 
 impl Engine {
@@ -243,6 +249,7 @@ impl Engine {
             thread_cache,
             memory_counter: counter,
             object_cache: crate::cache::ObjectCache::new(),
+            skip_indexes: Mutex::new(StdHashMap::new()),
         })
     }
 
@@ -275,6 +282,7 @@ impl Engine {
             thread_cache,
             memory_counter: counter,
             object_cache: crate::cache::ObjectCache::new(),
+            skip_indexes: Mutex::new(StdHashMap::new()),
         })
     }
 
@@ -782,6 +790,7 @@ impl NavigationEngine for Engine {
             if let Some(freed) = self.object_cache.evict_lru() {
                 let current = self.memory_counter.current();
                 self.memory_counter.subtract(freed.min(current));
+                // TODO(11.5): evict skip_indexes on LRU
                 if self.memory_counter.usage_ratio() < EVICTION_TARGET {
                     break;
                 }
@@ -837,7 +846,17 @@ impl NavigationEngine for Engine {
     }
 
     fn get_page(&self, collection_id: u64, offset: usize, limit: usize) -> Option<CollectionPage> {
-        crate::pagination::get_page(&self.hfile, collection_id, offset, limit)
+        let mut guard = self.skip_indexes.lock().unwrap_or_else(|e| e.into_inner());
+        let si = if offset > 0 {
+            Some(
+                guard
+                    .entry(collection_id)
+                    .or_insert_with(|| crate::pagination::SkipIndex::new(100)),
+            )
+        } else {
+            guard.get_mut(&collection_id)
+        };
+        crate::pagination::get_page(&self.hfile, collection_id, offset, limit, si)
     }
 
     fn resolve_string(&self, object_id: u64) -> Option<String> {
@@ -887,6 +906,17 @@ impl NavigationEngine for Engine {
     fn skeleton_bytes(&self) -> usize {
         use hprof_api::MemorySize;
         self.hfile.index.memory_size()
+    }
+}
+
+#[cfg(test)]
+impl Engine {
+    #[allow(dead_code)]
+    pub(crate) fn skip_index_count(&self) -> usize {
+        self.skip_indexes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 }
 

@@ -4,11 +4,16 @@
 //! object by identifying its concrete type and delegating
 //! to the appropriate extractor.
 
+mod skip_index;
+
 use hprof_parser::{HprofFile, ObjectArrayMeta, RawInstance};
 
 use crate::engine::{CollectionPage, EntryInfo, FieldValue};
 use crate::engine_impl::Engine;
 use crate::resolver::decode_fields;
+
+use skip_index::SkipCheckpoint;
+pub(crate) use skip_index::SkipIndex;
 
 /// Returns a page from the collection identified by
 /// `collection_id`, or `None` if unsupported/not found.
@@ -17,6 +22,7 @@ pub(crate) fn get_page(
     collection_id: u64,
     offset: usize,
     limit: usize,
+    skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
     // Try as Object[] or primitive[] first
     if let Some(page) = try_object_array(hfile, collection_id, offset, limit) {
@@ -62,7 +68,7 @@ pub(crate) fn get_page(
     };
     let short = class_name.rsplit('.').next().unwrap_or(class_name.as_str());
 
-    match_extractor(short, hfile, &raw, offset, limit)
+    match_extractor(short, hfile, &raw, offset, limit, skip_index)
 }
 
 fn match_extractor(
@@ -71,6 +77,7 @@ fn match_extractor(
     raw: &RawInstance,
     offset: usize,
     limit: usize,
+    skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
     if short_name.eq_ignore_ascii_case("ArrayList")
         || short_name.eq_ignore_ascii_case("CopyOnWriteArrayList")
@@ -81,18 +88,18 @@ fn match_extractor(
     if short_name.eq_ignore_ascii_case("HashMap")
         || short_name.eq_ignore_ascii_case("LinkedHashMap")
     {
-        return extract_hash_map(hfile, raw, offset, limit, false);
+        return extract_hash_map(hfile, raw, offset, limit, false, skip_index);
     }
     if short_name.eq_ignore_ascii_case("ConcurrentHashMap") {
-        return extract_hash_map(hfile, raw, offset, limit, true);
+        return extract_hash_map(hfile, raw, offset, limit, true, skip_index);
     }
     if short_name.eq_ignore_ascii_case("HashSet")
         || short_name.eq_ignore_ascii_case("LinkedHashSet")
     {
-        return extract_hash_set(hfile, raw, offset, limit);
+        return extract_hash_set(hfile, raw, offset, limit, skip_index);
     }
     if short_name.eq_ignore_ascii_case("LinkedList") {
-        return extract_linked_list(hfile, raw, offset, limit);
+        return extract_linked_list(hfile, raw, offset, limit, skip_index);
     }
     // Unsupported collection type
     None
@@ -196,12 +203,17 @@ fn extract_array_list(
 }
 
 /// Walks `table` Node[] for HashMap / ConcurrentHashMap.
+///
+/// When a `SkipIndex` is provided and `offset > 0`,
+/// resumes from the nearest checkpoint instead of walking
+/// from slot 0. Records new checkpoints during traversal.
 fn extract_hash_map(
     hfile: &HprofFile,
     raw: &RawInstance,
     offset: usize,
     limit: usize,
     concurrent: bool,
+    mut skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
     let fields = decode_fields(
         raw,
@@ -231,21 +243,105 @@ fn extract_hash_map(
     let table_arr_id = table_id?;
     let (_class_id, table_elements) = hfile.find_object_array(table_arr_id)?;
 
-    // Walk non-null slots, following `next` chains
+    // Determine start position via skip-index checkpoint
+    let mut checkpoint_index: usize = 0;
+    let mut start_slot: usize = 0;
+    let mut resume_node_id: Option<u64> = None;
+
+    if let Some(si) = skip_index.as_deref()
+        && offset > 0
+        && let Some((ci, cp)) = si.nearest_before(offset)
+    {
+        match cp {
+            SkipCheckpoint::HashMapSlot {
+                slot_index,
+                node_id,
+            } => {
+                if *slot_index < table_elements.len() {
+                    checkpoint_index = ci;
+                    start_slot = *slot_index;
+                    resume_node_id = Some(*node_id);
+                }
+            }
+            _ => unreachable!(
+                "unexpected checkpoint variant \
+                 in extract_hash_map"
+            ),
+        }
+    }
+
+    let adjusted_offset = offset - checkpoint_index;
+    let target_count = adjusted_offset + limit;
     let mut all_entries: Vec<(FieldValue, FieldValue)> = Vec::new();
-    let target_count = offset + limit;
     let mut visited = std::collections::HashSet::new();
 
-    for &slot_id in &table_elements {
+    for (slot_rel, &slot_id) in table_elements[start_slot..].iter().enumerate() {
+        let current_slot = start_slot + slot_rel;
         if slot_id == 0 {
             continue;
         }
         let mut node_id = slot_id;
+
+        // On the first slot of a checkpoint resume, walk
+        // the chain to find the checkpoint node
+        if let Some(target) = resume_node_id.take() {
+            // Walk chain until we find the target node
+            while node_id != 0 && node_id != target {
+                if !visited.insert(node_id) {
+                    break;
+                }
+                if let Some(nr) = Engine::read_instance_public(hfile, node_id) {
+                    let nf = decode_fields(
+                        &nr,
+                        &hfile.index,
+                        hfile.header.id_size,
+                        hfile.records_bytes(),
+                    );
+                    node_id = nf
+                        .iter()
+                        .find(|f| f.name == "next")
+                        .and_then(|f| match f.value {
+                            FieldValue::ObjectRef { id, .. } => Some(id),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                } else {
+                    node_id = 0;
+                }
+            }
+            if node_id == 0 {
+                // Target node not found — fallback:
+                // reset and walk from beginning
+                return extract_hash_map_full(
+                    hfile,
+                    &table_elements,
+                    total,
+                    offset,
+                    limit,
+                    val_field_name,
+                    skip_index,
+                );
+            }
+            // node_id is now the checkpoint node; proceed
+            // to collect from here (including this node)
+        }
+
         while node_id != 0 {
             if !visited.insert(node_id) {
                 break; // cycle guard
             }
             if let Some(node_raw) = Engine::read_instance_public(hfile, node_id) {
+                // Record checkpoint before pushing entry
+                if let Some(si) = skip_index.as_deref_mut() {
+                    si.record(
+                        checkpoint_index + all_entries.len(),
+                        SkipCheckpoint::HashMapSlot {
+                            slot_index: current_slot,
+                            node_id,
+                        },
+                    );
+                }
+
                 let node_fields = decode_fields(
                     &node_raw,
                     &hfile.index,
@@ -275,8 +371,81 @@ fn extract_hash_map(
             } else {
                 break;
             }
-            // Early exit: no need to walk past
-            // offset + limit
+            if all_entries.len() >= target_count {
+                break;
+            }
+        }
+        if all_entries.len() >= target_count {
+            break;
+        }
+    }
+
+    paginate_kv_entries(&all_entries, total, adjusted_offset, limit)
+}
+
+/// Full walk fallback for HashMap when checkpoint resume
+/// fails.
+fn extract_hash_map_full(
+    hfile: &HprofFile,
+    table_elements: &[u64],
+    total: u64,
+    offset: usize,
+    limit: usize,
+    val_field_name: &str,
+    mut skip_index: Option<&mut SkipIndex>,
+) -> Option<CollectionPage> {
+    let target_count = offset + limit;
+    let mut all_entries: Vec<(FieldValue, FieldValue)> = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+
+    for (current_slot, &slot_id) in table_elements.iter().enumerate() {
+        if slot_id == 0 {
+            continue;
+        }
+        let mut node_id = slot_id;
+        while node_id != 0 {
+            if !visited.insert(node_id) {
+                break;
+            }
+            if let Some(node_raw) = Engine::read_instance_public(hfile, node_id) {
+                if let Some(si) = skip_index.as_deref_mut() {
+                    si.record(
+                        all_entries.len(),
+                        SkipCheckpoint::HashMapSlot {
+                            slot_index: current_slot,
+                            node_id,
+                        },
+                    );
+                }
+                let node_fields = decode_fields(
+                    &node_raw,
+                    &hfile.index,
+                    hfile.header.id_size,
+                    hfile.records_bytes(),
+                );
+                let key = node_fields
+                    .iter()
+                    .find(|f| f.name == "key")
+                    .map(|f| f.value.clone())
+                    .unwrap_or(FieldValue::Null);
+                let value = node_fields
+                    .iter()
+                    .find(|f| f.name == val_field_name)
+                    .map(|f| f.value.clone())
+                    .unwrap_or(FieldValue::Null);
+                let next_id = node_fields
+                    .iter()
+                    .find(|f| f.name == "next")
+                    .and_then(|f| match f.value {
+                        FieldValue::ObjectRef { id, .. } => Some(id),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                all_entries.push((key, value));
+                node_id = next_id;
+            } else {
+                break;
+            }
             if all_entries.len() >= target_count {
                 break;
             }
@@ -295,6 +464,7 @@ fn extract_hash_set(
     raw: &RawInstance,
     offset: usize,
     limit: usize,
+    skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
     let fields = decode_fields(
         raw,
@@ -313,7 +483,7 @@ fn extract_hash_set(
     })?;
 
     let map_raw = Engine::read_instance_public(hfile, map_id)?;
-    let page = extract_hash_map(hfile, &map_raw, offset, limit, false)?;
+    let page = extract_hash_map(hfile, &map_raw, offset, limit, false, skip_index)?;
 
     // Convert map entries to set entries (keys only)
     let entries = page
@@ -335,11 +505,17 @@ fn extract_hash_set(
 }
 
 /// Walks `first` → `next` chain for LinkedList.
+///
+/// When a `SkipIndex` is provided and `offset > 0`,
+/// resumes from the nearest checkpoint instead of
+/// walking from the head. Records new checkpoints
+/// during traversal for future page requests.
 fn extract_linked_list(
     hfile: &HprofFile,
     raw: &RawInstance,
     offset: usize,
     limit: usize,
+    mut skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
     let fields = decode_fields(
         raw,
@@ -366,15 +542,48 @@ fn extract_linked_list(
 
     let total = size?;
     let mut node_id = first_id.unwrap_or(0);
-    let target_count = offset + limit;
+
+    // Determine start position via skip-index checkpoint
+    let mut checkpoint_index: usize = 0;
+    if let Some(si) = skip_index.as_deref()
+        && offset > 0
+        && let Some((ci, cp)) = si.nearest_before(offset)
+    {
+        match cp {
+            SkipCheckpoint::LinkedListNode { node_id: cp_node } => {
+                node_id = *cp_node;
+                checkpoint_index = ci;
+            }
+            _ => unreachable!(
+                "unexpected checkpoint variant \
+                 in extract_linked_list"
+            ),
+        }
+    }
+
+    let adjusted_offset = offset - checkpoint_index;
+    let target_count = adjusted_offset + limit;
+    let max_iter = (total as usize).saturating_sub(checkpoint_index);
     let mut items: Vec<FieldValue> = Vec::new();
     let mut visited = std::collections::HashSet::new();
+    let mut iterations: usize = 0;
 
     while node_id != 0 && items.len() < target_count {
+        if iterations >= max_iter {
+            break; // max iterations guard (Task 3.4)
+        }
         if !visited.insert(node_id) {
             break; // cycle guard
         }
         if let Some(node_raw) = Engine::read_instance_public(hfile, node_id) {
+            // Record checkpoint before pushing item
+            if let Some(si) = skip_index.as_deref_mut() {
+                si.record(
+                    checkpoint_index + items.len(),
+                    SkipCheckpoint::LinkedListNode { node_id },
+                );
+            }
+
             let node_fields = decode_fields(
                 &node_raw,
                 &hfile.index,
@@ -398,26 +607,34 @@ fn extract_linked_list(
         } else {
             break;
         }
+        iterations += 1;
     }
 
-    let clamped_offset = (offset as u64).min(total) as usize;
+    // Mark complete if we reached the end of the chain
+    if node_id == 0
+        && let Some(si) = skip_index
+    {
+        si.mark_complete();
+    }
+
+    let clamped_offset = (adjusted_offset as u64).min(total) as usize;
     let page_items: Vec<EntryInfo> = items
         .into_iter()
         .skip(clamped_offset)
         .take(limit)
         .enumerate()
         .map(|(i, value)| EntryInfo {
-            index: clamped_offset + i,
+            index: checkpoint_index + clamped_offset + i,
             key: None,
             value,
         })
         .collect();
-    let actual_end = clamped_offset + page_items.len();
+    let actual_end = checkpoint_index + clamped_offset + page_items.len();
 
     Some(CollectionPage {
         entries: page_items,
         total_count: total,
-        offset: clamped_offset,
+        offset: checkpoint_index + clamped_offset,
         has_more: (actual_end as u64) < total,
     })
 }
@@ -452,14 +669,16 @@ fn paginate_object_array(
     let element_ids: Vec<u64> = (0..actual)
         .map(|i| {
             let idx = (clamped + i) as u32;
-            hfile.read_object_array_element(meta, idx).unwrap_or_else(|| {
-                dbg_log!(
-                    "read_object_array_element \
+            hfile
+                .read_object_array_element(meta, idx)
+                .unwrap_or_else(|| {
+                    dbg_log!(
+                        "read_object_array_element \
                      returned None at idx {}",
-                    idx
-                );
-                0
-            })
+                        idx
+                    );
+                    0
+                })
         })
         .collect();
 

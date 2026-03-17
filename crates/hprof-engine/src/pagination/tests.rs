@@ -83,7 +83,7 @@ mod array_pagination {
             .add_object_array(0xA, 0, 100, &elements)
             .build();
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0xA, 0, 3).unwrap();
+        let page = get_page(&hfile, 0xA, 0, 3, None).unwrap();
         assert_eq!(page.total_count, 5);
         assert_eq!(page.offset, 0);
         assert_eq!(page.entries.len(), 3);
@@ -99,7 +99,7 @@ mod array_pagination {
             .add_object_array(0xA, 0, 100, &elements)
             .build();
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0xA, 3, 3).unwrap();
+        let page = get_page(&hfile, 0xA, 3, 3, None).unwrap();
         assert_eq!(page.total_count, 10);
         assert_eq!(page.offset, 3);
         assert_eq!(page.entries.len(), 3);
@@ -114,7 +114,7 @@ mod array_pagination {
             .add_object_array(0xA, 0, 100, &elements)
             .build();
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0xA, 3, 1000).unwrap();
+        let page = get_page(&hfile, 0xA, 3, 1000, None).unwrap();
         assert_eq!(page.total_count, 5);
         assert_eq!(page.offset, 3);
         assert_eq!(page.entries.len(), 2);
@@ -128,7 +128,7 @@ mod array_pagination {
             .add_object_array(0xA, 0, 100, &elements)
             .build();
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0xA, 0, 1000).unwrap();
+        let page = get_page(&hfile, 0xA, 0, 1000, None).unwrap();
         assert_eq!(page.total_count, 3);
         assert_eq!(page.entries.len(), 3);
         assert!(!page.has_more);
@@ -141,7 +141,7 @@ mod array_pagination {
             .add_object_array(0xA, 0, 100, &elements)
             .build();
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0xA, 100, 10).unwrap();
+        let page = get_page(&hfile, 0xA, 100, 10, None).unwrap();
         assert_eq!(page.entries.len(), 0);
         assert!(!page.has_more);
     }
@@ -155,12 +155,12 @@ mod array_pagination {
         let hfile = hfile_from_bytes(&bytes);
 
         // Exact fit: has_more = false
-        let page = get_page(&hfile, 0xA, 0, 5).unwrap();
+        let page = get_page(&hfile, 0xA, 0, 5, None).unwrap();
         assert_eq!(page.entries.len(), 5);
         assert!(!page.has_more);
 
         // One less: has_more = true
-        let page = get_page(&hfile, 0xA, 0, 4).unwrap();
+        let page = get_page(&hfile, 0xA, 0, 4, None).unwrap();
         assert_eq!(page.entries.len(), 4);
         assert!(page.has_more);
     }
@@ -175,7 +175,7 @@ mod array_pagination {
             .add_prim_array(0xB, 0, 10, 10, &int_bytes)
             .build();
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0xB, 2, 3).unwrap();
+        let page = get_page(&hfile, 0xB, 2, 3, None).unwrap();
         assert_eq!(page.total_count, 10);
         assert_eq!(page.offset, 2);
         assert_eq!(page.entries.len(), 3);
@@ -214,7 +214,7 @@ mod array_pagination {
             .add_object_array(outer_id, 0, 0, &[inner_id])
             .build();
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, outer_id, 0, 100).unwrap();
+        let page = get_page(&hfile, outer_id, 0, 100, None).unwrap();
         assert_eq!(page.entries.len(), 1);
         match &page.entries[0].value {
             FieldValue::ObjectRef {
@@ -239,7 +239,7 @@ mod array_pagination {
             .add_object_array(outer_id, 0, 0, &[inner_id])
             .build();
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, outer_id, 0, 100).unwrap();
+        let page = get_page(&hfile, outer_id, 0, 100, None).unwrap();
         assert_eq!(page.entries.len(), 1);
         match &page.entries[0].value {
             FieldValue::ObjectRef {
@@ -266,7 +266,7 @@ mod dispatch {
             .add_object_array(0xA, 0, 100, &[1])
             .build();
         let hfile = hfile_from_bytes(&bytes);
-        assert!(get_page(&hfile, 0xDEAD, 0, 10).is_none());
+        assert!(get_page(&hfile, 0xDEAD, 0, 10, None).is_none());
     }
 
     #[test]
@@ -287,7 +287,7 @@ mod dispatch {
             .build();
 
         let hfile = hfile_from_bytes(&bytes);
-        assert!(get_page(&hfile, 0x100, 0, 10).is_none());
+        assert!(get_page(&hfile, 0x100, 0, 10, None).is_none());
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod dispatch {
             .build();
 
         let hfile = hfile_from_bytes(&bytes);
-        assert!(get_page(&hfile, 0x100, 0, 10).is_none());
+        assert!(get_page(&hfile, 0x100, 0, 10, None).is_none());
     }
 }
 
@@ -336,7 +336,7 @@ mod list_extractors {
             .build();
 
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0x100, 0, 1000).unwrap();
+        let page = get_page(&hfile, 0x100, 0, 1000, None).unwrap();
         // Must use size=2, not capacity=4
         assert_eq!(page.total_count, 2);
         assert_eq!(page.entries.len(), 2);
@@ -365,7 +365,7 @@ mod list_extractors {
             .build();
 
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0x100, 0, 100).unwrap();
+        let page = get_page(&hfile, 0x100, 0, 100, None).unwrap();
         assert_eq!(page.total_count, 2);
         assert_eq!(page.entries.len(), 2);
     }
@@ -393,7 +393,7 @@ mod list_extractors {
             .build();
 
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0x100, 0, 1000).unwrap();
+        let page = get_page(&hfile, 0x100, 0, 1000, None).unwrap();
         // Must use elementCount=2, not capacity=4
         assert_eq!(page.total_count, 2);
         assert_eq!(page.entries.len(), 2);
@@ -403,7 +403,7 @@ mod list_extractors {
     #[test]
     fn linked_list_walks_chain() {
         let hfile = hfile_from_bytes(&build_linked_list_fixture());
-        let page = get_page(&hfile, 0x100, 0, 1000).unwrap();
+        let page = get_page(&hfile, 0x100, 0, 1000, None).unwrap();
         assert_eq!(page.total_count, 2);
         assert_eq!(page.entries.len(), 2);
         assert!(!page.has_more);
@@ -415,7 +415,7 @@ mod list_extractors {
     #[test]
     fn linked_list_offset_into_chain() {
         let hfile = hfile_from_bytes(&build_linked_list_fixture());
-        let page = get_page(&hfile, 0x100, 1, 1000).unwrap();
+        let page = get_page(&hfile, 0x100, 1, 1000, None).unwrap();
         assert_eq!(page.total_count, 2);
         assert_eq!(page.entries.len(), 1);
         assert_eq!(page.entries[0].index, 1);
@@ -504,7 +504,7 @@ mod map_extractors {
             .build();
 
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0x100, 0, 1000).unwrap();
+        let page = get_page(&hfile, 0x100, 0, 1000, None).unwrap();
         assert_eq!(page.total_count, 2);
         assert_eq!(page.entries.len(), 2);
         // Keys should be ObjectRef
@@ -555,7 +555,7 @@ mod map_extractors {
             .build();
 
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0x100, 0, 1000).unwrap();
+        let page = get_page(&hfile, 0x100, 0, 1000, None).unwrap();
         assert_eq!(page.total_count, 1);
         assert_eq!(page.entries.len(), 1);
         // Key and value must be resolved (non-null) via the "val" field
@@ -612,7 +612,7 @@ mod map_extractors {
             .build();
 
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0x100, 0, 1000).unwrap();
+        let page = get_page(&hfile, 0x100, 0, 1000, None).unwrap();
         assert_eq!(page.total_count, 1);
         assert_eq!(page.entries.len(), 1);
         assert!(page.entries[0].key.is_some());
@@ -674,7 +674,7 @@ mod map_extractors {
             .build();
 
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0x100, 0, 1000).unwrap();
+        let page = get_page(&hfile, 0x100, 0, 1000, None).unwrap();
         assert_eq!(page.total_count, 1);
         assert_eq!(page.entries.len(), 1);
         // Set entry: no key, value = the HashMap key (0x10)
@@ -707,7 +707,7 @@ mod map_extractors {
 
         let hfile = hfile_from_bytes(&bytes);
 
-        let page = get_page(&hfile, 0xAA, 0, 5).unwrap();
+        let page = get_page(&hfile, 0xAA, 0, 5, None).unwrap();
         assert_eq!(page.total_count, 5);
         assert_eq!(page.entries.len(), 5);
 
@@ -733,7 +733,7 @@ mod object_array_pagination {
             .build();
         let hfile = hfile_from_bytes(&bytes);
 
-        let page = get_page(&hfile, 0xA, 5, 3).unwrap();
+        let page = get_page(&hfile, 0xA, 5, 3, None).unwrap();
         assert_eq!(page.entries.len(), 3);
         assert_eq!(page.offset, 5);
         assert_eq!(page.total_count, 10);
@@ -748,7 +748,7 @@ mod object_array_pagination {
             .build();
         let hfile = hfile_from_bytes(&bytes);
 
-        let page = get_page(&hfile, 0xA, 8, 100).unwrap();
+        let page = get_page(&hfile, 0xA, 8, 100, None).unwrap();
         assert_eq!(page.entries.len(), 2);
         assert!(!page.has_more);
     }
@@ -760,7 +760,7 @@ mod object_array_pagination {
             .build();
         let hfile = hfile_from_bytes(&bytes);
 
-        let page = get_page(&hfile, 0xA, 0, 100).unwrap();
+        let page = get_page(&hfile, 0xA, 0, 100, None).unwrap();
         assert_eq!(page.entries.len(), 0);
         assert_eq!(page.total_count, 0);
         assert!(!page.has_more);
@@ -790,9 +790,460 @@ mod object_array_pagination {
             .build();
 
         let hfile = hfile_from_bytes(&bytes);
-        let page = get_page(&hfile, 0x100, 0, 100).unwrap();
+        let page = get_page(&hfile, 0x100, 0, 100, None).unwrap();
         assert_eq!(page.total_count, 3);
         assert_eq!(page.entries.len(), 3);
         assert!(!page.has_more);
+    }
+}
+
+/// Story 11.5: Skip-index integration tests for
+/// variable-size collection pagination.
+mod skip_index_integration {
+    use super::*;
+    use crate::pagination::skip_index::SkipIndex;
+
+    /// Builds a LinkedList with `n` nodes.
+    ///
+    /// Node IDs: 0x200, 0x201, …, 0x200 + (n-1).
+    /// Item IDs: 0x10, 0x11, …
+    fn build_linked_list_n(n: usize) -> Vec<u8> {
+        let id_size: u32 = 8;
+        let str_size = 10u64;
+        let str_first = 11u64;
+        let str_last = 12u64;
+        let str_item = 13u64;
+        let str_next = 14u64;
+        let str_prev = 15u64;
+        let str_cn = 16u64;
+        let str_node_cn = 17u64;
+
+        let first_node = if n > 0 { 0x200u64 } else { 0 };
+        let last_node = if n > 0 { 0x200u64 + (n as u64 - 1) } else { 0 };
+
+        let mut ll_data = Vec::new();
+        ll_data.extend_from_slice(&(n as i32).to_be_bytes());
+        ll_data.extend_from_slice(&first_node.to_be_bytes());
+        ll_data.extend_from_slice(&last_node.to_be_bytes());
+
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_string(str_size, "size")
+            .add_string(str_first, "first")
+            .add_string(str_last, "last")
+            .add_string(str_item, "item")
+            .add_string(str_next, "next")
+            .add_string(str_prev, "prev")
+            .add_string(str_cn, "java/util/LinkedList")
+            .add_string(str_node_cn, "java/util/LinkedList$Node")
+            .add_class(1, 1000, 0, str_cn)
+            .add_class(2, 2000, 0, str_node_cn)
+            .add_class_dump(
+                1000,
+                0,
+                4 + id_size * 2,
+                &[(str_size, 10), (str_first, 2), (str_last, 2)],
+            )
+            .add_class_dump(
+                2000,
+                0,
+                id_size * 3,
+                &[(str_item, 2), (str_next, 2), (str_prev, 2)],
+            )
+            .add_instance(0x100, 0, 1000, &ll_data);
+
+        for i in 0..n {
+            let node_id = 0x200u64 + i as u64;
+            let item_id = 0x10u64 + i as u64;
+            let next_id = if i + 1 < n {
+                0x200u64 + (i + 1) as u64
+            } else {
+                0u64
+            };
+            let prev_id = if i > 0 {
+                0x200u64 + (i - 1) as u64
+            } else {
+                0u64
+            };
+            let mut node_data = Vec::new();
+            node_data.extend_from_slice(&item_id.to_be_bytes());
+            node_data.extend_from_slice(&next_id.to_be_bytes());
+            node_data.extend_from_slice(&prev_id.to_be_bytes());
+            builder = builder.add_instance(node_id, 0, 2000, &node_data);
+        }
+
+        builder.build()
+    }
+
+    /// Builds a HashMap with `n` entries, each in its own
+    /// slot (no chaining). `pct_empty` controls the
+    /// percentage of empty slots (0.0 = none, 0.5 = 50%).
+    fn build_hashmap_n(n: usize, pct_empty: f64) -> Vec<u8> {
+        let id_size: u32 = 8;
+        let str_size = 10u64;
+        let str_table = 11u64;
+        let str_key = 12u64;
+        let str_value = 13u64;
+        let str_next = 14u64;
+        let str_cn = 15u64;
+        let str_node_cn = 16u64;
+
+        // Calculate table size to achieve desired empty %
+        let total_slots = if pct_empty > 0.0 {
+            (n as f64 / (1.0 - pct_empty)).ceil() as usize
+        } else {
+            n
+        };
+
+        let mut table: Vec<u64> = vec![0; total_slots];
+        // Place entries evenly across the table
+        let step = if n > 0 { total_slots / n } else { 1 };
+        for i in 0..n {
+            let slot = (i * step).min(total_slots - 1);
+            table[slot] = 0x200u64 + i as u64;
+        }
+
+        let mut hm_data = Vec::new();
+        hm_data.extend_from_slice(&(n as i32).to_be_bytes());
+        hm_data.extend_from_slice(&0x500u64.to_be_bytes());
+
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_string(str_size, "size")
+            .add_string(str_table, "table")
+            .add_string(str_key, "key")
+            .add_string(str_value, "value")
+            .add_string(str_next, "next")
+            .add_string(str_cn, "java/util/HashMap")
+            .add_string(str_node_cn, "java/util/HashMap$Node")
+            .add_class(1, 1000, 0, str_cn)
+            .add_class(2, 2000, 0, str_node_cn)
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_table, 2)])
+            .add_class_dump(
+                2000,
+                0,
+                id_size * 3,
+                &[(str_key, 2), (str_value, 2), (str_next, 2)],
+            )
+            .add_instance(0x100, 0, 1000, &hm_data)
+            .add_object_array(0x500, 0, 2000, &table);
+
+        for i in 0..n {
+            let node_id = 0x200u64 + i as u64;
+            let key_id = 0x1000u64 + i as u64;
+            let val_id = 0x2000u64 + i as u64;
+            let mut node_data = Vec::new();
+            node_data.extend_from_slice(&key_id.to_be_bytes());
+            node_data.extend_from_slice(&val_id.to_be_bytes());
+            node_data.extend_from_slice(&0u64.to_be_bytes()); // next=0
+            builder = builder.add_instance(node_id, 0, 2000, &node_data);
+        }
+
+        builder.build()
+    }
+
+    // -- Test 5.2: LinkedList skip-index integration --
+
+    #[test]
+    fn linked_list_skip_index_records_checkpoints() {
+        let hfile = hfile_from_bytes(&build_linked_list_n(30));
+        let mut si = SkipIndex::new(10);
+
+        // Page 0: no skip-index needed
+        let p0 = get_page(&hfile, 0x100, 0, 10, Some(&mut si)).unwrap();
+        assert_eq!(p0.entries.len(), 10);
+        assert_eq!(p0.offset, 0);
+
+        // Page 2 (offset=20): walk from head, records
+        // checkpoints at 0, 10, 20
+        let p2 = get_page(&hfile, 0x100, 20, 10, Some(&mut si)).unwrap();
+        assert_eq!(p2.entries.len(), 10);
+        assert_eq!(p2.offset, 20);
+
+        // Verify checkpoints recorded
+        let (idx, _) = si.nearest_before(20).unwrap();
+        assert_eq!(idx, 20);
+
+        let (idx0, _) = si.nearest_before(5).unwrap();
+        assert_eq!(idx0, 0);
+
+        let (idx10, _) = si.nearest_before(15).unwrap();
+        assert_eq!(idx10, 10);
+
+        // Verify content matches full sequential traversal
+        let full = get_page(&hfile, 0x100, 0, 30, None).unwrap();
+        for (i, entry) in p2.entries.iter().enumerate() {
+            assert_eq!(
+                entry.value,
+                full.entries[20 + i].value,
+                "mismatch at index {}",
+                20 + i
+            );
+        }
+    }
+
+    // -- Test 5.3: HashMap skip-index integration --
+
+    #[test]
+    fn hashmap_skip_index_records_checkpoints() {
+        let hfile = hfile_from_bytes(&build_hashmap_n(30, 0.0));
+        let mut si = SkipIndex::new(10);
+
+        let p0 = get_page(&hfile, 0x100, 0, 10, Some(&mut si)).unwrap();
+        assert_eq!(p0.entries.len(), 10);
+
+        let p2 = get_page(&hfile, 0x100, 20, 10, Some(&mut si)).unwrap();
+        assert_eq!(p2.entries.len(), 10);
+        assert_eq!(p2.offset, 20);
+
+        // Verify content matches full traversal
+        let full = get_page(&hfile, 0x100, 0, 30, None).unwrap();
+        for (i, entry) in p2.entries.iter().enumerate() {
+            assert_eq!(
+                entry.key,
+                full.entries[20 + i].key,
+                "key mismatch at index {}",
+                20 + i
+            );
+        }
+    }
+
+    // -- Test 5.6: Empty LinkedList --
+
+    #[test]
+    fn empty_linked_list_with_skip_index() {
+        let hfile = hfile_from_bytes(&build_linked_list_n(0));
+        let mut si = SkipIndex::new(10);
+        let page = get_page(&hfile, 0x100, 0, 10, Some(&mut si)).unwrap();
+        assert_eq!(page.entries.len(), 0);
+        assert_eq!(page.total_count, 0);
+    }
+
+    // -- Test 5.7: Offset beyond known checkpoints --
+
+    #[test]
+    fn offset_beyond_known_checkpoints_falls_back() {
+        let hfile = hfile_from_bytes(&build_linked_list_n(30));
+        let mut si = SkipIndex::new(10);
+
+        // Build partial skip-index (up to entry 20)
+        let _ = get_page(&hfile, 0x100, 20, 10, Some(&mut si));
+
+        // Now request offset=25, which is beyond
+        // checkpoint 20 but below 30 — should resume
+        // from checkpoint 20
+        let page = get_page(&hfile, 0x100, 25, 5, Some(&mut si)).unwrap();
+        assert_eq!(page.entries.len(), 5);
+        assert_eq!(page.offset, 25);
+
+        // Verify content
+        let full = get_page(&hfile, 0x100, 0, 30, None).unwrap();
+        for (i, entry) in page.entries.iter().enumerate() {
+            assert_eq!(
+                entry.value,
+                full.entries[25 + i].value,
+                "mismatch at index {}",
+                25 + i
+            );
+        }
+    }
+
+    // -- Test 5.9: HashMap with 50% empty slots --
+
+    #[test]
+    fn hashmap_50pct_empty_slots() {
+        let hfile = hfile_from_bytes(&build_hashmap_n(30, 0.5));
+        let mut si = SkipIndex::new(10);
+
+        // First pass: build partial index
+        let p2 = get_page(&hfile, 0x100, 20, 10, Some(&mut si)).unwrap();
+        assert_eq!(p2.entries.len(), 10);
+        assert_eq!(p2.offset, 20);
+
+        // Verify resuming from checkpoint returns correct
+        // entries
+        let full = get_page(&hfile, 0x100, 0, 30, None).unwrap();
+        for (i, entry) in p2.entries.iter().enumerate() {
+            assert_eq!(
+                entry.key,
+                full.entries[20 + i].key,
+                "key mismatch at index {}",
+                20 + i
+            );
+        }
+    }
+
+    // -- Test 5.10: Partial skip-index extension --
+
+    #[test]
+    fn partial_skip_index_extension() {
+        let hfile = hfile_from_bytes(&build_linked_list_n(50));
+        let mut si = SkipIndex::new(10);
+
+        // Call 1: page 0 → no skip-index changes
+        // (no checkpoints recorded beyond what the
+        // walk covers)
+        let p0 = get_page(&hfile, 0x100, 0, 10, Some(&mut si)).unwrap();
+        assert_eq!(p0.entries.len(), 10);
+        // Skip-index should have checkpoint at 0 from
+        // the walk
+        assert!(si.nearest_before(0).is_some() || si.nearest_before(1).is_none());
+
+        // Call 2: offset=20 → walk from head (or
+        // checkpoint), records checkpoints at 0,10,20
+        let p2 = get_page(&hfile, 0x100, 20, 10, Some(&mut si)).unwrap();
+        assert_eq!(p2.entries.len(), 10);
+        assert!(!si.is_complete());
+
+        // Verify 3 checkpoints (0, 10, 20)
+        assert!(si.nearest_before(5).is_some());
+        assert!(si.nearest_before(15).is_some());
+        assert!(si.nearest_before(25).is_some());
+
+        // Call 3: offset=40 → resume from checkpoint 20,
+        // records 30, 40
+        let p4 = get_page(&hfile, 0x100, 40, 10, Some(&mut si)).unwrap();
+        assert_eq!(p4.entries.len(), 10);
+        assert_eq!(p4.offset, 40);
+
+        // Verify 5 checkpoints (0, 10, 20, 30, 40)
+        let (idx, _) = si.nearest_before(35).unwrap();
+        assert_eq!(idx, 30);
+        let (idx, _) = si.nearest_before(45).unwrap();
+        assert_eq!(idx, 40);
+
+        // Call 4: offset=40 again → reaches end,
+        // mark_complete
+        let p4b = get_page(&hfile, 0x100, 40, 10, Some(&mut si)).unwrap();
+        assert_eq!(p4b.entries.len(), 10);
+        assert!(si.is_complete());
+
+        // Verify content matches full traversal
+        let full = get_page(&hfile, 0x100, 0, 50, None).unwrap();
+        for (i, entry) in p4.entries.iter().enumerate() {
+            assert_eq!(
+                entry.value,
+                full.entries[40 + i].value,
+                "mismatch at index {}",
+                40 + i
+            );
+        }
+    }
+
+    // -- Test 5.8: LinkedList with cycle --
+
+    /// Builds a LinkedList with `n` nodes where node at
+    /// `cycle_from` links back to node at `cycle_to`.
+    fn build_linked_list_with_cycle(n: usize, cycle_from: usize, cycle_to: usize) -> Vec<u8> {
+        let id_size: u32 = 8;
+        let str_size = 10u64;
+        let str_first = 11u64;
+        let str_last = 12u64;
+        let str_item = 13u64;
+        let str_next = 14u64;
+        let str_prev = 15u64;
+        let str_cn = 16u64;
+        let str_node_cn = 17u64;
+
+        let mut ll_data = Vec::new();
+        ll_data.extend_from_slice(&(n as i32).to_be_bytes());
+        ll_data.extend_from_slice(&0x200u64.to_be_bytes()); // first
+        ll_data.extend_from_slice(&(0x200u64 + (n - 1) as u64).to_be_bytes()); // last
+
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_string(str_size, "size")
+            .add_string(str_first, "first")
+            .add_string(str_last, "last")
+            .add_string(str_item, "item")
+            .add_string(str_next, "next")
+            .add_string(str_prev, "prev")
+            .add_string(str_cn, "java/util/LinkedList")
+            .add_string(str_node_cn, "java/util/LinkedList$Node")
+            .add_class(1, 1000, 0, str_cn)
+            .add_class(2, 2000, 0, str_node_cn)
+            .add_class_dump(
+                1000,
+                0,
+                4 + id_size * 2,
+                &[(str_size, 10), (str_first, 2), (str_last, 2)],
+            )
+            .add_class_dump(
+                2000,
+                0,
+                id_size * 3,
+                &[(str_item, 2), (str_next, 2), (str_prev, 2)],
+            )
+            .add_instance(0x100, 0, 1000, &ll_data);
+
+        for i in 0..n {
+            let node_id = 0x200u64 + i as u64;
+            let item_id = 0x10u64 + i as u64;
+            let next_id = if i == cycle_from {
+                // Cycle: link back to cycle_to
+                0x200u64 + cycle_to as u64
+            } else if i + 1 < n {
+                0x200u64 + (i + 1) as u64
+            } else {
+                0u64
+            };
+            let mut node_data = Vec::new();
+            node_data.extend_from_slice(&item_id.to_be_bytes());
+            node_data.extend_from_slice(&next_id.to_be_bytes());
+            node_data.extend_from_slice(&0u64.to_be_bytes()); // prev
+            builder = builder.add_instance(node_id, 0, 2000, &node_data);
+        }
+
+        builder.build()
+    }
+
+    #[test]
+    fn linked_list_cycle_full_traversal() {
+        // 15 nodes, cycle: node 12 → node 5
+        let hfile = hfile_from_bytes(&build_linked_list_with_cycle(15, 12, 5));
+        let page = get_page(&hfile, 0x100, 0, 100, None).unwrap();
+        // visited detects cycle at node 5 revisit
+        // → stops at 13 entries (0..12 inclusive)
+        assert!(page.entries.len() <= 15);
+        assert!(page.entries.len() >= 13);
+    }
+
+    #[test]
+    fn linked_list_cycle_resumed_walk_max_iter_guard() {
+        // 15 nodes, cycle: node 12 → node 5
+        let hfile = hfile_from_bytes(&build_linked_list_with_cycle(15, 12, 5));
+        let mut si = SkipIndex::new(10);
+
+        // First walk: offset=0, limit=10 → records
+        // checkpoints at 0, 10
+        let p0 = get_page(&hfile, 0x100, 0, 10, Some(&mut si)).unwrap();
+        assert_eq!(p0.entries.len(), 10);
+
+        // Resumed walk from checkpoint 10:
+        // max_iter = 15 - 10 = 5
+        // Walk: node 10 → 11 → 12 → 5(cycle) → 6 → …
+        // max_iter guard breaks after 5 iterations
+        let p1 = get_page(&hfile, 0x100, 10, 10, Some(&mut si)).unwrap();
+        // Should get at most 5 entries (max_iter guard)
+        assert!(
+            p1.entries.len() <= 5,
+            "expected ≤ 5 entries due to max_iter guard, \
+             got {}",
+            p1.entries.len()
+        );
+    }
+
+    // -- Test 6.5: Skip-index activation smoke test --
+
+    #[test]
+    fn skip_index_activation_smoke_test() {
+        let hfile = hfile_from_bytes(&build_linked_list_n(30));
+        let mut si = SkipIndex::new(10);
+
+        // Build skip-index via offset=20
+        let _ = get_page(&hfile, 0x100, 20, 10, Some(&mut si));
+
+        // Verify the skip-index was actually populated
+        let result = si.nearest_before(20);
+        assert!(result.is_some(), "skip-index should have a checkpoint ≤ 20");
+        let (idx, _) = result.unwrap();
+        assert_eq!(idx, 20, "nearest checkpoint before 20 should be 20");
     }
 }
