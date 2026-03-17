@@ -22,6 +22,22 @@ use crate::indexer::{first_pass::run_first_pass, precise::PreciseIndex, segment:
 use crate::tags::HeapSubTag;
 use crate::{HprofError, HprofHeader, RawInstance, open_readonly, parse_header, read_id};
 
+/// Metadata for an `OBJECT_ARRAY_DUMP` sub-record.
+///
+/// Contains the array header without deserializing
+/// elements. Use [`HprofFile::read_object_array_element`]
+/// for O(1) positional access.
+#[derive(Debug, Clone)]
+pub struct ObjectArrayMeta {
+    /// Class ID of the array's element type.
+    pub class_id: u64,
+    /// Number of elements in the array.
+    pub num_elements: u32,
+    /// Byte offset (relative to records section) of the
+    /// first element in the array.
+    pub elements_offset: u64,
+}
+
 /// Result of a batch instance resolution.
 ///
 /// Contains both the parsed instances and their byte
@@ -214,6 +230,21 @@ impl HprofFile {
     /// Returns `None` if not found (absent or filter
     /// false-positive).
     pub fn find_object_array(&self, array_id: u64) -> Option<(u64, Vec<u64>)> {
+        let meta = self.find_object_array_meta(array_id)?;
+        let n = meta.num_elements as usize;
+        let mut elems = Vec::with_capacity(n);
+        for i in 0..meta.num_elements {
+            elems.push(self.read_object_array_element(&meta, i)?);
+        }
+        Some((meta.class_id, elems))
+    }
+
+    /// Returns metadata for an `OBJECT_ARRAY_DUMP` without
+    /// deserializing elements. O(1) element access via
+    /// [`read_object_array_element`].
+    ///
+    /// Returns `None` if not found.
+    pub fn find_object_array_meta(&self, array_id: u64) -> Option<ObjectArrayMeta> {
         use crate::indexer::segment::SEGMENT_SIZE;
 
         let records = self.records_bytes();
@@ -249,12 +280,35 @@ impl HprofFile {
                 continue;
             }
 
-            if let Some(result) = scan_for_object_array(&records[start..end], array_id, id_size) {
+            if let Some(result) =
+                scan_for_object_array_meta(&records[start..end], array_id, id_size, r.payload_start)
+            {
                 return Some(result);
             }
         }
 
         None
+    }
+
+    /// Reads a single element from an `OBJECT_ARRAY_DUMP`
+    /// at `index` via O(1) arithmetic.
+    ///
+    /// Returns `None` if `index >= meta.num_elements` or
+    /// the computed offset is out of bounds.
+    pub fn read_object_array_element(&self, meta: &ObjectArrayMeta, index: u32) -> Option<u64> {
+        if index >= meta.num_elements {
+            return None;
+        }
+        let id_sz = self.header.id_size as usize;
+        let byte_offset = (index as usize)
+            .checked_mul(id_sz)?
+            .checked_add(meta.elements_offset as usize)?;
+        let records = self.records_bytes();
+        if byte_offset + id_sz > records.len() {
+            return None;
+        }
+        let mut cursor = std::io::Cursor::new(&records[byte_offset..byte_offset + id_sz]);
+        read_id(&mut cursor, self.header.id_size).ok()
     }
 
     /// Reads an `INSTANCE_DUMP` sub-record at a known byte offset.
@@ -435,7 +489,10 @@ impl HprofFile {
 
         // Phase 2 — Scan each segment group in parallel.
         #[cfg(feature = "dev-profiling")]
-        tracing::debug!(seg_count = seg_targets.len(), "batch_find_instances_parallel segments");
+        tracing::debug!(
+            seg_count = seg_targets.len(),
+            "batch_find_instances_parallel segments"
+        );
         let per_seg: Vec<_> = seg_targets
             .par_iter()
             .map(|(&seg_idx, targets)| {
@@ -670,7 +727,12 @@ fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u8,
     }
 }
 
-fn scan_for_object_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u64, Vec<u64>)> {
+fn scan_for_object_array_meta(
+    data: &[u8],
+    target_id: u64,
+    id_size: u32,
+    data_base_offset: u64,
+) -> Option<ObjectArrayMeta> {
     use std::io::Cursor;
 
     let mut cursor = Cursor::new(data);
@@ -689,28 +751,25 @@ fn scan_for_object_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u
                 Err(_) => return None,
             };
             let num_elements = match cursor.read_u32::<BigEndian>() {
-                Ok(n) => n as usize,
+                Ok(n) => n,
                 Err(_) => return None,
             };
             let class_id = match read_id(&mut cursor, id_size) {
                 Ok(id) => id,
                 Err(_) => return None,
             };
-            let byte_count = num_elements.checked_mul(id_size as usize)?;
+            let byte_count = (num_elements as usize).checked_mul(id_size as usize)?;
             let pos = cursor.position() as usize;
-            if pos + byte_count > data.len() {
+            let elements_offset = data_base_offset + pos as u64;
+            if elements_offset as usize + byte_count > data_base_offset as usize + data.len() {
                 return None;
             }
             if arr_id == target_id {
-                let mut elements = Vec::with_capacity(num_elements);
-                let mut elem_cursor = Cursor::new(&data[pos..pos + byte_count]);
-                for _ in 0..num_elements {
-                    match read_id(&mut elem_cursor, id_size) {
-                        Ok(id) => elements.push(id),
-                        Err(_) => return None,
-                    }
-                }
-                return Some((class_id, elements));
+                return Some(ObjectArrayMeta {
+                    class_id,
+                    num_elements,
+                    elements_offset,
+                });
             }
             cursor.set_position((pos + byte_count) as u64);
         } else if !skip_sub_record(&mut cursor, sub_tag, id_size) {
@@ -1396,5 +1455,117 @@ mod builder_tests {
             .expect("must read prim array");
         assert_eq!(elem_type, 5);
         assert_eq!(result_data, elem_data);
+    }
+
+    // ── Story 11.4: ObjectArrayMeta + O(1) reads ──
+
+    fn hfile_from_bytes(bytes: &[u8]) -> HprofFile {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(bytes).unwrap();
+        tmp.flush().unwrap();
+        HprofFile::from_path(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn find_object_array_meta_id_size_8() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_object_array(0xA, 0, 0xCC, &[0x1, 0x2, 0x3])
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+
+        let meta = hfile.find_object_array_meta(0xA).expect("must find meta");
+        assert_eq!(meta.class_id, 0xCC);
+        assert_eq!(meta.num_elements, 3);
+
+        assert_eq!(hfile.read_object_array_element(&meta, 0), Some(0x1));
+        assert_eq!(hfile.read_object_array_element(&meta, 1), Some(0x2));
+        assert_eq!(hfile.read_object_array_element(&meta, 2), Some(0x3));
+        assert_eq!(
+            hfile.read_object_array_element(&meta, 3),
+            None,
+            "out of bounds"
+        );
+
+        assert!(hfile.find_object_array_meta(0xBEEF).is_none(), "unknown ID");
+    }
+
+    #[test]
+    fn find_object_array_meta_id_size_4() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 4)
+            .add_object_array(0xA, 0, 0xCC, &[0x1, 0x2, 0x3])
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+
+        let meta = hfile.find_object_array_meta(0xA).expect("must find meta");
+        assert_eq!(meta.class_id, 0xCC);
+        assert_eq!(meta.num_elements, 3);
+
+        assert_eq!(hfile.read_object_array_element(&meta, 0), Some(0x1));
+        assert_eq!(hfile.read_object_array_element(&meta, 2), Some(0x3));
+        assert_eq!(hfile.read_object_array_element(&meta, 3), None);
+    }
+
+    #[test]
+    fn find_object_array_meta_empty_array() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_object_array(0xA, 0, 0xCC, &[])
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+
+        let meta = hfile.find_object_array_meta(0xA).expect("must find meta");
+        assert_eq!(meta.num_elements, 0);
+        assert_eq!(hfile.read_object_array_element(&meta, 0), None);
+    }
+
+    #[test]
+    fn find_object_array_meta_skips_preceding_sub_records() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xFF, 0, 100, &[0xDE, 0xAD])
+            .add_object_array(0xA, 0, 0xCC, &[0x42])
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+
+        let meta = hfile.find_object_array_meta(0xA).expect("must find meta");
+        assert_eq!(meta.num_elements, 1);
+        assert_eq!(hfile.read_object_array_element(&meta, 0), Some(0x42));
+    }
+
+    #[test]
+    fn find_object_array_meta_truncated_returns_none() {
+        // Build a valid 3-element array, then truncate
+        // so num_elements claims 3 but only 1 element
+        // fits in the payload.
+        let id_size = 8u32;
+        let mut payload = Vec::new();
+        payload.push(0x22u8); // OBJECT_ARRAY_DUMP
+        payload.extend_from_slice(&0xAu64.to_be_bytes()); // array_id
+        payload.extend_from_slice(&0u32.to_be_bytes()); // stack_serial
+        payload.extend_from_slice(&3u32.to_be_bytes()); // num_elements = 3
+        payload.extend_from_slice(&0xCCu64.to_be_bytes()); // class_id
+        // Only 1 element (8 bytes) instead of 3 (24)
+        payload.extend_from_slice(&0x1u64.to_be_bytes());
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_raw_heap_segment(&payload)
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+
+        assert!(
+            hfile.find_object_array_meta(0xA).is_none(),
+            "truncated array must return None"
+        );
+    }
+
+    #[test]
+    fn find_object_array_composition_matches_original() {
+        let elements = vec![0x10u64, 0x20, 0x30];
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_object_array(0xA, 0, 100, &elements)
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+
+        let (class_id, elems) = hfile.find_object_array(0xA).expect("composition must work");
+        assert_eq!(class_id, 100);
+        assert_eq!(elems, elements);
     }
 }

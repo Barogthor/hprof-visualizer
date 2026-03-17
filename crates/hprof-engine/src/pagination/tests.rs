@@ -685,19 +685,14 @@ mod map_extractors {
         ));
     }
 
-    // ── Task 3.4: batch pagination integration ──
-
     /// Verifies that `get_page` on an Object[] with
-    /// multiple instance references batch-resolves them
-    /// and caches offsets.
+    /// multiple instance references resolves them via
+    /// O(1) positional reads (Story 11.4).
     #[test]
-    fn get_page_object_array_batch_resolves_instances() {
+    fn get_page_object_array_resolves_instance_refs() {
         let id_size: u32 = 8;
         let str_cn = 50u64;
 
-        // 5 instances referenced by an Object[]
-        let mut instance_data = Vec::new();
-        instance_data.extend_from_slice(&0u64.to_be_bytes());
         let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
             .add_string(str_cn, "java/lang/Object")
             .add_class(1, 1000, 0, str_cn)
@@ -712,15 +707,10 @@ mod map_extractors {
 
         let hfile = hfile_from_bytes(&bytes);
 
-        // Before: no offsets cached for these IDs.
-        assert!(!hfile.index.instance_offsets.contains(&0x10));
-
         let page = get_page(&hfile, 0xAA, 0, 5).unwrap();
         assert_eq!(page.total_count, 5);
         assert_eq!(page.entries.len(), 5);
 
-        // All 5 entries must be resolved as ObjectRef
-        // (not Null).
         for (i, entry) in page.entries.iter().enumerate() {
             assert!(
                 matches!(entry.value, FieldValue::ObjectRef { .. }),
@@ -728,15 +718,81 @@ mod map_extractors {
                 entry.value
             );
         }
+    }
+}
 
-        // After: offsets cached by batch insert.
-        assert!(
-            hfile.index.instance_offsets.contains(&0x10),
-            "0x10 must be cached after batch"
-        );
-        assert!(
-            hfile.index.instance_offsets.contains(&0x50),
-            "0x50 must be cached after batch"
-        );
+/// Story 11.4: O(1) object array pagination tests.
+mod object_array_pagination {
+    use super::*;
+
+    #[test]
+    fn try_object_array_mid_page() {
+        let elements: Vec<u64> = (1..=10).collect();
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_object_array(0xA, 0, 100, &elements)
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+
+        let page = get_page(&hfile, 0xA, 5, 3).unwrap();
+        assert_eq!(page.entries.len(), 3);
+        assert_eq!(page.offset, 5);
+        assert_eq!(page.total_count, 10);
+        assert!(page.has_more);
+    }
+
+    #[test]
+    fn try_object_array_beyond_end() {
+        let elements: Vec<u64> = (1..=10).collect();
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_object_array(0xA, 0, 100, &elements)
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+
+        let page = get_page(&hfile, 0xA, 8, 100).unwrap();
+        assert_eq!(page.entries.len(), 2);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn empty_object_array_paginate() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_object_array(0xA, 0, 100, &[])
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+
+        let page = get_page(&hfile, 0xA, 0, 100).unwrap();
+        assert_eq!(page.entries.len(), 0);
+        assert_eq!(page.total_count, 0);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn arraylist_size_less_than_capacity() {
+        let id_size: u32 = 8;
+        let str_size = 10u64;
+        let str_ed = 11u64;
+        let str_cn = 12u64;
+
+        // Instance: size(Int=3) + elementData(Obj=0x500)
+        let mut data = Vec::new();
+        data.extend_from_slice(&3i32.to_be_bytes());
+        data.extend_from_slice(&0x500u64.to_be_bytes());
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_string(str_size, "size")
+            .add_string(str_ed, "elementData")
+            .add_string(str_cn, "java/util/ArrayList")
+            .add_class(1, 1000, 0, str_cn)
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_ed, 2)])
+            .add_instance(0x100, 0, 1000, &data)
+            // Backing array: 10 slots, only 3 used
+            .add_object_array(0x500, 0, 100, &[0x10, 0x20, 0x30, 0, 0, 0, 0, 0, 0, 0])
+            .build();
+
+        let hfile = hfile_from_bytes(&bytes);
+        let page = get_page(&hfile, 0x100, 0, 100).unwrap();
+        assert_eq!(page.total_count, 3);
+        assert_eq!(page.entries.len(), 3);
+        assert!(!page.has_more);
     }
 }

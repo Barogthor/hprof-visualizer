@@ -154,7 +154,7 @@ development_status:
   11-1-loading-indicator-slow-operations: done
   11-2-batch-scan-by-segment: done
   11-3-parallel-eager-item-resolution: review
-  11-4-skip-index-object-array: ready-for-dev
+  11-4-skip-index-object-array: review
   11-5-skip-index-variable-size: ready-for-dev
   11-6-investigate-non-array-item-slowness: backlog
 

@@ -540,8 +540,8 @@ impl Engine {
                 self.hfile.records_bytes(),
             );
             (class_name, entry_count, inline_value)
-        } else if let Some((_class_id, elems)) = self.hfile.find_object_array(object_id) {
-            ("Object[]".to_string(), Some(elems.len() as u64), None)
+        } else if let Some(meta) = self.hfile.find_object_array_meta(object_id) {
+            ("Object[]".to_string(), Some(meta.num_elements as u64), None)
         } else if let Some((elem_type, bytes)) = self.hfile.find_prim_array(object_id) {
             let type_name = prim_array_type_name(elem_type);
             let elem_size = field_byte_size(elem_type, 0);
@@ -746,9 +746,8 @@ impl NavigationEngine for Engine {
                                 self.hfile.records_bytes(),
                             );
                             (cn, ec)
-                        } else if let Some((_cid, elems)) = self.hfile.find_object_array(object_id)
-                        {
-                            ("Object[]".to_string(), Some(elems.len() as u64))
+                        } else if let Some(meta) = self.hfile.find_object_array_meta(object_id) {
+                            ("Object[]".to_string(), Some(meta.num_elements as u64))
                         } else if let Some((etype, bytes)) = self.hfile.find_prim_array(object_id) {
                             let type_name = prim_array_type_name(etype).to_string();
                             let esz = field_byte_size(etype, self.hfile.header.id_size);

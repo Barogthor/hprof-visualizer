@@ -4,7 +4,7 @@
 //! object by identifying its concrete type and delegating
 //! to the appropriate extractor.
 
-use hprof_parser::{HprofFile, RawInstance};
+use hprof_parser::{HprofFile, ObjectArrayMeta, RawInstance};
 
 use crate::engine::{CollectionPage, EntryInfo, FieldValue};
 use crate::engine_impl::Engine;
@@ -99,15 +99,17 @@ fn match_extractor(
 }
 
 /// Extracts a page from an `ObjectArrayDump` directly.
+///
+/// Uses O(1) positional reads via [`ObjectArrayMeta`]
+/// instead of deserializing all elements.
 fn try_object_array(
     hfile: &HprofFile,
     array_id: u64,
     offset: usize,
     limit: usize,
 ) -> Option<CollectionPage> {
-    let (_class_id, elements) = hfile.find_object_array(array_id)?;
-    let total = elements.len() as u64;
-    paginate_id_slice(&elements, total, offset, limit, hfile)
+    let meta = hfile.find_object_array_meta(array_id)?;
+    paginate_object_array(&meta, meta.num_elements as u64, offset, limit, hfile)
 }
 
 /// Extracts a page from a `PrimArrayDump` directly.
@@ -185,11 +187,12 @@ fn extract_array_list(
 
     let total = size?;
     let arr_id = element_data_id?;
-    let (_class_id, elements) = hfile.find_object_array(arr_id)?;
-
-    // Pass `total` (= size field) as the logical bound — paginate_id_slice
-    // limits entries to [0, total), so capacity-padding slots are ignored.
-    paginate_id_slice(&elements, total, offset, limit, hfile)
+    let meta = hfile.find_object_array_meta(arr_id)?;
+    // Clamp total to the actual backing array capacity
+    // to guard against corrupt dumps where size >
+    // num_elements.
+    let effective_total = total.min(meta.num_elements as u64);
+    paginate_object_array(&meta, effective_total, offset, limit, hfile)
 }
 
 /// Walks `table` Node[] for HashMap / ConcurrentHashMap.
@@ -421,87 +424,39 @@ fn extract_linked_list(
 
 // --- Helpers ---
 
-/// Paginates a slice of object IDs, resolving each
-/// to a `FieldValue`.
+/// Paginates an object array via O(1) positional reads.
 ///
-/// Uses a 2-level cache strategy for INSTANCE_DUMP IDs:
-/// - L1: `instance_offsets` (OffsetCache, O(1) offset)
-/// - L2: `batch_find_instances` (segment scan for
-///   uncached IDs, populates L1 for future pages)
-/// - Fallback: single-ID `id_to_field_value` for IDs
-///   not found in batch (arrays, etc.)
-///
-/// NOTE(11.x): L0 object_cache (LRU parsed FieldValue)
-/// integration deferred — `ObjectCache` stores
-/// `Vec<FieldInfo>`, not `FieldValue`; a separate
-/// FieldValue cache layer would be needed.
-fn paginate_id_slice(
-    ids: &[u64],
+/// `total` is the logical element count. In
+/// `try_object_array` it equals `meta.num_elements`; in
+/// `extract_array_list` it comes from the ArrayList `size`
+/// field and may be less than `meta.num_elements`.
+fn paginate_object_array(
+    meta: &ObjectArrayMeta,
     total: u64,
     offset: usize,
     limit: usize,
     hfile: &HprofFile,
 ) -> Option<CollectionPage> {
-    let clamped_offset = (offset as u64).min(total) as usize;
-    let remaining = (total - clamped_offset as u64) as usize;
-    let actual_limit = limit.min(remaining);
+    let clamped = (offset as u64).min(total) as usize;
+    let remaining = (total - clamped as u64) as usize;
+    let actual = limit.min(remaining);
 
-    // Step 1: Collect page IDs.
-    let page_ids: Vec<u64> = (0..actual_limit)
-        .filter_map(|i| {
-            let idx = clamped_offset + i;
-            if idx < ids.len() && ids[idx] != 0 {
-                Some(ids[idx])
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Step 2: Partition — find IDs not yet in
-    // instance_offsets (truly uncached).
-    let uncached: Vec<u64> = page_ids
-        .iter()
-        .copied()
-        .filter(|id| !hfile.index.instance_offsets.contains(id))
-        .collect();
-
-    // Step 3: Batch-resolve uncached IDs.
-    if !uncached.is_empty() {
-        let batch_result = hfile.batch_find_instances(&uncached);
-
-        // Step 4: Insert discovered offsets for future
-        // pages.
-        hfile
-            .index
-            .instance_offsets
-            .insert_batch(&batch_result.offsets);
-
-        let instance_misses = uncached
-            .iter()
-            .filter(|id| !batch_result.instances.contains_key(id))
-            .count();
-        if instance_misses > 0 {
-            dbg_log!(
-                "paginate_id_slice: {} IDs fell back \
-                 to single-ID path",
-                instance_misses
-            );
-        }
-    }
-
-    // Step 5: Resolve all IDs (batch-found now hit
-    // O(1) offset path, arrays use existing paths).
-    let mut entries = Vec::with_capacity(actual_limit);
-    for i in 0..actual_limit {
-        let idx = clamped_offset + i;
-        let value = if idx < ids.len() {
-            id_to_field_value(ids[idx], hfile)
-        } else {
-            FieldValue::Null
-        };
+    let mut entries = Vec::with_capacity(actual);
+    for i in 0..actual {
+        let idx = (clamped + i) as u32;
+        let value = hfile
+            .read_object_array_element(meta, idx)
+            .map(|id| id_to_field_value(id, hfile))
+            .unwrap_or_else(|| {
+                dbg_log!(
+                    "read_object_array_element \
+                     returned None at idx {}",
+                    idx
+                );
+                FieldValue::Null
+            });
         entries.push(EntryInfo {
-            index: idx,
+            index: clamped + i,
             key: None,
             value,
         });
@@ -510,8 +465,8 @@ fn paginate_id_slice(
     Some(CollectionPage {
         entries,
         total_count: total,
-        offset: clamped_offset,
-        has_more: (clamped_offset + actual_limit) < total as usize,
+        offset: clamped,
+        has_more: (clamped + actual) < total as usize,
     })
 }
 
@@ -573,12 +528,12 @@ fn id_to_field_value(id: u64, hfile: &HprofFile) -> FieldValue {
             inline_value,
         };
     }
-    // Try Object[] array.
-    if let Some((_cid, elems)) = hfile.find_object_array(id) {
+    // Try Object[] array (metadata only — no element read).
+    if let Some(meta) = hfile.find_object_array_meta(id) {
         return FieldValue::ObjectRef {
             id,
             class_name: "Object[]".to_string(),
-            entry_count: Some(elems.len() as u64),
+            entry_count: Some(meta.num_elements as u64),
             inline_value: None,
         };
     }
