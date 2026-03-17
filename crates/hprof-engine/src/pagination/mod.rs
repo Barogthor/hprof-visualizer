@@ -445,21 +445,29 @@ fn paginate_object_array(
     let remaining = (total - clamped as u64) as usize;
     let actual = limit.min(remaining);
 
-    // Step 1: Read page IDs via O(1) positional access.
-    let page_ids: Vec<u64> = (0..actual)
-        .filter_map(|i| {
+    // Step 1: Read all page IDs once via O(1) positional access.
+    // id=0 represents a null reference; stored at position i for
+    // index preservation. Failed reads (should not occur within
+    // bounds) also map to 0.
+    let element_ids: Vec<u64> = (0..actual)
+        .map(|i| {
             let idx = (clamped + i) as u32;
-            hfile
-                .read_object_array_element(meta, idx)
-                .filter(|&id| id != 0)
+            hfile.read_object_array_element(meta, idx).unwrap_or_else(|| {
+                dbg_log!(
+                    "read_object_array_element \
+                     returned None at idx {}",
+                    idx
+                );
+                0
+            })
         })
         .collect();
 
-    // Step 2: Batch pre-resolve uncached instance IDs.
-    let uncached: Vec<u64> = page_ids
+    // Step 2: Batch pre-resolve uncached non-null instance IDs.
+    let uncached: Vec<u64> = element_ids
         .iter()
         .copied()
-        .filter(|id| !hfile.index.instance_offsets.contains(id))
+        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
         .collect();
 
     if !uncached.is_empty() {
@@ -467,28 +475,17 @@ fn paginate_object_array(
         hfile.index.instance_offsets.insert_batch(&batch.offsets);
     }
 
-    // Step 3: Resolve all elements (batch-found now
-    // hit O(1) offset path).
-    let mut entries = Vec::with_capacity(actual);
-    for i in 0..actual {
-        let idx = (clamped + i) as u32;
-        let value = hfile
-            .read_object_array_element(meta, idx)
-            .map(|id| id_to_field_value(id, hfile))
-            .unwrap_or_else(|| {
-                dbg_log!(
-                    "read_object_array_element \
-                     returned None at idx {}",
-                    idx
-                );
-                FieldValue::Null
-            });
-        entries.push(EntryInfo {
+    // Step 3: Resolve all elements (batch-found IDs now
+    // hit O(1) offset path; no second mmap read needed).
+    let entries: Vec<EntryInfo> = element_ids
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| EntryInfo {
             index: clamped + i,
             key: None,
-            value,
-        });
-    }
+            value: id_to_field_value(id, hfile),
+        })
+        .collect();
 
     Some(CollectionPage {
         entries,
