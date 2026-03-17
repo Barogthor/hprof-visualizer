@@ -2122,3 +2122,91 @@ fn budget_e2e_through_engine() {
         "warning counts must match"
     );
 }
+
+// -- Story 11.5 Task 5.4: Lazy skip-index creation via Engine --
+
+#[test]
+fn skip_index_lazy_creation_via_engine() {
+    use hprof_parser::HprofTestBuilder;
+    use crate::engine::NavigationEngine;
+
+    let id_size: u32 = 8;
+    let str_size = 10u64;
+    let str_first = 11u64;
+    let str_last = 12u64;
+    let str_item = 13u64;
+    let str_next = 14u64;
+    let str_prev = 15u64;
+    let str_cn = 16u64;
+    let str_node_cn = 17u64;
+
+    let n = 20usize;
+    let first_node = 0x200u64;
+    let last_node = 0x200u64 + (n as u64 - 1);
+
+    let mut ll_data = Vec::new();
+    ll_data.extend_from_slice(&(n as i32).to_be_bytes());
+    ll_data.extend_from_slice(&first_node.to_be_bytes());
+    ll_data.extend_from_slice(&last_node.to_be_bytes());
+
+    let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+        .add_string(str_size, "size")
+        .add_string(str_first, "first")
+        .add_string(str_last, "last")
+        .add_string(str_item, "item")
+        .add_string(str_next, "next")
+        .add_string(str_prev, "prev")
+        .add_string(str_cn, "java/util/LinkedList")
+        .add_string(str_node_cn, "java/util/LinkedList$Node")
+        .add_class(1, 1000, 0, str_cn)
+        .add_class(2, 2000, 0, str_node_cn)
+        .add_class_dump(
+            1000,
+            0,
+            4 + id_size * 2,
+            &[(str_size, 10), (str_first, 2), (str_last, 2)],
+        )
+        .add_class_dump(
+            2000,
+            0,
+            id_size * 3,
+            &[(str_item, 2), (str_next, 2), (str_prev, 2)],
+        )
+        .add_instance(0x100, 0, 1000, &ll_data);
+
+    for i in 0..n {
+        let node_id = 0x200u64 + i as u64;
+        let item_id = 0x10u64 + i as u64;
+        let next_id = if i + 1 < n { 0x200u64 + (i + 1) as u64 } else { 0 };
+        let prev_id = if i > 0 { 0x200u64 + (i - 1) as u64 } else { 0 };
+        let mut node_data = Vec::new();
+        node_data.extend_from_slice(&item_id.to_be_bytes());
+        node_data.extend_from_slice(&next_id.to_be_bytes());
+        node_data.extend_from_slice(&prev_id.to_be_bytes());
+        builder = builder.add_instance(node_id, 0, 2000, &node_data);
+    }
+
+    let bytes = builder.build();
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    tmp.write_all(&bytes).unwrap();
+    tmp.flush().unwrap();
+
+    let config = EngineConfig::default();
+    let engine = Engine::from_file(tmp.path(), &config).unwrap();
+
+    // Page 0: no skip-index must be created (lazy — AC#7)
+    let _ = engine.get_page(0x100, 0, 10);
+    assert_eq!(
+        engine.skip_index_count(),
+        0,
+        "page 0 must not allocate a skip-index"
+    );
+
+    // Page 1 (offset=10): skip-index lazily created
+    let _ = engine.get_page(0x100, 10, 10);
+    assert_eq!(
+        engine.skip_index_count(),
+        1,
+        "first offset>0 access must allocate exactly one skip-index"
+    );
+}

@@ -380,7 +380,13 @@ fn extract_hash_map(
         }
     }
 
-    paginate_kv_entries(&all_entries, total, adjusted_offset, limit)
+    if all_entries.len() < target_count
+        && let Some(si) = skip_index
+    {
+        si.mark_complete();
+    }
+
+    paginate_kv_entries(&all_entries, total, adjusted_offset, limit, checkpoint_index)
 }
 
 /// Full walk fallback for HashMap when checkpoint resume
@@ -455,7 +461,13 @@ fn extract_hash_map_full(
         }
     }
 
-    paginate_kv_entries(&all_entries, total, offset, limit)
+    if all_entries.len() < target_count
+        && let Some(si) = skip_index
+    {
+        si.mark_complete();
+    }
+
+    paginate_kv_entries(&all_entries, total, offset, limit, 0)
 }
 
 /// HashSet delegates to its backing HashMap `map` field.
@@ -715,11 +727,15 @@ fn paginate_object_array(
 }
 
 /// Paginates key-value pairs collected from hash maps.
+///
+/// `base_index` is the logical index of the first element in `all`
+/// (non-zero when resuming from a skip-index checkpoint).
 fn paginate_kv_entries(
     all: &[(FieldValue, FieldValue)],
     total: u64,
     offset: usize,
     limit: usize,
+    base_index: usize,
 ) -> Option<CollectionPage> {
     let clamped_offset = offset.min(all.len());
     let remaining = all.len() - clamped_offset;
@@ -729,17 +745,17 @@ fn paginate_kv_entries(
         .iter()
         .enumerate()
         .map(|(i, (k, v))| EntryInfo {
-            index: clamped_offset + i,
+            index: base_index + clamped_offset + i,
             key: Some(k.clone()),
             value: v.clone(),
         })
         .collect();
-    let actual_end = clamped_offset + entries.len();
+    let actual_end = base_index + clamped_offset + entries.len();
 
     Some(CollectionPage {
         entries,
         total_count: total,
-        offset: clamped_offset,
+        offset: base_index + clamped_offset,
         has_more: (actual_end as u64) < total,
     })
 }

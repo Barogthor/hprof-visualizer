@@ -1083,9 +1083,11 @@ mod skip_index_integration {
         // walk covers)
         let p0 = get_page(&hfile, 0x100, 0, 10, Some(&mut si)).unwrap();
         assert_eq!(p0.entries.len(), 10);
-        // Skip-index should have checkpoint at 0 from
-        // the walk
-        assert!(si.nearest_before(0).is_some() || si.nearest_before(1).is_none());
+        // Skip-index must have checkpoint at 0 from the walk
+        assert!(
+            si.nearest_before(0).is_some(),
+            "checkpoint 0 must be recorded after page 0 walk"
+        );
 
         // Call 2: offset=20 → walk from head (or
         // checkpoint), records checkpoints at 0,10,20

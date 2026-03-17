@@ -1,6 +1,6 @@
 # Story 11.5: Skip-Index for Variable-Size Sequences
 
-Status: review
+Status: done
 
 ## Story
 
@@ -921,3 +921,4 @@ N/A
 
 ### Change Log
 - 2026-03-17: Implemented Story 11.5 — skip-index for variable-size collection pagination (LinkedList, HashMap, HashSet). All ACs satisfied, 16 new tests added.
+- 2026-03-17: Code review fixes — H1: added missing lazy-creation test 5.4 in engine_impl/tests.rs + removed dead_code attr; H2: fixed HashMap offset/index bug in paginate_kv_entries (base_index param); M2: fixed vacuously-true assertion in partial_skip_index_extension; M3: mark_complete() added to extract_hash_map and extract_hash_map_full.

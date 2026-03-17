@@ -911,7 +911,6 @@ impl NavigationEngine for Engine {
 
 #[cfg(test)]
 impl Engine {
-    #[allow(dead_code)]
     pub(crate) fn skip_index_count(&self) -> usize {
         self.skip_indexes
             .lock()

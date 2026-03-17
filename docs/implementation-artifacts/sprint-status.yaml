@@ -155,7 +155,7 @@ development_status:
   11-2-batch-scan-by-segment: done
   11-3-parallel-eager-item-resolution: done
   11-4-skip-index-object-array: done
-  11-5-skip-index-variable-size: review
+  11-5-skip-index-variable-size: done
   11-6-investigate-non-array-item-slowness: backlog
   # ACTION (11.5 manual test 2026-03-17): HashMap/LinkedList page 0
   #   opening is very slow on large dumps. Root cause: each
