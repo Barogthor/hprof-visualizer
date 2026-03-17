@@ -555,9 +555,21 @@ fn scan_segment_for_instances(
                 };
                 let pos = cursor.position() as usize;
                 if pos + num_bytes > data.len() {
-                    // Truncated INSTANCE_DUMP — skip
-                    // and stop scanning this range.
-                    break;
+                    // Truncated INSTANCE_DUMP body — the
+                    // record spans past the end of the
+                    // slice (segment boundary). Advance
+                    // to slice end and continue; the next
+                    // read_u8() will break the loop.
+                    #[cfg(feature = "dev-profiling")]
+                    tracing::warn!(
+                        "scan_segment_for_instances: \
+                         truncated INSTANCE_DUMP 0x{obj_id:X} \
+                         at offset {pos}: declared {num_bytes} bytes \
+                         but only {} available",
+                        data.len().saturating_sub(pos)
+                    );
+                    cursor.set_position(data.len() as u64);
+                    continue;
                 }
                 if target_ids.contains(&obj_id) {
                     results.push((
@@ -1102,21 +1114,49 @@ mod builder_tests {
 
     #[test]
     fn batch_find_tolerates_truncated_sub_record() {
-        // Build a segment with a valid instance followed
-        // by a truncated one, then another valid one in
-        // a separate segment.
+        // Layout:
+        //  raw_heap_segment A:
+        //    [0xAA valid INSTANCE_DUMP (1 byte data)]
+        //    [0xCC valid INSTANCE_DUMP (1 byte data)]
+        //    [truncated INSTANCE_DUMP header: tag + 2 bytes
+        //     of the 8-byte ID — scanner stops here because
+        //     the partial header cannot be skipped]
+        //  raw_heap_segment B (via add_instance):
+        //    [0xBB valid INSTANCE_DUMP (1 byte data)]
+        //
+        // BOUNDARY NOTE: the truncation is a HEADER
+        // truncation (partial object_id). The scanner
+        // cannot determine record size from a partial
+        // header, so it stops at that point.
+        // 0xAA and 0xCC (before truncation) are found;
+        // 0xBB (separate segment) is also found.
+        // Any record that would appear after a truncated
+        // BODY (where num_bytes > remaining slice bytes)
+        // would also be unreachable — the body truncation
+        // advances the cursor to the slice end, so the
+        // next read_u8() terminates the loop cleanly.
         let id_size = 8u32;
 
-        // Valid INSTANCE_DUMP for 0xAA
         let mut payload = Vec::new();
-        payload.push(0x21); // INSTANCE_DUMP
-        payload.extend_from_slice(&0xAAu64.to_be_bytes());
-        payload.extend_from_slice(&0u32.to_be_bytes());
-        payload.extend_from_slice(&100u64.to_be_bytes());
-        payload.extend_from_slice(&1u32.to_be_bytes());
-        payload.push(0xFF);
 
-        // Truncated INSTANCE_DUMP: just tag + partial ID
+        // Valid INSTANCE_DUMP for 0xAA (26 bytes)
+        payload.push(0x21);
+        payload.extend_from_slice(&0xAAu64.to_be_bytes()); // id
+        payload.extend_from_slice(&0u32.to_be_bytes()); // serial
+        payload.extend_from_slice(&100u64.to_be_bytes()); // class
+        payload.extend_from_slice(&1u32.to_be_bytes()); // num_bytes
+        payload.push(0xFF); // data
+
+        // Valid INSTANCE_DUMP for 0xCC (26 bytes)
+        payload.push(0x21);
+        payload.extend_from_slice(&0xCCu64.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&150u64.to_be_bytes());
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.push(0xDD);
+
+        // Truncated INSTANCE_DUMP: tag + only 2 bytes
+        // of the 8-byte object ID — scanner stops here.
         payload.push(0x21);
         payload.extend_from_slice(&[0x00, 0x00]);
 
@@ -1130,18 +1170,24 @@ mod builder_tests {
         tmp.flush().unwrap();
         let hfile = HprofFile::from_path(tmp.path()).unwrap();
 
-        let result = hfile.batch_find_instances(&[0xAA, 0xBB]);
+        let result = hfile.batch_find_instances(&[0xAA, 0xCC, 0xBB]);
 
-        // 0xAA from first segment, 0xBB from second
+        // 0xAA and 0xCC from first segment (before truncation)
         assert!(
             result.instances.contains_key(&0xAA),
             "valid instance before truncation must be found"
         );
         assert!(
+            result.instances.contains_key(&0xCC),
+            "second valid instance before truncation must be found"
+        );
+        // 0xBB from second segment
+        assert!(
             result.instances.contains_key(&0xBB),
             "instance in separate segment must be found"
         );
         assert_eq!(result.instances[&0xAA].class_object_id, 100);
+        assert_eq!(result.instances[&0xCC].class_object_id, 150);
         assert_eq!(result.instances[&0xBB].class_object_id, 200);
     }
 

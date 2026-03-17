@@ -424,12 +424,17 @@ fn extract_linked_list(
 /// Paginates a slice of object IDs, resolving each
 /// to a `FieldValue`.
 ///
-/// Uses a 3-level cache strategy:
+/// Uses a 2-level cache strategy for INSTANCE_DUMP IDs:
 /// - L1: `instance_offsets` (OffsetCache, O(1) offset)
 /// - L2: `batch_find_instances` (segment scan for
-///   uncached IDs)
+///   uncached IDs, populates L1 for future pages)
 /// - Fallback: single-ID `id_to_field_value` for IDs
 ///   not found in batch (arrays, etc.)
+///
+/// NOTE(11.x): L0 object_cache (LRU parsed FieldValue)
+/// integration deferred — `ObjectCache` stores
+/// `Vec<FieldInfo>`, not `FieldValue`; a separate
+/// FieldValue cache layer would be needed.
 fn paginate_id_slice(
     ids: &[u64],
     total: u64,
