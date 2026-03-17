@@ -430,6 +430,10 @@ fn extract_linked_list(
 /// `try_object_array` it equals `meta.num_elements`; in
 /// `extract_array_list` it comes from the ArrayList `size`
 /// field and may be less than `meta.num_elements`.
+///
+/// Uses batch pre-resolution (Story 11.2) to cache
+/// instance offsets before resolving individual elements,
+/// avoiding per-element segment scans.
 fn paginate_object_array(
     meta: &ObjectArrayMeta,
     total: u64,
@@ -441,6 +445,30 @@ fn paginate_object_array(
     let remaining = (total - clamped as u64) as usize;
     let actual = limit.min(remaining);
 
+    // Step 1: Read page IDs via O(1) positional access.
+    let page_ids: Vec<u64> = (0..actual)
+        .filter_map(|i| {
+            let idx = (clamped + i) as u32;
+            hfile
+                .read_object_array_element(meta, idx)
+                .filter(|&id| id != 0)
+        })
+        .collect();
+
+    // Step 2: Batch pre-resolve uncached instance IDs.
+    let uncached: Vec<u64> = page_ids
+        .iter()
+        .copied()
+        .filter(|id| !hfile.index.instance_offsets.contains(id))
+        .collect();
+
+    if !uncached.is_empty() {
+        let batch = hfile.batch_find_instances(&uncached);
+        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+    }
+
+    // Step 3: Resolve all elements (batch-found now
+    // hit O(1) offset path).
     let mut entries = Vec::with_capacity(actual);
     for i in 0..actual {
         let idx = (clamped + i) as u32;
