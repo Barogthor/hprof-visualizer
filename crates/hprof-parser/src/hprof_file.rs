@@ -15,6 +15,7 @@ use std::path::Path;
 use byteorder::{BigEndian, ReadBytesExt};
 use hprof_api::{MemoryBudget, NullProgressObserver, ParseProgressObserver, ProgressNotifier};
 use memmap2::Mmap;
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::indexer::{first_pass::run_first_pass, precise::PreciseIndex, segment::SegmentFilter};
@@ -391,7 +392,12 @@ impl HprofFile {
 
     /// Internal implementation with configurable
     /// `segment_size` for testability.
-    fn batch_find_instances_inner(&self, object_ids: &[u64], segment_size: usize) -> BatchResult {
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn batch_find_instances_inner(
+        &self,
+        object_ids: &[u64],
+        segment_size: usize,
+    ) -> BatchResult {
         let mut result = BatchResult {
             instances: FxHashMap::default(),
             offsets: FxHashMap::default(),
@@ -403,6 +409,13 @@ impl HprofFile {
 
         let records = self.records_bytes();
         let id_size = self.header.id_size;
+
+        #[cfg(feature = "dev-profiling")]
+        let _span = tracing::debug_span!(
+            "batch_find_instances_parallel",
+            num_uncached_ids = object_ids.len(),
+        )
+        .entered();
 
         // Phase 1 — Group IDs by candidate segment.
         // An ID may match multiple segment filters
@@ -421,34 +434,44 @@ impl HprofFile {
             }
         }
 
-        // Phase 2 — Scan each segment group.
-        for (&seg_idx, targets) in &seg_targets {
-            let seg_start = seg_idx as u64 * segment_size as u64;
-            let seg_end = seg_start + segment_size as u64;
+        // Phase 2 — Scan each segment group in parallel.
+        let per_seg: Vec<_> = seg_targets
+            .par_iter()
+            .map(|(&seg_idx, targets)| {
+                let seg_start = seg_idx as u64 * segment_size as u64;
+                let seg_end = seg_start + segment_size as u64;
+                let mut local_instances: FxHashMap<u64, RawInstance> = FxHashMap::default();
+                let mut local_offsets: FxHashMap<u64, u64> = FxHashMap::default();
 
-            for r in &self.heap_record_ranges {
-                let payload_end = r.payload_start + r.payload_length;
-
-                let overlaps = r.payload_start < seg_end && payload_end > seg_start;
-
-                if !overlaps {
-                    continue;
+                for r in &self.heap_record_ranges {
+                    let payload_end = r.payload_start + r.payload_length;
+                    let overlaps = r.payload_start < seg_end && payload_end > seg_start;
+                    if !overlaps {
+                        continue;
+                    }
+                    let start = r.payload_start as usize;
+                    if start >= records.len() {
+                        continue;
+                    }
+                    let end = (payload_end as usize).min(records.len());
+                    let found = scan_segment_for_instances(&records[start..end], targets, id_size);
+                    for (obj_id, raw, offset) in found {
+                        let abs_offset = start as u64 + offset;
+                        local_instances.entry(obj_id).or_insert(raw);
+                        local_offsets.entry(obj_id).or_insert(abs_offset);
+                    }
                 }
+                (local_instances, local_offsets)
+            })
+            .collect();
 
-                let start = r.payload_start as usize;
-                let end = (payload_end as usize).min(records.len());
-                if start >= records.len() {
-                    continue;
-                }
-
-                let found = scan_segment_for_instances(&records[start..end], targets, id_size);
-
-                // Phase 3 — Dedup: first-found wins.
-                for (obj_id, raw, offset) in found {
-                    let abs_offset = start as u64 + offset;
-                    result.instances.entry(obj_id).or_insert(raw);
-                    result.offsets.entry(obj_id).or_insert(abs_offset);
-                }
+        // Phase 3 — Sequential merge: first-found wins.
+        for (local_instances, local_offsets) in per_seg {
+            for (id, raw) in local_instances {
+                result.instances.entry(id).or_insert(raw);
+            }
+            for (id, off) in local_offsets {
+                result.offsets.entry(id).or_insert(off);
             }
         }
 
@@ -1272,6 +1295,77 @@ mod builder_tests {
 
         assert_eq!(single.class_object_id, batch_inst.class_object_id,);
         assert_eq!(single.data, batch_inst.data);
+    }
+
+    // ── Story 11.3 Task 2: Parallel completeness tests ──
+
+    #[test]
+    fn parallel_batch_multi_filter_returns_all_items() {
+        // 10 instances with distinct IDs — use small
+        // segment_size (1024) to force multiple segment
+        // filters, exercising the par_iter code path.
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+        for i in 1u64..=10 {
+            builder = builder.add_instance(i, 0, i * 100, &[i as u8]);
+        }
+        let bytes = builder.build();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+
+        let ids: Vec<u64> = (1..=10).collect();
+        let result = hfile.batch_find_instances_inner(&ids, 1024);
+
+        assert_eq!(result.instances.len(), 10, "all 10 instances must be found");
+        for i in 1u64..=10 {
+            let raw = &result.instances[&i];
+            assert_eq!(
+                raw.class_object_id,
+                i * 100,
+                "class_object_id mismatch for ID {i}"
+            );
+            assert_eq!(raw.data, vec![i as u8], "data mismatch for ID {i}");
+        }
+        assert_eq!(result.offsets.len(), 10);
+    }
+
+    #[test]
+    fn parallel_batch_single_filter_returns_all_items() {
+        // All IDs fall within 1 segment filter (default
+        // segment_size). Verifies no regression on K=1.
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0x10, 0, 100, &[0xAA])
+            .add_instance(0x20, 0, 200, &[0xBB])
+            .add_instance(0x30, 0, 300, &[0xCC])
+            .build();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+
+        let result = hfile.batch_find_instances(&[0x10, 0x20, 0x30]);
+
+        assert_eq!(result.instances.len(), 3);
+        assert_eq!(result.instances[&0x10].class_object_id, 100);
+        assert_eq!(result.instances[&0x20].class_object_id, 200);
+        assert_eq!(result.instances[&0x30].class_object_id, 300);
+    }
+
+    #[test]
+    fn parallel_batch_empty_slice_returns_empty() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0x01, 0, 100, &[0xAA])
+            .build();
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+
+        let result = hfile.batch_find_instances(&[]);
+
+        assert!(result.instances.is_empty());
+        assert!(result.offsets.is_empty());
     }
 
     #[test]
