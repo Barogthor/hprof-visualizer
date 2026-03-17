@@ -156,16 +156,29 @@ development_status:
   11-3-parallel-eager-item-resolution: done
   11-4-skip-index-object-array: done
   11-5-skip-index-variable-size: done
-  11-6-investigate-non-array-item-slowness: backlog
-  # ACTION (11.5 manual test 2026-03-17): HashMap/LinkedList page 0
-  #   opening is very slow on large dumps. Root cause: each
-  #   HashMap$Node / LinkedList$Node triggers an individual
-  #   find_instance segment scan (not in instance_offsets).
-  #   Object[] is fast thanks to batch_find_instances (Story 11.2).
-  #   Fix: apply batch pre-resolution to extract_hash_map and
-  #   extract_linked_list — collect node IDs first, then one
-  #   batch_find_instances call before resolving fields.
-  #   This is the primary scope for Story 11.6.
+  11-6-investigate-non-array-item-slowness: review
+  # CLOSED (11.6): Page 0 batch pre-resolution done. Table head IDs
+  #   batched, find_instance caches offsets, key/value IDs batched.
+  11-7-deep-pagination-chain-batching: backlog
+  # ACTION (11.6 completion 2026-03-17): Cold jump to page 300k+
+  #   is still slow on large HashMap/LinkedList (minutes). Root
+  #   cause: chain nodes (next pointers) are inherently sequential
+  #   — each resolved node reveals exactly 1 new ID. Table heads
+  #   are batched (11.6), but depth≥2 chain nodes still need
+  #   individual find_instance on first walk.
+  #   Fix options:
+  #   (a) Multi-level chain batching: after batch-resolving heads,
+  #       decode each head's `next` from BatchResult.instances
+  #       (zero I/O) to collect depth-1 IDs, then batch those too.
+  #       Covers ~13% additional chains (depth ≥2). Disable for
+  #       ConcurrentHashMap (TreeBin next is non-linear).
+  #   (b) Background pre-walk: async walk entire collection on
+  #       first page request, caching all offsets. Page 0 returns
+  #       fast (batched heads), deep pages become fast as the
+  #       background walk progresses.
+  #   (c) Lazy pagination with progress: show partial results
+  #       while walking, update count as chain walking completes.
+  #   User confirmed this is a priority (2026-03-17).
 
   # BUG (2026-03-17): Pressing Esc on a field showing "Resolving..."
   #   causes the field to display "no field" instead of reverting to

@@ -383,7 +383,7 @@ impl HprofFile {
     ///
     /// Returns `None` if the object is not found (absent or filter
     /// false-positive).
-    pub fn find_instance(&self, object_id: u64) -> Option<RawInstance> {
+    pub fn find_instance(&self, object_id: u64) -> Option<(RawInstance, u64)> {
         use crate::indexer::segment::SEGMENT_SIZE;
 
         let records = self.records_bytes();
@@ -419,8 +419,11 @@ impl HprofFile {
                 continue;
             }
 
-            if let Some(raw) = scan_for_instance(&records[start..end], object_id, id_size) {
-                return Some(raw);
+            if let Some((raw, rel_offset)) =
+                scan_for_instance(&records[start..end], object_id, id_size)
+            {
+                let abs_offset = start as u64 + rel_offset;
+                return Some((raw, abs_offset));
             }
         }
 
@@ -542,11 +545,12 @@ impl HprofFile {
     }
 }
 
-fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<RawInstance> {
+fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<(RawInstance, u64)> {
     use std::io::Cursor;
 
     let mut cursor = Cursor::new(data);
     loop {
+        let tag_pos = cursor.position();
         let sub_tag = match cursor.read_u8() {
             Ok(t) => HeapSubTag::from(t),
             Err(_) => return None,
@@ -574,10 +578,13 @@ fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<RawIns
                     return None;
                 }
                 if obj_id == target_id {
-                    return Some(RawInstance {
-                        class_object_id,
-                        data: data[pos..pos + num_bytes].to_vec(),
-                    });
+                    return Some((
+                        RawInstance {
+                            class_object_id,
+                            data: data[pos..pos + num_bytes].to_vec(),
+                        },
+                        tag_pos,
+                    ));
                 }
                 cursor.set_position((pos + num_bytes) as u64);
             }
@@ -991,7 +998,7 @@ mod builder_tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
         let hfile = HprofFile::from_path(tmp.path()).unwrap();
-        let raw = hfile.find_instance(0xDEAD).expect("must find instance");
+        let (raw, _offset) = hfile.find_instance(0xDEAD).expect("must find instance");
         assert_eq!(raw.class_object_id, 100);
         assert_eq!(raw.data, vec![1u8, 2, 3, 4]);
     }
@@ -1018,10 +1025,10 @@ mod builder_tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
         let hfile = HprofFile::from_path(tmp.path()).unwrap();
-        let r1 = hfile.find_instance(0x0001).unwrap();
+        let (r1, _) = hfile.find_instance(0x0001).unwrap();
         assert_eq!(r1.class_object_id, 10);
         assert_eq!(r1.data, vec![0xAAu8]);
-        let r2 = hfile.find_instance(0x0002).unwrap();
+        let (r2, _) = hfile.find_instance(0x0002).unwrap();
         assert_eq!(r2.class_object_id, 20);
         assert_eq!(r2.data, vec![0xBBu8]);
     }
@@ -1036,7 +1043,7 @@ mod builder_tests {
         tmp.write_all(&bytes).unwrap();
         tmp.flush().unwrap();
         let hfile = HprofFile::from_path(tmp.path()).unwrap();
-        let raw = hfile.find_instance(0xCAFE).unwrap();
+        let (raw, _) = hfile.find_instance(0xCAFE).unwrap();
         assert_eq!(raw.data, data);
     }
 
@@ -1353,12 +1360,16 @@ mod builder_tests {
         tmp.flush().unwrap();
         let hfile = HprofFile::from_path(tmp.path()).unwrap();
 
-        let single = hfile.find_instance(0xCAFE).unwrap();
+        let (single, single_off) = hfile.find_instance(0xCAFE).unwrap();
         let batch = hfile.batch_find_instances(&[0xCAFE]);
         let batch_inst = &batch.instances[&0xCAFE];
 
         assert_eq!(single.class_object_id, batch_inst.class_object_id,);
         assert_eq!(single.data, batch_inst.data);
+        assert_eq!(
+            single_off, batch.offsets[&0xCAFE],
+            "find_instance and batch offsets must match"
+        );
     }
 
     // ── Story 11.3 Task 2: Parallel completeness tests ──
@@ -1554,6 +1565,25 @@ mod builder_tests {
             hfile.find_object_array_meta(0xA).is_none(),
             "truncated array must return None"
         );
+    }
+
+    // ── Story 11.6 Task 1.4: find_instance returns offset ──
+
+    #[test]
+    fn find_instance_returns_valid_offset() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xDEAD, 0, 100, &[1, 2, 3, 4])
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+        let (raw, offset) = hfile.find_instance(0xDEAD).unwrap();
+        assert_eq!(raw.class_object_id, 100);
+
+        // Offset must point to a valid INSTANCE_DUMP
+        let re_read = hfile
+            .read_instance_at_offset(offset)
+            .expect("offset must point to valid record");
+        assert_eq!(re_read.class_object_id, 100);
+        assert_eq!(re_read.data, vec![1u8, 2, 3, 4]);
     }
 
     #[test]

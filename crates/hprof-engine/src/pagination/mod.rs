@@ -270,6 +270,19 @@ fn extract_hash_map(
         }
     }
 
+    // Batch pre-resolve uncached table head node IDs
+    // (Story 11.6 Task 2.1)
+    let uncached_heads: Vec<u64> = table_elements[start_slot..]
+        .iter()
+        .copied()
+        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .collect();
+    const BATCH_THRESHOLD: usize = 16;
+    if uncached_heads.len() >= BATCH_THRESHOLD {
+        let batch = hfile.batch_find_instances(&uncached_heads);
+        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+    }
+
     let adjusted_offset = offset - checkpoint_index;
     let target_count = adjusted_offset + limit;
     let mut all_entries: Vec<(FieldValue, FieldValue)> = Vec::new();
@@ -386,7 +399,33 @@ fn extract_hash_map(
         si.mark_complete();
     }
 
-    paginate_kv_entries(&all_entries, total, adjusted_offset, limit, checkpoint_index)
+    // Batch pre-resolve uncached key/value object IDs
+    // for the visible page window (Story 11.6 Task 3.1)
+    let kv_start = adjusted_offset;
+    let kv_end = (adjusted_offset + limit).min(all_entries.len());
+    if kv_start < kv_end {
+        let obj_ids: Vec<u64> = all_entries[kv_start..kv_end]
+            .iter()
+            .flat_map(|(k, v)| [k, v])
+            .filter_map(|fv| match fv {
+                FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
+                _ => None,
+            })
+            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .collect();
+        if !obj_ids.is_empty() {
+            let batch = hfile.batch_find_instances(&obj_ids);
+            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        }
+    }
+
+    paginate_kv_entries(
+        &all_entries,
+        total,
+        adjusted_offset,
+        limit,
+        checkpoint_index,
+    )
 }
 
 /// Full walk fallback for HashMap when checkpoint resume
@@ -400,6 +439,19 @@ fn extract_hash_map_full(
     val_field_name: &str,
     mut skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
+    // Batch pre-resolve uncached table head node IDs
+    // (Story 11.6 Task 2.1)
+    let uncached_heads: Vec<u64> = table_elements
+        .iter()
+        .copied()
+        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .collect();
+    const BATCH_THRESHOLD: usize = 16;
+    if uncached_heads.len() >= BATCH_THRESHOLD {
+        let batch = hfile.batch_find_instances(&uncached_heads);
+        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+    }
+
     let target_count = offset + limit;
     let mut all_entries: Vec<(FieldValue, FieldValue)> = Vec::new();
     let mut visited = std::collections::HashSet::new();
@@ -465,6 +517,26 @@ fn extract_hash_map_full(
         && let Some(si) = skip_index
     {
         si.mark_complete();
+    }
+
+    // Batch pre-resolve uncached key/value object IDs
+    // for the visible page window (Story 11.6 Task 3.1)
+    let page_start = offset;
+    let page_end = (offset + limit).min(all_entries.len());
+    if page_start < page_end {
+        let obj_ids: Vec<u64> = all_entries[page_start..page_end]
+            .iter()
+            .flat_map(|(k, v)| [k, v])
+            .filter_map(|fv| match fv {
+                FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
+                _ => None,
+            })
+            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .collect();
+        if !obj_ids.is_empty() {
+            let batch = hfile.batch_find_instances(&obj_ids);
+            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        }
     }
 
     paginate_kv_entries(&all_entries, total, offset, limit, 0)
@@ -629,7 +701,25 @@ fn extract_linked_list(
         si.mark_complete();
     }
 
+    // Batch pre-resolve uncached item object IDs for
+    // the visible page window (Story 11.6 Task 3.2)
     let clamped_offset = (adjusted_offset as u64).min(total) as usize;
+    let ll_end = (clamped_offset + limit).min(items.len());
+    if clamped_offset < ll_end {
+        let obj_ids: Vec<u64> = items[clamped_offset..ll_end]
+            .iter()
+            .filter_map(|fv| match fv {
+                FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
+                _ => None,
+            })
+            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .collect();
+        if !obj_ids.is_empty() {
+            let batch = hfile.batch_find_instances(&obj_ids);
+            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        }
+    }
+
     let page_items: Vec<EntryInfo> = items
         .into_iter()
         .skip(clamped_offset)

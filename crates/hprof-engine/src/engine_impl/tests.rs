@@ -2127,8 +2127,8 @@ fn budget_e2e_through_engine() {
 
 #[test]
 fn skip_index_lazy_creation_via_engine() {
-    use hprof_parser::HprofTestBuilder;
     use crate::engine::NavigationEngine;
+    use hprof_parser::HprofTestBuilder;
 
     let id_size: u32 = 8;
     let str_size = 10u64;
@@ -2177,7 +2177,11 @@ fn skip_index_lazy_creation_via_engine() {
     for i in 0..n {
         let node_id = 0x200u64 + i as u64;
         let item_id = 0x10u64 + i as u64;
-        let next_id = if i + 1 < n { 0x200u64 + (i + 1) as u64 } else { 0 };
+        let next_id = if i + 1 < n {
+            0x200u64 + (i + 1) as u64
+        } else {
+            0
+        };
         let prev_id = if i > 0 { 0x200u64 + (i - 1) as u64 } else { 0 };
         let mut node_data = Vec::new();
         node_data.extend_from_slice(&item_id.to_be_bytes());

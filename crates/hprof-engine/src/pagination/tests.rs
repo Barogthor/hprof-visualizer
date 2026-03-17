@@ -807,7 +807,7 @@ mod skip_index_integration {
     ///
     /// Node IDs: 0x200, 0x201, …, 0x200 + (n-1).
     /// Item IDs: 0x10, 0x11, …
-    fn build_linked_list_n(n: usize) -> Vec<u8> {
+    pub(super) fn build_linked_list_n(n: usize) -> Vec<u8> {
         let id_size: u32 = 8;
         let str_size = 10u64;
         let str_first = 11u64;
@@ -877,7 +877,7 @@ mod skip_index_integration {
     /// Builds a HashMap with `n` entries, each in its own
     /// slot (no chaining). `pct_empty` controls the
     /// percentage of empty slots (0.0 = none, 0.5 = 50%).
-    fn build_hashmap_n(n: usize, pct_empty: f64) -> Vec<u8> {
+    pub(super) fn build_hashmap_n(n: usize, pct_empty: f64) -> Vec<u8> {
         let id_size: u32 = 8;
         let str_size = 10u64;
         let str_table = 11u64;
@@ -1248,4 +1248,193 @@ mod skip_index_integration {
         let (idx, _) = result.unwrap();
         assert_eq!(idx, 20, "nearest checkpoint before 20 should be 20");
     }
+}
+
+// ── Story 11.6: Batch pre-resolution tests ──
+mod batch_pre_resolution {
+    use super::skip_index_integration::{build_hashmap_n, build_linked_list_n};
+    use super::*;
+
+    // -- Task 4.2: HashMap batch test --
+
+    #[test]
+    fn hashmap_30_entries_caches_head_node_ids() {
+        let hfile = hfile_from_bytes(&build_hashmap_n(30, 0.0));
+
+        let page = get_page(&hfile, 0x100, 0, 10, None).unwrap();
+        assert_eq!(page.entries.len(), 10);
+
+        // All 30 head node IDs should be cached
+        for i in 0..30u64 {
+            let node_id = 0x200 + i;
+            assert!(
+                hfile.index.instance_offsets.contains(&node_id),
+                "head node 0x{node_id:X} must be cached"
+            );
+        }
+    }
+
+    // -- Task 4.2b: BATCH_THRESHOLD boundary --
+
+    #[test]
+    fn hashmap_15_entries_no_batch() {
+        let hfile = hfile_from_bytes(&build_hashmap_n(15, 0.0));
+
+        let page = get_page(&hfile, 0x100, 0, 15, None).unwrap();
+        assert_eq!(page.entries.len(), 15);
+
+        // With 15 entries, below BATCH_THRESHOLD=16,
+        // nodes resolved via individual find_instance
+        // and cached (Task 1 offset caching).
+        // All 15 head nodes walked → all cached.
+        for i in 0..15u64 {
+            let node_id = 0x200 + i;
+            assert!(
+                hfile.index.instance_offsets.contains(&node_id),
+                "node 0x{node_id:X} must be cached \
+                 via individual find_instance"
+            );
+        }
+    }
+
+    #[test]
+    fn hashmap_16_entries_uses_batch() {
+        let hfile = hfile_from_bytes(&build_hashmap_n(16, 0.0));
+
+        let page = get_page(&hfile, 0x100, 0, 10, None).unwrap();
+        assert_eq!(page.entries.len(), 10);
+
+        // With 16 entries, >= BATCH_THRESHOLD, batch
+        // was used. All 16 head node IDs cached.
+        for i in 0..16u64 {
+            let node_id = 0x200 + i;
+            assert!(
+                hfile.index.instance_offsets.contains(&node_id),
+                "node 0x{node_id:X} must be cached \
+                 via batch"
+            );
+        }
+    }
+
+    // -- Task 4.2c: HashSet inheritance --
+
+    fn build_hash_set_n(n: usize) -> Vec<u8> {
+        let id_size: u32 = 8;
+        let str_size = 10u64;
+        let str_table = 11u64;
+        let str_key = 12u64;
+        let str_value = 13u64;
+        let str_next = 14u64;
+        let str_cn = 15u64;
+        let str_node_cn = 16u64;
+        let str_map = 18u64;
+        let str_set_cn = 19u64;
+
+        let mut table: Vec<u64> = Vec::with_capacity(n);
+        for i in 0..n {
+            table.push(0x200u64 + i as u64);
+        }
+
+        // Backing HashMap instance data: size + table ref
+        let mut hm_data = Vec::new();
+        hm_data.extend_from_slice(&(n as i32).to_be_bytes());
+        hm_data.extend_from_slice(&0x500u64.to_be_bytes());
+
+        // HashSet instance data: map ref
+        let mut set_data = Vec::new();
+        set_data.extend_from_slice(&0x400u64.to_be_bytes());
+
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_string(str_size, "size")
+            .add_string(str_table, "table")
+            .add_string(str_key, "key")
+            .add_string(str_value, "value")
+            .add_string(str_next, "next")
+            .add_string(str_cn, "java/util/HashMap")
+            .add_string(str_node_cn, "java/util/HashMap$Node")
+            .add_string(str_map, "map")
+            .add_string(str_set_cn, "java/util/HashSet")
+            .add_class(1, 1000, 0, str_cn)
+            .add_class(2, 2000, 0, str_node_cn)
+            .add_class(3, 3000, 0, str_set_cn)
+            .add_class_dump(1000, 0, 4 + id_size, &[(str_size, 10), (str_table, 2)])
+            .add_class_dump(
+                2000,
+                0,
+                id_size * 3,
+                &[(str_key, 2), (str_value, 2), (str_next, 2)],
+            )
+            .add_class_dump(3000, 0, id_size, &[(str_map, 2)])
+            // HashSet 0x100 → map 0x400 → table 0x500
+            .add_instance(0x100, 0, 3000, &set_data)
+            .add_instance(0x400, 0, 1000, &hm_data)
+            .add_object_array(0x500, 0, 2000, &table);
+
+        for i in 0..n {
+            let node_id = 0x200u64 + i as u64;
+            let key_id = 0x1000u64 + i as u64;
+            let val_id = 0x2000u64 + i as u64;
+            let mut node_data = Vec::new();
+            node_data.extend_from_slice(&key_id.to_be_bytes());
+            node_data.extend_from_slice(&val_id.to_be_bytes());
+            node_data.extend_from_slice(&0u64.to_be_bytes());
+            builder = builder.add_instance(node_id, 0, 2000, &node_data);
+        }
+
+        builder.build()
+    }
+
+    #[test]
+    fn hashset_inherits_batch_from_hashmap() {
+        let hfile = hfile_from_bytes(&build_hash_set_n(20));
+
+        let page = get_page(&hfile, 0x100, 0, 10, None).unwrap();
+        assert_eq!(page.entries.len(), 10);
+
+        // HashSet → HashMap → extract_hash_map_full
+        // All 20 head node IDs should be cached
+        for i in 0..20u64 {
+            let node_id = 0x200 + i;
+            assert!(
+                hfile.index.instance_offsets.contains(&node_id),
+                "HashSet head node 0x{node_id:X} \
+                 must be cached via inherited batch"
+            );
+        }
+    }
+
+    // -- Task 4.3: LinkedList caching test --
+
+    #[test]
+    fn linked_list_caches_walked_node_ids() {
+        let hfile = hfile_from_bytes(&build_linked_list_n(20));
+
+        // Walk all 20 nodes in one page
+        let _p1 = get_page(&hfile, 0x100, 0, 20, None).unwrap();
+
+        // After first visit, all walked nodes cached
+        // (Task 1 find_instance offset caching)
+        for i in 0..20u64 {
+            let node_id = 0x200 + i;
+            assert!(
+                hfile.index.instance_offsets.contains(&node_id),
+                "LL node 0x{node_id:X} must be cached"
+            );
+        }
+
+        let before_len = hfile.index.instance_offsets.len();
+
+        // Second call — no new entries added
+        let _p2 = get_page(&hfile, 0x100, 0, 20, None).unwrap();
+
+        let after_len = hfile.index.instance_offsets.len();
+        assert_eq!(
+            before_len, after_len,
+            "second visit must not add new entries"
+        );
+    }
+
+    // -- Task 4.3c: find_instance return type test --
+    // (covered by find_instance_returns_valid_offset
+    //  in hprof_file.rs builder_tests)
 }

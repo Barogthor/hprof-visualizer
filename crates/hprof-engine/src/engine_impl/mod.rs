@@ -459,7 +459,11 @@ impl Engine {
         {
             return Some(raw);
         }
-        hfile.find_instance(obj_id)
+        if let Some((raw, offset)) = hfile.find_instance(obj_id) {
+            hfile.index.instance_offsets.insert(obj_id, offset);
+            return Some(raw);
+        }
+        None
     }
 
     /// Reads a primitive array by offset if available, falling back to
@@ -737,9 +741,10 @@ impl NavigationEngine for Engine {
                     value: if object_id == 0 {
                         VariableValue::Null
                     } else {
-                        let (class_name, entry_count) = if let Some(raw) =
+                        let (class_name, entry_count) = if let Some((raw, offset)) =
                             self.hfile.find_instance(object_id)
                         {
+                            self.hfile.index.instance_offsets.insert(object_id, offset);
                             let cn = self
                                 .hfile
                                 .index
