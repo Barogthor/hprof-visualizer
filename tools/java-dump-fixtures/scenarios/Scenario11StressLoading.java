@@ -4,6 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
@@ -65,6 +66,10 @@ public final class Scenario11StressLoading
             Long.toString(totalEntities));
         metrics.put("threadLocalEntities",
             Long.toString(threadLocalEntities));
+        metrics.put("auditQueueSize",
+            Integer.toString(cfg.auditEventCount));
+        metrics.put("sessionCacheSize",
+            Integer.toString(cfg.sessionCount));
         metrics.put("estimatedObjects",
             Long.toString(totalEntities + threadLocalEntities));
 
@@ -99,6 +104,8 @@ public final class Scenario11StressLoading
         final int cacheEntryCount;
         final int metricCount;
         final int logEntryCount;
+        final int auditEventCount;
+        final int sessionCount;
 
         private StressConfig(
                 int heavyThreadCount,
@@ -113,7 +120,9 @@ public final class Scenario11StressLoading
                 int categoryCount,
                 int cacheEntryCount,
                 int metricCount,
-                int logEntryCount) {
+                int logEntryCount,
+                int auditEventCount,
+                int sessionCount) {
             this.heavyThreadCount = heavyThreadCount;
             this.mediumThreadCount = mediumThreadCount;
             this.lightThreadCount = lightThreadCount;
@@ -127,6 +136,8 @@ public final class Scenario11StressLoading
             this.cacheEntryCount = cacheEntryCount;
             this.metricCount = metricCount;
             this.logEntryCount = logEntryCount;
+            this.auditEventCount = auditEventCount;
+            this.sessionCount = sessionCount;
         }
 
         int totalThreadCount() {
@@ -143,35 +154,40 @@ public final class Scenario11StressLoading
                         30, 15, 10,
                         50_000,
                         20_000, 20, 10,
-                        100_000, 10_000, 5_000);
+                        100_000, 10_000, 5_000,
+                        10_000, 8_000);
                 case "medium":
                     return new StressConfig(
                         5, 20, 35,
                         50, 25, 12,
                         100_000,
                         60_000, 40, 15,
-                        300_000, 30_000, 15_000);
+                        300_000, 30_000, 15_000,
+                        50_000, 40_000);
                 case "large":
                     return new StressConfig(
                         8, 30, 62,
                         70, 35, 15,
                         200_000,
                         500_000, 60, 20,
-                        3_000_000, 100_000, 50_000);
+                        3_000_000, 100_000, 50_000,
+                        500_000, 400_000);
                 case "xlarge":
                     return new StressConfig(
                         10, 40, 150,
                         100, 50, 20,
                         400_000,
                         3_000_000, 100, 40,
-                        10_000_000, 500_000, 200_000);
+                        10_000_000, 500_000, 200_000,
+                        1_500_000, 1_000_000);
                 case "ultra":
                     return new StressConfig(
                         10, 40, 150,
                         100, 50, 20,
                         400_000,
                         6_000_000, 120, 50,
-                        18_000_000, 800_000, 400_000);
+                        18_000_000, 800_000, 400_000,
+                        3_000_000, 2_000_000);
                 default:
                     throw new IllegalArgumentException(
                         "S11 unsupported profile: "
@@ -237,6 +253,10 @@ public final class Scenario11StressLoading
         graph.configs = buildConfigs(seed + 31);
         graph.permissions =
             buildPermissions(graph.customers, seed + 37);
+        graph.auditQueue =
+            buildAuditQueue(cfg.auditEventCount, seed + 41);
+        graph.sessionCache =
+            buildSessionCache(cfg.sessionCount, seed + 43);
 
         graph.entityCount =
             (long) graph.categories.size()
@@ -246,7 +266,9 @@ public final class Scenario11StressLoading
             + graph.metrics.size()
             + graph.logs.size()
             + graph.configs.size()
-            + graph.permissions.size();
+            + graph.permissions.size()
+            + graph.auditQueue.size()
+            + graph.sessionCache.size();
 
         return graph;
     }
@@ -501,6 +523,45 @@ public final class Scenario11StressLoading
         return perms;
     }
 
+    private static LinkedList<AuditEvent> buildAuditQueue(
+            int count, int seed) {
+        LinkedList<AuditEvent> queue = new LinkedList<>();
+        String[] actions = {
+            "LOGIN", "LOGOUT", "VIEW_ORDER",
+            "PLACE_ORDER", "CANCEL_ORDER",
+            "UPDATE_PROFILE", "EXPORT_DATA",
+            "ADMIN_ACCESS", "PASSWORD_CHANGE",
+            "PERMISSION_GRANT"
+        };
+        for (int i = 0; i < count; i++) {
+            queue.add(new AuditEvent(
+                (long) i,
+                System.currentTimeMillis()
+                    - (long) i * 200L,
+                actions[i % actions.length],
+                (long) ((i * 7 + seed) % 1_000_000),
+                "detail-" + i + "-" + seed));
+        }
+        return queue;
+    }
+
+    private static LinkedHashMap<String, Session>
+            buildSessionCache(int count, int seed) {
+        LinkedHashMap<String, Session> cache =
+            new LinkedHashMap<>(count * 2);
+        for (int i = 0; i < count; i++) {
+            String sid = "sess-" + i + "-" + seed;
+            long now = System.currentTimeMillis();
+            cache.put(sid, new Session(
+                sid,
+                (long) ((i * 13 + seed) % 1_000_000),
+                now - (long) i * 60_000L,
+                now - (long) (i % 300) * 1_000L,
+                i % 10 != 0));
+        }
+        return cache;
+    }
+
     // ── Worker threads with deep stacks ───────────────
 
     private static List<StressWorker> startWorkers(
@@ -701,6 +762,8 @@ public final class Scenario11StressLoading
         List<LogEntry> logs;
         List<ConfigProperty> configs;
         List<Permission> permissions;
+        LinkedList<AuditEvent> auditQueue;
+        LinkedHashMap<String, Session> sessionCache;
         long entityCount;
     }
 
@@ -906,6 +969,42 @@ public final class Scenario11StressLoading
             this.endpoint = endpoint;
             this.port = port;
             this.createdAt = createdAt;
+            this.active = active;
+        }
+    }
+
+    private static final class AuditEvent {
+        final long id;
+        final long timestamp;
+        final String action;
+        final long customerId;
+        final String detail;
+
+        AuditEvent(long id, long timestamp,
+                String action, long customerId,
+                String detail) {
+            this.id = id;
+            this.timestamp = timestamp;
+            this.action = action;
+            this.customerId = customerId;
+            this.detail = detail;
+        }
+    }
+
+    private static final class Session {
+        final String sessionId;
+        final long customerId;
+        final long createdAt;
+        final long lastAccessAt;
+        final boolean active;
+
+        Session(String sessionId, long customerId,
+                long createdAt, long lastAccessAt,
+                boolean active) {
+            this.sessionId = sessionId;
+            this.customerId = customerId;
+            this.createdAt = createdAt;
+            this.lastAccessAt = lastAccessAt;
             this.active = active;
         }
     }

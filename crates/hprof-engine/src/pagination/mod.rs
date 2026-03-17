@@ -15,6 +15,11 @@ use crate::resolver::decode_fields;
 use skip_index::SkipCheckpoint;
 pub(crate) use skip_index::SkipIndex;
 
+/// Minimum number of uncached head IDs required to use
+/// `batch_find_instances`. Below this threshold the fixed
+/// overhead of rayon+segment grouping exceeds the gain.
+const BATCH_THRESHOLD: usize = 16;
+
 /// Returns a page from the collection identified by
 /// `collection_id`, or `None` if unsupported/not found.
 pub(crate) fn get_page(
@@ -91,6 +96,10 @@ fn match_extractor(
         return extract_hash_map(hfile, raw, offset, limit, false, skip_index);
     }
     if short_name.eq_ignore_ascii_case("ConcurrentHashMap") {
+        // TODO(11.6-4.3d): HprofTestBuilder cannot construct a ConcurrentHashMap
+        // (segments structure too complex). Batch pre-resolution is inherited via
+        // the shared extract_hash_map code path (concurrent=true). Manual test
+        // required to verify batch behaviour on a real dump with ≥16 entries.
         return extract_hash_map(hfile, raw, offset, limit, true, skip_index);
     }
     if short_name.eq_ignore_ascii_case("HashSet")
@@ -277,7 +286,6 @@ fn extract_hash_map(
         .copied()
         .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
         .collect();
-    const BATCH_THRESHOLD: usize = 16;
     if uncached_heads.len() >= BATCH_THRESHOLD {
         let batch = hfile.batch_find_instances(&uncached_heads);
         hfile.index.instance_offsets.insert_batch(&batch.offsets);
@@ -446,7 +454,6 @@ fn extract_hash_map_full(
         .copied()
         .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
         .collect();
-    const BATCH_THRESHOLD: usize = 16;
     if uncached_heads.len() >= BATCH_THRESHOLD {
         let batch = hfile.batch_find_instances(&uncached_heads);
         hfile.index.instance_offsets.insert_batch(&batch.offsets);

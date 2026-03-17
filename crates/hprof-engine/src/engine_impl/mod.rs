@@ -741,10 +741,9 @@ impl NavigationEngine for Engine {
                     value: if object_id == 0 {
                         VariableValue::Null
                     } else {
-                        let (class_name, entry_count) = if let Some((raw, offset)) =
-                            self.hfile.find_instance(object_id)
+                        let (class_name, entry_count) = if let Some(raw) =
+                            Self::read_instance(&self.hfile, object_id)
                         {
-                            self.hfile.index.instance_offsets.insert(object_id, offset);
                             let cn = self
                                 .hfile
                                 .index

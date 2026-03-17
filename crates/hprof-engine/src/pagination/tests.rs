@@ -1276,42 +1276,53 @@ mod batch_pre_resolution {
 
     // -- Task 4.2b: BATCH_THRESHOLD boundary --
 
+    // Note: the BATCH_THRESHOLD boundary tests below cannot
+    // verify *which path* was taken (batch vs. individual)
+    // without mocking, which is forbidden. Instead they
+    // verify the observable contract: all walked node IDs
+    // end up in instance_offsets (Task 1 individual caching
+    // guarantees this below threshold; batch guarantees it
+    // at or above). Correct page content is also checked.
+
     #[test]
-    fn hashmap_15_entries_no_batch() {
+    fn hashmap_below_threshold_all_nodes_cached() {
         let hfile = hfile_from_bytes(&build_hashmap_n(15, 0.0));
 
+        // Request all 15 entries (limit == n)
         let page = get_page(&hfile, 0x100, 0, 15, None).unwrap();
+        assert_eq!(page.total_count, 15);
         assert_eq!(page.entries.len(), 15);
+        assert!(!page.has_more);
 
-        // With 15 entries, below BATCH_THRESHOLD=16,
-        // nodes resolved via individual find_instance
-        // and cached (Task 1 offset caching).
-        // All 15 head nodes walked → all cached.
+        // All 15 head nodes walked → all cached
+        // (via Task 1 individual find_instance + offset
+        // caching; BATCH_THRESHOLD=16 not triggered).
         for i in 0..15u64 {
             let node_id = 0x200 + i;
             assert!(
                 hfile.index.instance_offsets.contains(&node_id),
-                "node 0x{node_id:X} must be cached \
-                 via individual find_instance"
+                "node 0x{node_id:X} must be cached"
             );
         }
     }
 
     #[test]
-    fn hashmap_16_entries_uses_batch() {
+    fn hashmap_at_threshold_all_nodes_cached() {
         let hfile = hfile_from_bytes(&build_hashmap_n(16, 0.0));
 
+        // Request page of 10; 6 remaining (has_more=true)
         let page = get_page(&hfile, 0x100, 0, 10, None).unwrap();
+        assert_eq!(page.total_count, 16);
         assert_eq!(page.entries.len(), 10);
+        assert!(page.has_more);
 
-        // With 16 entries, >= BATCH_THRESHOLD, batch
-        // was used. All 16 head node IDs cached.
+        // All 16 head node IDs cached (BATCH_THRESHOLD=16
+        // triggers batch pre-resolution before the walk).
         for i in 0..16u64 {
             let node_id = 0x200 + i;
             assert!(
                 hfile.index.instance_offsets.contains(&node_id),
-                "node 0x{node_id:X} must be cached \
-                 via batch"
+                "node 0x{node_id:X} must be cached"
             );
         }
     }
