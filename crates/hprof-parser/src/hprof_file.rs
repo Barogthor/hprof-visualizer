@@ -392,7 +392,6 @@ impl HprofFile {
 
     /// Internal implementation with configurable
     /// `segment_size` for testability.
-    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn batch_find_instances_inner(
         &self,
         object_ids: &[u64],
@@ -435,6 +434,8 @@ impl HprofFile {
         }
 
         // Phase 2 — Scan each segment group in parallel.
+        #[cfg(feature = "dev-profiling")]
+        tracing::debug!(seg_count = seg_targets.len(), "batch_find_instances_parallel segments");
         let per_seg: Vec<_> = seg_targets
             .par_iter()
             .map(|(&seg_idx, targets)| {
@@ -466,6 +467,11 @@ impl HprofFile {
             .collect();
 
         // Phase 3 — Sequential merge: first-found wins.
+        // FxHashMap iteration order is unspecified, so for IDs
+        // with BinaryFuse8 false positives (found in multiple
+        // segment scans), the winning offset is arbitrary but
+        // always valid — scan_segment_for_instances only returns
+        // records it physically found in the slice.
         for (local_instances, local_offsets) in per_seg {
             for (id, raw) in local_instances {
                 result.instances.entry(id).or_insert(raw);
@@ -527,12 +533,11 @@ fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<RawIns
     }
 }
 
-// NOTE: scan loop duplicated from scan_for_instance.
-// Sync both if hprof sub-record tag handling changes.
-// Future: extract walk_heap_subrecords() to share
-// the loop (deferred — scan_for_instance has
-// early-return semantics that complicate a callback
-// approach).
+// TODO: scan loop below is duplicated from scan_for_instance.
+// Keep both in sync if HeapSubTag handling or skip_sub_record
+// semantics change. A future refactor could extract
+// walk_heap_subrecords() — deferred because scan_for_instance
+// has early-return semantics that complicate a callback approach.
 //
 // This scanner only collects INSTANCE_DUMP records.
 // OBJECT_ARRAY_DUMP and PRIMITIVE_ARRAY_DUMP have their
@@ -592,7 +597,7 @@ fn scan_segment_for_instances(
                         data.len().saturating_sub(pos)
                     );
                     cursor.set_position(data.len() as u64);
-                    continue;
+                    break;
                 }
                 if target_ids.contains(&obj_id) {
                     results.push((
@@ -1300,10 +1305,14 @@ mod builder_tests {
     // ── Story 11.3 Task 2: Parallel completeness tests ──
 
     #[test]
-    fn parallel_batch_multi_filter_returns_all_items() {
-        // 10 instances with distinct IDs — use small
-        // segment_size (1024) to force multiple segment
-        // filters, exercising the par_iter code path.
+    fn parallel_batch_correctness_small_segment_size() {
+        // 10 instances with distinct IDs. segment_size=1024
+        // exercises the Phase 2 range-overlap arithmetic with
+        // a small window. NOTE: all instances land in a single
+        // SegmentFilter (file is tiny), so par_iter dispatches
+        // to one thread — this validates correctness, not K ≥ 2
+        // parallelism. K ≥ 2 speedup requires a large multi-
+        // segment dump and is validated manually (see AC #1 note).
         let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
         for i in 1u64..=10 {
             builder = builder.add_instance(i, 0, i * 100, &[i as u8]);

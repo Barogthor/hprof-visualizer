@@ -1,6 +1,6 @@
 # Story 11.3: Parallel Eager Item Resolution
 
-Status: review
+Status: done
 
 ## Story
 
@@ -195,8 +195,19 @@ None
   single-filter (K=1), empty batch.
 - All 949 tests pass, clippy clean, fmt clean.
 
+### Manual Testing Results (2026-03-17)
+- Large dump: collection list opening fast, deep jump ~1s or less
+- Go-to deep index also fast
+- AC #1 validated: parallel resolution works correctly on
+  multi-segment dump with no duplicates, no panics
+
 ### Change Log
 - 2026-03-17: Story 11.3 implemented — parallel batch_find_instances
+- 2026-03-17: Manual testing passed on large dump
+- 2026-03-17: Code review fixes — removed bogus `cfg_attr(test,allow(dead_code))`,
+  renamed misleading test to `parallel_batch_correctness_small_segment_size`,
+  `continue` → `break` after truncated slice, Phase 3 non-determinism comment,
+  `seg_count` tracing event, M3 TODO made actionable
 
 ### File List
 - `crates/hprof-parser/src/hprof_file.rs` (modified: par_iter + tests)
