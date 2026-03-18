@@ -2122,3 +2122,263 @@ fn budget_e2e_through_engine() {
         "warning counts must match"
     );
 }
+
+// -- Story 11.5 Task 5.4: Lazy skip-index creation via Engine --
+
+#[test]
+fn skip_index_lazy_creation_via_engine() {
+    use crate::engine::NavigationEngine;
+    use hprof_parser::HprofTestBuilder;
+
+    let id_size: u32 = 8;
+    let str_size = 10u64;
+    let str_first = 11u64;
+    let str_last = 12u64;
+    let str_item = 13u64;
+    let str_next = 14u64;
+    let str_prev = 15u64;
+    let str_cn = 16u64;
+    let str_node_cn = 17u64;
+
+    let n = 20usize;
+    let first_node = 0x200u64;
+    let last_node = 0x200u64 + (n as u64 - 1);
+
+    let mut ll_data = Vec::new();
+    ll_data.extend_from_slice(&(n as i32).to_be_bytes());
+    ll_data.extend_from_slice(&first_node.to_be_bytes());
+    ll_data.extend_from_slice(&last_node.to_be_bytes());
+
+    let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+        .add_string(str_size, "size")
+        .add_string(str_first, "first")
+        .add_string(str_last, "last")
+        .add_string(str_item, "item")
+        .add_string(str_next, "next")
+        .add_string(str_prev, "prev")
+        .add_string(str_cn, "java/util/LinkedList")
+        .add_string(str_node_cn, "java/util/LinkedList$Node")
+        .add_class(1, 1000, 0, str_cn)
+        .add_class(2, 2000, 0, str_node_cn)
+        .add_class_dump(
+            1000,
+            0,
+            4 + id_size * 2,
+            &[(str_size, 10), (str_first, 2), (str_last, 2)],
+        )
+        .add_class_dump(
+            2000,
+            0,
+            id_size * 3,
+            &[(str_item, 2), (str_next, 2), (str_prev, 2)],
+        )
+        .add_instance(0x100, 0, 1000, &ll_data);
+
+    for i in 0..n {
+        let node_id = 0x200u64 + i as u64;
+        let item_id = 0x10u64 + i as u64;
+        let next_id = if i + 1 < n {
+            0x200u64 + (i + 1) as u64
+        } else {
+            0
+        };
+        let prev_id = if i > 0 { 0x200u64 + (i - 1) as u64 } else { 0 };
+        let mut node_data = Vec::new();
+        node_data.extend_from_slice(&item_id.to_be_bytes());
+        node_data.extend_from_slice(&next_id.to_be_bytes());
+        node_data.extend_from_slice(&prev_id.to_be_bytes());
+        builder = builder.add_instance(node_id, 0, 2000, &node_data);
+    }
+
+    let bytes = builder.build();
+    let mut tmp = tempfile::NamedTempFile::new().unwrap();
+    tmp.write_all(&bytes).unwrap();
+    tmp.flush().unwrap();
+
+    let config = EngineConfig::default();
+    let engine = Engine::from_file(tmp.path(), &config).unwrap();
+
+    // Page 0: no skip-index must be created (lazy — AC#7)
+    let _ = engine.get_page(0x100, 0, 10);
+    assert_eq!(
+        engine.skip_index_count(),
+        0,
+        "page 0 must not allocate a skip-index"
+    );
+
+    // Page 1 (offset=10): skip-index lazily created
+    let _ = engine.get_page(0x100, 10, 10);
+    assert_eq!(
+        engine.skip_index_count(),
+        1,
+        "first offset>0 access must allocate exactly one skip-index"
+    );
+}
+
+// -- Story 11.7: Background walker Engine integration --
+
+mod walker_integration {
+    use super::*;
+    use crate::engine::NavigationEngine;
+    use hprof_parser::HprofTestBuilder;
+
+    fn build_hashmap_bytes(n: usize) -> Vec<u8> {
+        let id_size: u32 = 8;
+        let s_size = 10u64;
+        let s_table = 11u64;
+        let s_key = 12u64;
+        let s_value = 13u64;
+        let s_next = 14u64;
+        let s_cn = 15u64;
+        let s_node_cn = 16u64;
+
+        let table: Vec<u64> = (0..n).map(|i| 0x200u64 + i as u64).collect();
+
+        let mut hm = Vec::new();
+        hm.extend_from_slice(&(n as i32).to_be_bytes());
+        hm.extend_from_slice(&0x500u64.to_be_bytes());
+
+        let mut b = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_string(s_size, "size")
+            .add_string(s_table, "table")
+            .add_string(s_key, "key")
+            .add_string(s_value, "value")
+            .add_string(s_next, "next")
+            .add_string(s_cn, "java/util/HashMap")
+            .add_string(s_node_cn, "java/util/HashMap$Node")
+            .add_class(1, 1000, 0, s_cn)
+            .add_class(2, 2000, 0, s_node_cn)
+            .add_class_dump(1000, 0, 4 + id_size, &[(s_size, 10), (s_table, 2)])
+            .add_class_dump(
+                2000,
+                0,
+                id_size * 3,
+                &[(s_key, 2), (s_value, 2), (s_next, 2)],
+            )
+            .add_instance(0x100, 0, 1000, &hm)
+            .add_object_array(0x500, 0, 2000, &table);
+
+        for i in 0..n {
+            let nid = 0x200u64 + i as u64;
+            let kid = 0x1000u64 + i as u64;
+            let vid = 0x2000u64 + i as u64;
+            let mut nd = Vec::new();
+            nd.extend_from_slice(&kid.to_be_bytes());
+            nd.extend_from_slice(&vid.to_be_bytes());
+            nd.extend_from_slice(&0u64.to_be_bytes());
+            b = b.add_instance(nid, 0, 2000, &nd);
+        }
+        b.build()
+    }
+
+    fn engine_from_bytes(bytes: &[u8]) -> Engine {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(bytes).unwrap();
+        tmp.flush().unwrap();
+        Engine::from_file(tmp.path(), &EngineConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn spawn_walker_completes_and_drain_applies() {
+        let engine = engine_from_bytes(&build_hashmap_bytes(50));
+        engine.spawn_walker(0x100);
+
+        // Poll until walker finishes (up to 1 s).
+        // get_page calls drain_walker which processes
+        // WalkMessage::Complete and removes the handle.
+        for _ in 0..1000 {
+            engine.get_page(0x100, 0, 10);
+            if engine.walker_progress(0x100).is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        let page = engine.get_page(0x100, 0, 10);
+        assert!(page.is_some());
+
+        // Walker should be removed after Complete
+        assert!(
+            engine.walker_progress(0x100).is_none(),
+            "walker should be removed after completion"
+        );
+    }
+
+    #[test]
+    fn spawn_walker_dedup() {
+        let engine = engine_from_bytes(&build_hashmap_bytes(50));
+        engine.spawn_walker(0x100);
+        engine.spawn_walker(0x100); // second call
+
+        let walkers = engine.walkers.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(walkers.len(), 1, "duplicate spawn should be ignored");
+    }
+
+    #[test]
+    fn spawn_walker_cap() {
+        let engine = engine_from_bytes(&build_hashmap_bytes(10));
+
+        // Fill walker slots with fake entries
+        {
+            let mut walkers = engine.walkers.lock().unwrap_or_else(|e| e.into_inner());
+            for i in 1..=8 {
+                let (tx, rx) = std::sync::mpsc::channel();
+                drop(tx);
+                let handle = crate::pagination::WalkerHandle::new(
+                    rx,
+                    std::thread::spawn(|| {}),
+                    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                );
+                walkers.insert(i, handle);
+            }
+        }
+
+        // 9th walker should be rejected
+        engine.spawn_walker(0x100);
+        let walkers = engine.walkers.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !walkers.contains_key(&0x100),
+            "should reject spawn when cap reached"
+        );
+    }
+
+    #[test]
+    fn cancel_walker_removes_handle() {
+        let engine = engine_from_bytes(&build_hashmap_bytes(50));
+        engine.spawn_walker(0x100);
+
+        // Cancel immediately
+        engine.cancel_walker(0x100);
+
+        assert!(
+            engine.walker_progress(0x100).is_none(),
+            "handle should be removed after cancel"
+        );
+    }
+
+    #[test]
+    fn walker_progress_lifecycle() {
+        let engine = engine_from_bytes(&build_hashmap_bytes(50));
+        engine.spawn_walker(0x100);
+
+        // Progress may already be None if the walker
+        // finished before this line on fast machines.
+        let _progress = engine.walker_progress(0x100);
+
+        // Poll until walker finishes (up to 1 s).
+        for _ in 0..1000 {
+            engine.get_page(0x100, 0, 10);
+            if engine.walker_progress(0x100).is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        // After drain of Complete, progress is None
+        assert!(
+            engine.walker_progress(0x100).is_none(),
+            "progress should be None after completion"
+        );
+    }
+}

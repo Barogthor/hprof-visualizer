@@ -43,7 +43,20 @@ use crate::views::stack_view::{CollectionId, EntryIdx, FieldIdx, StaticFieldIdx,
 
 /// Delay before showing the loading spinner for expansions/page loads.
 /// Operations completing before this threshold show no spinner.
-const EXPANSION_LOADING_THRESHOLD: Duration = Duration::from_secs(1);
+const EXPANSION_LOADING_THRESHOLD: Duration = Duration::from_millis(200);
+
+/// Minimum time the spinner stays visible once shown, preventing
+/// sub-frame flicker for operations that complete shortly after
+/// the threshold.
+const MINIMUM_SPINNER_DURATION: Duration = Duration::from_millis(400);
+
+/// Status bar spinner state — mutual exclusion by construction.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SpinnerState {
+    Idle,
+    Resolving,
+    NavigatingToPin,
+}
 
 struct PendingExpansion {
     rx: Receiver<Option<Vec<FieldInfo>>>,
@@ -58,6 +71,9 @@ struct PendingPage {
     rx: Receiver<Option<CollectionPage>>,
     pub(super) started: Instant,
     loading_shown: bool,
+    /// Path of the collection node (set for offset-0 eager loads
+    /// so the node can be marked Loading after threshold).
+    parent_path: Option<NavigationPath>,
 }
 
 /// Minimum terminal width to show the favorites panel.
@@ -133,6 +149,8 @@ pub struct App<E: NavigationEngine> {
     preview_stack_state: StackState,
     /// Stack frame state — `Some` when a thread is entered, `None` otherwise.
     stack_state: Option<StackState>,
+    /// Serial of the thread whose stack is in `stack_state`.
+    stack_thread_serial: Option<u32>,
     /// In-flight object expansion receivers keyed by `NavigationPath`.
     pending_expansions: HashMap<NavigationPath, PendingExpansion>,
     /// In-flight collection page load receivers keyed by
@@ -161,10 +179,14 @@ pub struct App<E: NavigationEngine> {
     show_object_ids: bool,
     /// In-progress go-to-pin navigation state (async walk deferred).
     pending_navigation: Option<PendingNavigation>,
-    /// True while a go-to-pin walk is deferred; drives spinner in status bar.
-    navigating_to_pin: bool,
+    /// Consolidated spinner state for the status bar.
+    spinner_state: SpinnerState,
     /// Spinner frame counter, incremented via `wrapping_add(1)` each render.
     spinner_tick: u8,
+    /// Earliest instant at which the spinner may be hidden after going
+    /// non-idle. Arms on `Idle → non-Idle`; resets to `None` on return
+    /// to `Idle`.
+    loading_until: Option<Instant>,
 }
 
 impl<E: NavigationEngine> App<E> {
@@ -191,6 +213,7 @@ impl<E: NavigationEngine> App<E> {
             warning_count,
             preview_stack_state,
             stack_state: None,
+            stack_thread_serial: None,
             pending_expansions: HashMap::new(),
             pending_pages: HashMap::new(),
             pending_pinned_pages: HashMap::new(),
@@ -204,17 +227,28 @@ impl<E: NavigationEngine> App<E> {
             show_help: false,
             show_object_ids: false,
             pending_navigation: None,
-            navigating_to_pin: false,
+            spinner_state: SpinnerState::Idle,
             spinner_tick: 0,
+            loading_until: None,
         }
     }
 
     fn open_stack_for_selected_thread(&mut self, serial: u32) {
         self.thread_list.select_serial(serial);
+        // Reuse existing stack_state if same thread.
+        if self.stack_thread_serial == Some(serial) && self.stack_state.is_some() {
+            self.focus = Focus::StackFrames;
+            return;
+        }
+        // Discard in-flight work from the previous thread to
+        // prevent stale results from polluting the new state.
+        self.pending_expansions.clear();
+        self.pending_pages.clear();
         let frames = self.engine.get_stack_frames(serial);
         let mut stack_state = StackState::new(frames);
         stack_state.set_visible_height(0);
         self.stack_state = Some(stack_state);
+        self.stack_thread_serial = Some(serial);
         self.focus = Focus::StackFrames;
     }
 
@@ -410,7 +444,7 @@ impl<E: NavigationEngine> App<E> {
         if remaining.is_empty() {
             self.position_cursor_and_scroll(&materialised);
             self.pending_navigation = None;
-            self.navigating_to_pin = false;
+            self.spinner_state = SpinnerState::Idle;
             self.spinner_tick = 0;
             return WalkOutcome::Success(NavigationPath::from_segments(materialised));
         }
@@ -433,7 +467,7 @@ impl<E: NavigationEngine> App<E> {
                     awaited: AwaitedResource::Continue,
                     prereq_expanded,
                 });
-                self.navigating_to_pin = true;
+                self.spinner_state = SpinnerState::NavigatingToPin;
                 return WalkOutcome::PartialAt(partial);
             }
 
@@ -492,7 +526,7 @@ impl<E: NavigationEngine> App<E> {
                             awaited: AwaitedResource::ObjectExpansion(oid),
                             prereq_expanded,
                         });
-                        self.navigating_to_pin = true;
+                        self.spinner_state = SpinnerState::NavigatingToPin;
                         self.position_cursor_and_scroll(&materialised);
                         return WalkOutcome::PartialAt(partial);
                     }
@@ -522,7 +556,7 @@ impl<E: NavigationEngine> App<E> {
                             awaited: AwaitedResource::ObjectExpansion(oid),
                             prereq_expanded,
                         });
-                        self.navigating_to_pin = true;
+                        self.spinner_state = SpinnerState::NavigatingToPin;
                         self.position_cursor_and_scroll(&materialised);
                         return WalkOutcome::PartialAt(partial);
                     }
@@ -571,7 +605,7 @@ impl<E: NavigationEngine> App<E> {
                             awaited: AwaitedResource::CollectionPage(cid.0),
                             prereq_expanded,
                         });
-                        self.navigating_to_pin = true;
+                        self.spinner_state = SpinnerState::NavigatingToPin;
                         self.position_cursor_and_scroll(&materialised);
                         return WalkOutcome::PartialAt(partial);
                     }
@@ -586,7 +620,7 @@ impl<E: NavigationEngine> App<E> {
         let final_path = NavigationPath::from_segments(materialised.clone());
         self.position_cursor_and_scroll(&materialised);
         self.pending_navigation = None;
-        self.navigating_to_pin = false;
+        self.spinner_state = SpinnerState::Idle;
         self.spinner_tick = 0;
         WalkOutcome::Success(final_path)
     }
@@ -716,6 +750,7 @@ impl<E: NavigationEngine> App<E> {
                 s.expansion.collection_chunks.insert(collection_id, chunks);
             }
             self.start_collection_page_load(collection_id, 0, 100);
+            self.engine.spawn_walker(collection_id);
             return;
         }
 
@@ -925,7 +960,7 @@ impl<E: NavigationEngine> App<E> {
 
                 // Cancel any in-progress navigation before starting a new one (RT-A1).
                 self.pending_navigation = None;
-                self.navigating_to_pin = false;
+                self.spinner_state = SpinnerState::Idle;
                 self.spinner_tick = 0;
                 self.navigate_to_path(thread_id, &nav_path);
                 self.focus = Focus::StackFrames;
@@ -1124,30 +1159,25 @@ impl<E: NavigationEngine> App<E> {
         match event {
             InputEvent::Escape => {
                 // Priority: cancel any in-progress go-to-pin navigation (AC6).
-                if self.pending_navigation.is_some() {
-                    self.pending_navigation = None;
-                    self.navigating_to_pin = false;
-                    self.spinner_tick = 0;
-                    return AppAction::Continue;
-                }
-                // If inside a collection, collapse it and
-                // return cursor to the parent field.
-                let coll_info = self
-                    .stack_state
-                    .as_ref()
-                    .and_then(|s| s.cursor_collection_id());
-                if let Some((cid, restore_cursor)) = coll_info {
-                    self.pending_pages.retain(|&(id, _), _| id != cid);
-                    if let Some(s) = &mut self.stack_state {
-                        let cpath = match s.cursor() {
-                            RenderCursor::At(p) => Some(p.clone()),
-                            _ => None,
-                        };
-                        s.expansion.collection_chunks.remove(&cid);
-                        if let Some(p) = &cpath {
-                            s.expansion.collapse_at_path(p);
+                if let Some(nav) = self.pending_navigation.take() {
+                    // Remove the awaited async op so its result
+                    // is discarded (the node won't expand).
+                    match nav.awaited {
+                        AwaitedResource::ObjectExpansion(oid) => {
+                            self.pending_expansions.retain(|_, pe| pe.object_id != oid);
                         }
-                        s.set_cursor(restore_cursor);
+                        AwaitedResource::CollectionPage(cid) => {
+                            self.pending_pages.retain(|&(id, _), _| id != cid);
+                        }
+                        AwaitedResource::Continue => {}
+                    }
+                    let has_loading = self.has_loading_shown_pending();
+                    if has_loading {
+                        self.spinner_state = SpinnerState::Resolving;
+                    } else {
+                        self.spinner_state = SpinnerState::Idle;
+                        self.spinner_tick = 0;
+                        self.loading_until = None;
                     }
                     return AppAction::Continue;
                 }
@@ -1166,7 +1196,8 @@ impl<E: NavigationEngine> App<E> {
                         s.cancel_expansion(&path);
                     }
                 } else {
-                    self.stack_state = None;
+                    // Keep stack_state so re-entering the same
+                    // thread preserves expansion state.
                     self.focus = Focus::ThreadList;
                     self.refresh_preview_stack();
                 }
@@ -1342,15 +1373,26 @@ impl<E: NavigationEngine> App<E> {
                                 .map(|(o, _)| (o, ChunkState::Collapsed))
                                 .collect(),
                         };
+                        let cursor_path =
+                            self.stack_state.as_ref().and_then(|s| match s.cursor() {
+                                RenderCursor::At(p) => Some(p.clone()),
+                                _ => None,
+                            });
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.insert(cid, chunks);
-                            if let RenderCursor::At(path) = s.cursor().clone() {
+                            if let Some(ref path) = cursor_path {
                                 s.expansion
                                     .expansion_phases
-                                    .insert(path, ExpansionPhase::Expanded);
+                                    .insert(path.clone(), ExpansionPhase::Expanded);
                             }
                         }
                         self.start_collection_page_load(cid, 0, limit);
+                        self.engine.spawn_walker(cid);
+                        if let Some(path) = cursor_path
+                            && let Some(pp) = self.pending_pages.get_mut(&(cid, 0))
+                        {
+                            pp.parent_path = Some(path);
+                        }
                     }
                     Some(RightCmd::StartEntryObj(oid, path)) => {
                         self.start_object_expansion(oid, path);
@@ -1714,15 +1756,26 @@ impl<E: NavigationEngine> App<E> {
                                 .map(|(o, _)| (o, ChunkState::Collapsed))
                                 .collect(),
                         };
+                        let cursor_path =
+                            self.stack_state.as_ref().and_then(|s| match s.cursor() {
+                                RenderCursor::At(p) => Some(p.clone()),
+                                _ => None,
+                            });
                         if let Some(s) = &mut self.stack_state {
                             s.expansion.collection_chunks.insert(cid, chunks);
-                            if let RenderCursor::At(path) = s.cursor().clone() {
+                            if let Some(ref path) = cursor_path {
                                 s.expansion
                                     .expansion_phases
-                                    .insert(path, ExpansionPhase::Expanded);
+                                    .insert(path.clone(), ExpansionPhase::Expanded);
                             }
                         }
                         self.start_collection_page_load(cid, 0, limit);
+                        self.engine.spawn_walker(cid);
+                        if let Some(path) = cursor_path
+                            && let Some(pp) = self.pending_pages.get_mut(&(cid, 0))
+                        {
+                            pp.parent_path = Some(path);
+                        }
                     }
                     Some(Cmd::LoadChunk(cid, offset, limit)) => {
                         self.start_collection_page_load(cid, offset, limit);
@@ -1838,6 +1891,7 @@ impl<E: NavigationEngine> App<E> {
                 rx,
                 started: Instant::now(),
                 loading_shown: false,
+                parent_path: None,
             },
         );
     }
@@ -1862,11 +1916,20 @@ impl<E: NavigationEngine> App<E> {
                         offset,
                         page.entries.len()
                     );
+                    // Restore parent node to Expanded if it was
+                    // set to Loading during the threshold wait.
+                    if offset == 0
+                        && let Some(ref path) = pp.parent_path
+                        && let Some(s) = &mut self.stack_state
+                    {
+                        s.expansion
+                            .expansion_phases
+                            .insert(path.clone(), ExpansionPhase::Expanded);
+                    }
                     if let Some(s) = &mut self.stack_state
                         && let Some(cc) = s.expansion.collection_chunks.get_mut(&cid)
                     {
                         if offset == 0 {
-                            // Update total_count/chunk_pages if initialised async.
                             if cc.total_count == 0 {
                                 cc.total_count = page.total_count;
                                 cc.chunk_pages = compute_chunk_ranges(page.total_count)
@@ -1905,7 +1968,7 @@ impl<E: NavigationEngine> App<E> {
                         .is_some_and(|p| p.awaited == AwaitedResource::CollectionPage(cid))
                     {
                         self.pending_navigation = None;
-                        self.navigating_to_pin = false;
+                        self.spinner_state = SpinnerState::Idle;
                         self.spinner_tick = 0;
                         self.ui_status =
                             Some("Failed to navigate — object not resolvable".to_string());
@@ -1916,8 +1979,13 @@ impl<E: NavigationEngine> App<E> {
                 Err(mpsc::TryRecvError::Empty) => {
                     if !pp.loading_shown && pp.started.elapsed() >= EXPANSION_LOADING_THRESHOLD {
                         if offset == 0 {
-                            // Collection loading uses ChunkState::Loading,
-                            // not ExpansionPhase; no-op here.
+                            // Mark the collection node as Loading so it
+                            // renders with the loading indicator color.
+                            if let Some(ref path) = pp.parent_path
+                                && let Some(s) = &mut self.stack_state
+                            {
+                                s.set_expansion_loading(path);
+                            }
                         } else if let Some(s) = &mut self.stack_state
                             && let Some(cc) = s.expansion.collection_chunks.get_mut(&cid)
                         {
@@ -2061,16 +2129,25 @@ impl<E: NavigationEngine> App<E> {
                             fields.len()
                         ),
                     }
-                    if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_done_at_path(path, object_id, fields);
-                        s.set_static_fields(object_id, static_fields);
-                    }
-                    if self
-                        .pending_navigation
-                        .as_ref()
-                        .is_some_and(|p| p.awaited == AwaitedResource::ObjectExpansion(object_id))
-                    {
-                        nav_resume_oid = Some(object_id);
+                    // Guard: if the Loading indicator was shown
+                    // but the phase was since cancelled
+                    // (reverted to Collapsed), discard the
+                    // result to avoid reinserting an orphaned
+                    // Expanded phase.
+                    let cancelled = pe.loading_shown
+                        && self.stack_state.as_ref().is_some_and(|s| {
+                            s.expansion_state_for_path(path) != ExpansionPhase::Loading
+                        });
+                    if !cancelled {
+                        if let Some(s) = &mut self.stack_state {
+                            s.set_expansion_done_at_path(path, object_id, fields);
+                            s.set_static_fields(object_id, static_fields);
+                        }
+                        if self.pending_navigation.as_ref().is_some_and(|p| {
+                            p.awaited == AwaitedResource::ObjectExpansion(object_id)
+                        }) {
+                            nav_resume_oid = Some(object_id);
+                        }
                     }
                     done.push(path.clone());
                 }
@@ -2085,7 +2162,7 @@ impl<E: NavigationEngine> App<E> {
                         .is_some_and(|p| p.awaited == AwaitedResource::ObjectExpansion(object_id))
                     {
                         self.pending_navigation = None;
-                        self.navigating_to_pin = false;
+                        self.spinner_state = SpinnerState::Idle;
                         self.spinner_tick = 0;
                         self.ui_status =
                             Some("Failed to navigate — object not resolvable".to_string());
@@ -2133,10 +2210,85 @@ impl<E: NavigationEngine> App<E> {
         }
     }
 
+    /// Returns `true` if any pending operation has crossed the
+    /// loading threshold (`loading_shown == true`).
+    ///
+    /// Scans all three pending HashMaps. With at most ~100 concurrent
+    /// operations the O(n) scan is < 0.01ms. If Epic 11.3 introduces
+    /// concurrency beyond ~1000 entries, replace with an `AtomicUsize`
+    /// counter incremented when `loading_shown` is first set and
+    /// decremented when the pending entry is removed.
+    fn has_loading_shown_pending(&self) -> bool {
+        self.pending_expansions.values().any(|pe| pe.loading_shown)
+            || self.pending_pages.values().any(|pp| pp.loading_shown)
+            || self
+                .pending_pinned_pages
+                .values()
+                .any(|pp| pp.loading_shown)
+    }
+
+    /// Returns walker progress for the first active
+    /// walker among currently viewed collections,
+    /// or `None` if no walker is active.
+    fn current_walker_info(&self) -> Option<(usize, u64)> {
+        let cc_map = self
+            .stack_state
+            .as_ref()?
+            .expansion
+            .collection_chunks
+            .iter();
+        for (&cid, chunks) in cc_map {
+            if let Some(progress) = self.engine.walker_progress(cid) {
+                return Some((progress, chunks.total_count));
+            }
+        }
+        None
+    }
+
+    /// Recomputes `spinner_state` from all pending operation maps and
+    /// the `loading_until` minimum-display timer. Must be called once
+    /// per tick, after `poll_expansions()` + `poll_pages()`.
+    fn update_spinner_state(&mut self) {
+        let prev = self.spinner_state;
+
+        // NavigatingToPin takes priority over Resolving.
+        let nav_active = self.pending_navigation.is_some();
+        let has_loading = self.has_loading_shown_pending();
+
+        let computed = if nav_active {
+            SpinnerState::NavigatingToPin
+        } else if has_loading {
+            SpinnerState::Resolving
+        } else {
+            SpinnerState::Idle
+        };
+
+        // Minimum display: keep spinner visible until loading_until.
+        let timer_active = self.loading_until.is_some_and(|t| Instant::now() < t);
+
+        if computed != SpinnerState::Idle {
+            // Arm the timer on Idle → non-Idle transition only.
+            if prev == SpinnerState::Idle {
+                self.loading_until = Some(Instant::now() + MINIMUM_SPINNER_DURATION);
+            }
+            self.spinner_state = computed;
+        } else if timer_active {
+            // Operations done but minimum display not expired —
+            // keep the current spinner_state visible (it may be
+            // non-Idle from a normal timer arm, or already Idle
+            // if Escape explicitly cleared it — in either case
+            // the render is correct as-is).
+        } else {
+            // Both conditions false: clear spinner.
+            self.spinner_state = SpinnerState::Idle;
+            self.loading_until = None;
+        }
+    }
+
     /// Renders the current state into a ratatui `Frame`.
     pub fn render(&mut self, frame: &mut ratatui::Frame) {
-        // Advance spinner when a go-to-pin navigation is in progress.
-        if self.navigating_to_pin {
+        // Advance spinner when any spinner is active.
+        if self.spinner_state != SpinnerState::Idle {
             self.spinner_tick = self.spinner_tick.wrapping_add(1);
         }
         if self.last_memory_log.elapsed() >= Duration::from_secs(20) {
@@ -2289,14 +2441,15 @@ impl<E: NavigationEngine> App<E> {
                 last_warning: last_warning.as_deref(),
                 file_indexed_pct,
                 pinned_hidden_count,
-                navigating_to_pin: self.navigating_to_pin,
+                spinner_state: self.spinner_state,
                 spinner_tick: self.spinner_tick,
+                walker_info: self.current_walker_info(),
             },
             status_area,
         );
 
         if let Some(area) = help_area {
-            let ctx = if self.navigating_to_pin {
+            let ctx = if self.spinner_state != SpinnerState::Idle {
                 HelpContext::Navigating
             } else {
                 match self.focus {
@@ -2398,6 +2551,7 @@ fn run_loop<E: NavigationEngine + Send + Sync + 'static>(
         }
 
         // 2. Polls — must run after input so Escape can cancel before resume.
+        app.engine.drain_walkers();
         app.poll_expansions();
         app.poll_pages();
 
@@ -2411,7 +2565,10 @@ fn run_loop<E: NavigationEngine + Send + Sync + 'static>(
             app.resume_pending_navigation(pending);
         }
 
-        // 4. Render.
+        // 4. Recompute consolidated spinner state once per tick.
+        app.update_spinner_state();
+
+        // 5. Render.
         terminal.draw(|f| app.render(f))?;
     }
 }

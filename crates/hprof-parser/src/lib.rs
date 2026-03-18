@@ -50,10 +50,10 @@ pub use tags::{HeapSubTag, RecordTag};
 
 pub mod indexer;
 pub use indexer::HeapRecordRange;
-pub use indexer::precise::PreciseIndex;
+pub use indexer::precise::{OffsetCache, PreciseIndex};
 
 pub(crate) mod hprof_file;
-pub use hprof_file::HprofFile;
+pub use hprof_file::{BatchResult, HprofFile, ObjectArrayMeta};
 
 #[cfg(feature = "test-utils")]
 pub(crate) mod test_utils;

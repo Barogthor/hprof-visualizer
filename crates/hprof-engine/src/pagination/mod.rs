@@ -4,11 +4,25 @@
 //! object by identifying its concrete type and delegating
 //! to the appropriate extractor.
 
-use hprof_parser::{HprofFile, RawInstance};
+mod background_walker;
+mod skip_index;
+
+use hprof_parser::{HprofFile, ObjectArrayMeta, RawInstance};
 
 use crate::engine::{CollectionPage, EntryInfo, FieldValue};
 use crate::engine_impl::Engine;
 use crate::resolver::decode_fields;
+
+pub(crate) use background_walker::{
+    MAX_WALKERS, WalkMessage, WalkerHandle, walk_collection_background,
+};
+use skip_index::SkipCheckpoint;
+pub(crate) use skip_index::{SKIP_INTERVAL, SkipIndex};
+
+/// Minimum number of uncached head IDs required to use
+/// `batch_find_instances`. Below this threshold the fixed
+/// overhead of rayon+segment grouping exceeds the gain.
+const BATCH_THRESHOLD: usize = 16;
 
 /// Returns a page from the collection identified by
 /// `collection_id`, or `None` if unsupported/not found.
@@ -17,6 +31,7 @@ pub(crate) fn get_page(
     collection_id: u64,
     offset: usize,
     limit: usize,
+    skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
     // Try as Object[] or primitive[] first
     if let Some(page) = try_object_array(hfile, collection_id, offset, limit) {
@@ -62,7 +77,7 @@ pub(crate) fn get_page(
     };
     let short = class_name.rsplit('.').next().unwrap_or(class_name.as_str());
 
-    match_extractor(short, hfile, &raw, offset, limit)
+    match_extractor(short, hfile, &raw, offset, limit, skip_index)
 }
 
 fn match_extractor(
@@ -71,6 +86,7 @@ fn match_extractor(
     raw: &RawInstance,
     offset: usize,
     limit: usize,
+    skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
     if short_name.eq_ignore_ascii_case("ArrayList")
         || short_name.eq_ignore_ascii_case("CopyOnWriteArrayList")
@@ -81,33 +97,39 @@ fn match_extractor(
     if short_name.eq_ignore_ascii_case("HashMap")
         || short_name.eq_ignore_ascii_case("LinkedHashMap")
     {
-        return extract_hash_map(hfile, raw, offset, limit, false);
+        return extract_hash_map(hfile, raw, offset, limit, false, skip_index);
     }
     if short_name.eq_ignore_ascii_case("ConcurrentHashMap") {
-        return extract_hash_map(hfile, raw, offset, limit, true);
+        // TODO(11.6-4.3d): HprofTestBuilder cannot construct a ConcurrentHashMap
+        // (segments structure too complex). Batch pre-resolution is inherited via
+        // the shared extract_hash_map code path (concurrent=true). Manual test
+        // required to verify batch behaviour on a real dump with ≥16 entries.
+        return extract_hash_map(hfile, raw, offset, limit, true, skip_index);
     }
     if short_name.eq_ignore_ascii_case("HashSet")
         || short_name.eq_ignore_ascii_case("LinkedHashSet")
     {
-        return extract_hash_set(hfile, raw, offset, limit);
+        return extract_hash_set(hfile, raw, offset, limit, skip_index);
     }
     if short_name.eq_ignore_ascii_case("LinkedList") {
-        return extract_linked_list(hfile, raw, offset, limit);
+        return extract_linked_list(hfile, raw, offset, limit, skip_index);
     }
     // Unsupported collection type
     None
 }
 
 /// Extracts a page from an `ObjectArrayDump` directly.
+///
+/// Uses O(1) positional reads via [`ObjectArrayMeta`]
+/// instead of deserializing all elements.
 fn try_object_array(
     hfile: &HprofFile,
     array_id: u64,
     offset: usize,
     limit: usize,
 ) -> Option<CollectionPage> {
-    let (_class_id, elements) = hfile.find_object_array(array_id)?;
-    let total = elements.len() as u64;
-    paginate_id_slice(&elements, total, offset, limit, hfile)
+    let meta = hfile.find_object_array_meta(array_id)?;
+    paginate_object_array(&meta, meta.num_elements as u64, offset, limit, hfile)
 }
 
 /// Extracts a page from a `PrimArrayDump` directly.
@@ -185,20 +207,26 @@ fn extract_array_list(
 
     let total = size?;
     let arr_id = element_data_id?;
-    let (_class_id, elements) = hfile.find_object_array(arr_id)?;
-
-    // Pass `total` (= size field) as the logical bound — paginate_id_slice
-    // limits entries to [0, total), so capacity-padding slots are ignored.
-    paginate_id_slice(&elements, total, offset, limit, hfile)
+    let meta = hfile.find_object_array_meta(arr_id)?;
+    // Clamp total to the actual backing array capacity
+    // to guard against corrupt dumps where size >
+    // num_elements.
+    let effective_total = total.min(meta.num_elements as u64);
+    paginate_object_array(&meta, effective_total, offset, limit, hfile)
 }
 
 /// Walks `table` Node[] for HashMap / ConcurrentHashMap.
+///
+/// When a `SkipIndex` is provided and `offset > 0`,
+/// resumes from the nearest checkpoint instead of walking
+/// from slot 0. Records new checkpoints during traversal.
 fn extract_hash_map(
     hfile: &HprofFile,
     raw: &RawInstance,
     offset: usize,
     limit: usize,
     concurrent: bool,
+    mut skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
     let fields = decode_fields(
         raw,
@@ -228,21 +256,117 @@ fn extract_hash_map(
     let table_arr_id = table_id?;
     let (_class_id, table_elements) = hfile.find_object_array(table_arr_id)?;
 
-    // Walk non-null slots, following `next` chains
+    // Determine start position via skip-index checkpoint
+    let mut checkpoint_index: usize = 0;
+    let mut start_slot: usize = 0;
+    let mut resume_node_id: Option<u64> = None;
+
+    if let Some(si) = skip_index.as_deref()
+        && offset > 0
+        && let Some((ci, cp)) = si.nearest_before(offset)
+    {
+        match cp {
+            SkipCheckpoint::HashMapSlot {
+                slot_index,
+                node_id,
+            } => {
+                if *slot_index < table_elements.len() {
+                    checkpoint_index = ci;
+                    start_slot = *slot_index;
+                    resume_node_id = Some(*node_id);
+                }
+            }
+            _ => unreachable!(
+                "unexpected checkpoint variant \
+                 in extract_hash_map"
+            ),
+        }
+    }
+
+    // Batch pre-resolve uncached table head node IDs
+    // (Story 11.6 Task 2.1)
+    let uncached_heads: Vec<u64> = table_elements[start_slot..]
+        .iter()
+        .copied()
+        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .collect();
+    if uncached_heads.len() >= BATCH_THRESHOLD {
+        let batch = hfile.batch_find_instances(&uncached_heads);
+        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+    }
+
+    let adjusted_offset = offset - checkpoint_index;
+    let target_count = adjusted_offset + limit;
     let mut all_entries: Vec<(FieldValue, FieldValue)> = Vec::new();
-    let target_count = offset + limit;
     let mut visited = std::collections::HashSet::new();
 
-    for &slot_id in &table_elements {
+    for (slot_rel, &slot_id) in table_elements[start_slot..].iter().enumerate() {
+        let current_slot = start_slot + slot_rel;
         if slot_id == 0 {
             continue;
         }
         let mut node_id = slot_id;
+
+        // On the first slot of a checkpoint resume, walk
+        // the chain to find the checkpoint node
+        if let Some(target) = resume_node_id.take() {
+            // Walk chain until we find the target node
+            while node_id != 0 && node_id != target {
+                if !visited.insert(node_id) {
+                    break;
+                }
+                if let Some(nr) = Engine::read_instance_public(hfile, node_id) {
+                    let nf = decode_fields(
+                        &nr,
+                        &hfile.index,
+                        hfile.header.id_size,
+                        hfile.records_bytes(),
+                    );
+                    node_id = nf
+                        .iter()
+                        .find(|f| f.name == "next")
+                        .and_then(|f| match f.value {
+                            FieldValue::ObjectRef { id, .. } => Some(id),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                } else {
+                    node_id = 0;
+                }
+            }
+            if node_id == 0 {
+                // Target node not found — fallback:
+                // reset and walk from beginning
+                return extract_hash_map_full(
+                    hfile,
+                    &table_elements,
+                    total,
+                    offset,
+                    limit,
+                    val_field_name,
+                    skip_index,
+                );
+            }
+            // node_id is now the checkpoint node; proceed
+            // to collect from here (including this node)
+        }
+
         while node_id != 0 {
             if !visited.insert(node_id) {
                 break; // cycle guard
             }
             if let Some(node_raw) = Engine::read_instance_public(hfile, node_id) {
+                // Record checkpoint before pushing entry
+                if let Some(si) = skip_index.as_deref_mut() {
+                    si.record(
+                        checkpoint_index + all_entries.len(),
+                        SkipCheckpoint::HashMapSlot {
+                            slot_index: current_slot,
+                            node_id,
+                        },
+                    );
+                }
+
                 let node_fields = decode_fields(
                     &node_raw,
                     &hfile.index,
@@ -272,8 +396,6 @@ fn extract_hash_map(
             } else {
                 break;
             }
-            // Early exit: no need to walk past
-            // offset + limit
             if all_entries.len() >= target_count {
                 break;
             }
@@ -283,7 +405,152 @@ fn extract_hash_map(
         }
     }
 
-    paginate_kv_entries(&all_entries, total, offset, limit)
+    if all_entries.len() < target_count
+        && let Some(si) = skip_index
+    {
+        si.mark_complete();
+    }
+
+    // Batch pre-resolve uncached key/value object IDs
+    // for the visible page window (Story 11.6 Task 3.1)
+    let kv_start = adjusted_offset;
+    let kv_end = (adjusted_offset + limit).min(all_entries.len());
+    if kv_start < kv_end {
+        let obj_ids: Vec<u64> = all_entries[kv_start..kv_end]
+            .iter()
+            .flat_map(|(k, v)| [k, v])
+            .filter_map(|fv| match fv {
+                FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
+                _ => None,
+            })
+            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .collect();
+        if !obj_ids.is_empty() {
+            let batch = hfile.batch_find_instances(&obj_ids);
+            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        }
+    }
+
+    paginate_kv_entries(
+        &all_entries,
+        total,
+        adjusted_offset,
+        limit,
+        checkpoint_index,
+    )
+}
+
+/// Full walk fallback for HashMap when checkpoint resume
+/// fails.
+fn extract_hash_map_full(
+    hfile: &HprofFile,
+    table_elements: &[u64],
+    total: u64,
+    offset: usize,
+    limit: usize,
+    val_field_name: &str,
+    mut skip_index: Option<&mut SkipIndex>,
+) -> Option<CollectionPage> {
+    // Batch pre-resolve uncached table head node IDs
+    // (Story 11.6 Task 2.1)
+    let uncached_heads: Vec<u64> = table_elements
+        .iter()
+        .copied()
+        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .collect();
+    if uncached_heads.len() >= BATCH_THRESHOLD {
+        let batch = hfile.batch_find_instances(&uncached_heads);
+        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+    }
+
+    let target_count = offset + limit;
+    let mut all_entries: Vec<(FieldValue, FieldValue)> = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+
+    for (current_slot, &slot_id) in table_elements.iter().enumerate() {
+        if slot_id == 0 {
+            continue;
+        }
+        let mut node_id = slot_id;
+        while node_id != 0 {
+            if !visited.insert(node_id) {
+                break;
+            }
+            if let Some(node_raw) = Engine::read_instance_public(hfile, node_id) {
+                if let Some(si) = skip_index.as_deref_mut() {
+                    si.record(
+                        all_entries.len(),
+                        SkipCheckpoint::HashMapSlot {
+                            slot_index: current_slot,
+                            node_id,
+                        },
+                    );
+                }
+                let node_fields = decode_fields(
+                    &node_raw,
+                    &hfile.index,
+                    hfile.header.id_size,
+                    hfile.records_bytes(),
+                );
+                let key = node_fields
+                    .iter()
+                    .find(|f| f.name == "key")
+                    .map(|f| f.value.clone())
+                    .unwrap_or(FieldValue::Null);
+                let value = node_fields
+                    .iter()
+                    .find(|f| f.name == val_field_name)
+                    .map(|f| f.value.clone())
+                    .unwrap_or(FieldValue::Null);
+                let next_id = node_fields
+                    .iter()
+                    .find(|f| f.name == "next")
+                    .and_then(|f| match f.value {
+                        FieldValue::ObjectRef { id, .. } => Some(id),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                all_entries.push((key, value));
+                node_id = next_id;
+            } else {
+                break;
+            }
+            if all_entries.len() >= target_count {
+                break;
+            }
+        }
+        if all_entries.len() >= target_count {
+            break;
+        }
+    }
+
+    if all_entries.len() < target_count
+        && let Some(si) = skip_index
+    {
+        si.mark_complete();
+    }
+
+    // Batch pre-resolve uncached key/value object IDs
+    // for the visible page window (Story 11.6 Task 3.1)
+    let page_start = offset;
+    let page_end = (offset + limit).min(all_entries.len());
+    if page_start < page_end {
+        let obj_ids: Vec<u64> = all_entries[page_start..page_end]
+            .iter()
+            .flat_map(|(k, v)| [k, v])
+            .filter_map(|fv| match fv {
+                FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
+                _ => None,
+            })
+            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .collect();
+        if !obj_ids.is_empty() {
+            let batch = hfile.batch_find_instances(&obj_ids);
+            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        }
+    }
+
+    paginate_kv_entries(&all_entries, total, offset, limit, 0)
 }
 
 /// HashSet delegates to its backing HashMap `map` field.
@@ -292,6 +559,7 @@ fn extract_hash_set(
     raw: &RawInstance,
     offset: usize,
     limit: usize,
+    skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
     let fields = decode_fields(
         raw,
@@ -310,7 +578,7 @@ fn extract_hash_set(
     })?;
 
     let map_raw = Engine::read_instance_public(hfile, map_id)?;
-    let page = extract_hash_map(hfile, &map_raw, offset, limit, false)?;
+    let page = extract_hash_map(hfile, &map_raw, offset, limit, false, skip_index)?;
 
     // Convert map entries to set entries (keys only)
     let entries = page
@@ -332,11 +600,17 @@ fn extract_hash_set(
 }
 
 /// Walks `first` → `next` chain for LinkedList.
+///
+/// When a `SkipIndex` is provided and `offset > 0`,
+/// resumes from the nearest checkpoint instead of
+/// walking from the head. Records new checkpoints
+/// during traversal for future page requests.
 fn extract_linked_list(
     hfile: &HprofFile,
     raw: &RawInstance,
     offset: usize,
     limit: usize,
+    mut skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
     let fields = decode_fields(
         raw,
@@ -363,15 +637,48 @@ fn extract_linked_list(
 
     let total = size?;
     let mut node_id = first_id.unwrap_or(0);
-    let target_count = offset + limit;
+
+    // Determine start position via skip-index checkpoint
+    let mut checkpoint_index: usize = 0;
+    if let Some(si) = skip_index.as_deref()
+        && offset > 0
+        && let Some((ci, cp)) = si.nearest_before(offset)
+    {
+        match cp {
+            SkipCheckpoint::LinkedListNode { node_id: cp_node } => {
+                node_id = *cp_node;
+                checkpoint_index = ci;
+            }
+            _ => unreachable!(
+                "unexpected checkpoint variant \
+                 in extract_linked_list"
+            ),
+        }
+    }
+
+    let adjusted_offset = offset - checkpoint_index;
+    let target_count = adjusted_offset + limit;
+    let max_iter = (total as usize).saturating_sub(checkpoint_index);
     let mut items: Vec<FieldValue> = Vec::new();
     let mut visited = std::collections::HashSet::new();
+    let mut iterations: usize = 0;
 
     while node_id != 0 && items.len() < target_count {
+        if iterations >= max_iter {
+            break; // max iterations guard (Task 3.4)
+        }
         if !visited.insert(node_id) {
             break; // cycle guard
         }
         if let Some(node_raw) = Engine::read_instance_public(hfile, node_id) {
+            // Record checkpoint before pushing item
+            if let Some(si) = skip_index.as_deref_mut() {
+                si.record(
+                    checkpoint_index + items.len(),
+                    SkipCheckpoint::LinkedListNode { node_id },
+                );
+            }
+
             let node_fields = decode_fields(
                 &node_raw,
                 &hfile.index,
@@ -395,74 +702,141 @@ fn extract_linked_list(
         } else {
             break;
         }
+        iterations += 1;
     }
 
-    let clamped_offset = (offset as u64).min(total) as usize;
+    // Mark complete if we reached the end of the chain
+    if node_id == 0
+        && let Some(si) = skip_index
+    {
+        si.mark_complete();
+    }
+
+    // Batch pre-resolve uncached item object IDs for
+    // the visible page window (Story 11.6 Task 3.2)
+    let clamped_offset = (adjusted_offset as u64).min(total) as usize;
+    let ll_end = (clamped_offset + limit).min(items.len());
+    if clamped_offset < ll_end {
+        let obj_ids: Vec<u64> = items[clamped_offset..ll_end]
+            .iter()
+            .filter_map(|fv| match fv {
+                FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
+                _ => None,
+            })
+            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .collect();
+        if !obj_ids.is_empty() {
+            let batch = hfile.batch_find_instances(&obj_ids);
+            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        }
+    }
+
     let page_items: Vec<EntryInfo> = items
         .into_iter()
         .skip(clamped_offset)
         .take(limit)
         .enumerate()
         .map(|(i, value)| EntryInfo {
-            index: clamped_offset + i,
+            index: checkpoint_index + clamped_offset + i,
             key: None,
             value,
         })
         .collect();
-    let actual_end = clamped_offset + page_items.len();
+    let actual_end = checkpoint_index + clamped_offset + page_items.len();
 
     Some(CollectionPage {
         entries: page_items,
         total_count: total,
-        offset: clamped_offset,
+        offset: checkpoint_index + clamped_offset,
         has_more: (actual_end as u64) < total,
     })
 }
 
 // --- Helpers ---
 
-/// Paginates a slice of object IDs, resolving each
-/// to a `FieldValue`.
-fn paginate_id_slice(
-    ids: &[u64],
+/// Paginates an object array via O(1) positional reads.
+///
+/// `total` is the logical element count. In
+/// `try_object_array` it equals `meta.num_elements`; in
+/// `extract_array_list` it comes from the ArrayList `size`
+/// field and may be less than `meta.num_elements`.
+///
+/// Uses batch pre-resolution (Story 11.2) to cache
+/// instance offsets before resolving individual elements,
+/// avoiding per-element segment scans.
+fn paginate_object_array(
+    meta: &ObjectArrayMeta,
     total: u64,
     offset: usize,
     limit: usize,
     hfile: &HprofFile,
 ) -> Option<CollectionPage> {
-    let clamped_offset = (offset as u64).min(total) as usize;
-    let remaining = (total - clamped_offset as u64) as usize;
-    let actual_limit = limit.min(remaining);
+    let clamped = (offset as u64).min(total) as usize;
+    let remaining = (total - clamped as u64) as usize;
+    let actual = limit.min(remaining);
 
-    let mut entries = Vec::with_capacity(actual_limit);
-    for i in 0..actual_limit {
-        let idx = clamped_offset + i;
-        let value = if idx < ids.len() {
-            id_to_field_value(ids[idx], hfile)
-        } else {
-            FieldValue::Null
-        };
-        entries.push(EntryInfo {
-            index: idx,
-            key: None,
-            value,
-        });
+    // Step 1: Read all page IDs once via O(1) positional access.
+    // id=0 represents a null reference; stored at position i for
+    // index preservation. Failed reads (should not occur within
+    // bounds) also map to 0.
+    let element_ids: Vec<u64> = (0..actual)
+        .map(|i| {
+            let idx = (clamped + i) as u32;
+            hfile
+                .read_object_array_element(meta, idx)
+                .unwrap_or_else(|| {
+                    dbg_log!(
+                        "read_object_array_element \
+                     returned None at idx {}",
+                        idx
+                    );
+                    0
+                })
+        })
+        .collect();
+
+    // Step 2: Batch pre-resolve uncached non-null instance IDs.
+    let uncached: Vec<u64> = element_ids
+        .iter()
+        .copied()
+        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .collect();
+
+    if !uncached.is_empty() {
+        let batch = hfile.batch_find_instances(&uncached);
+        hfile.index.instance_offsets.insert_batch(&batch.offsets);
     }
+
+    // Step 3: Resolve all elements (batch-found IDs now
+    // hit O(1) offset path; no second mmap read needed).
+    let entries: Vec<EntryInfo> = element_ids
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| EntryInfo {
+            index: clamped + i,
+            key: None,
+            value: id_to_field_value(id, hfile),
+        })
+        .collect();
 
     Some(CollectionPage {
         entries,
         total_count: total,
-        offset: clamped_offset,
-        has_more: (clamped_offset + actual_limit) < total as usize,
+        offset: clamped,
+        has_more: (clamped + actual) < total as usize,
     })
 }
 
 /// Paginates key-value pairs collected from hash maps.
+///
+/// `base_index` is the logical index of the first element in `all`
+/// (non-zero when resuming from a skip-index checkpoint).
 fn paginate_kv_entries(
     all: &[(FieldValue, FieldValue)],
     total: u64,
     offset: usize,
     limit: usize,
+    base_index: usize,
 ) -> Option<CollectionPage> {
     let clamped_offset = offset.min(all.len());
     let remaining = all.len() - clamped_offset;
@@ -472,17 +846,17 @@ fn paginate_kv_entries(
         .iter()
         .enumerate()
         .map(|(i, (k, v))| EntryInfo {
-            index: clamped_offset + i,
+            index: base_index + clamped_offset + i,
             key: Some(k.clone()),
             value: v.clone(),
         })
         .collect();
-    let actual_end = clamped_offset + entries.len();
+    let actual_end = base_index + clamped_offset + entries.len();
 
     Some(CollectionPage {
         entries,
         total_count: total,
-        offset: clamped_offset,
+        offset: base_index + clamped_offset,
         has_more: (actual_end as u64) < total,
     })
 }
@@ -515,12 +889,12 @@ fn id_to_field_value(id: u64, hfile: &HprofFile) -> FieldValue {
             inline_value,
         };
     }
-    // Try Object[] array.
-    if let Some((_cid, elems)) = hfile.find_object_array(id) {
+    // Try Object[] array (metadata only — no element read).
+    if let Some(meta) = hfile.find_object_array_meta(id) {
         return FieldValue::ObjectRef {
             id,
             class_name: "Object[]".to_string(),
-            entry_count: Some(elems.len() as u64),
+            entry_count: Some(meta.num_elements as u64),
             inline_value: None,
         };
     }

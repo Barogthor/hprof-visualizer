@@ -65,10 +65,19 @@ pub(super) fn append_var(
                     format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
                 ("+ ", format!("local variable: {label}"), Style::new())
             }
-            ExpansionPhase::Expanded | ExpansionPhase::Loading => {
+            ExpansionPhase::Expanded => {
                 let label =
                     format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
                 ("- ", format!("local variable: {label}"), Style::new())
+            }
+            ExpansionPhase::Loading => {
+                let label =
+                    format_object_ref_collapsed(class_name, *entry_count, ctx.show_object_ids, *id);
+                (
+                    "- ",
+                    format!("local variable: {label}"),
+                    THEME.loading_indicator,
+                )
             }
         }
     } else {

@@ -4,6 +4,9 @@
 //! navigation API. Parser internals are fully encapsulated — callers only
 //! depend on `hprof-engine`.
 
+use std::collections::HashMap as StdHashMap;
+use std::sync::Mutex;
+
 use rustc_hash::FxHashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -216,6 +219,11 @@ pub struct Engine {
     memory_counter: Arc<crate::cache::MemoryCounter>,
     /// LRU cache for expanded object fields.
     object_cache: crate::cache::ObjectCache,
+    /// Skip-indexes for variable-size collection pagination.
+    /// Lazily created when `offset > 0` is requested.
+    skip_indexes: Mutex<StdHashMap<u64, crate::pagination::SkipIndex>>,
+    /// Active background walkers keyed by collection ID.
+    walkers: Mutex<StdHashMap<u64, crate::pagination::WalkerHandle>>,
 }
 
 impl Engine {
@@ -243,6 +251,8 @@ impl Engine {
             thread_cache,
             memory_counter: counter,
             object_cache: crate::cache::ObjectCache::new(),
+            skip_indexes: Mutex::new(StdHashMap::new()),
+            walkers: Mutex::new(StdHashMap::new()),
         })
     }
 
@@ -275,6 +285,8 @@ impl Engine {
             thread_cache,
             memory_counter: counter,
             object_cache: crate::cache::ObjectCache::new(),
+            skip_indexes: Mutex::new(StdHashMap::new()),
+            walkers: Mutex::new(StdHashMap::new()),
         })
     }
 
@@ -446,18 +458,22 @@ impl Engine {
     /// Reads an instance by offset if available, falling back to
     /// `find_instance`.
     fn read_instance(hfile: &HprofFile, obj_id: u64) -> Option<RawInstance> {
-        if let Some(&off) = hfile.index.instance_offsets.get(&obj_id)
+        if let Some(off) = hfile.index.instance_offsets.get(obj_id)
             && let Some(raw) = hfile.read_instance_at_offset(off)
         {
             return Some(raw);
         }
-        hfile.find_instance(obj_id)
+        if let Some((raw, offset)) = hfile.find_instance(obj_id) {
+            hfile.index.instance_offsets.insert(obj_id, offset);
+            return Some(raw);
+        }
+        None
     }
 
     /// Reads a primitive array by offset if available, falling back to
     /// `find_prim_array`.
     fn read_prim_array(hfile: &HprofFile, arr_id: u64) -> Option<(u8, Vec<u8>)> {
-        if let Some(&off) = hfile.index.instance_offsets.get(&arr_id)
+        if let Some(off) = hfile.index.instance_offsets.get(arr_id)
             && let Some(r) = hfile.read_prim_array_at_offset(off)
         {
             return Some(r);
@@ -540,8 +556,8 @@ impl Engine {
                 self.hfile.records_bytes(),
             );
             (class_name, entry_count, inline_value)
-        } else if let Some((_class_id, elems)) = self.hfile.find_object_array(object_id) {
-            ("Object[]".to_string(), Some(elems.len() as u64), None)
+        } else if let Some(meta) = self.hfile.find_object_array_meta(object_id) {
+            ("Object[]".to_string(), Some(meta.num_elements as u64), None)
         } else if let Some((elem_type, bytes)) = self.hfile.find_prim_array(object_id) {
             let type_name = prim_array_type_name(elem_type);
             let elem_size = field_byte_size(elem_type, 0);
@@ -633,6 +649,164 @@ impl Engine {
             }
         }
         Some(fields)
+    }
+
+    /// Drains pending walker messages for a collection
+    /// and applies checkpoints to the skip-index.
+    ///
+    /// Lock ordering: `walkers` first, then
+    /// `skip_indexes`. Never reverse.
+    fn drain_walker(&self, collection_id: u64) {
+        // Phase 1: drain messages from walker handle
+        let (messages, should_remove) = {
+            let walkers = self.walkers.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(handle) = walkers.get(&collection_id) else {
+                return;
+            };
+            let (msgs, disconnected) = handle.try_drain();
+            let has_complete = msgs
+                .iter()
+                .any(|m| matches!(m, crate::pagination::WalkMessage::Complete));
+            let remove = has_complete || disconnected;
+            (msgs, remove)
+        };
+
+        if messages.is_empty() && !should_remove {
+            return;
+        }
+
+        // Remove handle if walker completed or
+        // disconnected
+        if should_remove {
+            let mut walkers = self.walkers.lock().unwrap_or_else(|e| e.into_inner());
+            let removed = walkers.remove(&collection_id);
+            // Log unexpected termination (disconnect
+            // without Complete)
+            let has_complete = messages
+                .iter()
+                .any(|m| matches!(m, crate::pagination::WalkMessage::Complete));
+            if !has_complete {
+                if let Some(mut handle) = removed {
+                    eprintln!(
+                        "Walker for collection \
+                         0x{:X} terminated \
+                         unexpectedly",
+                        collection_id,
+                    );
+                    if let Some(jh) = handle.join_handle.take() {
+                        let _ = jh.join();
+                    }
+                }
+            } else if let Some(mut handle) = removed
+                && let Some(jh) = handle.join_handle.take()
+            {
+                let _ = jh.join();
+            }
+        }
+
+        // Phase 2: apply checkpoints to skip-index
+        // Walker checkpoints may be dropped by record()
+        // if an on-demand walk already extended the
+        // skip-index further. This is expected.
+        let mut guard = self.skip_indexes.lock().unwrap_or_else(|e| e.into_inner());
+        for msg in &messages {
+            match msg {
+                crate::pagination::WalkMessage::Batch { checkpoints } => {
+                    let si = guard.entry(collection_id).or_insert_with(|| {
+                        crate::pagination::SkipIndex::new(crate::pagination::SKIP_INTERVAL)
+                    });
+                    for (idx, cp) in checkpoints {
+                        si.record(*idx, cp.clone());
+                    }
+                }
+                crate::pagination::WalkMessage::Complete => {
+                    if let Some(si) = guard.get_mut(&collection_id) {
+                        si.mark_complete();
+                    }
+                    dbg_log!("walker completed for 0x{:X}", collection_id,);
+                }
+            }
+        }
+    }
+}
+
+impl Engine {
+    /// Spawns a background walker for the given
+    /// collection. No-op if already walking, already
+    /// complete, or walker cap reached.
+    pub fn spawn_walker(&self, collection_id: u64) {
+        use crate::pagination::{MAX_WALKERS, walk_collection_background};
+
+        let mut walkers = self.walkers.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Dedup: already has a walker
+        if walkers.contains_key(&collection_id) {
+            return;
+        }
+
+        // Already complete: skip re-walk
+        {
+            let si_guard = self.skip_indexes.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(si) = si_guard.get(&collection_id)
+                && si.is_complete()
+            {
+                return;
+            }
+        }
+
+        // Cap reached
+        if walkers.len() >= MAX_WALKERS {
+            return;
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let progress = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hfile = Arc::clone(&self.hfile);
+        let p = Arc::clone(&progress);
+        let c = Arc::clone(&cancel);
+
+        let jh = std::thread::spawn(move || {
+            walk_collection_background(hfile, collection_id, tx, p, c);
+        });
+
+        dbg_log!("walker spawned for collection 0x{:X}", collection_id,);
+
+        walkers.insert(
+            collection_id,
+            crate::pagination::WalkerHandle::new(rx, jh, progress, cancel),
+        );
+    }
+
+    /// Cancels an active walker, joining its thread.
+    pub fn cancel_walker(&self, collection_id: u64) {
+        let mut walkers = self.walkers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut handle) = walkers.remove(&collection_id) {
+            handle.cancel();
+            if let Some(jh) = handle.join_handle.take() {
+                let _ = jh.join();
+            }
+        }
+    }
+
+    /// Returns the walker progress for the given
+    /// collection, or `None` if no walker is active.
+    pub fn walker_progress(&self, collection_id: u64) -> Option<usize> {
+        let walkers = self.walkers.lock().unwrap_or_else(|e| e.into_inner());
+        walkers.get(&collection_id).map(|h| h.progress())
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        if let Ok(mut walkers) = self.walkers.lock() {
+            for (_, mut handle) in walkers.drain() {
+                handle.cancel();
+                if let Some(jh) = handle.join_handle.take() {
+                    let _ = jh.join();
+                }
+            }
+        }
     }
 }
 
@@ -730,7 +904,7 @@ impl NavigationEngine for Engine {
                         VariableValue::Null
                     } else {
                         let (class_name, entry_count) = if let Some(raw) =
-                            self.hfile.find_instance(object_id)
+                            Self::read_instance(&self.hfile, object_id)
                         {
                             let cn = self
                                 .hfile
@@ -746,9 +920,8 @@ impl NavigationEngine for Engine {
                                 self.hfile.records_bytes(),
                             );
                             (cn, ec)
-                        } else if let Some((_cid, elems)) = self.hfile.find_object_array(object_id)
-                        {
-                            ("Object[]".to_string(), Some(elems.len() as u64))
+                        } else if let Some(meta) = self.hfile.find_object_array_meta(object_id) {
+                            ("Object[]".to_string(), Some(meta.num_elements as u64))
                         } else if let Some((etype, bytes)) = self.hfile.find_prim_array(object_id) {
                             let type_name = prim_array_type_name(etype).to_string();
                             let esz = field_byte_size(etype, self.hfile.header.id_size);
@@ -783,6 +956,7 @@ impl NavigationEngine for Engine {
             if let Some(freed) = self.object_cache.evict_lru() {
                 let current = self.memory_counter.current();
                 self.memory_counter.subtract(freed.min(current));
+                // TODO(11.5): evict skip_indexes on LRU
                 if self.memory_counter.usage_ratio() < EVICTION_TARGET {
                     break;
                 }
@@ -838,7 +1012,27 @@ impl NavigationEngine for Engine {
     }
 
     fn get_page(&self, collection_id: u64, offset: usize, limit: usize) -> Option<CollectionPage> {
-        crate::pagination::get_page(&self.hfile, collection_id, offset, limit)
+        // Phase 1: drain walker (acquires+releases
+        // both walkers AND skip_indexes locks).
+        // Intentional two-phase approach for deadlock
+        // prevention. TOCTOU between phases is safe —
+        // both skip-index operations are monotonically
+        // additive and record() is idempotent.
+        self.drain_walker(collection_id);
+
+        // Phase 2: existing pagination (acquires
+        // skip_indexes lock independently)
+        let mut guard = self.skip_indexes.lock().unwrap_or_else(|e| e.into_inner());
+        let si = if offset > 0 {
+            Some(
+                guard
+                    .entry(collection_id)
+                    .or_insert_with(|| crate::pagination::SkipIndex::new(100)),
+            )
+        } else {
+            guard.get_mut(&collection_id)
+        };
+        crate::pagination::get_page(&self.hfile, collection_id, offset, limit, si)
     }
 
     fn resolve_string(&self, object_id: u64) -> Option<String> {
@@ -888,6 +1082,38 @@ impl NavigationEngine for Engine {
     fn skeleton_bytes(&self) -> usize {
         use hprof_api::MemorySize;
         self.hfile.index.memory_size()
+    }
+
+    fn drain_walkers(&self) {
+        let ids: Vec<u64> = {
+            let walkers = self.walkers.lock().unwrap_or_else(|e| e.into_inner());
+            walkers.keys().copied().collect()
+        };
+        for id in ids {
+            self.drain_walker(id);
+        }
+    }
+
+    fn spawn_walker(&self, collection_id: u64) {
+        Engine::spawn_walker(self, collection_id);
+    }
+
+    fn cancel_walker(&self, collection_id: u64) {
+        Engine::cancel_walker(self, collection_id);
+    }
+
+    fn walker_progress(&self, collection_id: u64) -> Option<usize> {
+        Engine::walker_progress(self, collection_id)
+    }
+}
+
+#[cfg(test)]
+impl Engine {
+    pub(crate) fn skip_index_count(&self) -> usize {
+        self.skip_indexes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 }
 

@@ -11,7 +11,7 @@ use ratatui::{
     widgets::Widget,
 };
 
-use crate::theme::THEME;
+use crate::{app::SpinnerState, theme::THEME};
 
 /// Braille spinner characters for the navigation-in-progress indicator.
 pub(crate) const SPINNER_CHARS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -32,10 +32,14 @@ pub struct StatusBar<'a> {
     pub last_warning: Option<&'a str>,
     /// Number of pinned items hidden because terminal is too narrow.
     pub pinned_hidden_count: usize,
-    /// Whether a go-to-pin navigation is in progress (shows spinner).
-    pub navigating_to_pin: bool,
-    /// Spinner frame index, incremented each render tick (`% 10` gives char).
+    /// Consolidated spinner state for the status bar.
+    pub spinner_state: SpinnerState,
+    /// Spinner frame index, incremented each render tick.
     pub spinner_tick: u8,
+    /// Background walker progress for the current
+    /// collection: `(progress, total_count)`.
+    /// `None` when no walker is active.
+    pub walker_info: Option<(usize, u64)>,
 }
 
 pub(crate) fn state_label(state: ThreadState) -> &'static str {
@@ -89,11 +93,28 @@ impl Widget for StatusBar<'_> {
             String::new()
         };
 
-        let nav_part = if self.navigating_to_pin {
-            let ch = SPINNER_CHARS[(self.spinner_tick % 10) as usize];
-            format!("  |  {} Navigating to pin...", ch)
-        } else {
-            String::new()
+        let walker_part = match self.walker_info {
+            Some((progress, total)) if total > 0 => {
+                let ch = SPINNER_CHARS[(self.spinner_tick / 4) as usize % 10];
+                format!("  |  {ch} Pre-walking… {progress}/{total}")
+            }
+            Some((progress, _)) => {
+                let ch = SPINNER_CHARS[(self.spinner_tick / 4) as usize % 10];
+                format!("  |  {ch} Pre-walking… {progress}")
+            }
+            None => String::new(),
+        };
+
+        let nav_part = match self.spinner_state {
+            SpinnerState::Idle => String::new(),
+            SpinnerState::Resolving => {
+                let ch = SPINNER_CHARS[(self.spinner_tick / 4) as usize % 10];
+                format!("  |  {ch} Resolving…")
+            }
+            SpinnerState::NavigatingToPin => {
+                let ch = SPINNER_CHARS[(self.spinner_tick / 4) as usize % 10];
+                format!("  |  {ch} Navigating to pin…")
+            }
         };
 
         let main = Span::styled(
@@ -103,8 +124,9 @@ impl Widget for StatusBar<'_> {
             ),
             THEME.status_bar_bg,
         );
+        let walker = Span::styled(walker_part, THEME.nav_spinner);
         let nav = Span::styled(nav_part, THEME.nav_spinner);
-        Line::from(vec![main, nav]).render(area, buf);
+        Line::from(vec![main, walker, nav]).render(area, buf);
     }
 }
 
@@ -182,8 +204,9 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             120,
         );
@@ -204,8 +227,9 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             120,
         );
@@ -226,8 +250,9 @@ mod tests {
                 file_indexed_pct: Some(75.3),
                 last_warning: None,
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             200,
         );
@@ -248,8 +273,9 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: Some("Object 0xABC not found"),
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             200,
         );
@@ -270,8 +296,9 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
-                navigating_to_pin: true,
+                spinner_state: SpinnerState::NavigatingToPin,
                 spinner_tick: 0,
+                walker_info: None,
             },
             200,
         );
@@ -292,8 +319,9 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: None,
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             200,
         );
@@ -315,8 +343,9 @@ mod tests {
                 file_indexed_pct: None,
                 last_warning: Some(&long_warning),
                 pinned_hidden_count: 0,
-                navigating_to_pin: false,
+                spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             300,
         );

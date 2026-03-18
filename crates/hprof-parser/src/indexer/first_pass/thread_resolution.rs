@@ -143,19 +143,13 @@ pub(super) fn resolve_all(
         for w in warns {
             ctx.push_warning(w);
         }
-        for (id, offset) in &found {
-            ctx.result.index.instance_offsets.insert(*id, *offset);
+        for (&id, &offset) in &found {
+            ctx.result.index.instance_offsets.insert(id, offset);
         }
 
         // Round 1: transitive refs (name, holder)
         let mut round1_ids: HashSet<u64> = HashSet::new();
-        let thread_offsets: Vec<u64> = ctx
-            .result
-            .index
-            .instance_offsets
-            .values()
-            .copied()
-            .collect();
+        let thread_offsets: Vec<u64> = ctx.result.index.instance_offsets.values();
 
         let mut string_offsets: Vec<(u64, u64)> = Vec::new();
 
@@ -172,7 +166,7 @@ pub(super) fn resolve_all(
                 data,
             );
             for r in &refs {
-                if !ctx.result.index.instance_offsets.contains_key(&r.ref_id) {
+                if !ctx.result.index.instance_offsets.contains(&r.ref_id) {
                     round1_ids.insert(r.ref_id);
                     if r.field_name == "name" {
                         string_offsets.push((r.ref_id, 0));
@@ -224,7 +218,7 @@ pub(super) fn resolve_all(
                     data,
                 );
                 for r in &refs {
-                    if !ctx.result.index.instance_offsets.contains_key(&r.ref_id) {
+                    if !ctx.result.index.instance_offsets.contains(&r.ref_id) {
                         round2_ids.insert(r.ref_id);
                     }
                 }
@@ -246,7 +240,7 @@ pub(super) fn resolve_all(
                 for w in warns2 {
                     ctx.push_warning(w);
                 }
-                for (id, offset) in found2 {
+                for (&id, &offset) in &found2 {
                     ctx.result.index.instance_offsets.insert(id, offset);
                 }
             }

@@ -150,16 +150,63 @@ development_status:
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
   # Deferred after Epic 12 (Epic 10 retro decision)
-  epic-11: backlog
-  11-1-loading-indicator-slow-operations: ready-for-dev
-  11-2-batch-scan-by-segment: ready-for-dev
-  11-3-parallel-eager-item-resolution: ready-for-dev
-  11-4-skip-index-object-array: ready-for-dev
-  11-5-skip-index-variable-size: ready-for-dev
-  11-6-investigate-non-array-item-slowness: backlog
+  epic-11: done
+  11-1-loading-indicator-slow-operations: done
+  11-2-batch-scan-by-segment: done
+  11-3-parallel-eager-item-resolution: done
+  11-4-skip-index-object-array: done
+  11-5-skip-index-variable-size: done
+  11-6-investigate-non-array-item-slowness: done
+  # CLOSED (11.6): Page 0 batch pre-resolution done. Table head IDs
+  #   batched, find_instance caches offsets, key/value IDs batched.
+  11-7-deep-pagination-chain-batching: done
+  # ACTION (11.6 completion 2026-03-17): Cold jump to page 300k+
+  #   is still slow on large HashMap/LinkedList (minutes). Root
+  #   cause: chain nodes (next pointers) are inherently sequential
+  #   — each resolved node reveals exactly 1 new ID. Table heads
+  #   are batched (11.6), but depth≥2 chain nodes still need
+  #   individual find_instance on first walk.
+  #   Fix options:
+  #   (a) Multi-level chain batching: after batch-resolving heads,
+  #       decode each head's `next` from BatchResult.instances
+  #       (zero I/O) to collect depth-1 IDs, then batch those too.
+  #       Covers ~13% additional chains (depth ≥2). Disable for
+  #       ConcurrentHashMap (TreeBin next is non-linear).
+  #   (b) Background pre-walk: async walk entire collection on
+  #       first page request, caching all offsets. Page 0 returns
+  #       fast (batched heads), deep pages become fast as the
+  #       background walk progresses.
+  #   (c) Lazy pagination with progress: show partial results
+  #       while walking, update count as chain walking completes.
+  #   User confirmed this is a priority (2026-03-17).
+
+  # ACTION (11.7 completion 2026-03-18): Background walker is ~2-3s per
+  #   100 entries on large collections. LinkedList is worst case —
+  #   structurally sequential (each next depends on previous node),
+  #   no batching possible. Deep jumps still slow until walker catches up.
+  #   Ideas to explore:
+  #   (a) Faster walker: reduce per-node cost (lighter decode, prefetch
+  #       offsets, skip decode_fields and extract next from raw bytes)
+  #   (b) Better heap indexing: per-class instance index during first-pass
+  #       (class_id → Vec<offset>) — would allow finding all LinkedList$Node
+  #       instances without following chains. Major indexing change.
+  #   (c) Bidirectional walk: walk from both `first` and `last` (prev field)
+  #       simultaneously — covers both ends, halves time to reach middle.
+  #   (d) Segment-local node clustering: if nodes tend to cluster in
+  #       segments, prefetch entire segments instead of per-node lookups.
+
+  # BUG (2026-03-17): Pressing Esc on a field showing "Resolving..."
+  #   causes the field to display "no field" instead of reverting to
+  #   its unexpanded state. User must collapse the parent and re-expand
+  #   to see the field again. Likely the cancel/abort path clears the
+  #   field data without restoring the pre-expansion state.
+  #   Scope: hprof-tui expand/cancel logic.
+  #   RESOLVED: Fixed outside of a story (confirmed Epic 11 retro).
+  epic-11-retrospective: done
 
   # Epic 13: UI Polish & Ergonomie (sourced from large dump UX observations 2026-03-14)
   epic-13: backlog
+  13-0-progress-bar-intra-segment: backlog
   13-1-collapsible-static-fields-section: backlog
   13-2-enhanced-favorites-navigation: backlog
   13-3-ui-separators: backlog

@@ -601,6 +601,33 @@ mod flat_items_tests {
         assert_eq!(state.selected_loading_object_id(), Some(42));
     }
 
+    #[test]
+    fn flat_items_expanded_with_zero_fields_has_no_loading_node() {
+        let frames = vec![make_frame(10), make_frame(20)];
+        let mut state = StackState::new(frames);
+        let vars = vec![make_var_object_ref(0, 99)];
+        state.toggle_expand(10, vars);
+        // Mark as Expanded with an empty field list.
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 99, vec![]);
+        let flat = state.flat_items();
+        assert!(
+            !flat
+                .iter()
+                .any(|c| matches!(c, RenderCursor::LoadingNode(_))),
+            "Expanded object with 0 fields must NOT emit \
+             LoadingNode: {flat:?}"
+        );
+        // Cursor should be able to move past var to next
+        // frame without getting stuck.
+        state.move_down(); // Frame(10) → Var(10,0)
+        state.move_down(); // Var(10,0) → Frame(20)
+        assert_eq!(
+            state.cursor(),
+            &rc_frame(20),
+            "must skip past empty-field object to next frame"
+        );
+    }
+
     // --- Task 4.5 / 5.5: depth-2 navigation and indentation tests ---
 
     #[test]

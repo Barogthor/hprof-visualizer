@@ -30,6 +30,12 @@ pub(super) fn object_ref_state(
         return (None, false);
     }
     if entry_count.is_some() && ctx.collection_chunks.contains_key(&object_id) {
+        // In live mode with path-based phases, respect Loading state;
+        // otherwise delegate to phase_for (snapshot/collapsed logic).
+        if let (Some(ep), Some(p)) = (&ctx.expansion_phases, path) {
+            let phase = ep.get(p).cloned().unwrap_or(ExpansionPhase::Expanded);
+            return (Some(phase), false);
+        }
         if ctx.snapshot_mode {
             return (Some(ctx.phase_for(object_id, path)), false);
         }
