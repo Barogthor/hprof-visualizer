@@ -12,11 +12,6 @@ fn cursor_ends_with_collection_entry(cursor: &RenderCursor) -> bool {
         if matches!(p.segments().last(), Some(PathSegment::CollectionEntry(..))))
 }
 
-fn cursor_ends_with_field(cursor: &RenderCursor) -> bool {
-    matches!(cursor, RenderCursor::At(p)
-        if matches!(p.segments().last(), Some(PathSegment::Field(..))))
-}
-
 fn cursor_ends_with_static_field(cursor: &RenderCursor) -> bool {
     matches!(cursor, RenderCursor::At(p)
         if matches!(p.segments().last(), Some(PathSegment::StaticField(..))))
@@ -680,7 +675,7 @@ mod stack_navigation {
     }
 
     #[test]
-    fn handle_input_escape_in_stack_frames_clears_state_and_returns_to_thread_list() {
+    fn handle_input_escape_in_stack_frames_returns_to_thread_list_preserving_state() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
         let mut app = App::new(engine, "test.hprof".to_string());
@@ -688,7 +683,10 @@ mod stack_navigation {
         assert_eq!(app.focus, Focus::StackFrames);
         app.handle_input(InputEvent::Escape);
         assert_eq!(app.focus, Focus::ThreadList);
-        assert!(app.stack_state.is_none());
+        assert!(
+            app.stack_state.is_some(),
+            "Esc preserves stack_state for re-entry"
+        );
     }
 
     #[test]
@@ -1455,12 +1453,11 @@ mod collection_paging {
     }
 
     #[test]
-    fn escape_collapses_collection() {
+    fn escape_from_collection_returns_to_thread_list() {
         let mut app = make_collection_app(250);
         nav_to_collection_field(&mut app);
         app.handle_input(InputEvent::Enter);
         poll_all_pages(&mut app);
-        // Move into collection entries.
         app.handle_input(InputEvent::Down);
         let ss = app.stack_state.as_ref().unwrap();
         assert!(
@@ -1468,107 +1465,26 @@ mod collection_paging {
             "expected collection entry cursor, got {:?}",
             ss.cursor()
         );
-        // Escape → collapse collection.
         app.handle_input(InputEvent::Escape);
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            !ss.expansion.collection_chunks.contains_key(&888),
-            "collection should be removed"
+        assert_eq!(
+            app.focus,
+            Focus::ThreadList,
+            "Esc must return to ThreadList"
         );
-        // Cursor returns to the collection field.
-        assert!(
-            cursor_ends_with_field(ss.cursor()),
-            "expected object field cursor, got {:?}",
-            ss.cursor()
-        );
-        // Focus stays in StackFrames.
-        assert_eq!(app.focus, Focus::StackFrames);
     }
 
     #[test]
-    fn escape_from_collection_opened_on_var_restores_on_var_cursor() {
+    fn escape_from_var_collection_returns_to_thread_list() {
         let mut app = make_var_collection_app(250);
         app.handle_input(InputEvent::Enter); // StackFrames
         app.handle_input(InputEvent::Enter); // expand frame
-        app.handle_input(InputEvent::Down); // -> OnVar{0,0}
-        app.handle_input(InputEvent::Enter); // open collection 888 from var
-        poll_all_pages(&mut app);
-        assert!(
-            app.stack_state
-                .as_ref()
-                .unwrap()
-                .expansion
-                .collection_chunks
-                .contains_key(&888),
-            "collection 888 should be loaded before testing escape"
-        );
-
-        app.handle_input(InputEvent::Down); // -> first collection entry
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            cursor_ends_with_collection_entry(ss.cursor()),
-            "expected collection entry cursor before escape, got {:?}",
-            ss.cursor()
-        );
-
-        app.handle_input(InputEvent::Escape);
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            !ss.expansion.collection_chunks.contains_key(&888),
-            "collection should be removed"
-        );
-        assert_eq!(
-            ss.cursor(),
-            &RenderCursor::At(NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build()),
-            "escape from var-opened collection must restore var cursor"
-        );
-    }
-
-    #[test]
-    fn escape_from_collection_clears_parent_field_phase() {
-        // After Esc collapses a collection, the parent
-        // field's expansion_phase must be Collapsed so no
-        // phantom "(no fields)" node appears.
-        let mut app = make_var_collection_app(3);
-        app.handle_input(InputEvent::Enter); // StackFrames
-        app.handle_input(InputEvent::Enter); // expand frame
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
-        app.handle_input(InputEvent::Enter); // open coll 888
+        app.handle_input(InputEvent::Enter); // open coll
         poll_all_pages(&mut app);
         app.handle_input(InputEvent::Down); // → first entry
 
-        // Precondition: inside collection.
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            cursor_ends_with_collection_entry(ss.cursor()),
-            "precondition: cursor in collection, got {:?}",
-            ss.cursor()
-        );
-
         app.handle_input(InputEvent::Escape);
-        let ss = app.stack_state.as_ref().unwrap();
-
-        // The parent field phase must be Collapsed.
-        let var_path = NavigationPathBuilder::new(
-            FrameId(10),
-            VarIdx(0),
-        )
-        .build();
-        assert_eq!(
-            ss.expansion_state_for_path(&var_path),
-            ExpansionPhase::Collapsed,
-            "parent field phase must be Collapsed after Esc"
-        );
-
-        // No LoadingNode / "(no fields)" phantom.
-        let flat = ss.flat_items();
-        assert!(
-            !flat.iter().any(|c| matches!(
-                c,
-                RenderCursor::LoadingNode(_)
-            )),
-            "no phantom LoadingNode after Esc: {flat:?}"
-        );
+        assert_eq!(app.focus, Focus::ThreadList);
     }
 
     #[test]
@@ -1613,12 +1529,11 @@ mod collection_paging {
     }
 
     #[test]
-    fn escape_from_chunk_section_collapses_collection() {
+    fn escape_from_chunk_section_returns_to_thread_list() {
         let mut app = make_collection_app(250);
         nav_to_collection_field(&mut app);
         app.handle_input(InputEvent::Enter);
         poll_all_pages(&mut app);
-        // Navigate to first chunk section (past 100 eager entries + 1 entry node).
         for _ in 0..101 {
             app.handle_input(InputEvent::Down);
         }
@@ -1628,18 +1543,8 @@ mod collection_paging {
             "should be on chunk section, got {:?}",
             ss.cursor()
         );
-        // Escape from chunk section should collapse the collection.
         app.handle_input(InputEvent::Escape);
-        let ss = app.stack_state.as_ref().unwrap();
-        assert!(
-            !ss.expansion.collection_chunks.contains_key(&888),
-            "collection should be removed after escape from chunk section"
-        );
-        assert!(
-            cursor_ends_with_field(ss.cursor()),
-            "expected object field cursor, got {:?}",
-            ss.cursor()
-        );
+        assert_eq!(app.focus, Focus::ThreadList);
     }
 
     #[test]
@@ -1887,18 +1792,7 @@ mod collection_paging {
         }
 
         app.handle_input(InputEvent::Escape);
-        {
-            let ss = app.stack_state.as_ref().unwrap();
-            assert!(
-                !ss.expansion.collection_chunks.contains_key(&888),
-                "nested collection should be collapsed on escape"
-            );
-            assert!(
-                cursor_is_collection_entry_field(ss.cursor()),
-                "escape from nested collection should restore collection entry obj field, got {:?}",
-                ss.cursor()
-            );
-        }
+        assert_eq!(app.focus, Focus::ThreadList);
     }
 
     #[test]
@@ -1942,18 +1836,7 @@ mod collection_paging {
         }
 
         app.handle_input(InputEvent::Escape);
-        {
-            let ss = app.stack_state.as_ref().unwrap();
-            assert!(
-                !ss.expansion.collection_chunks.contains_key(&888),
-                "nested collection should be collapsed on escape"
-            );
-            assert!(
-                matches!(cursor_collection_entry_ids(ss.cursor()), Some((890, 0))),
-                "escape from nested collection should restore outer collection entry, got {:?}",
-                ss.cursor()
-            );
-        }
+        assert_eq!(app.focus, Focus::ThreadList);
     }
 
     #[test]

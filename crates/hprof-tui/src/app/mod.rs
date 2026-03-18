@@ -149,6 +149,8 @@ pub struct App<E: NavigationEngine> {
     preview_stack_state: StackState,
     /// Stack frame state — `Some` when a thread is entered, `None` otherwise.
     stack_state: Option<StackState>,
+    /// Serial of the thread whose stack is in `stack_state`.
+    stack_thread_serial: Option<u32>,
     /// In-flight object expansion receivers keyed by `NavigationPath`.
     pending_expansions: HashMap<NavigationPath, PendingExpansion>,
     /// In-flight collection page load receivers keyed by
@@ -211,6 +213,7 @@ impl<E: NavigationEngine> App<E> {
             warning_count,
             preview_stack_state,
             stack_state: None,
+            stack_thread_serial: None,
             pending_expansions: HashMap::new(),
             pending_pages: HashMap::new(),
             pending_pinned_pages: HashMap::new(),
@@ -232,10 +235,18 @@ impl<E: NavigationEngine> App<E> {
 
     fn open_stack_for_selected_thread(&mut self, serial: u32) {
         self.thread_list.select_serial(serial);
+        // Reuse existing stack_state if same thread.
+        if self.stack_thread_serial == Some(serial)
+            && self.stack_state.is_some()
+        {
+            self.focus = Focus::StackFrames;
+            return;
+        }
         let frames = self.engine.get_stack_frames(serial);
         let mut stack_state = StackState::new(frames);
         stack_state.set_visible_height(0);
         self.stack_state = Some(stack_state);
+        self.stack_thread_serial = Some(serial);
         self.focus = Focus::StackFrames;
     }
 
@@ -1168,36 +1179,6 @@ impl<E: NavigationEngine> App<E> {
                     }
                     return AppAction::Continue;
                 }
-                // If inside a collection, collapse it and
-                // return cursor to the parent field.
-                let coll_info = self
-                    .stack_state
-                    .as_ref()
-                    .and_then(|s| s.cursor_collection_id());
-                if let Some((cid, restore_cursor)) = coll_info {
-                    self.pending_pages.retain(|&(id, _), _| id != cid);
-                    if let Some(s) = &mut self.stack_state {
-                        let cpath = match s.cursor() {
-                            RenderCursor::At(p) => Some(p.clone()),
-                            _ => None,
-                        };
-                        s.expansion.collection_chunks.remove(&cid);
-                        if let Some(p) = &cpath {
-                            s.expansion.collapse_at_path(p);
-                        }
-                        // Also collapse the collection field
-                        // itself so its phase doesn't linger
-                        // as Expanded (which would render
-                        // "(no fields)" for the empty object).
-                        if let RenderCursor::At(ref rp) =
-                            restore_cursor
-                        {
-                            s.expansion.collapse_at_path(rp);
-                        }
-                        s.set_cursor(restore_cursor);
-                    }
-                    return AppAction::Continue;
-                }
                 // If cursor is on a loading node, cancel.
                 let loading_info = self.stack_state.as_ref().and_then(|s| {
                     let oid = s.selected_loading_object_id()?;
@@ -1213,9 +1194,9 @@ impl<E: NavigationEngine> App<E> {
                         s.cancel_expansion(&path);
                     }
                 } else {
-                    self.stack_state = None;
+                    // Keep stack_state so re-entering the same
+                    // thread preserves expansion state.
                     self.focus = Focus::ThreadList;
-                    self.refresh_preview_stack();
                 }
             }
             InputEvent::Up => {
