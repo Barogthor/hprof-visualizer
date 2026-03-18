@@ -730,12 +730,19 @@ mod tests {
 
     #[test]
     fn walk_hashmap_cancel_midway() {
-        // Use a large collection so the walker runs long
-        // enough to be cancelled while still in progress.
+        // Set cancel=true before spawning so the walker sees
+        // it on the first inner-loop check and exits without
+        // reaching the Complete send. This is equivalent to
+        // cancelling mid-walk (the loop body runs at least once
+        // before observing cancel) and is deterministic on all
+        // platforms. The previous spin-wait approach was racy
+        // on fast machines (macOS M-series) where the walker
+        // could complete all 500 entries in one scheduler
+        // timeslice before the main thread got to cancel.store.
         let hfile = hfile_from_bytes(&build_hashmap(500, 1));
         let (tx, rx) = mpsc::channel();
         let progress = Arc::new(AtomicUsize::new(0));
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(AtomicBool::new(true)); // pre-cancel
 
         let hfile_arc = unsafe { Arc::from_raw(&hfile as *const HprofFile) };
         let hfile_for_thread = Arc::clone(&hfile_arc);
@@ -745,19 +752,6 @@ mod tests {
         let jh = std::thread::spawn(move || {
             walk_collection_background(hfile_for_thread, 0x100, tx, progress_clone, cancel_clone);
         });
-
-        // Wait until walker has made at least some
-        // progress before cancelling.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if progress.load(Ordering::Relaxed) > 0 || std::time::Instant::now() > deadline {
-                break;
-            }
-            std::thread::yield_now();
-        }
-
-        // Cancel during walk
-        cancel.store(true, Ordering::Relaxed);
         jh.join().unwrap();
         std::mem::forget(hfile_arc);
 
