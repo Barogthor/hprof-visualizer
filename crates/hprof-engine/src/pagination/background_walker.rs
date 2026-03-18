@@ -709,37 +709,72 @@ mod tests {
         let cps = collect_checkpoints(&msgs);
         assert_eq!(progress, 50);
 
-        // Checkpoint at entry 0
+        // 50 entries < SKIP_INTERVAL=100 → exactly 1
+        // checkpoint at entry 0
+        assert_eq!(cps.len(), 1, "50 entries → exactly 1 checkpoint");
         assert!(
             cps.iter().any(|(idx, _)| *idx == 0),
             "should have checkpoint at entry 0"
         );
+
+        // All 50 head node IDs must be in OffsetCache
+        // after multi-level batch-resolve
+        for i in 0..50usize {
+            let head_id = 0x200u64 + i as u64;
+            assert!(
+                hfile.index.instance_offsets.contains(&head_id),
+                "head node 0x{head_id:X} must be in OffsetCache"
+            );
+        }
     }
 
     #[test]
     fn walk_hashmap_cancel_midway() {
-        let hfile = hfile_from_bytes(&build_hashmap(200, 1));
+        // Use a large collection so the walker runs long
+        // enough to be cancelled while still in progress.
+        let hfile = hfile_from_bytes(&build_hashmap(500, 1));
         let (tx, rx) = mpsc::channel();
         let progress = Arc::new(AtomicUsize::new(0));
         let cancel = Arc::new(AtomicBool::new(false));
-        // Cancel after a tiny delay
-        cancel.store(true, Ordering::Relaxed);
 
         let hfile_arc = unsafe { Arc::from_raw(&hfile as *const HprofFile) };
-        walk_collection_background(
-            Arc::clone(&hfile_arc),
-            0x100,
-            tx,
-            Arc::clone(&progress),
-            Arc::clone(&cancel),
-        );
+        let hfile_for_thread = Arc::clone(&hfile_arc);
+        let progress_clone = Arc::clone(&progress);
+        let cancel_clone = Arc::clone(&cancel);
+
+        let jh = std::thread::spawn(move || {
+            walk_collection_background(
+                hfile_for_thread,
+                0x100,
+                tx,
+                progress_clone,
+                cancel_clone,
+            );
+        });
+
+        // Wait until walker has made at least some
+        // progress before cancelling.
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if progress.load(Ordering::Relaxed) > 0
+                || std::time::Instant::now() > deadline
+            {
+                break;
+            }
+            std::thread::yield_now();
+        }
+
+        // Cancel during walk
+        cancel.store(true, Ordering::Relaxed);
+        jh.join().unwrap();
         std::mem::forget(hfile_arc);
 
         let mut msgs = Vec::new();
         while let Ok(msg) = rx.recv() {
             msgs.push(msg);
         }
-        // Should NOT have Complete (cancelled)
+        // Cancelled walk must NOT send Complete
         assert!(
             !msgs.iter().any(|m| matches!(m, WalkMessage::Complete)),
             "cancelled walk should not send Complete"
@@ -763,12 +798,25 @@ mod tests {
 
     #[test]
     fn walk_hashmap_depth2_chains() {
-        // 50 entries in chains of depth 2
+        // 50 entries in 25 chains of depth 2.
+        // Head nodes: 0x200, 0x202, ..., 0x230 (even)
+        // Depth-1 nodes: 0x201, 0x203, ..., 0x231 (odd)
         let hfile = hfile_from_bytes(&build_hashmap(50, 2));
         let (msgs, progress) = run_walk(&hfile, 0x100);
 
         assert!(matches!(msgs.last().unwrap(), WalkMessage::Complete));
         assert_eq!(progress, 50);
+
+        // Depth-1 node IDs must be in OffsetCache —
+        // verified that multi-level chain batching
+        // resolved them before the chain walk.
+        for c in 0..25usize {
+            let depth1_id = 0x200u64 + (c * 2 + 1) as u64;
+            assert!(
+                hfile.index.instance_offsets.contains(&depth1_id),
+                "depth-1 node 0x{depth1_id:X} must be in OffsetCache"
+            );
+        }
     }
 
     #[test]

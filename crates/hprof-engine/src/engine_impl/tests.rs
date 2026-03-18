@@ -2283,10 +2283,17 @@ mod walker_integration {
         let engine = engine_from_bytes(&build_hashmap_bytes(50));
         engine.spawn_walker(0x100);
 
-        // Wait for walker to complete
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Poll until walker finishes (up to 1 s).
+        // get_page calls drain_walker which processes
+        // WalkMessage::Complete and removes the handle.
+        for _ in 0..1000 {
+            engine.get_page(0x100, 0, 10);
+            if engine.walker_progress(0x100).is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
 
-        // Drain via get_page
         let page = engine.get_page(0x100, 0, 10);
         assert!(page.is_some());
 
@@ -2355,14 +2362,18 @@ mod walker_integration {
         let engine = engine_from_bytes(&build_hashmap_bytes(50));
         engine.spawn_walker(0x100);
 
-        // Progress should be Some while walker runs
-        // (may already be done for small collection)
+        // Progress may already be None if the walker
+        // finished before this line on fast machines.
         let _progress = engine.walker_progress(0x100);
 
-        // Wait for completion
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        // Drain walker
-        engine.get_page(0x100, 0, 10);
+        // Poll until walker finishes (up to 1 s).
+        for _ in 0..1000 {
+            engine.get_page(0x100, 0, 10);
+            if engine.walker_progress(0x100).is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
 
         // After drain of Complete, progress is None
         assert!(

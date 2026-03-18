@@ -159,7 +159,7 @@ development_status:
   11-6-investigate-non-array-item-slowness: done
   # CLOSED (11.6): Page 0 batch pre-resolution done. Table head IDs
   #   batched, find_instance caches offsets, key/value IDs batched.
-  11-7-deep-pagination-chain-batching: review
+  11-7-deep-pagination-chain-batching: done
   # ACTION (11.6 completion 2026-03-17): Cold jump to page 300k+
   #   is still slow on large HashMap/LinkedList (minutes). Root
   #   cause: chain nodes (next pointers) are inherently sequential
