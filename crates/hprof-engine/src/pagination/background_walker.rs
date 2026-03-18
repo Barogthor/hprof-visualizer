@@ -743,23 +743,14 @@ mod tests {
         let cancel_clone = Arc::clone(&cancel);
 
         let jh = std::thread::spawn(move || {
-            walk_collection_background(
-                hfile_for_thread,
-                0x100,
-                tx,
-                progress_clone,
-                cancel_clone,
-            );
+            walk_collection_background(hfile_for_thread, 0x100, tx, progress_clone, cancel_clone);
         });
 
         // Wait until walker has made at least some
         // progress before cancelling.
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            if progress.load(Ordering::Relaxed) > 0
-                || std::time::Instant::now() > deadline
-            {
+            if progress.load(Ordering::Relaxed) > 0 || std::time::Instant::now() > deadline {
                 break;
             }
             std::thread::yield_now();

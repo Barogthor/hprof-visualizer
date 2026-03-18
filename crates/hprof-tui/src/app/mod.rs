@@ -236,9 +236,7 @@ impl<E: NavigationEngine> App<E> {
     fn open_stack_for_selected_thread(&mut self, serial: u32) {
         self.thread_list.select_serial(serial);
         // Reuse existing stack_state if same thread.
-        if self.stack_thread_serial == Some(serial)
-            && self.stack_state.is_some()
-        {
+        if self.stack_thread_serial == Some(serial) && self.stack_state.is_some() {
             self.focus = Focus::StackFrames;
             return;
         }
@@ -2137,32 +2135,17 @@ impl<E: NavigationEngine> App<E> {
                     // result to avoid reinserting an orphaned
                     // Expanded phase.
                     let cancelled = pe.loading_shown
-                        && self
-                            .stack_state
-                            .as_ref()
-                            .is_some_and(|s| {
-                                s.expansion_state_for_path(path)
-                                    != ExpansionPhase::Loading
-                            });
+                        && self.stack_state.as_ref().is_some_and(|s| {
+                            s.expansion_state_for_path(path) != ExpansionPhase::Loading
+                        });
                     if !cancelled {
                         if let Some(s) = &mut self.stack_state {
-                            s.set_expansion_done_at_path(
-                                path, object_id, fields,
-                            );
-                            s.set_static_fields(
-                                object_id, static_fields,
-                            );
+                            s.set_expansion_done_at_path(path, object_id, fields);
+                            s.set_static_fields(object_id, static_fields);
                         }
-                        if self
-                            .pending_navigation
-                            .as_ref()
-                            .is_some_and(|p| {
-                                p.awaited
-                                    == AwaitedResource::ObjectExpansion(
-                                        object_id,
-                                    )
-                            })
-                        {
+                        if self.pending_navigation.as_ref().is_some_and(|p| {
+                            p.awaited == AwaitedResource::ObjectExpansion(object_id)
+                        }) {
                             nav_resume_oid = Some(object_id);
                         }
                     }

@@ -608,11 +608,7 @@ mod flat_items_tests {
         let vars = vec![make_var_object_ref(0, 99)];
         state.toggle_expand(10, vars);
         // Mark as Expanded with an empty field list.
-        state.set_expansion_done_at_path(
-            &path_field(10, 0, &[]),
-            99,
-            vec![],
-        );
+        state.set_expansion_done_at_path(&path_field(10, 0, &[]), 99, vec![]);
         let flat = state.flat_items();
         assert!(
             !flat

@@ -723,10 +723,7 @@ impl Engine {
                     if let Some(si) = guard.get_mut(&collection_id) {
                         si.mark_complete();
                     }
-                    dbg_log!(
-                        "walker completed for 0x{:X}",
-                        collection_id,
-                    );
+                    dbg_log!("walker completed for 0x{:X}", collection_id,);
                 }
             }
         }
@@ -773,10 +770,7 @@ impl Engine {
             walk_collection_background(hfile, collection_id, tx, p, c);
         });
 
-        dbg_log!(
-            "walker spawned for collection 0x{:X}",
-            collection_id,
-        );
+        dbg_log!("walker spawned for collection 0x{:X}", collection_id,);
 
         walkers.insert(
             collection_id,
@@ -1092,10 +1086,7 @@ impl NavigationEngine for Engine {
 
     fn drain_walkers(&self) {
         let ids: Vec<u64> = {
-            let walkers = self
-                .walkers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+            let walkers = self.walkers.lock().unwrap_or_else(|e| e.into_inner());
             walkers.keys().copied().collect()
         };
         for id in ids {

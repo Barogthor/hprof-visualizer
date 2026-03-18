@@ -1050,11 +1050,7 @@ mod object_expansion {
         // up the result it must NOT re-insert Expanded.
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
-        let engine = StubEngine::with_threads_and_frames(
-            &["main"],
-            frames,
-        )
-        .with_vars(10, vars);
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Enter); // expand frame 10
@@ -1063,18 +1059,14 @@ mod object_expansion {
         // Inject a pending expansion whose result will
         // arrive later.
         let (tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
-        let exp_path =
-            NavigationPathBuilder::new(FrameId(10), VarIdx(0))
-                .build();
+        let exp_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         app.pending_expansions.insert(
             exp_path.clone(),
             PendingExpansion {
                 rx,
                 object_id: 42,
                 path: exp_path.clone(),
-                started: Instant::now()
-                    - EXPANSION_LOADING_THRESHOLD
-                    - Duration::from_millis(10),
+                started: Instant::now() - EXPANSION_LOADING_THRESHOLD - Duration::from_millis(10),
                 loading_shown: false,
             },
         );
@@ -1137,8 +1129,7 @@ mod object_expansion {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine =
-            StubEngine::with_threads_and_frames(&["main", "worker"], frames)
-                .with_vars(10, vars);
+            StubEngine::with_threads_and_frames(&["main", "worker"], frames).with_vars(10, vars);
         let mut app = App::new(engine, "test.hprof".to_string());
 
         // Enter thread 1 (main).
@@ -1148,8 +1139,7 @@ mod object_expansion {
         // Inject a pending expansion (loading_shown=false,
         // simulating a fast in-flight request).
         let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
-        let exp_path =
-            NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        let exp_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
         app.pending_expansions.insert(
             exp_path.clone(),
             PendingExpansion {
