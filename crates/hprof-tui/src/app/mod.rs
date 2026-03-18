@@ -242,6 +242,10 @@ impl<E: NavigationEngine> App<E> {
             self.focus = Focus::StackFrames;
             return;
         }
+        // Discard in-flight work from the previous thread to
+        // prevent stale results from polluting the new state.
+        self.pending_expansions.clear();
+        self.pending_pages.clear();
         let frames = self.engine.get_stack_frames(serial);
         let mut stack_state = StackState::new(frames);
         stack_state.set_visible_height(0);
@@ -1197,6 +1201,7 @@ impl<E: NavigationEngine> App<E> {
                     // Keep stack_state so re-entering the same
                     // thread preserves expansion state.
                     self.focus = Focus::ThreadList;
+                    self.refresh_preview_stack();
                 }
             }
             InputEvent::Up => {

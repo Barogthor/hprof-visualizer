@@ -150,7 +150,7 @@ development_status:
 
   # Epic 11: Navigation Performance (sourced from large dump UX observations 2026-03-14)
   # Deferred after Epic 12 (Epic 10 retro decision)
-  epic-11: in-progress
+  epic-11: done
   11-1-loading-indicator-slow-operations: done
   11-2-batch-scan-by-segment: done
   11-3-parallel-eager-item-resolution: done
@@ -201,9 +201,12 @@ development_status:
   #   to see the field again. Likely the cancel/abort path clears the
   #   field data without restoring the pre-expansion state.
   #   Scope: hprof-tui expand/cancel logic.
+  #   RESOLVED: Fixed outside of a story (confirmed Epic 11 retro).
+  epic-11-retrospective: done
 
   # Epic 13: UI Polish & Ergonomie (sourced from large dump UX observations 2026-03-14)
   epic-13: backlog
+  13-0-progress-bar-intra-segment: backlog
   13-1-collapsible-static-fields-section: backlog
   13-2-enhanced-favorites-navigation: backlog
   13-3-ui-separators: backlog
