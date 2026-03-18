@@ -1185,6 +1185,15 @@ impl<E: NavigationEngine> App<E> {
                         if let Some(p) = &cpath {
                             s.expansion.collapse_at_path(p);
                         }
+                        // Also collapse the collection field
+                        // itself so its phase doesn't linger
+                        // as Expanded (which would render
+                        // "(no fields)" for the empty object).
+                        if let RenderCursor::At(ref rp) =
+                            restore_cursor
+                        {
+                            s.expansion.collapse_at_path(rp);
+                        }
                         s.set_cursor(restore_cursor);
                     }
                     return AppAction::Continue;
@@ -2136,16 +2145,40 @@ impl<E: NavigationEngine> App<E> {
                             fields.len()
                         ),
                     }
-                    if let Some(s) = &mut self.stack_state {
-                        s.set_expansion_done_at_path(path, object_id, fields);
-                        s.set_static_fields(object_id, static_fields);
-                    }
-                    if self
-                        .pending_navigation
-                        .as_ref()
-                        .is_some_and(|p| p.awaited == AwaitedResource::ObjectExpansion(object_id))
-                    {
-                        nav_resume_oid = Some(object_id);
+                    // Guard: if the Loading indicator was shown
+                    // but the phase was since cancelled
+                    // (reverted to Collapsed), discard the
+                    // result to avoid reinserting an orphaned
+                    // Expanded phase.
+                    let cancelled = pe.loading_shown
+                        && self
+                            .stack_state
+                            .as_ref()
+                            .is_some_and(|s| {
+                                s.expansion_state_for_path(path)
+                                    != ExpansionPhase::Loading
+                            });
+                    if !cancelled {
+                        if let Some(s) = &mut self.stack_state {
+                            s.set_expansion_done_at_path(
+                                path, object_id, fields,
+                            );
+                            s.set_static_fields(
+                                object_id, static_fields,
+                            );
+                        }
+                        if self
+                            .pending_navigation
+                            .as_ref()
+                            .is_some_and(|p| {
+                                p.awaited
+                                    == AwaitedResource::ObjectExpansion(
+                                        object_id,
+                                    )
+                            })
+                        {
+                            nav_resume_oid = Some(object_id);
+                        }
                     }
                     done.push(path.clone());
                 }

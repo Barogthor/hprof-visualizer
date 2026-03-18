@@ -1041,6 +1041,94 @@ mod object_expansion {
         // Focus must remain in StackFrames.
         assert_eq!(app.focus, Focus::StackFrames);
     }
+
+    #[test]
+    fn poll_expansions_after_collapse_does_not_reinsert_expanded() {
+        // Scenario: user expands object, phase goes to
+        // Loading, then user collapses via Left before the
+        // background thread finishes. collapse_at_path
+        // removes the phase but pending_expansions still
+        // holds the receiver.  When poll_expansions picks
+        // up the result it must NOT re-insert Expanded.
+        let frames = vec![make_frame(10)];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(
+            &["main"],
+            frames,
+        )
+        .with_vars(10, vars);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame 10
+        app.handle_input(InputEvent::Down); // → OnVar{0,0}
+
+        // Inject a pending expansion whose result will
+        // arrive later.
+        let (tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
+        let exp_path =
+            NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+                .build();
+        app.pending_expansions.insert(
+            exp_path.clone(),
+            PendingExpansion {
+                rx,
+                object_id: 42,
+                path: exp_path.clone(),
+                started: Instant::now()
+                    - EXPANSION_LOADING_THRESHOLD
+                    - Duration::from_millis(10),
+                loading_shown: false,
+            },
+        );
+        // Show Loading phase after threshold.
+        app.poll_expansions();
+        assert_eq!(
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&exp_path),
+            ExpansionPhase::Loading,
+        );
+
+        // Collapse via collapse_at_path (simulates Left key
+        // on the var node while Loading). This removes the
+        // phase but does NOT remove pending_expansions.
+        if let Some(s) = &mut app.stack_state {
+            s.expansion.collapse_at_path(&exp_path);
+        }
+        assert_eq!(
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&exp_path),
+            ExpansionPhase::Collapsed,
+            "phase must be Collapsed after manual collapse"
+        );
+
+        // Background thread delivers the result.
+        tx.send(Some(vec![])).unwrap();
+        app.poll_expansions();
+
+        // The expansion must NOT be re-inserted.
+        assert_eq!(
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .expansion_state_for_path(&exp_path),
+            ExpansionPhase::Collapsed,
+            "poll_expansions must not re-insert Expanded \
+             after collapse"
+        );
+        // No phantom node in flat items.
+        let flat = app.stack_state.as_ref().unwrap().flat_items();
+        assert!(
+            !flat
+                .iter()
+                .any(|c| matches!(c, RenderCursor::LoadingNode(_))),
+            "no LoadingNode after collapsed expansion: \
+             {flat:?}"
+        );
+    }
 }
 
 mod collection_paging {
@@ -1433,6 +1521,53 @@ mod collection_paging {
             ss.cursor(),
             &RenderCursor::At(NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build()),
             "escape from var-opened collection must restore var cursor"
+        );
+    }
+
+    #[test]
+    fn escape_from_collection_clears_parent_field_phase() {
+        // After Esc collapses a collection, the parent
+        // field's expansion_phase must be Collapsed so no
+        // phantom "(no fields)" node appears.
+        let mut app = make_var_collection_app(3);
+        app.handle_input(InputEvent::Enter); // StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.handle_input(InputEvent::Down); // → OnVar{0,0}
+        app.handle_input(InputEvent::Enter); // open coll 888
+        poll_all_pages(&mut app);
+        app.handle_input(InputEvent::Down); // → first entry
+
+        // Precondition: inside collection.
+        let ss = app.stack_state.as_ref().unwrap();
+        assert!(
+            cursor_ends_with_collection_entry(ss.cursor()),
+            "precondition: cursor in collection, got {:?}",
+            ss.cursor()
+        );
+
+        app.handle_input(InputEvent::Escape);
+        let ss = app.stack_state.as_ref().unwrap();
+
+        // The parent field phase must be Collapsed.
+        let var_path = NavigationPathBuilder::new(
+            FrameId(10),
+            VarIdx(0),
+        )
+        .build();
+        assert_eq!(
+            ss.expansion_state_for_path(&var_path),
+            ExpansionPhase::Collapsed,
+            "parent field phase must be Collapsed after Esc"
+        );
+
+        // No LoadingNode / "(no fields)" phantom.
+        let flat = ss.flat_items();
+        assert!(
+            !flat.iter().any(|c| matches!(
+                c,
+                RenderCursor::LoadingNode(_)
+            )),
+            "no phantom LoadingNode after Esc: {flat:?}"
         );
     }
 

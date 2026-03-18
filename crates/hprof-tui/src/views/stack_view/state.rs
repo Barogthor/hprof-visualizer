@@ -1353,7 +1353,9 @@ impl StackState {
                 let fields = self.expansion.object_fields.get(&object_id);
                 let field_count = fields.map(|f| f.len()).unwrap_or(0);
                 if field_count == 0 {
-                    out.push(RenderCursor::LoadingNode(parent_path.clone()));
+                    // Object is Expanded but has no fields —
+                    // skip emitting any child cursor.  The
+                    // renderer shows "(no fields)" inline.
                 } else {
                     let field_list = fields.unwrap();
                     for (idx, field) in field_list.iter().enumerate() {
