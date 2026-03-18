@@ -206,7 +206,7 @@ development_status:
 
   # Epic 13: UI Polish & Ergonomie (sourced from large dump UX observations 2026-03-14)
   epic-13: in-progress
-  13-0-progress-bar-intra-segment: review
+  13-0-progress-bar-intra-segment: done
   13-1-collapsible-static-fields-section: ready-for-dev
   13-2-enhanced-favorites-navigation: ready-for-dev
   13-3-ui-separators: backlog

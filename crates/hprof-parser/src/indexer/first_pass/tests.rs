@@ -2736,30 +2736,45 @@ mod story_13_0_tests {
         HprofTestBuilder, advance_past_header,
     };
 
-    /// 13.0-5.6: extract_all on a small dump terminates
-    /// within 5 seconds (deadlock regression guard for
-    /// `drop(tx)`).
+    /// 13.0-5.6: extract_all on a dump that triggers the
+    /// PARALLEL path terminates without deadlock.
+    /// Uses a dedicated 2-thread pool so the test is
+    /// deterministic. Exercises the `drop(tx)` guard
+    /// inside `rayon::in_place_scope` — if `drop(tx)` is
+    /// removed, `rx.iter()` never terminates and the
+    /// scope hangs.
     #[test]
     fn extract_all_terminates_no_deadlock() {
-        let handle = std::thread::spawn(|| {
-            let bytes = HprofTestBuilder::new(
-                "JAVA PROFILE 1.0.2",
-                8,
-            )
-            .add_instance(1, 0, 100, &[0u8; 4])
-            .add_instance(2, 0, 100, &[0u8; 4])
-            .build();
-            let start = advance_past_header(&bytes);
+        // Two segments of 17 MB each → 34 MB total ≥
+        // PARALLEL_THRESHOLD, and num_threads == 2 > 1
+        // → parallel path taken.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .expect("2-thread pool");
+        let seg_bytes = 17 * 1024 * 1024_usize;
+        let data = vec![0u8; seg_bytes];
+        let bytes = HprofTestBuilder::new(
+            "JAVA PROFILE 1.0.2",
+            8,
+        )
+        .add_prim_array(1, 0, seg_bytes as u32, 8, &data)
+        .add_prim_array(2, 0, seg_bytes as u32, 8, &data)
+        .build();
+        let start = advance_past_header(&bytes);
+        let handle = std::thread::spawn(move || {
             let mut obs = TestObserver::default();
-            let mut notifier =
-                ProgressNotifier::new(&mut obs);
-            let _result = run_first_pass(
-                &bytes[start..],
-                8,
-                0,
-                &mut notifier,
-                MemoryBudget::Unlimited,
-            );
+            pool.install(|| {
+                let mut notifier =
+                    ProgressNotifier::new(&mut obs);
+                let _result = run_first_pass(
+                    &bytes[start..],
+                    8,
+                    0,
+                    &mut notifier,
+                    MemoryBudget::Unlimited,
+                );
+            });
         });
         let result = handle.join();
         assert!(

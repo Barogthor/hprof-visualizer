@@ -30,8 +30,8 @@ pub trait ParseProgressObserver {
     /// `total`. Called once per segment regardless of
     /// parallel or sequential path. `done` is strictly
     /// monotonically increasing — the counter is
-    /// incremented in the main thread after
-    /// `par_iter().collect()`, never inside workers.
+    /// incremented on the main thread after each
+    /// segment result is merged.
     fn on_segment_completed(&mut self, done: usize, total: usize);
 
     /// Thread name resolution progress.

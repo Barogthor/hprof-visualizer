@@ -1,9 +1,10 @@
 //! CLI progress observer for hprof loading phases.
 //!
 //! [`CliProgressObserver`] implements
-//! [`ParseProgressObserver`] with four indicatif bars:
-//! scan bytes, segment completion, phase spinners, and
-//! name resolution.
+//! [`ParseProgressObserver`] with indicatif bars:
+//! scan bytes (sequential record scan), heap bytes
+//! extracted (parallel/sequential heap extraction),
+//! phase spinners, and name resolution.
 
 use std::time::{Duration, Instant};
 

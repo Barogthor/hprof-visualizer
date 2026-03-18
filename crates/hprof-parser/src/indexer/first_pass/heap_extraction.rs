@@ -1,6 +1,7 @@
 //! Heap segment object extraction — sequential and parallel
 //! paths.
 
+use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::ops::Range;
 
@@ -455,6 +456,11 @@ pub(super) fn extract_all(
             let _ = batch_idx;
 
             let (tx, rx) = std::sync::mpsc::channel();
+            let mut batch_results: Vec<(
+                u64,
+                u64,
+                HeapSegmentParsingResult,
+            )> = Vec::new();
 
             rayon::in_place_scope(|s| {
                 for r in batch {
@@ -482,26 +488,36 @@ pub(super) fn extract_all(
                 // rx.iter() terminates when all worker
                 // clones are dropped.
                 drop(tx);
+                // Concurrent drain — report bytes as
+                // each segment arrives, while slower
+                // workers are still active. Progress
+                // fires in non-deterministic arrival
+                // order; merge is deferred so
+                // SegmentFilterBuilder receives IDs
+                // in offset order.
+                for (start, payload_len, result)
+                    in rx.iter()
+                {
+                    bytes_done += payload_len;
+                    notifier.heap_bytes_extracted(
+                        bytes_done,
+                        total_heap_bytes,
+                    );
+                    batch_results
+                        .push((start, payload_len, result));
+                }
             });
 
-            // Collect and sort by payload_start so the
-            // streaming SegmentFilterBuilder receives
-            // IDs in offset order — filters are built
-            // inline instead of deferred to finish().
-            let mut batch_results: Vec<_> =
-                rx.into_iter().collect();
+            // Sort by payload_start before merging —
+            // required by the streaming
+            // SegmentFilterBuilder (IDs must arrive
+            // in non-decreasing offset order).
             batch_results
                 .sort_unstable_by_key(|(start, _, _)| {
                     *start
                 });
-
-            for (_, payload_len, result) in batch_results {
+            for (_, _, result) in batch_results.drain(..) {
                 result.merge_into(ctx);
-                bytes_done += payload_len;
-                notifier.heap_bytes_extracted(
-                    bytes_done,
-                    total_heap_bytes,
-                );
             }
         }
     } else {
