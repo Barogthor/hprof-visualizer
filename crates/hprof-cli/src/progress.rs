@@ -14,7 +14,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 pub struct CliProgressObserver {
     mp: MultiProgress,
     scan_bar: ProgressBar,
-    segment_bar: Option<ProgressBar>,
+    extraction_bar: Option<ProgressBar>,
     phase_bar: Option<ProgressBar>,
     name_bar: Option<ProgressBar>,
     start: Instant,
@@ -40,7 +40,7 @@ impl CliProgressObserver {
         Self {
             mp: mp.clone(),
             scan_bar: pb,
-            segment_bar: None,
+            extraction_bar: None,
             phase_bar: None,
             name_bar: None,
             start: Instant::now(),
@@ -57,7 +57,7 @@ impl CliProgressObserver {
         if let Some(bar) = self.name_bar.take() {
             bar.finish_and_clear();
         }
-        if let Some(bar) = self.segment_bar.take() {
+        if let Some(bar) = self.extraction_bar.take() {
             bar.finish_and_clear();
         }
         self.scan_bar.finish_and_clear();
@@ -80,36 +80,48 @@ impl ParseProgressObserver for CliProgressObserver {
         self.scan_bar.set_position(position);
     }
 
-    fn on_segment_completed(&mut self, done: usize, total: usize) {
-        let bar = self.segment_bar.get_or_insert_with(|| {
-            self.scan_bar.finish();
-            let pb = self.mp.add(ProgressBar::new(total as u64));
-            pb.set_style(
-                ProgressStyle::with_template(
-                    "[{elapsed_precise}] \
-                     [{bar:40.green/blue}] \
-                     {pos}/{len} segments \
-                     ({percent}%, ETA {eta})",
-                )
-                .unwrap()
-                .progress_chars("=>-"),
-            );
-            pb
-        });
-        bar.set_length(total as u64);
-        bar.set_position(done as u64);
+    // TODO(cleanup): remove once parser no longer calls
+    // on_segment_completed
+    fn on_segment_completed(
+        &mut self,
+        _done: usize,
+        _total: usize,
+    ) {
+    }
+
+    fn on_heap_bytes_extracted(
+        &mut self,
+        done: u64,
+        total: u64,
+    ) {
+        let bar =
+            self.extraction_bar.get_or_insert_with(|| {
+                if !self.scan_bar.is_finished() {
+                    self.scan_bar.finish();
+                }
+                let pb =
+                    self.mp.add(ProgressBar::new(total));
+                pb.set_style(
+                    ProgressStyle::with_template(
+                        "[{elapsed_precise}] \
+                         [{bar:40.green/blue}] \
+                         {bytes}/{total_bytes} \
+                         extracted ({bytes_per_sec}, \
+                         ETA {eta})",
+                    )
+                    .unwrap()
+                    .progress_chars("=>-"),
+                );
+                pb
+            });
+        bar.set_length(total);
+        bar.set_position(done);
         if done == total {
             bar.finish();
         }
     }
 
     fn on_phase_changed(&mut self, phase: &str) {
-        if let Some(bar) = &self.segment_bar
-            && bar.position() < bar.length().unwrap_or(0)
-        {
-            bar.finish_and_clear();
-            self.segment_bar = None;
-        }
         if let Some(pb) = &self.phase_bar {
             pb.set_message(phase.to_owned());
         } else {
@@ -219,15 +231,31 @@ mod tests {
     }
 
     #[test]
+    fn on_heap_bytes_extracted_finishes_bar_at_done_eq_total()
+    {
+        let mp = MultiProgress::new();
+        let mut obs = CliProgressObserver::new(&mp, 1024);
+        obs.on_heap_bytes_extracted(512, 1024);
+        assert!(obs.extraction_bar.is_some());
+        let bar = obs.extraction_bar.as_ref().unwrap();
+        assert!(!bar.is_finished());
+        obs.on_heap_bytes_extracted(1024, 1024);
+        let bar = obs.extraction_bar.as_ref().unwrap();
+        assert!(bar.is_finished());
+    }
+
+    #[test]
     fn finish_clears_all_bars_without_panic() {
         let mp = MultiProgress::new();
         let mut obs = CliProgressObserver::new(&mp, 1024);
-        obs.on_segment_completed(1, 5);
-        obs.on_phase_changed("Building segment filters\u{2026}");
+        obs.on_heap_bytes_extracted(512, 1024);
+        obs.on_phase_changed(
+            "Building segment filters\u{2026}",
+        );
         obs.on_names_resolved(5, 32);
         obs.finish();
         assert!(obs.phase_bar.is_none());
         assert!(obs.name_bar.is_none());
-        assert!(obs.segment_bar.is_none());
+        assert!(obs.extraction_bar.is_none());
     }
 }
