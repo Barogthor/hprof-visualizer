@@ -1993,7 +1993,7 @@ static fields I rarely need.
 
 As a user,
 I want to unexpand a pinned item, navigate between pinned items with
-shortcuts, and batch-unexpand multiple levels at once,
+shortcuts, and batch-unexpand multiple levels at once anywhere in the tree,
 So that managing complex pinned snapshots is efficient.
 
 **FRs covered:** FR67

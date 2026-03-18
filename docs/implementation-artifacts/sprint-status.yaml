@@ -208,12 +208,19 @@ development_status:
   epic-13: in-progress
   13-0-progress-bar-intra-segment: review
   13-1-collapsible-static-fields-section: ready-for-dev
-  13-2-enhanced-favorites-navigation: backlog
+  13-2-enhanced-favorites-navigation: ready-for-dev
   13-3-ui-separators: backlog
   13-4-incomplete-file-warning-color: backlog
   13-5-azerty-qwerty-keymapping: backlog
   13-6-class-metadata-preload: backlog
   13-7-logo-splash-screen: backlog
+
+  # ACTION (13.0 testing 2026-03-18): Stack view navigation
+  #   is sluggish when the tree is deep due to large
+  #   expanded collections. Needs investigation — likely
+  #   render_variable_tree or cursor movement cost scales
+  #   with visible node count in deep trees.
+  #   Scope: hprof-tui stack_view performance.
 
   # BACKLOG IDEAS (not yet scoped into epics/stories):
   # - Custom collection recognition: detect collections by
