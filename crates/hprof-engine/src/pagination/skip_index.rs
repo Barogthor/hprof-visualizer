@@ -6,6 +6,9 @@
 //! from the nearest checkpoint instead of scanning from the
 //! beginning.
 
+/// Interval between skip-index checkpoints (entries).
+pub(crate) const SKIP_INTERVAL: usize = 100;
+
 /// Resume state at a skip-index checkpoint.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SkipCheckpoint {
@@ -85,7 +88,6 @@ impl SkipIndex {
 
     /// Returns `true` if the full collection has been
     /// traversed.
-    #[cfg(test)]
     pub(crate) fn is_complete(&self) -> bool {
         self.complete
     }

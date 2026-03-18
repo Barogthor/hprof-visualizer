@@ -4442,6 +4442,7 @@ mod spinner_state_tests {
             pinned_hidden_count: 0,
             spinner_state: SpinnerState::Resolving,
             spinner_tick: 0,
+            walker_info: None,
         };
         let backend = TestBackend::new(200, 1);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -4478,6 +4479,7 @@ mod spinner_state_tests {
             pinned_hidden_count: 0,
             spinner_state: SpinnerState::Idle,
             spinner_tick: 0,
+            walker_info: None,
         };
         let backend = TestBackend::new(200, 1);
         let mut terminal = Terminal::new(backend).unwrap();

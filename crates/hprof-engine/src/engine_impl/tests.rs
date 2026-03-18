@@ -2214,3 +2214,160 @@ fn skip_index_lazy_creation_via_engine() {
         "first offset>0 access must allocate exactly one skip-index"
     );
 }
+
+// -- Story 11.7: Background walker Engine integration --
+
+mod walker_integration {
+    use super::*;
+    use crate::engine::NavigationEngine;
+    use hprof_parser::HprofTestBuilder;
+
+    fn build_hashmap_bytes(n: usize) -> Vec<u8> {
+        let id_size: u32 = 8;
+        let s_size = 10u64;
+        let s_table = 11u64;
+        let s_key = 12u64;
+        let s_value = 13u64;
+        let s_next = 14u64;
+        let s_cn = 15u64;
+        let s_node_cn = 16u64;
+
+        let table: Vec<u64> = (0..n).map(|i| 0x200u64 + i as u64).collect();
+
+        let mut hm = Vec::new();
+        hm.extend_from_slice(&(n as i32).to_be_bytes());
+        hm.extend_from_slice(&0x500u64.to_be_bytes());
+
+        let mut b = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_string(s_size, "size")
+            .add_string(s_table, "table")
+            .add_string(s_key, "key")
+            .add_string(s_value, "value")
+            .add_string(s_next, "next")
+            .add_string(s_cn, "java/util/HashMap")
+            .add_string(s_node_cn, "java/util/HashMap$Node")
+            .add_class(1, 1000, 0, s_cn)
+            .add_class(2, 2000, 0, s_node_cn)
+            .add_class_dump(1000, 0, 4 + id_size, &[(s_size, 10), (s_table, 2)])
+            .add_class_dump(
+                2000,
+                0,
+                id_size * 3,
+                &[(s_key, 2), (s_value, 2), (s_next, 2)],
+            )
+            .add_instance(0x100, 0, 1000, &hm)
+            .add_object_array(0x500, 0, 2000, &table);
+
+        for i in 0..n {
+            let nid = 0x200u64 + i as u64;
+            let kid = 0x1000u64 + i as u64;
+            let vid = 0x2000u64 + i as u64;
+            let mut nd = Vec::new();
+            nd.extend_from_slice(&kid.to_be_bytes());
+            nd.extend_from_slice(&vid.to_be_bytes());
+            nd.extend_from_slice(&0u64.to_be_bytes());
+            b = b.add_instance(nid, 0, 2000, &nd);
+        }
+        b.build()
+    }
+
+    fn engine_from_bytes(bytes: &[u8]) -> Engine {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(bytes).unwrap();
+        tmp.flush().unwrap();
+        Engine::from_file(tmp.path(), &EngineConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn spawn_walker_completes_and_drain_applies() {
+        let engine = engine_from_bytes(&build_hashmap_bytes(50));
+        engine.spawn_walker(0x100);
+
+        // Wait for walker to complete
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Drain via get_page
+        let page = engine.get_page(0x100, 0, 10);
+        assert!(page.is_some());
+
+        // Walker should be removed after Complete
+        assert!(
+            engine.walker_progress(0x100).is_none(),
+            "walker should be removed after completion"
+        );
+    }
+
+    #[test]
+    fn spawn_walker_dedup() {
+        let engine = engine_from_bytes(&build_hashmap_bytes(50));
+        engine.spawn_walker(0x100);
+        engine.spawn_walker(0x100); // second call
+
+        let walkers = engine.walkers.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(walkers.len(), 1, "duplicate spawn should be ignored");
+    }
+
+    #[test]
+    fn spawn_walker_cap() {
+        let engine = engine_from_bytes(&build_hashmap_bytes(10));
+
+        // Fill walker slots with fake entries
+        {
+            let mut walkers = engine.walkers.lock().unwrap_or_else(|e| e.into_inner());
+            for i in 1..=8 {
+                let (tx, rx) = std::sync::mpsc::channel();
+                drop(tx);
+                let handle = crate::pagination::WalkerHandle::new(
+                    rx,
+                    std::thread::spawn(|| {}),
+                    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                );
+                walkers.insert(i, handle);
+            }
+        }
+
+        // 9th walker should be rejected
+        engine.spawn_walker(0x100);
+        let walkers = engine.walkers.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !walkers.contains_key(&0x100),
+            "should reject spawn when cap reached"
+        );
+    }
+
+    #[test]
+    fn cancel_walker_removes_handle() {
+        let engine = engine_from_bytes(&build_hashmap_bytes(50));
+        engine.spawn_walker(0x100);
+
+        // Cancel immediately
+        engine.cancel_walker(0x100);
+
+        assert!(
+            engine.walker_progress(0x100).is_none(),
+            "handle should be removed after cancel"
+        );
+    }
+
+    #[test]
+    fn walker_progress_lifecycle() {
+        let engine = engine_from_bytes(&build_hashmap_bytes(50));
+        engine.spawn_walker(0x100);
+
+        // Progress should be Some while walker runs
+        // (may already be done for small collection)
+        let _progress = engine.walker_progress(0x100);
+
+        // Wait for completion
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // Drain walker
+        engine.get_page(0x100, 0, 10);
+
+        // After drain of Complete, progress is None
+        assert!(
+            engine.walker_progress(0x100).is_none(),
+            "progress should be None after completion"
+        );
+    }
+}

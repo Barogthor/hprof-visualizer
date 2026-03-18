@@ -159,7 +159,7 @@ development_status:
   11-6-investigate-non-array-item-slowness: done
   # CLOSED (11.6): Page 0 batch pre-resolution done. Table head IDs
   #   batched, find_instance caches offsets, key/value IDs batched.
-  11-7-deep-pagination-chain-batching: ready-for-dev
+  11-7-deep-pagination-chain-batching: review
   # ACTION (11.6 completion 2026-03-17): Cold jump to page 300k+
   #   is still slow on large HashMap/LinkedList (minutes). Root
   #   cause: chain nodes (next pointers) are inherently sequential
@@ -179,6 +179,21 @@ development_status:
   #   (c) Lazy pagination with progress: show partial results
   #       while walking, update count as chain walking completes.
   #   User confirmed this is a priority (2026-03-17).
+
+  # ACTION (11.7 completion 2026-03-18): Background walker is ~2-3s per
+  #   100 entries on large collections. LinkedList is worst case —
+  #   structurally sequential (each next depends on previous node),
+  #   no batching possible. Deep jumps still slow until walker catches up.
+  #   Ideas to explore:
+  #   (a) Faster walker: reduce per-node cost (lighter decode, prefetch
+  #       offsets, skip decode_fields and extract next from raw bytes)
+  #   (b) Better heap indexing: per-class instance index during first-pass
+  #       (class_id → Vec<offset>) — would allow finding all LinkedList$Node
+  #       instances without following chains. Major indexing change.
+  #   (c) Bidirectional walk: walk from both `first` and `last` (prev field)
+  #       simultaneously — covers both ends, halves time to reach middle.
+  #   (d) Segment-local node clustering: if nodes tend to cluster in
+  #       segments, prefetch entire segments instead of per-node lookups.
 
   # BUG (2026-03-17): Pressing Esc on a field showing "Resolving..."
   #   causes the field to display "no field" instead of reverting to

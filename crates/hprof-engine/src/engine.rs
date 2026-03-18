@@ -325,6 +325,25 @@ pub trait NavigationEngine {
     /// Returns the byte size of the non-evictable skeleton — the
     /// `PreciseIndex` held permanently in `HprofFile`.
     fn skeleton_bytes(&self) -> usize;
+
+    /// Drains completed background walkers, applying
+    /// pending skip-index checkpoints. Call once per
+    /// tick to keep walker state up-to-date.
+    fn drain_walkers(&self) {}
+
+    /// Spawns a background walker for the given collection.
+    /// Default no-op for engines that don't support it.
+    fn spawn_walker(&self, _collection_id: u64) {}
+
+    /// Cancels an active walker for the given collection.
+    /// Default no-op.
+    fn cancel_walker(&self, _collection_id: u64) {}
+
+    /// Returns the walker progress (entry count) for the
+    /// given collection, or `None` if no walker is active.
+    fn walker_progress(&self, _collection_id: u64) -> Option<usize> {
+        None
+    }
 }
 
 #[cfg(test)]

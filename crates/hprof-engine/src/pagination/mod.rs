@@ -4,6 +4,7 @@
 //! object by identifying its concrete type and delegating
 //! to the appropriate extractor.
 
+mod background_walker;
 mod skip_index;
 
 use hprof_parser::{HprofFile, ObjectArrayMeta, RawInstance};
@@ -12,8 +13,11 @@ use crate::engine::{CollectionPage, EntryInfo, FieldValue};
 use crate::engine_impl::Engine;
 use crate::resolver::decode_fields;
 
+pub(crate) use background_walker::{
+    MAX_WALKERS, WalkMessage, WalkerHandle, walk_collection_background,
+};
 use skip_index::SkipCheckpoint;
-pub(crate) use skip_index::SkipIndex;
+pub(crate) use skip_index::{SKIP_INTERVAL, SkipIndex};
 
 /// Minimum number of uncached head IDs required to use
 /// `batch_find_instances`. Below this threshold the fixed

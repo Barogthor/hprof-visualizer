@@ -737,6 +737,7 @@ impl<E: NavigationEngine> App<E> {
                 s.expansion.collection_chunks.insert(collection_id, chunks);
             }
             self.start_collection_page_load(collection_id, 0, 100);
+            self.engine.spawn_walker(collection_id);
             return;
         }
 
@@ -1393,6 +1394,7 @@ impl<E: NavigationEngine> App<E> {
                             }
                         }
                         self.start_collection_page_load(cid, 0, limit);
+                        self.engine.spawn_walker(cid);
                         if let Some(path) = cursor_path
                             && let Some(pp) = self.pending_pages.get_mut(&(cid, 0))
                         {
@@ -1775,6 +1777,7 @@ impl<E: NavigationEngine> App<E> {
                             }
                         }
                         self.start_collection_page_load(cid, 0, limit);
+                        self.engine.spawn_walker(cid);
                         if let Some(path) = cursor_path
                             && let Some(pp) = self.pending_pages.get_mut(&(cid, 0))
                         {
@@ -2222,6 +2225,24 @@ impl<E: NavigationEngine> App<E> {
                 .any(|pp| pp.loading_shown)
     }
 
+    /// Returns walker progress for the first active
+    /// walker among currently viewed collections,
+    /// or `None` if no walker is active.
+    fn current_walker_info(&self) -> Option<(usize, u64)> {
+        let cc_map = self
+            .stack_state
+            .as_ref()?
+            .expansion
+            .collection_chunks
+            .iter();
+        for (&cid, chunks) in cc_map {
+            if let Some(progress) = self.engine.walker_progress(cid) {
+                return Some((progress, chunks.total_count));
+            }
+        }
+        None
+    }
+
     /// Recomputes `spinner_state` from all pending operation maps and
     /// the `loading_until` minimum-display timer. Must be called once
     /// per tick, after `poll_expansions()` + `poll_pages()`.
@@ -2420,6 +2441,7 @@ impl<E: NavigationEngine> App<E> {
                 pinned_hidden_count,
                 spinner_state: self.spinner_state,
                 spinner_tick: self.spinner_tick,
+                walker_info: self.current_walker_info(),
             },
             status_area,
         );
@@ -2527,6 +2549,7 @@ fn run_loop<E: NavigationEngine + Send + Sync + 'static>(
         }
 
         // 2. Polls — must run after input so Escape can cancel before resume.
+        app.engine.drain_walkers();
         app.poll_expansions();
         app.poll_pages();
 

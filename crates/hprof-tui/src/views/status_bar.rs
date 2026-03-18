@@ -36,6 +36,10 @@ pub struct StatusBar<'a> {
     pub spinner_state: SpinnerState,
     /// Spinner frame index, incremented each render tick.
     pub spinner_tick: u8,
+    /// Background walker progress for the current
+    /// collection: `(progress, total_count)`.
+    /// `None` when no walker is active.
+    pub walker_info: Option<(usize, u64)>,
 }
 
 pub(crate) fn state_label(state: ThreadState) -> &'static str {
@@ -89,6 +93,18 @@ impl Widget for StatusBar<'_> {
             String::new()
         };
 
+        let walker_part = match self.walker_info {
+            Some((progress, total)) if total > 0 => {
+                let ch = SPINNER_CHARS[(self.spinner_tick / 4) as usize % 10];
+                format!("  |  {ch} Pre-walking… {progress}/{total}")
+            }
+            Some((progress, _)) => {
+                let ch = SPINNER_CHARS[(self.spinner_tick / 4) as usize % 10];
+                format!("  |  {ch} Pre-walking… {progress}")
+            }
+            None => String::new(),
+        };
+
         let nav_part = match self.spinner_state {
             SpinnerState::Idle => String::new(),
             SpinnerState::Resolving => {
@@ -108,8 +124,9 @@ impl Widget for StatusBar<'_> {
             ),
             THEME.status_bar_bg,
         );
+        let walker = Span::styled(walker_part, THEME.nav_spinner);
         let nav = Span::styled(nav_part, THEME.nav_spinner);
-        Line::from(vec![main, nav]).render(area, buf);
+        Line::from(vec![main, walker, nav]).render(area, buf);
     }
 }
 
@@ -189,6 +206,7 @@ mod tests {
                 pinned_hidden_count: 0,
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             120,
         );
@@ -211,6 +229,7 @@ mod tests {
                 pinned_hidden_count: 0,
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             120,
         );
@@ -233,6 +252,7 @@ mod tests {
                 pinned_hidden_count: 0,
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             200,
         );
@@ -255,6 +275,7 @@ mod tests {
                 pinned_hidden_count: 0,
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             200,
         );
@@ -277,6 +298,7 @@ mod tests {
                 pinned_hidden_count: 0,
                 spinner_state: SpinnerState::NavigatingToPin,
                 spinner_tick: 0,
+                walker_info: None,
             },
             200,
         );
@@ -299,6 +321,7 @@ mod tests {
                 pinned_hidden_count: 0,
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             200,
         );
@@ -322,6 +345,7 @@ mod tests {
                 pinned_hidden_count: 0,
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
+                walker_info: None,
             },
             300,
         );
