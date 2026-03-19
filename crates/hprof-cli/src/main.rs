@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use hprof_api::ParseProgressObserver;
 use hprof_engine::NavigationEngine;
+use hprof_tui::keymap::KeymapPreset;
 use indicatif::MultiProgress;
 
 mod config;
@@ -31,6 +32,11 @@ struct Cli {
     /// the budget is auto-calculated as 50% of total RAM.
     #[arg(long = "memory-limit")]
     memory_limit: Option<String>,
+
+    /// Keyboard layout preset. Accepted values: `azerty`, `qwerty`.
+    /// Overrides the `keymap` setting in config.toml.
+    #[arg(long = "keymap")]
+    keymap: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -118,7 +124,17 @@ fn run() -> Result<(), CliError> {
         eprintln!("[warn] {w}");
     }
 
-    hprof_tui::run_tui(engine, path.display().to_string()).map_err(CliError::TuiFailed)?;
+    let keymap_str = cli
+        .keymap
+        .as_deref()
+        .or(app_config.keymap.as_deref())
+        .unwrap_or("azerty");
+    let keymap_preset = keymap_str
+        .parse::<KeymapPreset>()
+        .map_err(CliError::InvalidKeymap)?;
+    let keymap = keymap_preset.build();
+
+    hprof_tui::run_tui(engine, path.display().to_string(), keymap).map_err(CliError::TuiFailed)?;
 
     Ok(())
 }
@@ -152,6 +168,7 @@ fn parse_memory_size(s: &str) -> Result<u64, String> {
 #[derive(Debug)]
 enum CliError {
     InvalidMemoryLimit(String),
+    InvalidKeymap(String),
     MetadataFailed(std::io::Error),
     OpenFailed(hprof_engine::HprofError),
     TuiFailed(std::io::Error),
@@ -162,6 +179,9 @@ impl fmt::Display for CliError {
         match self {
             Self::InvalidMemoryLimit(msg) => {
                 write!(f, "invalid memory limit: {msg}")
+            }
+            Self::InvalidKeymap(msg) => {
+                write!(f, "invalid keymap: {msg}")
             }
             Self::MetadataFailed(err) => {
                 write!(f, "failed to read file metadata: {err}")
@@ -239,6 +259,7 @@ mod tests {
         let cli = Cli::try_parse_from(["hprof-visualizer", "heap.hprof"]).unwrap();
         assert_eq!(cli.file, PathBuf::from("heap.hprof"));
         assert!(cli.memory_limit.is_none());
+        assert!(cli.keymap.is_none());
     }
 
     #[test]
@@ -301,6 +322,49 @@ mod tests {
             err_msg.contains("config file"),
             "expected 'config file' in error, got: {err_msg}"
         );
+    }
+
+    #[test]
+    fn cli_parse_with_keymap_flag() {
+        let cli =
+            Cli::try_parse_from(["hprof-visualizer", "--keymap", "qwerty", "heap.hprof"]).unwrap();
+        assert_eq!(cli.keymap.as_deref(), Some("qwerty"));
+    }
+
+    #[test]
+    fn cli_keymap_azerty_parses_to_preset() {
+        "azerty"
+            .parse::<KeymapPreset>()
+            .expect("azerty must be a valid preset");
+    }
+
+    #[test]
+    fn cli_keymap_bogus_is_rejected() {
+        assert!("bogus".parse::<KeymapPreset>().is_err());
+    }
+
+    #[test]
+    fn cli_keymap_overrides_config_keymap() {
+        let cli_val = Some("qwerty");
+        let config_val = Some("azerty");
+        let effective = cli_val.or(config_val);
+        assert_eq!(effective, Some("qwerty"));
+    }
+
+    #[test]
+    fn config_keymap_used_when_cli_absent() {
+        let cli_val: Option<&str> = None;
+        let config_val = Some("azerty");
+        let effective = cli_val.or(config_val);
+        assert_eq!(effective, Some("azerty"));
+    }
+
+    #[test]
+    fn both_absent_defaults_to_azerty() {
+        let cli_val: Option<&str> = None;
+        let config_val: Option<&str> = None;
+        let effective = cli_val.or(config_val).unwrap_or("azerty");
+        assert_eq!(effective, "azerty");
     }
 
     #[test]

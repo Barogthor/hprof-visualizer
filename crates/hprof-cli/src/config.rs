@@ -16,6 +16,9 @@ use std::path::Path;
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct AppConfig {
     pub memory_limit: Option<String>,
+    /// Keyboard layout preset. Accepted values: `azerty`, `qwerty`.
+    /// Defaults to `azerty` when absent.
+    pub keymap: Option<String>,
 }
 
 /// Loads configuration from the first `config.toml` found in the standard
@@ -177,5 +180,29 @@ mod tests {
         write_config(dir.path(), "unknown_key = 42\nmemory_limit = \"2G\"");
         let cfg = load_from(dir.path(), std::path::Path::new("/nonexistent/bin"));
         assert_eq!(cfg.memory_limit.as_deref(), Some("2G"));
+    }
+
+    #[test]
+    fn keymap_azerty_deserializes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), r#"keymap = "azerty""#);
+        let cfg = load_from(dir.path(), std::path::Path::new("/nonexistent/bin"));
+        assert_eq!(cfg.keymap.as_deref(), Some("azerty"));
+    }
+
+    #[test]
+    fn keymap_qwerty_deserializes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), r#"keymap = "qwerty""#);
+        let cfg = load_from(dir.path(), std::path::Path::new("/nonexistent/bin"));
+        assert_eq!(cfg.keymap.as_deref(), Some("qwerty"));
+    }
+
+    #[test]
+    fn keymap_absent_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), r#"memory_limit = "2G""#);
+        let cfg = load_from(dir.path(), std::path::Path::new("/nonexistent/bin"));
+        assert!(cfg.keymap.is_none());
     }
 }

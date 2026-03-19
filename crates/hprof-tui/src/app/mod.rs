@@ -24,6 +24,7 @@ use ratatui::{
 use crate::{
     favorites::{PinnedItem, PinnedSnapshot, snapshot_from_cursor},
     input::{self, InputEvent},
+    keymap::Keymap,
     views::{
         favorites_panel::{FavoritesPanel, FavoritesPanelState},
         help_bar::{self, HelpBar, HelpContext},
@@ -187,11 +188,13 @@ pub struct App<E: NavigationEngine> {
     /// non-idle. Arms on `Idle → non-Idle`; resets to `None` on return
     /// to `Idle`.
     loading_until: Option<Instant>,
+    /// Active keyboard layout mapping for configurable key bindings.
+    keymap: Keymap,
 }
 
 impl<E: NavigationEngine> App<E> {
     /// Constructs the app from a ready engine. Loads thread list immediately.
-    pub fn new(engine: E, filename: String) -> Self {
+    pub fn new(engine: E, filename: String, keymap: Keymap) -> Self {
         let engine = Arc::new(engine);
         let threads = engine.list_threads();
         let thread_count = threads.len();
@@ -230,6 +233,7 @@ impl<E: NavigationEngine> App<E> {
             spinner_state: SpinnerState::Idle,
             spinner_tick: 0,
             loading_until: None,
+            keymap,
         }
     }
 
@@ -891,7 +895,7 @@ impl<E: NavigationEngine> App<E> {
                 }
             }
             // c — batch expand current pinned item
-            InputEvent::SearchChar('c') => {
+            InputEvent::BatchExpand => {
                 let idx = self.favorites_list_state.selected_index();
                 if let Some(item) = self.pinned.get_mut(idx) {
                     item.local_collapsed.clear();
@@ -972,12 +976,8 @@ impl<E: NavigationEngine> App<E> {
                 self.navigate_to_path(thread_id, &nav_path);
                 self.focus = Focus::StackFrames;
             }
-            // h — hide / show field (AC1, AC2)
-            // 'h'/'H' are caught here as SearchChar because input::from_key maps
-            // unbound printable keys to SearchChar. Focus-based dispatch ensures
-            // these arms fire only when the favorites panel is focused, leaving
-            // thread-list incremental search fully intact.
-            InputEvent::SearchChar('h') => {
+            // h — hide / show field
+            InputEvent::HideField => {
                 if let Some((key, is_hidden)) = self.favorites_list_state.field_key_at_cursor() {
                     let idx = self.favorites_list_state.selected_index();
                     if let Some(item) = self.pinned.get_mut(idx) {
@@ -994,15 +994,15 @@ impl<E: NavigationEngine> App<E> {
             }
             // b / n — jump between pinned items
             // FUTURE: guard with is_search_active() if favorites search is added
-            InputEvent::SearchChar('b') => {
+            InputEvent::PrevPin => {
                 self.favorites_list_state.jump_to_prev_pin();
             }
             // FUTURE: guard with is_search_active() if favorites search is added
-            InputEvent::SearchChar('n') => {
+            InputEvent::NextPin => {
                 self.favorites_list_state.jump_to_next_pin();
             }
             // H — toggle reveal mode for hidden rows in current snapshot
-            InputEvent::SearchChar('H') => {
+            InputEvent::RevealHidden => {
                 let idx = self.favorites_list_state.selected_index();
                 if let Some(item) = self.pinned.get_mut(idx) {
                     item.show_hidden = !item.show_hidden;
@@ -1154,9 +1154,6 @@ impl<E: NavigationEngine> App<E> {
                 }
                 InputEvent::Tab => {
                     self.cycle_focus();
-                }
-                InputEvent::SearchChar('s') => {
-                    self.thread_list.activate_search();
                 }
                 InputEvent::Quit => return AppAction::Quit,
                 _ => {}
@@ -1858,7 +1855,7 @@ impl<E: NavigationEngine> App<E> {
                 }
             }
             // c — progressive expand from cursor position
-            InputEvent::SearchChar('c') => {
+            InputEvent::BatchExpand => {
                 let cursor_info = self.stack_state.as_ref().and_then(|s| {
                     let path = match s.cursor().clone() {
                         RenderCursor::At(p) | RenderCursor::LoadingNode(p) => p,
@@ -2594,7 +2591,13 @@ impl<E: NavigationEngine> App<E> {
                     Focus::Favorites => HelpContext::Favorites,
                 }
             };
-            frame.render_widget(HelpBar { context: ctx }, area);
+            frame.render_widget(
+                HelpBar {
+                    context: ctx,
+                    keymap: self.keymap.clone(),
+                },
+                area,
+            );
         }
     }
 }
@@ -2644,6 +2647,7 @@ impl Drop for TerminalGuard {
 pub fn run_tui<E: NavigationEngine + Send + Sync + 'static>(
     engine: E,
     filename: String,
+    keymap: Keymap,
 ) -> io::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -2665,22 +2669,23 @@ pub fn run_tui<E: NavigationEngine + Send + Sync + 'static>(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    run_loop(&mut terminal, engine, filename)
+    run_loop(&mut terminal, engine, filename, keymap)
 }
 
 fn run_loop<E: NavigationEngine + Send + Sync + 'static>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     engine: E,
     filename: String,
+    keymap: Keymap,
 ) -> io::Result<()> {
-    let mut app = App::new(engine, filename);
+    let mut app = App::new(engine, filename, keymap);
 
     loop {
         // 1. Input handling — Escape clears pending nav before polls can resume.
         if event::poll(Duration::from_millis(16))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && let Some(ev) = input::from_key(key)
+            && let Some(ev) = input::from_key(key, &app.keymap)
             && app.handle_input(ev) == AppAction::Quit
         {
             return Ok(());
