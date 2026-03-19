@@ -208,7 +208,7 @@ development_status:
   epic-13: in-progress
   13-0-progress-bar-intra-segment: done
   13-1-collapsible-static-fields-section: done
-  13-2-enhanced-favorites-navigation: review
+  13-2-enhanced-favorites-navigation: done
   13-3-ui-separators: ready-for-dev
   13-4-incomplete-file-warning-color: ready-for-dev
   13-5-azerty-qwerty-keymapping: ready-for-dev

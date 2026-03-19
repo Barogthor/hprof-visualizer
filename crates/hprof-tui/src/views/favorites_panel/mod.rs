@@ -256,12 +256,6 @@ impl FavoritesPanelState {
         }
     }
 
-    /// Resets `sub_row` to 0 (header row) and clamps.
-    pub fn reset_sub_row(&mut self) {
-        self.sub_row = 0;
-        self.clamp_sub_row();
-    }
-
     pub(crate) fn clamp_sub_row(&mut self) {
         let max_sub_row = self
             .row_counts
@@ -698,25 +692,6 @@ impl<'a> MetadataCollector<'a> {
         } else {
             (ExpansionPhase::Collapsed, false, false)
         }
-    }
-}
-
-/// Returns paths to insert into `local_collapsed` for a batch collapse.
-///
-/// Pure function — caller extends `item.local_collapsed` with the result.
-/// For `Frame` snapshots, returns `Frame(0)/Var(i)` for each variable
-/// (using the synthetic `FrameId(0)` from `collect_frame_rows`).
-/// For `Subtree`, returns the synthetic root path.
-/// For `Primitive` / `UnexpandedRef`, returns empty vec (no-op).
-pub fn batch_collapse_paths(item: &PinnedItem) -> Vec<NavigationPath> {
-    match &item.snapshot {
-        PinnedSnapshot::Frame { variables, .. } => (0..variables.len())
-            .map(|i| NavigationPathBuilder::new(FrameId(0), VarIdx(i)).build())
-            .collect(),
-        PinnedSnapshot::Subtree { root_id, .. } => {
-            vec![NavigationPathBuilder::new(FrameId(*root_id), VarIdx(0)).build()]
-        }
-        PinnedSnapshot::Primitive { .. } | PinnedSnapshot::UnexpandedRef { .. } => vec![],
     }
 }
 

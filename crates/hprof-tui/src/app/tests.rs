@@ -726,6 +726,42 @@ mod stack_navigation {
         let v = VariableValue::Null;
         assert_eq!(v, VariableValue::Null);
     }
+
+    #[test]
+    fn c_key_on_collapsed_frame_expands_it() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → Focus::StackFrames
+        assert!(!app.stack_state.as_ref().unwrap().is_expanded(10));
+
+        app.handle_input(InputEvent::SearchChar('c'));
+
+        assert!(
+            app.stack_state.as_ref().unwrap().is_expanded(10),
+            "c should expand a collapsed frame"
+        );
+    }
+
+    #[test]
+    fn c_key_on_expanded_frame_with_object_var_triggers_pending_expansion() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vec![make_obj_var(0, 42)]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.handle_input(InputEvent::Enter); // → Focus::StackFrames
+        app.handle_input(InputEvent::SearchChar('c')); // expand frame
+        assert!(app.stack_state.as_ref().unwrap().is_expanded(10));
+        app.handle_input(InputEvent::Down); // cursor → Frame(10)/Var(0)
+        app.pending_expansions.clear(); // clear any from prior expand
+
+        app.handle_input(InputEvent::SearchChar('c')); // expand ObjectRef
+
+        assert!(
+            !app.pending_expansions.is_empty(),
+            "c on a collapsed ObjectRef var should trigger pending expansion"
+        );
+    }
 }
 
 mod object_expansion {
@@ -3189,6 +3225,11 @@ mod favorites {
         assert!(
             app.pinned[0].local_collapsed.is_empty(),
             "local_collapsed must be empty after 'c' expand"
+        );
+        assert_eq!(
+            app.favorites_list_state.abs_row(),
+            0,
+            "c must not move cursor away from current position"
         );
     }
 

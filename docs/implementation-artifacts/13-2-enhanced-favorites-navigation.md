@@ -1,6 +1,6 @@
 # Story 13.2: Enhanced Favorites Navigation
 
-Status: review
+Status: done
 
 ## Story
 
@@ -76,33 +76,16 @@ stack view:
 
 ## Tasks / Subtasks
 
-- [x] Task 1: Add `BatchCollapseSubtree` InputEvent and key binding (AC: #1, #2)
-  - [x] 1.1 In `crates/hprof-tui/src/input.rs`, add a new variant
-    `BatchCollapseSubtree` to `InputEvent`.
-    Map `Shift+Left` BEFORE the plain `Left` arm:
-    ```rust
-    (KeyCode::Left, mods) if mods.contains(KeyModifiers::SHIFT) =>
-        Some(InputEvent::BatchCollapseSubtree),
-    ```
-    Note: `Shift+Left` is currently unmapped (only `Shift+Up`/`Shift+Down`
-    are mapped to camera scroll). The new arm must come before
-    `(KeyCode::Left, _) => Some(InputEvent::Left)`.
-    **Side-effect:** `mods.contains(SHIFT)` is true for `CONTROL|SHIFT`
-    too, so `Ctrl+Shift+Left` will also map to `BatchCollapseSubtree`.
-    This is acceptable and consistent with the camera-scroll pattern
-    (`Ctrl/Shift+Up` both map to the same event). Do NOT change to
-    `mods == KeyModifiers::SHIFT` — that would break keyboards that send
-    extra modifier bits for the same physical key.
-  - [x] 1.2 Add unit test: `from_key(Shift+Left)` →
-    `Some(InputEvent::BatchCollapseSubtree)`.
-  - [x] 1.3 Add unit test: `from_key(Left)` still →
-    `Some(InputEvent::Left)` (regression guard).
-  - [x] 1.4 Add unit test: `assert_ne!(from_key(Shift+Left), Some(InputEvent::Left))`
-    — explicit guard against the arm ordering bug where Shift+Left
-    silently falls into the plain `Left` catch-all.
-  - [x] 1.5 Add unit test: `from_key(Ctrl+Shift+Left)` →
-    `Some(InputEvent::BatchCollapseSubtree)` (documents the accepted
-    dual-modifier behaviour).
+- [x] Task 1: Key bindings for new features (AC: #1, #2, #3, #4)
+  > **Note:** `Shift+Left` was not implemented — crossterm does not reliably
+  > forward it on WSL/AZERTY terminals (see story background note).
+  > `BatchCollapseSubtree` InputEvent variant was not added.
+  > Bindings use `SearchChar` dispatch instead:
+  - [x] 1.1 `c` dispatched as `SearchChar('c')` — no `input.rs` changes required.
+  - [x] 1.2 `b`/`n` dispatched as `SearchChar('b'/'n')` — no `input.rs` changes required.
+  - [ ] 1.3 ~~`from_key(Shift+Left)` test~~ — not applicable (binding deferred to 13.5).
+  - [ ] 1.4 ~~`from_key(Left)` regression test~~ — not applicable.
+  - [ ] 1.5 ~~`from_key(Ctrl+Shift+Left)` test~~ — not applicable.
 
 - [x] Task 2: Handle `BatchCollapseSubtree` in the stack view (AC: #2)
   - [x] 2.1 In `handle_stack_frames_input`
@@ -569,17 +552,19 @@ N/A
 
 - 2026-03-19: Implemented story 13.2 — progressive expand, favorites expand/jump, help bar
 - 2026-03-19: Post-review: fixed collection boundary traversal, "no fields" phantoms, LRU race, cursor sync
+- 2026-03-19: Code review (2nd pass): removed dead code, added missing tests, fixed story task statuses
 
 ### File List
 
-- `crates/hprof-tui/src/app/mod.rs` — `c` progressive expand handler (stack view + favorites), `b`/`n` pin jump, `ExpandTarget` import, `HashSet` import
-- `crates/hprof-tui/src/app/tests.rs` — integration tests (expand on subtree, b/n empty pinned)
-- `crates/hprof-tui/src/views/favorites_panel/mod.rs` — `batch_collapse_paths()`, `jump_to_prev_pin()`, `jump_to_next_pin()`, `reset_sub_row()`
-- `crates/hprof-tui/src/views/favorites_panel/tests.rs` — `jump_pin_tests` (6), `batch_collapse_tests` (6)
+- `crates/hprof-tui/src/app/mod.rs` — `c` progressive expand handler (stack view + favorites), `b`/`n` pin jump, `ExpandTarget` import, `HashSet` import, FUTURE comment on `n` handler
+- `crates/hprof-tui/src/app/tests.rs` — integration tests (expand on subtree, b/n empty pinned, c key stack view ×2)
+- `crates/hprof-tui/src/views/favorites_panel/mod.rs` — `jump_to_prev_pin()`, `jump_to_next_pin()`
+- `crates/hprof-tui/src/views/favorites_panel/tests.rs` — `jump_pin_tests` (6)
 - `crates/hprof-tui/src/views/help_bar.rs` — `ENTRY_COUNT` 23, `c` + `b/n` entries, updated tests
 - `crates/hprof-tui/src/views/stack_view/mod.rs` — re-export `ExpandTarget`
 - `crates/hprof-tui/src/views/stack_view/state.rs` — `ExpandTarget` enum, `expand_target_at_path`, `collapsed_expandable_at`, `mark_path_expanded`, `sync_nav`, `object_id_at_path` → `expand_target_at_path` rewrite, `emit_*` "no fields" fix, `set_expansion_done_at_path` nav sync
 - `crates/hprof-tui/src/views/stack_view/tests.rs` — `expand_target_at_collection_entry_path`, `expand_target_at_collection_entry_child_field`, realistic Universe scenario (5 tests)
 - `crates/hprof-engine/src/engine_impl/mod.rs` — `expand_object` re-check cache after decode
-- `docs/implementation-artifacts/sprint-status.yaml` — story status
+- `docs/implementation-artifacts/sprint-status.yaml` — story status → done
 - `docs/implementation-artifacts/13-2-enhanced-favorites-navigation.md` — this file
+- `docs/code-review/claude-story-13.2-adversarial-review-2.md` — review report

@@ -997,6 +997,7 @@ impl<E: NavigationEngine> App<E> {
             InputEvent::SearchChar('b') => {
                 self.favorites_list_state.jump_to_prev_pin();
             }
+            // FUTURE: guard with is_search_active() if favorites search is added
             InputEvent::SearchChar('n') => {
                 self.favorites_list_state.jump_to_next_pin();
             }
