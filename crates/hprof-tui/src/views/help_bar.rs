@@ -14,7 +14,7 @@ use ratatui::{
 use crate::theme::THEME;
 
 /// Number of keymap entries documented in the help panel.
-const ENTRY_COUNT: u16 = 21;
+const ENTRY_COUNT: u16 = 23;
 
 // Context bitmask constants — private to this module.
 const THREAD: u8 = 0b001;
@@ -37,6 +37,8 @@ const ENTRIES: &[(&str, &str, u8)] = &[
     ("Enter", "Expand / confirm", THREAD | STACK),
     ("\u{2192}", "Expand node", STACK),
     ("\u{2190}", "Unexpand / go to parent", STACK),
+    ("c", "Re-expand collapsed", STACK | FAV),
+    ("b / n", "Favorites: prev/next pin", FAV),
     ("f", "Pin / unpin favorite", STACK | FAV),
     ("F", "Focus favorites panel", ALL),
     ("g", "Favorites: go to source", FAV),
@@ -84,7 +86,7 @@ pub(crate) fn context_bit(ctx: &HelpContext) -> u8 {
 ///
 /// Formula: `2 (borders) + 1 (padding) + div_ceil(ENTRY_COUNT, 2) + 1 (separator)`
 ///
-/// With `ENTRY_COUNT = 21`: `2 + 1 + 11 + 1 = 15`.
+/// With `ENTRY_COUNT = 23`: `2 + 1 + 12 + 1 = 16`.
 pub fn required_height() -> u16 {
     2 + 1 + ENTRY_COUNT.div_ceil(2) + 1
 }
@@ -185,9 +187,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn required_height_returns_fifteen_for_twenty_one_entries() {
-        // div_ceil(21, 2) = 11; 2 + 1 + 11 + 1 = 15
-        assert_eq!(required_height(), 15);
+    fn required_height_returns_sixteen_for_twenty_three_entries() {
+        // div_ceil(23, 2) = 12; 2 + 1 + 12 + 1 = 16
+        assert_eq!(required_height(), 16);
     }
 
     #[test]
@@ -197,10 +199,10 @@ mod tests {
 
     #[test]
     fn build_rows_produces_correct_line_count() {
-        // 1 padding + ceil(21/2) + 1 separator = 1 + 11 + 1 = 13
-        assert_eq!(build_rows(HelpContext::ThreadList).len(), 13);
-        assert_eq!(build_rows(HelpContext::StackFrames).len(), 13);
-        assert_eq!(build_rows(HelpContext::Favorites).len(), 13);
+        // 1 padding + ceil(23/2) + 1 separator = 1 + 12 + 1 = 14
+        assert_eq!(build_rows(HelpContext::ThreadList).len(), 14);
+        assert_eq!(build_rows(HelpContext::StackFrames).len(), 14);
+        assert_eq!(build_rows(HelpContext::Favorites).len(), 14);
     }
 
     // --- Task 2 tests ---
@@ -263,6 +265,25 @@ mod tests {
     #[test]
     fn help_bar_h_key_applicable_only_in_favorites() {
         let idx = ENTRIES.iter().position(|(k, _, _)| *k == "h").unwrap();
+        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+    }
+
+    #[test]
+    fn help_bar_c_key_applicable_in_stack_and_favorites() {
+        let idx = ENTRIES.iter().position(|(k, _, _)| *k == "c").unwrap();
+        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+    }
+
+    #[test]
+    fn help_bar_bn_keys_applicable_only_in_favorites() {
+        let idx = ENTRIES
+            .iter()
+            .position(|(k, _, _)| k.contains("b / n"))
+            .unwrap();
         assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
         assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
         assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);

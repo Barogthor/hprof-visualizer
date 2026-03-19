@@ -948,6 +948,11 @@ impl NavigationEngine for Engine {
         }
         // Cache miss: decode from mmap
         let fields = self.decode_object_fields(object_id)?;
+        // Re-check after decode — another thread may have inserted
+        // while we were decoding (concurrent expand_object calls).
+        if let Some(fields) = self.object_cache.get(object_id) {
+            return Some(fields);
+        }
         // Insert into cache, track memory
         let mem = self.object_cache.insert(object_id, fields.clone());
         self.memory_counter.add(mem);

@@ -1650,3 +1650,210 @@ mod path_based_collapse_tests {
         assert_eq!(row_count, 5);
     }
 }
+
+mod jump_pin_tests {
+    use super::*;
+
+    fn state_with_items(count: usize) -> FavoritesPanelState {
+        let mut s = FavoritesPanelState::default();
+        s.set_items_len(count);
+        // Give each item 3 rows
+        let counts = vec![3; count];
+        let km = vec![HashMap::new(); count];
+        let sm = vec![HashMap::new(); count];
+        let fm = vec![HashMap::new(); count];
+        let pm = vec![Vec::new(); count];
+        s.update_row_metadata(counts, km, sm, fm, pm);
+        s
+    }
+
+    #[test]
+    fn jump_to_prev_pin_from_item_2() {
+        let mut s = state_with_items(3);
+        s.set_selected_index(Some(2));
+        s.jump_to_prev_pin();
+        assert_eq!(s.selected_index(), 1);
+    }
+
+    #[test]
+    fn jump_to_prev_pin_at_first_item_is_noop() {
+        let mut s = state_with_items(3);
+        s.jump_to_prev_pin();
+        assert_eq!(s.selected_index(), 0);
+    }
+
+    #[test]
+    fn jump_to_next_pin_from_item_0() {
+        let mut s = state_with_items(3);
+        s.jump_to_next_pin();
+        assert_eq!(s.selected_index(), 1);
+    }
+
+    #[test]
+    fn jump_to_next_pin_at_last_item_is_noop() {
+        let mut s = state_with_items(3);
+        s.set_selected_index(Some(2));
+        s.jump_to_next_pin();
+        assert_eq!(s.selected_index(), 2);
+    }
+
+    #[test]
+    fn jump_to_next_pin_resets_sub_row() {
+        let mut s = state_with_items(3);
+        // Manually set sub_row > 0 via move_down
+        s.move_down();
+        s.move_down();
+        s.jump_to_next_pin();
+        // After jump, sub_row should be 0
+        // We verify by checking abs_row = sum(row_counts[0..1]) + 0
+        assert_eq!(s.abs_row(), 3); // 3 rows for item 0, sub_row=0
+    }
+
+    #[test]
+    fn jump_to_next_pin_empty_items_no_panic() {
+        let mut s = FavoritesPanelState::default();
+        s.set_items_len(0);
+        s.jump_to_next_pin();
+        assert_eq!(s.selected_index(), 0);
+    }
+}
+
+mod batch_collapse_tests {
+    use super::*;
+    use crate::views::favorites_panel::batch_collapse_paths;
+
+    fn make_subtree_item(root_id: u64) -> PinnedItem {
+        let mut object_fields = HashMap::new();
+        object_fields.insert(
+            root_id,
+            vec![FieldInfo {
+                name: "x".to_string(),
+                value: FieldValue::Int(1),
+            }],
+        );
+        PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Foo.bar()".to_string(),
+            item_label: "var[0]".to_string(),
+            snapshot: PinnedSnapshot::Subtree {
+                root_id,
+                object_fields,
+                object_static_fields: HashMap::new(),
+                collection_chunks: HashMap::new(),
+                truncated: false,
+            },
+            local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            show_hidden: false,
+            key: PinKey {
+                thread_id: ThreadId(1),
+                thread_name: "main".to_string(),
+                nav_path: NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build(),
+            },
+        }
+    }
+
+    #[test]
+    fn batch_collapse_subtree_snapshot() {
+        let item = make_subtree_item(1);
+        let paths = batch_collapse_paths(&item);
+        let expected = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+        assert_eq!(paths, vec![expected]);
+    }
+
+    #[test]
+    fn batch_collapse_primitive_snapshot_is_noop() {
+        let item = make_primitive_item();
+        let paths = batch_collapse_paths(&item);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn batch_collapse_frame_snapshot_with_n_variables() {
+        let item = make_frame_with_nested_objects();
+        let paths = batch_collapse_paths(&item);
+        // Frame snapshot has 1 variable → 1 path: Frame(0)/Var(0)
+        let expected = vec![NavigationPathBuilder::new(FrameId(0), VarIdx(0)).build()];
+        assert_eq!(paths, expected);
+    }
+
+    #[test]
+    fn batch_collapse_frame_snapshot_with_zero_variables() {
+        let mut item = make_frame_item();
+        item.snapshot = PinnedSnapshot::Frame {
+            variables: vec![],
+            object_fields: HashMap::new(),
+            object_static_fields: HashMap::new(),
+            collection_chunks: HashMap::new(),
+            truncated: false,
+        };
+        let paths = batch_collapse_paths(&item);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn batch_collapse_frame_multi_vars() {
+        // Frame with 3 variables → 3 paths
+        let item = PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Foo.bar()".to_string(),
+            item_label: "Foo.bar()".to_string(),
+            snapshot: PinnedSnapshot::Frame {
+                variables: vec![
+                    VariableInfo {
+                        index: 0,
+                        value: VariableValue::Null,
+                    },
+                    VariableInfo {
+                        index: 1,
+                        value: VariableValue::Null,
+                    },
+                    VariableInfo {
+                        index: 2,
+                        value: VariableValue::Null,
+                    },
+                ],
+                object_fields: HashMap::new(),
+                object_static_fields: HashMap::new(),
+                collection_chunks: HashMap::new(),
+                truncated: false,
+            },
+            local_collapsed: HashSet::new(),
+            hidden_fields: HashSet::new(),
+            show_hidden: false,
+            key: PinKey {
+                thread_id: ThreadId(1),
+                thread_name: "main".to_string(),
+                nav_path: NavigationPathBuilder::frame_only(FrameId(1)),
+            },
+        };
+        let paths = batch_collapse_paths(&item);
+        assert_eq!(paths.len(), 3);
+        for (i, path) in paths.iter().enumerate() {
+            let expected = NavigationPathBuilder::new(FrameId(0), VarIdx(i)).build();
+            assert_eq!(*path, expected);
+        }
+    }
+
+    #[test]
+    fn batch_collapse_frame_uses_synthetic_frame_id_zero() {
+        let item = make_frame_with_nested_objects();
+        let paths = batch_collapse_paths(&item);
+        for path in &paths {
+            let segs = path.segments();
+            match segs.first() {
+                Some(crate::views::stack_view::PathSegment::Frame(fid)) => {
+                    assert_eq!(fid.0, 0, "must use FrameId(0), not real fid");
+                }
+                other => panic!("expected Frame segment, got {:?}", other),
+            }
+        }
+        // No frame-only path should be inserted
+        for path in &paths {
+            assert!(
+                path.segments().len() > 1,
+                "should not insert frame-only paths"
+            );
+        }
+    }
+}

@@ -4,7 +4,7 @@
 //! the terminal and drives the 16ms event loop (60 fps target, NFR4).
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io,
     sync::{
         Arc,
@@ -28,7 +28,7 @@ use crate::{
         favorites_panel::{FavoritesPanel, FavoritesPanelState},
         help_bar::{self, HelpBar, HelpContext},
         stack_view::{
-            ChunkState, CollectionChunks, ExpansionPhase, FrameId, NavigationPath,
+            ChunkState, CollectionChunks, ExpandTarget, ExpansionPhase, FrameId, NavigationPath,
             NavigationPathBuilder, PathSegment, RenderCursor, StackState, StackView, ThreadId,
             compute_chunk_ranges,
         },
@@ -890,6 +890,13 @@ impl<E: NavigationEngine> App<E> {
                     }
                 }
             }
+            // c — batch expand current pinned item
+            InputEvent::SearchChar('c') => {
+                let idx = self.favorites_list_state.selected_index();
+                if let Some(item) = self.pinned.get_mut(idx) {
+                    item.local_collapsed.clear();
+                }
+            }
             InputEvent::Left => {
                 if !self.pinned.is_empty()
                     && self
@@ -984,6 +991,14 @@ impl<E: NavigationEngine> App<E> {
                         self.favorites_list_state.clamp_sub_row();
                     }
                 }
+            }
+            // b / n — jump between pinned items
+            // FUTURE: guard with is_search_active() if favorites search is added
+            InputEvent::SearchChar('b') => {
+                self.favorites_list_state.jump_to_prev_pin();
+            }
+            InputEvent::SearchChar('n') => {
+                self.favorites_list_state.jump_to_next_pin();
             }
             // H — toggle reveal mode for hidden rows in current snapshot
             InputEvent::SearchChar('H') => {
@@ -1839,6 +1854,88 @@ impl<E: NavigationEngine> App<E> {
                         self.pending_pages.retain(|&(id, _), _| id != cid);
                     }
                     None => {}
+                }
+            }
+            // c — progressive expand from cursor position
+            InputEvent::SearchChar('c') => {
+                let cursor_info = self.stack_state.as_ref().and_then(|s| {
+                    let path = match s.cursor().clone() {
+                        RenderCursor::At(p) | RenderCursor::LoadingNode(p) => p,
+                        _ => return None,
+                    };
+                    let PathSegment::Frame(fid) = path.segments().first()? else {
+                        return None;
+                    };
+                    Some((fid.0, path))
+                });
+                if let Some((fid, cursor_path)) = cursor_info {
+                    if !self
+                        .stack_state
+                        .as_ref()
+                        .is_some_and(|s| s.is_expanded(fid))
+                    {
+                        // Frame collapsed → expand it.
+                        let vars = self.engine.get_local_variables(fid);
+                        if let Some(s) = &mut self.stack_state {
+                            s.toggle_expand(fid, vars);
+                        }
+                    } else if cursor_path.segments().len() >= 2 {
+                        // Expand collapsed objects under cursor
+                        // (only when on a specific node, not the
+                        // frame header).
+                        let targets = self
+                            .stack_state
+                            .as_ref()
+                            .map(|s| s.collapsed_expandable_at(&cursor_path))
+                            .unwrap_or_default();
+                        let mut seen_oids = HashSet::new();
+                        let pending_oids: HashSet<u64> = self
+                            .pending_expansions
+                            .values()
+                            .map(|pe| pe.object_id)
+                            .collect();
+                        let mut needs_sync = false;
+                        for (target, path) in targets {
+                            match target {
+                                ExpandTarget::Object(oid) => {
+                                    if !seen_oids.contains(&oid) && !pending_oids.contains(&oid) {
+                                        seen_oids.insert(oid);
+                                        self.start_object_expansion(oid, path);
+                                    }
+                                }
+                                ExpandTarget::Collection(cid, ec) => {
+                                    if seen_oids.contains(&cid) || pending_oids.contains(&cid) {
+                                        continue;
+                                    }
+                                    seen_oids.insert(cid);
+                                    let limit = (ec as usize).min(100);
+                                    let chunks = CollectionChunks {
+                                        total_count: ec,
+                                        eager_page: None,
+                                        chunk_pages: compute_chunk_ranges(ec)
+                                            .into_iter()
+                                            .map(|(o, _)| (o, ChunkState::Collapsed))
+                                            .collect(),
+                                    };
+                                    if let Some(s) = &mut self.stack_state {
+                                        s.expansion.collection_chunks.insert(cid, chunks);
+                                        s.expansion
+                                            .expansion_phases
+                                            .insert(path.clone(), ExpansionPhase::Expanded);
+                                    }
+                                    self.start_collection_page_load(cid, 0, limit);
+                                    self.engine.spawn_walker(cid);
+                                    if let Some(pp) = self.pending_pages.get_mut(&(cid, 0)) {
+                                        pp.parent_path = Some(path);
+                                    }
+                                    needs_sync = true;
+                                }
+                            }
+                        }
+                        if needs_sync && let Some(s) = &mut self.stack_state {
+                            s.sync_nav();
+                        }
+                    }
                 }
             }
             InputEvent::ToggleFavorite => {

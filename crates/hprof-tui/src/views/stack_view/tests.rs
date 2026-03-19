@@ -4108,3 +4108,421 @@ fn collapse_all_for_object_clears_static_section_state() {
         "static section must be collapsed after LRU eviction and data reload"
     );
 }
+
+#[test]
+fn expand_target_at_collection_entry_path() {
+    use std::collections::HashMap;
+    let frames = vec![make_frame(10)];
+    // Var 0 is a collection (entry_count = Some(3))
+    let vars = vec![VariableInfo {
+        index: 0,
+        value: VariableValue::ObjectRef {
+            id: 42,
+            class_name: "ArrayList".to_string(),
+            entry_count: Some(3),
+        },
+    }];
+    let mut state = StackState::new(frames);
+    state.vars.insert(10, vars);
+    state.expanded.insert(10);
+
+    // Set up collection chunks with an eager page
+    let page = CollectionPage {
+        offset: 0,
+        total_count: 3,
+        has_more: false,
+        entries: vec![
+            hprof_engine::EntryInfo {
+                index: 0,
+                key: None,
+                value: FieldValue::ObjectRef {
+                    id: 100,
+                    class_name: "Item".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            hprof_engine::EntryInfo {
+                index: 1,
+                key: None,
+                value: FieldValue::ObjectRef {
+                    id: 101,
+                    class_name: "Item".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+        ],
+    };
+    let chunks = CollectionChunks {
+        total_count: 3,
+        eager_page: Some(page),
+        chunk_pages: HashMap::new(),
+    };
+    state.expansion.collection_chunks.insert(42, chunks);
+    // Mark var path as expanded (collection is open)
+    let var_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(var_path.clone(), ExpansionPhase::Expanded);
+
+    // Build entry path: Frame(10)/Var(0)/CollectionEntry(42, 0)
+    let entry_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+        .collection_entry(CollectionId(42), EntryIdx(0))
+        .build();
+
+    // expand_target_at_path should resolve to Object(100)
+    let target = state.expand_target_at_path(&entry_path);
+    assert!(
+        target.is_some(),
+        "expand_target_at_path must resolve collection entry; \
+         got None"
+    );
+    match target.unwrap() {
+        ExpandTarget::Object(oid) => assert_eq!(oid, 100),
+        other => panic!("expected Object(100), got {:?}", other),
+    }
+
+    // Also test: entry path should be collapsed
+    assert_eq!(
+        state.expansion_state_for_path(&entry_path),
+        ExpansionPhase::Collapsed,
+    );
+
+    // collapsed_expandable_at on the entry should find it
+    let targets = state.collapsed_expandable_at(&entry_path);
+    assert_eq!(targets.len(), 1, "should find 1 target");
+    match &targets[0].0 {
+        ExpandTarget::Object(oid) => assert_eq!(*oid, 100),
+        other => panic!("expected Object(100), got {:?}", other),
+    }
+}
+
+#[test]
+fn expand_target_at_collection_entry_child_field() {
+    use std::collections::HashMap;
+    let frames = vec![make_frame(10)];
+    let vars = vec![VariableInfo {
+        index: 0,
+        value: VariableValue::ObjectRef {
+            id: 42,
+            class_name: "ArrayList".to_string(),
+            entry_count: Some(3),
+        },
+    }];
+    let mut state = StackState::new(frames);
+    state.vars.insert(10, vars);
+    state.expanded.insert(10);
+
+    // Collection page: entry 0 → ObjectRef(100)
+    let page = CollectionPage {
+        offset: 0,
+        total_count: 1,
+        has_more: false,
+        entries: vec![hprof_engine::EntryInfo {
+            index: 0,
+            key: None,
+            value: FieldValue::ObjectRef {
+                id: 100,
+                class_name: "Item".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }],
+    };
+    let chunks = CollectionChunks {
+        total_count: 1,
+        eager_page: Some(page),
+        chunk_pages: HashMap::new(),
+    };
+    state.expansion.collection_chunks.insert(42, chunks);
+
+    // Mark collection var as expanded
+    let var_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(var_path, ExpansionPhase::Expanded);
+
+    // Mark entry 0 as expanded with fields
+    let entry_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+        .collection_entry(CollectionId(42), EntryIdx(0))
+        .build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(entry_path.clone(), ExpansionPhase::Expanded);
+    state.expansion.object_fields.insert(
+        100,
+        vec![FieldInfo {
+            name: "child".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 200,
+                class_name: "Inner".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }],
+    );
+
+    // Path to field 0 of entry 0's object
+    let field_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+        .collection_entry(CollectionId(42), EntryIdx(0))
+        .field(FieldIdx(0))
+        .build();
+
+    let target = state.expand_target_at_path(&field_path);
+    assert!(
+        target.is_some(),
+        "expand_target_at_path must resolve collection entry \
+         child field; got None"
+    );
+    match target.unwrap() {
+        ExpandTarget::Object(oid) => assert_eq!(oid, 200),
+        other => panic!("expected Object(200), got {:?}", other),
+    }
+
+    // Also verify flat_items contains the field path
+    let flat = state.flat_items();
+    let has_field = flat
+        .iter()
+        .any(|c| matches!(c, RenderCursor::At(p) if *p == field_path));
+    assert!(
+        has_field,
+        "flat_items must contain the field path;\n\
+         flat_items: {:?}",
+        flat
+    );
+
+    // collapsed_expandable_at on the field should find it
+    let targets = state.collapsed_expandable_at(&field_path);
+    assert_eq!(
+        targets.len(),
+        1,
+        "should find 1 target for field;\n\
+         field expansion_state: {:?}",
+        state.expansion_state_for_path(&field_path)
+    );
+}
+
+/// Realistic scenario from user's heap dump:
+///
+/// ```text
+/// - HeapDumpFixture.runScenario() [frame 10]
+///   - [4] ScenarioHandle (oid=400)
+///     + cleanup: Lambda (oid=410)
+///     + metrics: LinkedHashMap (oid=420, 7 entries)
+///     - roots: ArrayList (oid=430, 1 entry)     ← collection field
+///       - [0] Universe (oid=500)                 ← collection entry
+///         + indirectCycle3 (oid=501)              ← collapsed child
+///         + directCycle (oid=502)
+///         + plainRoot (oid=503)
+/// ```
+///
+/// Tests that `c` can:
+/// 1. Resolve the collection entry [0] as expandable
+/// 2. Resolve children of [0] (fields of Universe) as expandable
+/// 3. `collapsed_expandable_at` on [0] finds its collapsed children
+#[test]
+fn scenario_expand_through_collection_field_into_entry_children() {
+    use std::collections::HashMap;
+
+    let frames = vec![make_frame(10)];
+    // var[4] = ScenarioHandle (oid=400, not a collection)
+    let vars = vec![
+        make_var(0, 0), // null placeholders for vars 0-3
+        make_var(1, 0),
+        make_var(2, 0),
+        make_var(3, 0),
+        VariableInfo {
+            index: 4,
+            value: VariableValue::ObjectRef {
+                id: 400,
+                class_name: "ScenarioHandle".to_string(),
+                entry_count: None,
+            },
+        },
+    ];
+    let mut state = StackState::new(frames);
+    state.vars.insert(10, vars);
+    state.expanded.insert(10);
+
+    // ScenarioHandle fields: cleanup, metrics, roots
+    state.expansion.object_fields.insert(
+        400,
+        vec![
+            FieldInfo {
+                name: "cleanup".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 410,
+                    class_name: "Lambda".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "metrics".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 420,
+                    class_name: "LinkedHashMap".to_string(),
+                    entry_count: Some(7),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "roots".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 430,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(1),
+                    inline_value: None,
+                },
+            },
+        ],
+    );
+
+    // Mark var[4] as expanded
+    let var4_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4)).build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(var4_path.clone(), ExpansionPhase::Expanded);
+
+    // Mark roots field as expanded (collection open)
+    let roots_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+        .field(FieldIdx(2)) // roots is field index 2
+        .build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(roots_path.clone(), ExpansionPhase::Expanded);
+
+    // Set up collection chunks for roots (oid=430)
+    let roots_page = CollectionPage {
+        offset: 0,
+        total_count: 1,
+        has_more: false,
+        entries: vec![hprof_engine::EntryInfo {
+            index: 0,
+            key: None,
+            value: FieldValue::ObjectRef {
+                id: 500,
+                class_name: "Universe".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }],
+    };
+    state.expansion.collection_chunks.insert(
+        430,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(roots_page),
+            chunk_pages: HashMap::new(),
+        },
+    );
+
+    // Entry [0] path: Frame(10)/Var(4)/Field(2)/CollectionEntry(430,0)
+    let entry0_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+        .field(FieldIdx(2))
+        .collection_entry(CollectionId(430), EntryIdx(0))
+        .build();
+
+    // === TEST 1: entry [0] itself is resolvable ===
+    let target = state.expand_target_at_path(&entry0_path);
+    assert!(
+        target.is_some(),
+        "must resolve entry [0] (Universe oid=500)"
+    );
+    match target.unwrap() {
+        ExpandTarget::Object(oid) => assert_eq!(oid, 500),
+        other => panic!("expected Object(500), got {:?}", other),
+    }
+
+    // === TEST 2: collapsed_expandable_at finds entry [0] ===
+    let targets = state.collapsed_expandable_at(&entry0_path);
+    assert_eq!(targets.len(), 1, "entry [0] is collapsed, should be found");
+
+    // === TEST 3: after expanding entry [0], children are resolvable ===
+    state
+        .expansion
+        .expansion_phases
+        .insert(entry0_path.clone(), ExpansionPhase::Expanded);
+    state.expansion.object_fields.insert(
+        500,
+        vec![
+            FieldInfo {
+                name: "indirectCycle3".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 501,
+                    class_name: "IndirectCycle3NodeA".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "directCycle".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 502,
+                    class_name: "DirectCycle".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "plainRoot".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 503,
+                    class_name: "CustomWithoutStatic".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+        ],
+    );
+
+    // Child field path:
+    // Frame(10)/Var(4)/Field(2)/CollectionEntry(430,0)/Field(0)
+    let child_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+        .field(FieldIdx(2))
+        .collection_entry(CollectionId(430), EntryIdx(0))
+        .field(FieldIdx(0))
+        .build();
+
+    let child_target = state.expand_target_at_path(&child_path);
+    assert!(
+        child_target.is_some(),
+        "must resolve child field indirectCycle3 (oid=501)"
+    );
+    match child_target.unwrap() {
+        ExpandTarget::Object(oid) => assert_eq!(oid, 501),
+        other => panic!("expected Object(501), got {:?}", other),
+    }
+
+    // === TEST 4: collapsed_expandable_at on entry [0] finds all 3 children ===
+    let child_targets = state.collapsed_expandable_at(&entry0_path);
+    assert_eq!(
+        child_targets.len(),
+        3,
+        "3 collapsed ObjectRef children of Universe;\n\
+         got: {:?}",
+        child_targets
+            .iter()
+            .map(|(t, p)| format!("{:?} @ {:?}", t, p))
+            .collect::<Vec<_>>()
+    );
+
+    // === TEST 5: flat_items contains all expected paths ===
+    let flat = state.flat_items();
+    assert!(
+        flat.iter()
+            .any(|c| matches!(c, RenderCursor::At(p) if *p == entry0_path)),
+        "flat_items must contain entry [0]"
+    );
+    assert!(
+        flat.iter()
+            .any(|c| matches!(c, RenderCursor::At(p) if *p == child_path)),
+        "flat_items must contain child field path"
+    );
+}

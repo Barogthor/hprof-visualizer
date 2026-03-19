@@ -3146,6 +3146,67 @@ mod favorites {
         );
     }
 
+    #[test]
+    fn c_key_expands_collapsed_pinned_subtree() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+
+        let mut object_fields = HashMap::new();
+        object_fields.insert(
+            1u64,
+            vec![FieldInfo {
+                name: "x".to_string(),
+                value: FieldValue::Int(1),
+            }],
+        );
+        let root_path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+        let mut local_collapsed = HashSet::new();
+        local_collapsed.insert(root_path.clone());
+        app.pinned.push(PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Foo.bar()".to_string(),
+            item_label: "var[0]".to_string(),
+            snapshot: PinnedSnapshot::Subtree {
+                root_id: 1,
+                object_fields,
+                object_static_fields: HashMap::new(),
+                collection_chunks: HashMap::new(),
+                truncated: false,
+            },
+            local_collapsed,
+            hidden_fields: HashSet::new(),
+            show_hidden: false,
+            key: make_pin_key_var(1, "main", 1, 0),
+        });
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        assert!(!app.pinned[0].local_collapsed.is_empty());
+
+        // 'c' should clear local_collapsed (expand all)
+        app.handle_input(InputEvent::SearchChar('c'));
+
+        assert!(
+            app.pinned[0].local_collapsed.is_empty(),
+            "local_collapsed must be empty after 'c' expand"
+        );
+    }
+
+    #[test]
+    fn bn_keys_noop_when_no_pinned_items() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string());
+        app.focus = Focus::Favorites;
+
+        app.handle_input(InputEvent::SearchChar('b'));
+        assert!(app.pinned.is_empty());
+        assert_eq!(app.favorites_list_state.selected_index(), 0);
+
+        app.handle_input(InputEvent::SearchChar('n'));
+        assert!(app.pinned.is_empty());
+        assert_eq!(app.favorites_list_state.selected_index(), 0);
+    }
+
     // 6.16
     #[test]
     fn handle_favorites_input_h_noop_when_no_pinned_items() {
