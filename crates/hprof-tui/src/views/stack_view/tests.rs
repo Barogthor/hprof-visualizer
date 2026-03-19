@@ -3898,15 +3898,14 @@ fn render_variable_tree_snapshot_static_collapsed() {
         None, // static_section_expanded = None → collapsed
     );
     let texts: Vec<String> = items.into_iter().map(item_text).collect();
-    // Header must appear
+    // Static section not shown at all in snapshot mode
     assert!(
-        texts.iter().any(|t| t.contains("[static fields]")),
-        "header must appear: {texts:?}"
+        !texts.iter().any(|t| t.contains("[static fields]")),
+        "header must not appear in snapshot: {texts:?}"
     );
-    // Field value must NOT appear (collapsed)
     assert!(
         !texts.iter().any(|t| t.contains("CONST")),
-        "static field must be hidden: {texts:?}"
+        "static field must be hidden in snapshot: {texts:?}"
     );
 }
 

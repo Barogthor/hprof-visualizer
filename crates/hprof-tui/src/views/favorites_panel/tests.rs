@@ -406,12 +406,11 @@ mod rendering_tests {
             30,
         );
 
+        // Static fields not shown in snapshots at all.
         assert!(
-            text.contains("[static fields]"),
-            "expected static section header, got: {text:?}"
+            !text.contains("[static fields]"),
+            "static header must not appear in snapshot: {text:?}"
         );
-        // Static fields are collapsed by default in snapshots
-        // (AC #7) — SOME_STATIC should NOT be visible.
         assert!(
             !text.contains("SOME_STATIC"),
             "static field must be hidden in snapshot: {text:?}"

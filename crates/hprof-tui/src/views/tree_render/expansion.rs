@@ -254,6 +254,11 @@ pub(super) fn append_static_items(
         return;
     }
 
+    // Snapshot/favorites mode: no static section at all.
+    if ctx.static_section_expanded.is_none() {
+        return;
+    }
+
     let total = static_fields.len();
     let expanded = ctx.is_static_section_expanded(parent_path);
     dbg_log!(

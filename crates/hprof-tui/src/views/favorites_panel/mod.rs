@@ -337,19 +337,11 @@ impl<'a> MetadataCollector<'a> {
 
     fn collect_static_rows(
         &mut self,
-        object_id: u64,
+        _object_id: u64,
         _parent_path: &NavigationPath,
         _depth: usize,
     ) {
-        let Some(static_fields) = self.object_static_fields.get(&object_id) else {
-            return;
-        };
-        if static_fields.is_empty() {
-            return;
-        }
-        // Static section is always collapsed in snapshot mode
-        // (AC #7). Only the header row is counted.
-        self.push_row(None);
+        // Static fields are not shown in snapshots — skip entirely.
     }
 
     fn collect_frame_rows(&mut self, vars: &[VariableInfo], frame_id: u64) {
