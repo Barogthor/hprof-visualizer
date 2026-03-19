@@ -951,9 +951,11 @@ mod object_expansion {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
-        // OnObjectField([0]) then OnStaticField([0]).
-        app.handle_input(InputEvent::Down);
-        app.handle_input(InputEvent::Down);
+        // OnObjectField([0]) then toggle static section via Enter.
+        app.handle_input(InputEvent::Down); // → field[0]
+        app.handle_input(InputEvent::Down); // → SectionHeader
+        app.handle_input(InputEvent::Enter); // toggle open
+        app.handle_input(InputEvent::Down); // → StaticField[0]
         assert!(
             cursor_ends_with_static_field(app.stack_state.as_ref().unwrap().cursor()),
             "expected static field cursor, got {:?}",
@@ -2077,6 +2079,8 @@ mod collection_paging {
         app.handle_input(InputEvent::Enter); // expand object 42
         poll_all_expansions(app);
         app.handle_input(InputEvent::Down); // → x field
+        app.handle_input(InputEvent::Down); // → SectionHeader
+        app.handle_input(InputEvent::Enter); // toggle static section open
         app.handle_input(InputEvent::Down); // → EMPTY static field
     }
 
@@ -4553,6 +4557,174 @@ mod spinner_state_tests {
         assert!(
             !content.contains("Resolving") && !content.contains("Navigating to pin"),
             "no spinner text when Idle; got: {content:?}"
+        );
+    }
+}
+
+// === Story 13.1: Static section toggle keyboard tests ===
+
+mod static_section_toggle_tests {
+    use super::*;
+
+    fn make_static_toggle_app() -> App<StubEngine> {
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(
+                42,
+                Some(vec![FieldInfo {
+                    name: "x".to_string(),
+                    value: FieldValue::Int(1),
+                }]),
+            )
+            .with_class_of(42, 500)
+            .with_static_fields(
+                500,
+                vec![
+                    FieldInfo {
+                        name: "S1".to_string(),
+                        value: FieldValue::Int(1),
+                    },
+                    FieldInfo {
+                        name: "S2".to_string(),
+                        value: FieldValue::Int(2),
+                    },
+                ],
+            );
+        App::new(engine, "test.hprof".to_string())
+    }
+
+    fn poll_all_expansions(app: &mut App<StubEngine>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn nav_to_section_header(app: &mut App<StubEngine>) {
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.handle_input(InputEvent::Down); // → OnVar
+        app.handle_input(InputEvent::Enter); // expand object 42
+        poll_all_expansions(app);
+        app.handle_input(InputEvent::Down); // → field x
+        app.handle_input(InputEvent::Down); // → SectionHeader
+    }
+
+    #[test]
+    fn enter_toggles_static_section() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        assert!(
+            matches!(
+                app.stack_state.as_ref().unwrap().cursor(),
+                RenderCursor::SectionHeader(_)
+            ),
+            "cursor must be on SectionHeader"
+        );
+        // Enter → expand
+        app.handle_input(InputEvent::Enter);
+        let parent_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        assert!(
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .is_static_section_expanded(&parent_path),
+            "static section must be expanded after Enter"
+        );
+        // Enter again → collapse
+        app.handle_input(InputEvent::Enter);
+        assert!(
+            !app.stack_state
+                .as_ref()
+                .unwrap()
+                .is_static_section_expanded(&parent_path),
+            "static section must be collapsed after second Enter"
+        );
+    }
+
+    #[test]
+    fn left_on_expanded_collapses_without_parent_nav() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        app.handle_input(InputEvent::Enter); // expand
+        // Cursor stays on SectionHeader after toggle
+        assert!(
+            matches!(
+                app.stack_state.as_ref().unwrap().cursor(),
+                RenderCursor::SectionHeader(_)
+            ),
+            "cursor on header after expand"
+        );
+        app.handle_input(InputEvent::Left); // collapse
+        let parent_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        assert!(
+            !app.stack_state
+                .as_ref()
+                .unwrap()
+                .is_static_section_expanded(&parent_path),
+            "section must be collapsed after Left"
+        );
+        // Cursor still on SectionHeader (not parent)
+        assert!(
+            matches!(
+                app.stack_state.as_ref().unwrap().cursor(),
+                RenderCursor::SectionHeader(_)
+            ),
+            "cursor must stay on header, got: {:?}",
+            app.stack_state.as_ref().unwrap().cursor()
+        );
+    }
+
+    #[test]
+    fn left_on_collapsed_navigates_to_parent() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        // Section is collapsed by default
+        app.handle_input(InputEvent::Left);
+        // Should navigate to parent (instance field or var)
+        assert!(
+            !matches!(
+                app.stack_state.as_ref().unwrap().cursor(),
+                RenderCursor::SectionHeader(_)
+            ),
+            "cursor must leave SectionHeader: {:?}",
+            app.stack_state.as_ref().unwrap().cursor()
+        );
+    }
+
+    #[test]
+    fn flat_and_display_alignment_after_toggle() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        // Before toggle (collapsed)
+        let s = app.stack_state.as_ref().unwrap();
+        assert_eq!(
+            s.flat_items().len(),
+            s.build_items().len(),
+            "flat/display alignment when collapsed"
+        );
+        // After toggle (expanded)
+        app.handle_input(InputEvent::Enter);
+        let s = app.stack_state.as_ref().unwrap();
+        assert_eq!(
+            s.flat_items().len(),
+            s.build_items().len(),
+            "flat/display alignment when expanded"
+        );
+        // After second toggle (re-collapsed)
+        app.handle_input(InputEvent::Enter);
+        let s = app.stack_state.as_ref().unwrap();
+        assert_eq!(
+            s.flat_items().len(),
+            s.build_items().len(),
+            "flat/display alignment when re-collapsed"
         );
     }
 }

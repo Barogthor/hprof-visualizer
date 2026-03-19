@@ -172,10 +172,8 @@ impl<'a> FirstPassContext<'a> {
             self.push_warning(w);
         }
         self.built_filters = Some((Vec::new(), Vec::new()));
-        let mut entry_points =
-            std::mem::take(&mut self.segment_entry_points);
-        entry_points
-            .sort_unstable_by_key(|ep| ep.segment_index);
+        let mut entry_points = std::mem::take(&mut self.segment_entry_points);
+        entry_points.sort_unstable_by_key(|ep| ep.segment_index);
         (filters, entry_points)
     }
 

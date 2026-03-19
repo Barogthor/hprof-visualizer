@@ -207,13 +207,13 @@ development_status:
   # Epic 13: UI Polish & Ergonomie (sourced from large dump UX observations 2026-03-14)
   epic-13: in-progress
   13-0-progress-bar-intra-segment: done
-  13-1-collapsible-static-fields-section: ready-for-dev
+  13-1-collapsible-static-fields-section: review
   13-2-enhanced-favorites-navigation: ready-for-dev
-  13-3-ui-separators: backlog
-  13-4-incomplete-file-warning-color: backlog
-  13-5-azerty-qwerty-keymapping: backlog
-  13-6-class-metadata-preload: backlog
-  13-7-logo-splash-screen: backlog
+  13-3-ui-separators: ready-for-dev
+  13-4-incomplete-file-warning-color: ready-for-dev
+  13-5-azerty-qwerty-keymapping: ready-for-dev
+  13-6-class-metadata-preload: ready-for-dev
+  13-7-logo-splash-screen: ready-for-dev
 
   # ACTION (13.0 testing 2026-03-18): Stack view navigation
   #   is sluggish when the tree is deep due to large

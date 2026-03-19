@@ -1248,6 +1248,19 @@ impl<E: NavigationEngine> App<E> {
                 }
             }
             InputEvent::Right => {
+                // Expand static section if collapsed; no-op if expanded
+                if let Some(s) = &self.stack_state
+                    && let RenderCursor::SectionHeader(path) = s.cursor().clone()
+                {
+                    if !s.is_static_section_expanded(&path) {
+                        self.stack_state
+                            .as_mut()
+                            .unwrap()
+                            .toggle_static_section(&path);
+                        return AppAction::Continue;
+                    }
+                    return AppAction::Continue;
+                }
                 enum RightCmd {
                     ExpandFrame(u64),
                     StartObj(u64, NavigationPath),
@@ -1404,6 +1417,18 @@ impl<E: NavigationEngine> App<E> {
                 }
             }
             InputEvent::Left => {
+                // Collapse expanded static section; if already
+                // collapsed, fall through to NavigateToParent.
+                if let Some(s) = &self.stack_state
+                    && let RenderCursor::SectionHeader(path) = s.cursor().clone()
+                    && s.is_static_section_expanded(&path)
+                {
+                    self.stack_state
+                        .as_mut()
+                        .unwrap()
+                        .toggle_static_section(&path);
+                    return AppAction::Continue;
+                }
                 enum LeftCmd {
                     CollapseFrame(u64),
                     CollapseObj(u64, NavigationPath),
@@ -1550,6 +1575,16 @@ impl<E: NavigationEngine> App<E> {
                 }
             }
             InputEvent::Enter => {
+                // Toggle static section on SectionHeader
+                if let Some(s) = &self.stack_state
+                    && let RenderCursor::SectionHeader(path) = s.cursor().clone()
+                {
+                    self.stack_state
+                        .as_mut()
+                        .unwrap()
+                        .toggle_static_section(&path);
+                    return AppAction::Continue;
+                }
                 enum Cmd {
                     CollapseFrame(u64),
                     ExpandFrame(u64),

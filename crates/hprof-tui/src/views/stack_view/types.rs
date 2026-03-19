@@ -213,7 +213,7 @@ pub enum RenderCursor {
     CyclicNode(NavigationPath),
     /// Chunk section header inside a paginated collection.
     ChunkSection(NavigationPath, ChunkOffset),
-    /// Non-interactive `[static]` section header.
+    /// Collapsible `[static fields]` section header.
     SectionHeader(NavigationPath),
     /// Non-interactive `[+N more static fields]` overflow row.
     OverflowRow(NavigationPath),

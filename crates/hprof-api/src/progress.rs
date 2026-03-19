@@ -50,12 +50,7 @@ pub trait ParseProgressObserver {
     /// Called once per segment completion with cumulative
     /// bytes extracted so far. Default no-op so existing
     /// impls don't break.
-    fn on_heap_bytes_extracted(
-        &mut self,
-        _done: u64,
-        _total: u64,
-    ) {
-    }
+    fn on_heap_bytes_extracted(&mut self, _done: u64, _total: u64) {}
 
     /// A named loading phase has started.
     ///
@@ -108,11 +103,7 @@ impl<'a> ProgressNotifier<'a> {
     }
 
     /// Reports heap extraction byte-level progress.
-    pub fn heap_bytes_extracted(
-        &mut self,
-        done: u64,
-        total: u64,
-    ) {
+    pub fn heap_bytes_extracted(&mut self, done: u64, total: u64) {
         debug_assert!(done <= total);
         self.0.on_heap_bytes_extracted(done, total);
     }
@@ -148,16 +139,9 @@ impl ParseProgressObserver for TestObserver {
         self.events
             .push(ProgressEvent::SegmentCompleted { done, total });
     }
-    fn on_heap_bytes_extracted(
-        &mut self,
-        done: u64,
-        total: u64,
-    ) {
+    fn on_heap_bytes_extracted(&mut self, done: u64, total: u64) {
         self.events
-            .push(ProgressEvent::HeapBytesExtracted {
-                done,
-                total,
-            });
+            .push(ProgressEvent::HeapBytesExtracted { done, total });
     }
     fn on_names_resolved(&mut self, done: usize, total: usize) {
         self.events

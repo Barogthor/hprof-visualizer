@@ -83,38 +83,27 @@ impl ParseProgressObserver for CliProgressObserver {
 
     // TODO(cleanup): remove once parser no longer calls
     // on_segment_completed
-    fn on_segment_completed(
-        &mut self,
-        _done: usize,
-        _total: usize,
-    ) {
-    }
+    fn on_segment_completed(&mut self, _done: usize, _total: usize) {}
 
-    fn on_heap_bytes_extracted(
-        &mut self,
-        done: u64,
-        total: u64,
-    ) {
-        let bar =
-            self.extraction_bar.get_or_insert_with(|| {
-                if !self.scan_bar.is_finished() {
-                    self.scan_bar.finish();
-                }
-                let pb =
-                    self.mp.add(ProgressBar::new(total));
-                pb.set_style(
-                    ProgressStyle::with_template(
-                        "[{elapsed_precise}] \
+    fn on_heap_bytes_extracted(&mut self, done: u64, total: u64) {
+        let bar = self.extraction_bar.get_or_insert_with(|| {
+            if !self.scan_bar.is_finished() {
+                self.scan_bar.finish();
+            }
+            let pb = self.mp.add(ProgressBar::new(total));
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] \
                          [{bar:40.green/blue}] \
                          {bytes}/{total_bytes} \
                          extracted ({bytes_per_sec}, \
                          ETA {eta})",
-                    )
-                    .unwrap()
-                    .progress_chars("=>-"),
-                );
-                pb
-            });
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+            );
+            pb
+        });
         bar.set_length(total);
         bar.set_position(done);
         if done == total {
@@ -232,8 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn on_heap_bytes_extracted_finishes_bar_at_done_eq_total()
-    {
+    fn on_heap_bytes_extracted_finishes_bar_at_done_eq_total() {
         let mp = MultiProgress::new();
         let mut obs = CliProgressObserver::new(&mp, 1024);
         obs.on_heap_bytes_extracted(512, 1024);
@@ -250,9 +238,7 @@ mod tests {
         let mp = MultiProgress::new();
         let mut obs = CliProgressObserver::new(&mp, 1024);
         obs.on_heap_bytes_extracted(512, 1024);
-        obs.on_phase_changed(
-            "Building segment filters\u{2026}",
-        );
+        obs.on_phase_changed("Building segment filters\u{2026}");
         obs.on_names_resolved(5, 32);
         obs.finish();
         assert!(obs.phase_bar.is_none());

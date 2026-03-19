@@ -407,12 +407,14 @@ mod rendering_tests {
         );
 
         assert!(
-            text.contains("[static]"),
-            "expected static section, got: {text:?}"
+            text.contains("[static fields]"),
+            "expected static section header, got: {text:?}"
         );
+        // Static fields are collapsed by default in snapshots
+        // (AC #7) — SOME_STATIC should NOT be visible.
         assert!(
-            text.contains("SOME_STATIC"),
-            "expected static field label, got: {text:?}"
+            !text.contains("SOME_STATIC"),
+            "static field must be hidden in snapshot: {text:?}"
         );
     }
 }
@@ -571,6 +573,7 @@ mod row_metadata_tests {
             None,
             None,
             None,
+            None,
         );
 
         assert_eq!(row_count, rendered.len() + 2);
@@ -700,6 +703,7 @@ mod row_metadata_tests {
             None,
             None,
             None,
+            None,
         );
 
         assert_eq!(row_count, rendered.len() + 2);
@@ -809,6 +813,7 @@ mod row_metadata_tests {
                 snapshot_mode: true,
                 show_hidden: false,
             },
+            None,
             None,
             None,
             None,
@@ -1091,6 +1096,7 @@ mod hide_field_tests {
             None,
             None,
             None,
+            None,
         );
         // header=1, ObjectRef row=1, 2 child primitives=2, separator=1 → row_count=5
         assert_eq!(row_count_base, 5);
@@ -1130,6 +1136,7 @@ mod hide_field_tests {
                 show_hidden: false,
             },
             Some(&hide_set),
+            None,
             None,
             None,
         );
@@ -1172,6 +1179,7 @@ mod hide_field_tests {
                 show_hidden: true,
             },
             Some(&item_revealed.hidden_fields),
+            None,
             None,
             None,
         );
@@ -1329,6 +1337,7 @@ mod path_based_collapse_tests {
             None,
             None,
             Some(&item.local_collapsed),
+            None,
         );
         items.iter().map(|li| format!("{li:?}")).collect()
     }

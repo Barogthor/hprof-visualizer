@@ -938,6 +938,22 @@ impl StackState {
         self.expansion.collapse_all_for_object(object_id);
     }
 
+    /// Returns whether the `[static fields]` section at
+    /// `path` is expanded.
+    pub fn is_static_section_expanded(&self, path: &NavigationPath) -> bool {
+        self.expansion.is_static_section_expanded(path)
+    }
+
+    /// Toggles the `[static fields]` section, resyncs nav
+    /// and restores cursor to the section header.
+    pub fn toggle_static_section(&mut self, path: &NavigationPath) {
+        self.expansion.toggle_static_section(path);
+        let flat = self.flat_items();
+        self.nav.sync(&flat);
+        self.nav
+            .set_cursor_and_sync(RenderCursor::SectionHeader(path.clone()), &flat);
+    }
+
     /// Recursively collapses the target path and all
     /// descendant paths.
     ///
@@ -1030,10 +1046,7 @@ impl StackState {
     }
 
     fn is_non_interactive_cursor(cursor: &RenderCursor) -> bool {
-        matches!(
-            cursor,
-            RenderCursor::SectionHeader(_) | RenderCursor::OverflowRow(_)
-        )
+        matches!(cursor, RenderCursor::OverflowRow(_))
     }
 
     fn first_interactive_index(flat: &[RenderCursor]) -> Option<usize> {
@@ -1403,6 +1416,9 @@ impl StackState {
             return;
         }
         out.push(RenderCursor::SectionHeader(parent_path.clone()));
+        if !self.expansion.is_static_section_expanded(parent_path) {
+            return;
+        }
         let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
         for (si, field) in static_fields.iter().take(shown).enumerate() {
             let static_path = NavigationPathBuilder::extend(parent_path.clone())
@@ -1644,6 +1660,9 @@ impl StackState {
             return;
         }
         out.push(RenderCursor::SectionHeader(entry_path.clone()));
+        if !self.expansion.is_static_section_expanded(entry_path) {
+            return;
+        }
         let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
         for (si, field) in static_fields.iter().take(shown).enumerate() {
             let static_path = NavigationPathBuilder::extend(entry_path.clone())
@@ -1774,6 +1793,7 @@ impl StackState {
                     None,
                     Some(&self.expansion.expansion_phases),
                     None,
+                    Some(&self.expansion.static_section_expanded),
                 );
                 items.extend(tree_items);
             }

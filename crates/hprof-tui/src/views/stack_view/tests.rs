@@ -3,6 +3,7 @@ use hprof_engine::{
 };
 use ratatui::widgets::{List, ListItem};
 
+use super::expansion::ExpansionRegistry;
 use super::*;
 use crate::theme::THEME;
 
@@ -2679,9 +2680,12 @@ mod static_fields_rendering_tests {
                 value: FieldValue::Int(1),
             }],
         );
+        // Toggle static section open for the entry path
+        let entry_path = path_coll_entry(10, 0, &[0], 0xC00, 0);
+        state.expansion.toggle_static_section(&entry_path);
         let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
         assert!(
-            rendered.iter().any(|l| l.contains("[static]")),
+            rendered.iter().any(|l| l.contains("[static fields]")),
             "static header must be rendered: {rendered:?}"
         );
         assert!(
@@ -2750,6 +2754,9 @@ mod static_fields_rendering_tests {
             })
             .collect();
         state.set_static_fields(0x710, static_fields);
+        // Toggle static section open for the collection entry
+        let entry_path = path_coll_entry(10, 0, &[0], 0xC10, 0);
+        state.expansion.toggle_static_section(&entry_path);
 
         state.move_down(); // Frame(10) -> Var
         state.move_down(); // Var -> items field[0]
@@ -2764,9 +2771,9 @@ mod static_fields_rendering_tests {
             state.cursor()
         );
 
-        // Skip non-interactive [static] header
-        state.move_down();
-        // Should be on static field 0
+        // Navigate through [static fields] header
+        state.move_down(); // → SectionHeader
+        state.move_down(); // → static field 0
         assert!(
             matches!(state.cursor(), RenderCursor::At(p)
                 if p.segments().last().is_some_and(|s| matches!(s, PathSegment::StaticField(StaticFieldIdx(0))))),
@@ -2819,13 +2826,17 @@ mod static_fields_rendering_tests {
                 value: FieldValue::Int(42),
             }],
         );
+        state
+            .expansion
+            .toggle_static_section(&path_field(10, 0, &[]));
 
         state.move_down(); // Frame(10) -> Var
         state.move_down(); // Var -> instance field[0]
         assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
 
-        // Must skip non-interactive [static] header
-        state.move_down();
+        // Navigate through [static fields] header
+        state.move_down(); // → SectionHeader
+        state.move_down(); // → StaticField[0]
         assert!(
             matches!(state.cursor(), RenderCursor::At(p)
                 if matches!(p.segments().last(), Some(PathSegment::StaticField(StaticFieldIdx(0))))),
@@ -2833,7 +2844,14 @@ mod static_fields_rendering_tests {
             state.cursor()
         );
 
-        // Must also skip header when moving back up
+        // Move up lands on SectionHeader (now navigable)
+        state.move_up();
+        assert!(
+            matches!(state.cursor(), RenderCursor::SectionHeader(_)),
+            "cursor must be on SectionHeader, got: {:?}",
+            state.cursor()
+        );
+        // One more move_up → field[0]
         state.move_up();
         assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
     }
@@ -2858,10 +2876,14 @@ mod static_fields_rendering_tests {
             })
             .collect();
         state.set_static_fields(0xB00, static_fields);
+        state
+            .expansion
+            .toggle_static_section(&path_field(10, 0, &[]));
 
         state.move_down(); // Frame(10) -> Var
         state.move_down(); // Var -> instance field
-        state.move_down(); // instance field -> static[0], skipping [static]
+        state.move_down(); // instance field -> SectionHeader
+        state.move_down(); // SectionHeader -> static[0]
         for _ in 0..19 {
             state.move_down();
         }
@@ -2926,10 +2948,14 @@ mod static_fields_rendering_tests {
                 value: FieldValue::Int(7),
             }],
         );
+        state
+            .expansion
+            .toggle_static_section(&path_field(10, 0, &[]));
 
         state.move_down(); // Frame(10) -> Var
         state.move_down(); // Var -> instance field
-        state.move_down(); // instance field -> static field (skip [static] header)
+        state.move_down(); // instance field -> SectionHeader
+        state.move_down(); // SectionHeader -> static field[0]
         assert!(
             matches!(state.cursor(), RenderCursor::At(p)
                 if matches!(p.segments().last(), Some(PathSegment::StaticField(StaticFieldIdx(0))))),
@@ -3034,12 +3060,16 @@ mod static_fields_rendering_tests {
                 value: FieldValue::Int(3),
             }],
         );
+        // Toggle static section open for collection entry
+        let entry_toggle_path = path_coll_entry(10, 0, &[0], 0xD00, 0);
+        state.expansion.toggle_static_section(&entry_toggle_path);
 
         state.move_down(); // Frame(10) -> Var
         state.move_down(); // Var -> items field[0]
         state.move_down(); // items field -> entry[0]
         state.move_down(); // entry[0] -> entry obj field[0]
-        state.move_down(); // -> static field (skipping [static] header)
+        state.move_down(); // -> SectionHeader
+        state.move_down(); // -> StaticField[0]
         assert!(
             matches!(state.cursor(), RenderCursor::At(p)
                 if p.segments().last().is_some_and(|s| matches!(s, PathSegment::StaticField(StaticFieldIdx(0))))),
@@ -3551,4 +3581,429 @@ mod path_isolation_tests {
         // The data cache is populated regardless.
         assert!(state.expansion.object_fields.contains_key(&0x300),);
     }
+}
+
+// === Task 1.5/1.6: Static section collapse state tests ===
+
+#[test]
+fn toggle_static_section_on_fresh_registry_returns_true() {
+    let mut reg = ExpansionRegistry::new();
+    let path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+    let result = reg.toggle_static_section(&path);
+    assert!(result, "first toggle should expand (return true)");
+    assert!(reg.is_static_section_expanded(&path));
+}
+
+#[test]
+fn toggle_static_section_twice_returns_false() {
+    let mut reg = ExpansionRegistry::new();
+    let path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+    reg.toggle_static_section(&path);
+    let result = reg.toggle_static_section(&path);
+    assert!(!result, "second toggle should collapse (return false)");
+    assert!(!reg.is_static_section_expanded(&path));
+}
+
+// === Task 2.3: emit_static_rows collapsed → only SectionHeader ===
+
+#[test]
+fn emit_static_rows_collapsed_only_section_header() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done_at_path(
+        &path_field(10, 0, &[]),
+        0xA00,
+        vec![FieldInfo {
+            name: "inst".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![
+            FieldInfo {
+                name: "S1".to_string(),
+                value: FieldValue::Int(1),
+            },
+            FieldInfo {
+                name: "S2".to_string(),
+                value: FieldValue::Int(2),
+            },
+        ],
+    );
+    // Static section is collapsed by default
+    let flat = state.flat_items();
+    let header_count = flat
+        .iter()
+        .filter(|c| matches!(c, RenderCursor::SectionHeader(_)))
+        .count();
+    assert_eq!(header_count, 1, "SectionHeader must be emitted");
+    let static_field_count = flat
+        .iter()
+        .filter(|c| {
+            if let RenderCursor::At(p) = c {
+                p.segments()
+                    .iter()
+                    .any(|s| matches!(s, PathSegment::StaticField(_)))
+            } else {
+                false
+            }
+        })
+        .count();
+    assert_eq!(
+        static_field_count, 0,
+        "no static field cursors when collapsed"
+    );
+    let overflow_count = flat
+        .iter()
+        .filter(|c| matches!(c, RenderCursor::OverflowRow(_)))
+        .count();
+    assert_eq!(overflow_count, 0, "no overflow when collapsed");
+}
+
+// === Task 2.4: emit_static_rows after toggle → fields visible ===
+
+#[test]
+fn emit_static_rows_after_toggle_shows_fields() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done_at_path(
+        &path_field(10, 0, &[]),
+        0xA00,
+        vec![FieldInfo {
+            name: "inst".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![
+            FieldInfo {
+                name: "S1".to_string(),
+                value: FieldValue::Int(1),
+            },
+            FieldInfo {
+                name: "S2".to_string(),
+                value: FieldValue::Int(2),
+            },
+        ],
+    );
+    let parent_path = path_field(10, 0, &[]);
+    state.toggle_static_section(&parent_path);
+    let flat = state.flat_items();
+    let static_field_count = flat
+        .iter()
+        .filter(|c| {
+            if let RenderCursor::At(p) = c {
+                p.segments()
+                    .iter()
+                    .any(|s| matches!(s, PathSegment::StaticField(_)))
+            } else {
+                false
+            }
+        })
+        .count();
+    assert_eq!(
+        static_field_count, 2,
+        "static field cursors visible after toggle"
+    );
+}
+
+// === Task 2.5: collection entry static rows collapse gate ===
+
+#[test]
+fn emit_collection_entry_static_rows_collapsed() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xB00)]);
+    state.set_expansion_done_at_path(
+        &path_field(10, 0, &[]),
+        0xB00,
+        vec![FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 0xC00,
+                class_name: "java.util.ArrayList".to_string(),
+                entry_count: Some(1),
+                inline_value: None,
+            },
+        }],
+    );
+    state
+        .expansion
+        .expansion_phases
+        .insert(path_field(10, 0, &[0]), ExpansionPhase::Expanded);
+    state.expansion.collection_chunks.insert(
+        0xC00,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: 0x700,
+                        class_name: "Node".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+    state.set_expansion_done_at_path(
+        &path_coll_entry(10, 0, &[0], 0xC00, 0),
+        0x700,
+        vec![FieldInfo {
+            name: "value".to_string(),
+            value: FieldValue::Int(7),
+        }],
+    );
+    state.set_static_fields(
+        0x700,
+        vec![FieldInfo {
+            name: "STATIC_ONE".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    // Collapsed by default — only SectionHeader, no static fields
+    let flat = state.flat_items();
+    let static_field_count = flat
+        .iter()
+        .filter(|c| {
+            if let RenderCursor::At(p) = c {
+                p.segments()
+                    .iter()
+                    .any(|s| matches!(s, PathSegment::StaticField(_)))
+            } else {
+                false
+            }
+        })
+        .count();
+    assert_eq!(
+        static_field_count, 0,
+        "collection entry static fields collapsed by default"
+    );
+    // Toggle open — now static fields visible
+    let entry_path = path_coll_entry(10, 0, &[0], 0xC00, 0);
+    state.toggle_static_section(&entry_path);
+    let flat = state.flat_items();
+    let static_field_count = flat
+        .iter()
+        .filter(|c| {
+            if let RenderCursor::At(p) = c {
+                p.segments()
+                    .iter()
+                    .any(|s| matches!(s, PathSegment::StaticField(_)))
+            } else {
+                false
+            }
+        })
+        .count();
+    assert_eq!(
+        static_field_count, 1,
+        "collection entry static field visible after toggle"
+    );
+}
+
+// === Task 4.3: header text with uncapped count ===
+
+#[test]
+fn static_header_shows_uncapped_field_count() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done_at_path(
+        &path_field(10, 0, &[]),
+        0xA00,
+        vec![FieldInfo {
+            name: "inst".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    let statics: Vec<FieldInfo> = (0..25)
+        .map(|i| FieldInfo {
+            name: format!("S_{i}"),
+            value: FieldValue::Int(i),
+        })
+        .collect();
+    state.set_static_fields(0xA00, statics);
+    // Collapsed header: ▸ [static fields] (25)
+    let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
+    assert!(
+        rendered.iter().any(|l| l.contains("[static fields] (25)")),
+        "header must show real count 25, not capped 20: {rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|l| l.contains("\u{25B8}")),
+        "collapsed indicator must be ▸: {rendered:?}"
+    );
+    // Toggle open → ▾ [static fields] (25)
+    state
+        .expansion
+        .toggle_static_section(&path_field(10, 0, &[]));
+    let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
+    assert!(
+        rendered.iter().any(|l| l.contains("\u{25BE}")),
+        "expanded indicator must be ▾: {rendered:?}"
+    );
+}
+
+// === Task 3.4: snapshot mode static fields collapsed ===
+
+#[test]
+fn render_variable_tree_snapshot_static_collapsed() {
+    use crate::views::tree_render::{RenderOptions, TreeRoot, render_variable_tree};
+    let mut object_fields = std::collections::HashMap::new();
+    object_fields.insert(
+        10,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    let mut object_static_fields = std::collections::HashMap::new();
+    object_static_fields.insert(
+        10,
+        vec![FieldInfo {
+            name: "CONST".to_string(),
+            value: FieldValue::Int(99),
+        }],
+    );
+    let items = render_variable_tree(
+        TreeRoot::Subtree { root_id: 10 },
+        &object_fields,
+        &object_static_fields,
+        &std::collections::HashMap::new(),
+        &{
+            let mut m = std::collections::HashMap::new();
+            m.insert(10, ExpansionPhase::Expanded);
+            m
+        },
+        &std::collections::HashMap::new(),
+        RenderOptions {
+            show_object_ids: false,
+            snapshot_mode: true,
+            show_hidden: false,
+        },
+        None,
+        None,
+        None,
+        None, // static_section_expanded = None → collapsed
+    );
+    let texts: Vec<String> = items.into_iter().map(item_text).collect();
+    // Header must appear
+    assert!(
+        texts.iter().any(|t| t.contains("[static fields]")),
+        "header must appear: {texts:?}"
+    );
+    // Field value must NOT appear (collapsed)
+    assert!(
+        !texts.iter().any(|t| t.contains("CONST")),
+        "static field must be hidden: {texts:?}"
+    );
+}
+
+// === Task 6.5: collapse object → static section reset ===
+
+#[test]
+fn collapse_object_clears_static_section_state() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    let var_path = path_field(10, 0, &[]);
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    // Toggle static open
+    state.expansion.toggle_static_section(&var_path);
+    assert!(state.expansion.is_static_section_expanded(&var_path));
+    // Collapse the object
+    state.collapse_object_recursive(&var_path);
+    // Re-expand
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    // Static section must be collapsed
+    assert!(
+        !state.expansion.is_static_section_expanded(&var_path),
+        "static section must be collapsed after object collapse"
+    );
+}
+
+// === Task 6.6: thread switch clears static section ===
+
+#[test]
+fn thread_switch_resets_static_section() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    let var_path = path_field(10, 0, &[]);
+    state.expansion.toggle_static_section(&var_path);
+    assert!(state.expansion.is_static_section_expanded(&var_path));
+    // Simulate thread switch → new state
+    let state2 = StackState::new(vec![make_frame(20)]);
+    assert!(
+        !state2.expansion.is_static_section_expanded(&var_path),
+        "fresh state must have collapsed static sections"
+    );
+}
+
+// === Task 6.7: per-path isolation ===
+
+#[test]
+fn static_section_per_path_isolation() {
+    let mut reg = ExpansionRegistry::new();
+    let path_a = NavigationPathBuilder::new(FrameId(1), VarIdx(0))
+        .field(FieldIdx(0))
+        .build();
+    let path_b = NavigationPathBuilder::new(FrameId(1), VarIdx(0))
+        .field(FieldIdx(1))
+        .build();
+    reg.toggle_static_section(&path_a);
+    assert!(reg.is_static_section_expanded(&path_a));
+    assert!(
+        !reg.is_static_section_expanded(&path_b),
+        "path_b must be independent from path_a"
+    );
+}
+
+#[test]
+fn is_static_section_expanded_returns_false_on_unknown_path() {
+    let reg = ExpansionRegistry::new();
+    let path = NavigationPathBuilder::new(FrameId(42), VarIdx(0)).build();
+    assert!(
+        !reg.is_static_section_expanded(&path),
+        "unknown path should be collapsed"
+    );
 }

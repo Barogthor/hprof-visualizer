@@ -35,10 +35,7 @@ impl SegmentFilter {
 }
 
 impl std::fmt::Debug for SegmentFilter {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "SegmentFilter {{ segment_index: {} }}",
@@ -84,11 +81,7 @@ impl SegmentFilterBuilder {
     /// When a new segment index is detected, the
     /// previous segment's filter is built immediately
     /// and its raw ID vector is freed.
-    pub(crate) fn add(
-        &mut self,
-        data_offset: usize,
-        id: u64,
-    ) {
+    pub(crate) fn add(&mut self, data_offset: usize, id: u64) {
         let seg = data_offset / SEGMENT_SIZE;
         if self.current_segment != Some(seg) {
             self.finalize_current();
@@ -100,10 +93,8 @@ impl SegmentFilterBuilder {
     /// Builds the filter for the current segment and
     /// resets state.
     fn finalize_current(&mut self) {
-        if let Some(seg_idx) = self.current_segment.take()
-        {
-            let mut ids =
-                std::mem::take(&mut self.current_ids);
+        if let Some(seg_idx) = self.current_segment.take() {
+            let mut ids = std::mem::take(&mut self.current_ids);
             ids.sort_unstable();
             ids.dedup();
             match BinaryFuse8::try_from(ids.as_slice()) {
@@ -145,20 +136,15 @@ impl SegmentFilterBuilder {
     /// by `batch_lookup_by_filter`. With ordered input
     /// they are already sorted; the sort is a safety net
     /// that costs nothing on sorted data.
-    pub(crate) fn finish(
-        mut self,
-    ) -> (Vec<SegmentFilter>, Vec<String>) {
+    pub(crate) fn finish(mut self) -> (Vec<SegmentFilter>, Vec<String>) {
         self.finalize_current();
-        self.filters
-            .sort_unstable_by_key(|f| f.segment_index);
+        self.filters.sort_unstable_by_key(|f| f.segment_index);
         (self.filters, self.warnings)
     }
 
     /// Alias for [`finish`](SegmentFilterBuilder::finish).
     #[allow(dead_code)]
-    pub(crate) fn build(
-        self,
-    ) -> (Vec<SegmentFilter>, Vec<String>) {
+    pub(crate) fn build(self) -> (Vec<SegmentFilter>, Vec<String>) {
         self.finish()
     }
 }

@@ -355,16 +355,11 @@ fn bytes_scanned_positions(obs: &hprof_api::TestObserver) -> Vec<u64> {
 }
 
 #[cfg(feature = "test-utils")]
-fn heap_bytes_events(
-    obs: &hprof_api::TestObserver,
-) -> Vec<(u64, u64)> {
+fn heap_bytes_events(obs: &hprof_api::TestObserver) -> Vec<(u64, u64)> {
     obs.events
         .iter()
         .filter_map(|e| match e {
-            hprof_api::ProgressEvent::HeapBytesExtracted {
-                done,
-                total,
-            } => Some((*done, *total)),
+            hprof_api::ProgressEvent::HeapBytesExtracted { done, total } => Some((*done, *total)),
             _ => None,
         })
         .collect()
@@ -1474,14 +1469,11 @@ mod builder_tests {
     #[test]
     fn sequential_path_reports_all_segments() {
         let id_size = 8u32;
-        let bytes = HprofTestBuilder::new(
-            "JAVA PROFILE 1.0.2",
-            id_size,
-        )
-        .add_instance(1, 0, 100, &[1])
-        .add_instance(2, 0, 100, &[2])
-        .add_instance(3, 0, 100, &[3])
-        .build();
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_instance(1, 0, 100, &[1])
+            .add_instance(2, 0, 100, &[2])
+            .add_instance(3, 0, 100, &[3])
+            .build();
 
         assert!(
             (bytes.len() as u64) < PARALLEL_THRESHOLD,
@@ -1489,23 +1481,16 @@ mod builder_tests {
         );
 
         let start = advance_past_header(&bytes);
-        let (result, obs) =
-            run_fp_with_test_observer(&bytes[start..], id_size);
+        let (result, obs) = run_fp_with_test_observer(&bytes[start..], id_size);
         let events = heap_bytes_events(&obs);
         let expected_total = result.heap_record_ranges.len();
 
-        assert!(
-            expected_total > 0,
-            "expected at least one heap segment"
-        );
+        assert!(expected_total > 0, "expected at least one heap segment");
         assert_eq!(events.len(), expected_total);
 
         // done is monotonically increasing bytes
         for w in events.windows(2) {
-            assert!(
-                w[1].0 > w[0].0,
-                "done must be strictly increasing"
-            );
+            assert!(w[1].0 > w[0].0, "done must be strictly increasing");
         }
         // total stays constant
         let total = events[0].1;
@@ -1524,18 +1509,10 @@ mod builder_tests {
     fn parallel_path_reports_all_segments() {
         let id_size = 8u32;
         let big_data = vec![0u8; 33 * 1024 * 1024];
-        let bytes = HprofTestBuilder::new(
-            "JAVA PROFILE 1.0.2",
-            id_size,
-        )
-        .add_class_dump(
-            100,
-            0,
-            big_data.len() as u32,
-            &[],
-        )
-        .add_instance(42, 0, 100, &big_data)
-        .build();
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_class_dump(100, 0, big_data.len() as u32, &[])
+            .add_instance(42, 0, 100, &big_data)
+            .build();
 
         let start = advance_past_header(&bytes);
         let data = &bytes[start..];
@@ -1544,23 +1521,16 @@ mod builder_tests {
             "fixture must trigger parallel path"
         );
 
-        let (result, obs) =
-            run_fp_with_test_observer(data, id_size);
+        let (result, obs) = run_fp_with_test_observer(data, id_size);
         let events = heap_bytes_events(&obs);
         let expected_total = result.heap_record_ranges.len();
 
-        assert!(
-            expected_total > 0,
-            "expected at least one heap segment"
-        );
+        assert!(expected_total > 0, "expected at least one heap segment");
         assert_eq!(events.len(), expected_total);
 
         // done is monotonically increasing bytes
         for w in events.windows(2) {
-            assert!(
-                w[1].0 > w[0].0,
-                "done must be strictly increasing"
-            );
+            assert!(w[1].0 > w[0].0, "done must be strictly increasing");
         }
         // total stays constant
         let total = events[0].1;
@@ -1578,24 +1548,17 @@ mod builder_tests {
     #[test]
     fn segment_done_never_exceeds_total() {
         let id_size = 8u32;
-        let bytes = HprofTestBuilder::new(
-            "JAVA PROFILE 1.0.2",
-            id_size,
-        )
-        .add_instance(10, 0, 100, &[1])
-        .add_instance(11, 0, 100, &[2])
-        .add_instance(12, 0, 100, &[3])
-        .build();
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_instance(10, 0, 100, &[1])
+            .add_instance(11, 0, 100, &[2])
+            .add_instance(12, 0, 100, &[3])
+            .build();
 
         let start = advance_past_header(&bytes);
-        let (_result, obs) =
-            run_fp_with_test_observer(&bytes[start..], id_size);
+        let (_result, obs) = run_fp_with_test_observer(&bytes[start..], id_size);
         let events = heap_bytes_events(&obs);
 
-        assert!(
-            !events.is_empty(),
-            "expected heap bytes progress events"
-        );
+        assert!(!events.is_empty(), "expected heap bytes progress events");
         for (done, total) in events {
             assert!(done <= total, "done must not exceed total");
         }
@@ -2359,38 +2322,27 @@ mod budget_batching_tests {
         use crate::test_utils::HprofTestBuilder;
         use hprof_api::ProgressEvent;
 
-        let mut builder =
-            HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
         for i in 1..=5u64 {
-            builder =
-                builder.add_instance(i, 0, 100, &[0u8; 16]);
+            builder = builder.add_instance(i, 0, 100, &[0u8; 16]);
         }
         let bytes = builder.build();
-        let start =
-            crate::test_utils::advance_past_header(&bytes);
+        let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (_, obs) = run_fp_with_budget(
-            &bytes[start..],
-            8,
-            MemoryBudget::Bytes(64),
-        );
+        let (_, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(64));
 
         let byte_events: Vec<(u64, u64)> = obs
             .events
             .iter()
             .filter_map(|e| match e {
-                ProgressEvent::HeapBytesExtracted {
-                    done,
-                    total,
-                } => Some((*done, *total)),
+                ProgressEvent::HeapBytesExtracted { done, total } => Some((*done, *total)),
                 _ => None,
             })
             .collect();
 
         assert_eq!(byte_events.len(), 5);
         // Final done == total
-        let (final_done, final_total) =
-            *byte_events.last().unwrap();
+        let (final_done, final_total) = *byte_events.last().unwrap();
         assert_eq!(
             final_done, final_total,
             "final heap_bytes_extracted must be \
@@ -2398,10 +2350,7 @@ mod budget_batching_tests {
         );
         // Events must be monotonically increasing
         for w in byte_events.windows(2) {
-            assert!(
-                w[1].0 > w[0].0,
-                "done must be strictly increasing"
-            );
+            assert!(w[1].0 > w[0].0, "done must be strictly increasing");
         }
         // All report same total
         let total = byte_events[0].1;
@@ -2612,22 +2561,14 @@ mod budget_batching_tests {
         // 17 MB per segment × 2 = ~34 MB > PARALLEL_THRESHOLD
         let seg_bytes = 17 * 1024 * 1024_usize;
         let data = vec![0u8; seg_bytes];
-        let bytes = HprofTestBuilder::new(
-            "JAVA PROFILE 1.0.2",
-            8,
-        )
-        // element_type 8 = TYPE_BYTE (1 byte each)
-        .add_prim_array(1, 0, seg_bytes as u32, 8, &data)
-        .add_prim_array(2, 0, seg_bytes as u32, 8, &data)
-        .build();
-        let start =
-            crate::test_utils::advance_past_header(&bytes);
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            // element_type 8 = TYPE_BYTE (1 byte each)
+            .add_prim_array(1, 0, seg_bytes as u32, 8, &data)
+            .add_prim_array(2, 0, seg_bytes as u32, 8, &data)
+            .build();
+        let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (result, obs) = run_fp_with_budget(
-            &bytes[start..],
-            8,
-            MemoryBudget::Unlimited,
-        );
+        let (result, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
 
         assert_eq!(result.heap_record_ranges.len(), 2);
         assert!(result.warnings.is_empty());
@@ -2636,16 +2577,12 @@ mod budget_batching_tests {
             .events
             .iter()
             .filter_map(|e| match e {
-                ProgressEvent::HeapBytesExtracted {
-                    done,
-                    total,
-                } => Some((*done, *total)),
+                ProgressEvent::HeapBytesExtracted { done, total } => Some((*done, *total)),
                 _ => None,
             })
             .collect();
         assert_eq!(byte_events.len(), 2);
-        let (final_done, final_total) =
-            *byte_events.last().unwrap();
+        let (final_done, final_total) = *byte_events.last().unwrap();
         assert_eq!(final_done, final_total);
         let total = byte_events[0].1;
         for (_, t) in &byte_events {
@@ -2660,44 +2597,29 @@ mod budget_batching_tests {
         use crate::test_utils::HprofTestBuilder;
         use hprof_api::ProgressEvent;
 
-        let mut builder = HprofTestBuilder::new(
-            "JAVA PROFILE 1.0.2",
-            8,
-        );
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
         // 5 segments with 16 bytes payload each;
         // budget = 64 forces BATCH_FLOOR (64 MB) which
         // fits all, but test asserts monotonicity across
         // any number of batches.
         for i in 1..=5u64 {
-            builder =
-                builder.add_instance(i, 0, 100, &[0u8; 16]);
+            builder = builder.add_instance(i, 0, 100, &[0u8; 16]);
         }
         let bytes = builder.build();
-        let start =
-            crate::test_utils::advance_past_header(&bytes);
+        let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (_, obs) = run_fp_with_budget(
-            &bytes[start..],
-            8,
-            MemoryBudget::Bytes(64),
-        );
+        let (_, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(64));
 
         let byte_events: Vec<(u64, u64)> = obs
             .events
             .iter()
             .filter_map(|e| match e {
-                ProgressEvent::HeapBytesExtracted {
-                    done,
-                    total,
-                } => Some((*done, *total)),
+                ProgressEvent::HeapBytesExtracted { done, total } => Some((*done, *total)),
                 _ => None,
             })
             .collect();
 
-        assert!(
-            !byte_events.is_empty(),
-            "must emit HeapBytesExtracted"
-        );
+        assert!(!byte_events.is_empty(), "must emit HeapBytesExtracted");
 
         // Strictly monotonically increasing done
         for w in byte_events.windows(2) {
@@ -2711,12 +2633,8 @@ mod budget_batching_tests {
         }
 
         // Final done == total
-        let (final_done, final_total) =
-            *byte_events.last().unwrap();
-        assert_eq!(
-            final_done, final_total,
-            "final done must equal total"
-        );
+        let (final_done, final_total) = *byte_events.last().unwrap();
+        assert_eq!(final_done, final_total, "final done must equal total");
     }
 }
 
@@ -2726,15 +2644,10 @@ mod budget_batching_tests {
 
 #[cfg(feature = "test-utils")]
 mod story_13_0_tests {
-    use hprof_api::{
-        MemoryBudget, ProgressEvent, ProgressNotifier,
-        TestObserver,
-    };
+    use hprof_api::{MemoryBudget, ProgressEvent, ProgressNotifier, TestObserver};
 
     use crate::indexer::first_pass::run_first_pass;
-    use crate::test_utils::{
-        HprofTestBuilder, advance_past_header,
-    };
+    use crate::test_utils::{HprofTestBuilder, advance_past_header};
 
     /// 13.0-5.6: extract_all on a dump that triggers the
     /// PARALLEL path terminates without deadlock.
@@ -2754,19 +2667,15 @@ mod story_13_0_tests {
             .expect("2-thread pool");
         let seg_bytes = 17 * 1024 * 1024_usize;
         let data = vec![0u8; seg_bytes];
-        let bytes = HprofTestBuilder::new(
-            "JAVA PROFILE 1.0.2",
-            8,
-        )
-        .add_prim_array(1, 0, seg_bytes as u32, 8, &data)
-        .add_prim_array(2, 0, seg_bytes as u32, 8, &data)
-        .build();
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_prim_array(1, 0, seg_bytes as u32, 8, &data)
+            .add_prim_array(2, 0, seg_bytes as u32, 8, &data)
+            .build();
         let start = advance_past_header(&bytes);
         let handle = std::thread::spawn(move || {
             let mut obs = TestObserver::default();
             pool.install(|| {
-                let mut notifier =
-                    ProgressNotifier::new(&mut obs);
+                let mut notifier = ProgressNotifier::new(&mut obs);
                 let _result = run_first_pass(
                     &bytes[start..],
                     8,
@@ -2777,10 +2686,7 @@ mod story_13_0_tests {
             });
         });
         let result = handle.join();
-        assert!(
-            result.is_ok(),
-            "extract_all must not deadlock"
-        );
+        assert!(result.is_ok(), "extract_all must not deadlock");
     }
 
     /// 13.0-5.7: single-threaded fallback — when rayon
@@ -2797,19 +2703,15 @@ mod story_13_0_tests {
         // num_threads == 1 → sequential fallback.
         let seg_bytes = 17 * 1024 * 1024_usize;
         let data = vec![0u8; seg_bytes];
-        let bytes = HprofTestBuilder::new(
-            "JAVA PROFILE 1.0.2",
-            8,
-        )
-        .add_prim_array(1, 0, seg_bytes as u32, 8, &data)
-        .add_prim_array(2, 0, seg_bytes as u32, 8, &data)
-        .build();
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_prim_array(1, 0, seg_bytes as u32, 8, &data)
+            .add_prim_array(2, 0, seg_bytes as u32, 8, &data)
+            .build();
         let start = advance_past_header(&bytes);
 
         let mut obs = TestObserver::default();
         pool.install(|| {
-            let mut notifier =
-                ProgressNotifier::new(&mut obs);
+            let mut notifier = ProgressNotifier::new(&mut obs);
             let _result = run_first_pass(
                 &bytes[start..],
                 8,
@@ -2823,10 +2725,7 @@ mod story_13_0_tests {
             .events
             .iter()
             .filter_map(|e| match e {
-                ProgressEvent::HeapBytesExtracted {
-                    done,
-                    total,
-                } => Some((*done, *total)),
+                ProgressEvent::HeapBytesExtracted { done, total } => Some((*done, *total)),
                 _ => None,
             })
             .collect();
@@ -2836,12 +2735,8 @@ mod story_13_0_tests {
             "sequential fallback must emit \
              HeapBytesExtracted"
         );
-        let (final_done, final_total) =
-            *byte_events.last().unwrap();
-        assert_eq!(
-            final_done, final_total,
-            "final done must equal total"
-        );
+        let (final_done, final_total) = *byte_events.last().unwrap();
+        assert_eq!(final_done, final_total, "final done must equal total");
     }
 }
 
@@ -3559,10 +3454,7 @@ fn phase_events_ordered_on_jvisualvm_dump() {
         .iter()
         .enumerate()
         .filter_map(|(i, e)| match e {
-            ProgressEvent::HeapBytesExtracted {
-                done,
-                total,
-            } if done == total => Some(i),
+            ProgressEvent::HeapBytesExtracted { done, total } if done == total => Some(i),
             _ => None,
         })
         .next_back()

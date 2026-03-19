@@ -4,8 +4,6 @@
 use std::io::Cursor;
 use std::ops::Range;
 
-use byteorder::{BigEndian, ReadBytesExt};
-use hprof_api::ProgressNotifier;
 use super::hprof_primitives::{
     PARALLEL_THRESHOLD, gc_root_skip_size, parse_class_dump, primitive_element_size, skip_n,
 };
@@ -14,6 +12,8 @@ use super::{ClassDumpEntry, FilterEntry, FirstPassContext, RawFrameRoot, RawThre
 use crate::indexer::HeapRecordRange;
 use crate::read_id;
 use crate::tags::HeapSubTag;
+use byteorder::{BigEndian, ReadBytesExt};
+use hprof_api::ProgressNotifier;
 
 /// Per-worker output from heap segment extraction.
 pub(super) struct HeapSegmentResult {
@@ -373,10 +373,7 @@ pub(super) fn compute_batch_ranges(
 /// depending on total heap size and thread count.
 /// Reports byte-level progress via
 /// [`ProgressNotifier::heap_bytes_extracted`].
-pub(super) fn extract_all(
-    ctx: &mut FirstPassContext,
-    notifier: &mut ProgressNotifier,
-) {
+pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNotifier) {
     let total_heap_bytes: u64 = ctx
         .result
         .heap_record_ranges
@@ -391,10 +388,8 @@ pub(super) fn extract_all(
     // Intra-segment chunk size (story 10.2).
     let max_chunk_bytes = match ctx.budget.bytes() {
         Some(b) => {
-            let b =
-                usize::try_from(b).unwrap_or(usize::MAX);
-            let per_thread =
-                b / rayon::current_num_threads().max(1);
+            let b = usize::try_from(b).unwrap_or(usize::MAX);
+            let per_thread = b / rayon::current_num_threads().max(1);
             per_thread.max(CHUNK_FLOOR)
         }
         None => usize::MAX,
@@ -412,34 +407,23 @@ pub(super) fn extract_all(
     // current_num_threads() == 1, rayon::scope workers
     // have no thread to run on while the main thread
     // blocks on rx.iter() — deadlock.
-    if total_heap_bytes >= PARALLEL_THRESHOLD
-        && rayon::current_num_threads() > 1
-    {
+    if total_heap_bytes >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
         #[cfg(feature = "dev-profiling")]
-        let _par_span = tracing::info_span!(
-            "parallel_heap_extraction"
-        )
-        .entered();
+        let _par_span = tracing::info_span!("parallel_heap_extraction").entered();
 
-        let batches =
-            compute_batch_ranges(&ranges, max_batch_payload);
+        let batches = compute_batch_ranges(&ranges, max_batch_payload);
 
         // bytes_done is cumulative across ALL batches so
         // the progress bar never regresses at a batch
         // boundary.
         let mut bytes_done: u64 = 0;
 
-        for (batch_idx, batch_range) in
-            batches.iter().enumerate()
-        {
+        for (batch_idx, batch_range) in batches.iter().enumerate() {
             let batch = &ranges[batch_range.clone()];
 
             #[cfg(feature = "dev-profiling")]
             {
-                let batch_payload: u64 = batch
-                    .iter()
-                    .map(|r| r.payload_length)
-                    .sum();
+                let batch_payload: u64 = batch.iter().map(|r| r.payload_length).sum();
                 tracing::info!(
                     "heap extraction batch {}/{}: \
                      {} segment(s), {} bytes payload, \
@@ -460,22 +444,15 @@ pub(super) fn extract_all(
                 for r in batch {
                     let tx = tx.clone();
                     s.spawn(move |_| {
-                        let start =
-                            r.payload_start as usize;
-                        let end = start
-                            + r.payload_length as usize;
-                        let result =
-                            extract_heap_segment(
-                                &data[start..end],
-                                start,
-                                id_size,
-                                max_chunk_bytes,
-                            );
-                        let _ = tx.send((
-                            r.payload_start,
-                            r.payload_length,
-                            result,
-                        ));
+                        let start = r.payload_start as usize;
+                        let end = start + r.payload_length as usize;
+                        let result = extract_heap_segment(
+                            &data[start..end],
+                            start,
+                            id_size,
+                            max_chunk_bytes,
+                        );
+                        let _ = tx.send((r.payload_start, r.payload_length, result));
                     });
                 }
                 // CRITICAL: drop original tx so
@@ -490,46 +467,27 @@ pub(super) fn extract_all(
             // parallelism. Sort by payload_start
             // before merging (SegmentFilterBuilder
             // requires non-decreasing offset order).
-            let mut batch_results: Vec<_> =
-                rx.into_iter().collect();
-            batch_results
-                .sort_unstable_by_key(|(start, _, _)| {
-                    *start
-                });
-            for (_, payload_len, result)
-                in batch_results.drain(..)
-            {
+            let mut batch_results: Vec<_> = rx.into_iter().collect();
+            batch_results.sort_unstable_by_key(|(start, _, _)| *start);
+            for (_, payload_len, result) in batch_results.drain(..) {
                 result.merge_into(ctx);
                 bytes_done += payload_len;
-                notifier.heap_bytes_extracted(
-                    bytes_done,
-                    total_heap_bytes,
-                );
+                notifier.heap_bytes_extracted(bytes_done, total_heap_bytes);
             }
         }
     } else {
         #[cfg(feature = "dev-profiling")]
-        let _seq_span = tracing::info_span!(
-            "sequential_heap_extraction"
-        )
-        .entered();
+        let _seq_span = tracing::info_span!("sequential_heap_extraction").entered();
 
         let mut bytes_done: u64 = 0;
         for r in &ranges {
             let start = r.payload_start as usize;
             let end = start + r.payload_length as usize;
-            let parsing_result = extract_heap_segment(
-                &data[start..end],
-                start,
-                id_size,
-                max_chunk_bytes,
-            );
+            let parsing_result =
+                extract_heap_segment(&data[start..end], start, id_size, max_chunk_bytes);
             parsing_result.merge_into(ctx);
             bytes_done += r.payload_length;
-            notifier.heap_bytes_extracted(
-                bytes_done,
-                total_heap_bytes,
-            );
+            notifier.heap_bytes_extracted(bytes_done, total_heap_bytes);
         }
     }
 }

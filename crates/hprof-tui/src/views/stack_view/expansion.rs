@@ -4,7 +4,7 @@
 //! decoded fields, errors) and collection pagination state,
 //! decoupled from cursor and frame logic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hprof_engine::FieldInfo;
 
@@ -25,6 +25,9 @@ pub struct ExpansionRegistry {
     /// Collection pagination state keyed by `collection_id`
     /// — shared data cache.
     pub(crate) collection_chunks: HashMap<u64, CollectionChunks>,
+    /// Tracks which `[static fields]` sections are expanded.
+    /// Absent = collapsed (default). Keyed by parent object path.
+    pub(crate) static_section_expanded: HashSet<NavigationPath>,
 }
 
 impl ExpansionRegistry {
@@ -36,6 +39,7 @@ impl ExpansionRegistry {
             object_static_fields: HashMap::new(),
             object_errors: HashMap::new(),
             collection_chunks: HashMap::new(),
+            static_section_expanded: HashSet::new(),
         }
     }
 
@@ -79,6 +83,13 @@ impl ExpansionRegistry {
             }
             segs[..target_len] != *target_segs
         });
+        self.static_section_expanded.retain(|p| {
+            let segs = p.segments();
+            if segs.len() < target_len {
+                return true;
+            }
+            segs[..target_len] != *target_segs
+        });
     }
 
     /// Clears data caches for a given `object_id`.
@@ -112,6 +123,24 @@ impl ExpansionRegistry {
             map.insert(oid, ExpansionPhase::Failed);
         }
         map
+    }
+
+    /// Toggles the `[static fields]` section for a path.
+    ///
+    /// Returns `true` if now expanded, `false` if now collapsed.
+    pub fn toggle_static_section(&mut self, path: &NavigationPath) -> bool {
+        if self.static_section_expanded.remove(path) {
+            false
+        } else {
+            self.static_section_expanded.insert(path.clone());
+            true
+        }
+    }
+
+    /// Returns whether the `[static fields]` section at
+    /// `path` is expanded (`false` by default).
+    pub fn is_static_section_expanded(&self, path: &NavigationPath) -> bool {
+        self.static_section_expanded.contains(path)
     }
 
     /// Returns the [`ChunkState`] for a specific chunk.
