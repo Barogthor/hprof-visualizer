@@ -21,6 +21,7 @@ use std::time::Instant;
 #[cfg(feature = "test-utils")]
 use hprof_api::MemorySize;
 use hprof_api::{MemoryBudget, ProgressNotifier};
+use rustc_hash::FxHashSet;
 
 use crate::ClassDumpInfo;
 #[cfg(feature = "test-utils")]
@@ -198,6 +199,63 @@ impl<'a> FirstPassContext<'a> {
     }
 }
 
+fn preload_field_names(ctx: &mut FirstPassContext) {
+    let mut field_name_ids = FxHashSet::default();
+    for class_dump in ctx.result.index.class_dumps.values() {
+        for field in &class_dump.instance_fields {
+            field_name_ids.insert(field.name_string_id);
+        }
+        for field in &class_dump.static_fields {
+            field_name_ids.insert(field.name_string_id);
+        }
+    }
+
+    ctx.result.index.field_names.reserve(field_name_ids.len());
+
+    let mut resolved_names = Vec::with_capacity(field_name_ids.len());
+    let mut missing_name_ids = Vec::new();
+    {
+        let strings = &ctx.result.index.strings;
+        for name_string_id in field_name_ids {
+            if let Some(sref) = strings.get(&name_string_id) {
+                resolved_names.push((name_string_id, sref.resolve(ctx.data)));
+            } else {
+                missing_name_ids.push(name_string_id);
+            }
+        }
+    }
+
+    for name_string_id in missing_name_ids {
+        ctx.push_warning(format!(
+            "field name string id {name_string_id} missing from STRING records"
+        ));
+    }
+
+    for (name_string_id, name) in resolved_names {
+        ctx.result.index.field_names.insert(name_string_id, name);
+    }
+
+    #[cfg(feature = "dev-profiling")]
+    {
+        let field_names_heap_bytes = field_names_heap_bytes(&ctx.result.index);
+        tracing::info!(
+            field_names_entries = ctx.result.index.field_names.len(),
+            field_names_heap_bytes,
+            "first-pass preloaded field_names cache"
+        );
+    }
+}
+
+#[cfg(feature = "dev-profiling")]
+fn field_names_heap_bytes(index: &PreciseIndex) -> usize {
+    hprof_api::fxhashmap_memory_size::<u64, String>(index.field_names.capacity())
+        + index
+            .field_names
+            .values()
+            .map(|s| s.capacity())
+            .sum::<usize>()
+}
+
 /// Scans all records in `data` and returns a populated
 /// [`IndexResult`].
 ///
@@ -237,6 +295,7 @@ pub fn run_first_pass(
     let mut ctx = FirstPassContext::new(data, id_size, base_offset, budget);
     record_scan::scan_records(&mut ctx, notifier);
     heap_extraction::extract_all(&mut ctx, notifier);
+    preload_field_names(&mut ctx);
 
     // Build segment filters BEFORE thread resolution.
     // Filters are needed for batched lookups.

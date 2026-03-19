@@ -599,6 +599,9 @@ impl Engine {
     }
 
     fn resolve_name(&self, name_string_id: u64) -> String {
+        if let Some(name) = self.hfile.index.field_names.get(&name_string_id) {
+            return name.clone();
+        }
         self.hfile
             .index
             .strings

@@ -1153,6 +1153,37 @@ mod builder_tests {
     }
 
     #[test]
+    fn from_path_preloads_field_name_cache_with_specific_string_id_mapping() {
+        let name_string_id = 101u64;
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_string(name_string_id, "count")
+            .add_string(102, "com/example/Foo")
+            .add_class(1, 0x100, 0, 102)
+            .add_class_dump(0x100, 0, 4, &[(name_string_id, 10u8)])
+            .add_instance(0x200, 0, 0x100, &42i32.to_be_bytes())
+            .build();
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+
+        assert!(
+            hfile.index.field_names.contains_key(&name_string_id),
+            "field_names must contain specific field name string id"
+        );
+        assert_eq!(
+            hfile
+                .index
+                .field_names
+                .get(&name_string_id)
+                .map(String::as_str),
+            Some("count")
+        );
+    }
+
+    #[test]
     fn read_instance_at_offset_returns_correct_data() {
         let obj_id = 0xDEAD_u64;
         let class_id = 100_u64;

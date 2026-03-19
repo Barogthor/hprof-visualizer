@@ -15,6 +15,7 @@
 //! | `class_dumps` | `u64` class object ID | `CLASS_DUMP` |
 //! | `thread_object_ids` | `u32` thread serial | `ROOT_THREAD_OBJ` |
 //! | `class_names_by_id` | `u64` class object ID | derived from `LOAD_CLASS` |
+//! | `field_names` | `u64` string ID | derived from `CLASS_DUMP` field metadata |
 
 use std::sync::RwLock;
 
@@ -135,6 +136,13 @@ pub struct PreciseIndex {
     /// Binary JVM names (`java/util/HashMap`) are normalised to
     /// dot notation (`java.util.HashMap`).
     pub class_names_by_id: FxHashMap<u64, String>,
+    /// Field names keyed by `name_string_id`.
+    ///
+    /// Populated after heap extraction by resolving unique
+    /// `ClassDumpInfo.instance_fields` and
+    /// `ClassDumpInfo.static_fields` name IDs through
+    /// `strings`.
+    pub field_names: FxHashMap<u64, String>,
     /// Object-ID → byte offset (relative to records section) for
     /// cached instance locations. Initially populated with
     /// thread-related objects during first pass; later extended
@@ -158,6 +166,7 @@ impl PreciseIndex {
             class_dumps: FxHashMap::default(),
             thread_object_ids: FxHashMap::default(),
             class_names_by_id: FxHashMap::default(),
+            field_names: FxHashMap::default(),
             instance_offsets: OffsetCache::new(),
         }
     }
@@ -180,6 +189,7 @@ impl PreciseIndex {
             class_dumps: FxHashMap::with_capacity_and_hasher(class_cap, Default::default()),
             thread_object_ids: FxHashMap::default(),
             class_names_by_id: FxHashMap::with_capacity_and_hasher(class_cap, Default::default()),
+            field_names: FxHashMap::with_capacity_and_hasher(class_cap, Default::default()),
             instance_offsets: OffsetCache::new(),
         }
     }
@@ -217,6 +227,12 @@ impl MemorySize for PreciseIndex {
             + fxhashmap_memory_size::<u64, String>(self.class_names_by_id.capacity())
             + self
                 .class_names_by_id
+                .values()
+                .map(|s| s.capacity())
+                .sum::<usize>()
+            + fxhashmap_memory_size::<u64, String>(self.field_names.capacity())
+            + self
+                .field_names
                 .values()
                 .map(|s| s.capacity())
                 .sum::<usize>()
@@ -354,6 +370,29 @@ mod tests {
     }
 
     #[test]
+    fn memory_size_accounts_for_field_name_capacity() {
+        let mut index = PreciseIndex::new();
+        let long_name = "b".repeat(240);
+        index.field_names.insert(7, long_name);
+        let total = index.memory_size();
+        assert!(
+            total >= std::mem::size_of::<PreciseIndex>() + 240,
+            "must include field_names string capacity ({total})"
+        );
+    }
+
+    #[test]
+    fn field_names_map_is_string_id_to_name() {
+        let mut index = PreciseIndex::new();
+        let _: &FxHashMap<u64, String> = &index.field_names;
+        index.field_names.insert(0xAA, "size".to_string());
+        assert_eq!(
+            index.field_names.get(&0xAA).map(String::as_str),
+            Some("size")
+        );
+    }
+
+    #[test]
     fn new_creates_empty_index() {
         let index = PreciseIndex::new();
         assert!(index.strings.is_empty());
@@ -365,6 +404,7 @@ mod tests {
         assert!(index.class_dumps.is_empty());
         assert!(index.thread_object_ids.is_empty());
         assert!(index.class_names_by_id.is_empty());
+        assert!(index.field_names.is_empty());
     }
 
     #[test]

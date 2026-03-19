@@ -1136,6 +1136,55 @@ mod builder_tests {
     }
 
     #[test]
+    fn field_names_preloaded_for_all_instance_and_static_field_name_ids() {
+        use std::collections::BTreeSet;
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_string(10, "instanceField")
+            .add_string(11, "staticField")
+            .add_string(12, "com/example/Foo")
+            .add_class(1, 0x100, 0, 12)
+            .add_class_dump_with_static_fields(
+                0x100,
+                0,
+                4,
+                &[(10, 10u8)],
+                &[(11, crate::StaticValue::Int(7))],
+            )
+            .add_instance(0x200, 0, 0x100, &7i32.to_be_bytes())
+            .build();
+
+        let start = advance_past_header(&bytes);
+        let result = run_fp(&bytes[start..], 8);
+
+        let mut expected_ids = BTreeSet::new();
+        for dump in result.index.class_dumps.values() {
+            for field in &dump.instance_fields {
+                expected_ids.insert(field.name_string_id);
+            }
+            for field in &dump.static_fields {
+                expected_ids.insert(field.name_string_id);
+            }
+        }
+
+        assert_eq!(expected_ids, BTreeSet::from([10, 11]));
+        for id in expected_ids {
+            assert!(
+                result.index.field_names.contains_key(&id),
+                "field_names must contain name_string_id={id}"
+            );
+        }
+        assert_eq!(
+            result.index.field_names.get(&10).map(String::as_str),
+            Some("instanceField")
+        );
+        assert_eq!(
+            result.index.field_names.get(&11).map(String::as_str),
+            Some("staticField")
+        );
+    }
+
+    #[test]
     fn heap_record_ranges_populated_for_heap_dump_segment() {
         let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
             .add_instance(0xDEAD, 0, 100, &[])
