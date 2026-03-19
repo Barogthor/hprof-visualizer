@@ -478,8 +478,7 @@ mod tests {
     }
 
     fn cell_at(buf: &ratatui::buffer::Buffer, x: u16, y: u16) -> &ratatui::buffer::Cell {
-        let idx = y as usize * RENDER_W as usize + x as usize;
-        &buf.content[idx]
+        buf.cell((x, y)).expect("cell coordinates out of buffer bounds")
     }
 
     #[test]
