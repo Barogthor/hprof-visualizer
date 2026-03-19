@@ -1184,6 +1184,11 @@ impl StackState {
         {
             return vec![(target, anchor.clone())];
         }
+        // If anchor is a collection (expanded or not), stop here —
+        // don't recurse into collection entries automatically.
+        if let Some(ExpandTarget::Collection(..)) = self.expand_target_at_path(anchor) {
+            return vec![];
+        }
         // Find collapsed descendants.
         let anchor_segs = anchor.segments();
         let anchor_len = anchor_segs.len();

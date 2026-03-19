@@ -1904,7 +1904,10 @@ impl<E: NavigationEngine> App<E> {
                                     }
                                 }
                                 ExpandTarget::Collection(cid, ec) => {
-                                    if seen_oids.contains(&cid) || pending_oids.contains(&cid) {
+                                    if seen_oids.contains(&cid)
+                                        || pending_oids.contains(&cid)
+                                        || ec > 100
+                                    {
                                         continue;
                                     }
                                     seen_oids.insert(cid);
