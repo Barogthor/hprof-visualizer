@@ -4310,31 +4310,83 @@ fn expand_target_at_collection_entry_child_field() {
 ///
 /// ```text
 /// - HeapDumpFixture.runScenario() [frame 10]
+///   + [0] FixtureOptions (oid=100)
+///   + [1] ProfileSpec (oid=101)
+///   + [2] Scenario01StackFrameTypes (oid=102)
+///   + [3] UnixPath (oid=103)
 ///   - [4] ScenarioHandle (oid=400)
 ///     + cleanup: Lambda (oid=410)
-///     + metrics: LinkedHashMap (oid=420, 7 entries)
-///     - roots: ArrayList (oid=430, 1 entry)     ← collection field
-///       - [0] Universe (oid=500)                 ← collection entry
-///         + indirectCycle3 (oid=501)              ← collapsed child
-///         + directCycle (oid=502)
-///         + plainRoot (oid=503)
+///     + metrics: LinkedHashMap (oid=420, 7 entries)    ← collection
+///     - roots: ArrayList (oid=430, 1 entry)            ← collection
+///       - [0] Universe (oid=500)                       ← entry
+///         + indirectCycle3: IndirectCycle3NodeA (oid=501)
+///         + indirectCycle2: IndirectCycle2NodeA (oid=502)
+///         + directCycle: DirectCycle (oid=503)
+///         + enumValue: SampleEnum (oid=504)
+///         + plainRoot: CustomWithoutStatic (oid=505)
+///         + staticRoot: CustomWithStatic (oid=506)
+///         + hugeWrapperLongs: EmptyList (oid=507)
+///         + customMap: HashMap (oid=508, 20480 entries) ← collection
+///         + wrapperStringSet: HashSet (oid=509)         ← collection-like
+///         + wrapperLongDeque: ArrayDeque (oid=510)
+///         + customLinkedList: LinkedList (oid=511, 20480)← collection
+///         + wrapperInts: ArrayList (oid=512, 20480)     ← collection
+///         + customArray: Object[] (oid=513, 4096)       ← collection
+///         + mixedObjectArray: Object[] (oid=514, 2048)  ← collection
+///         + primitiveArrays: PrimitiveArrays (oid=515)
+///         + primitives: PrimitiveBox (oid=516)
+///         + profileSpec: ProfileSpec (oid=517)
+///   + [5] ArrayList (oid=105, 1 entries)               ← collection var
+///   + [6] UnixPath (oid=106)
 /// ```
 ///
-/// Tests that `c` can:
-/// 1. Resolve the collection entry [0] as expandable
-/// 2. Resolve children of [0] (fields of Universe) as expandable
-/// 3. `collapsed_expandable_at` on [0] finds its collapsed children
+/// Tests:
+/// 1. Entry [0] in roots resolvable through collection field
+/// 2. Children of Universe resolvable (mix of objects & collections)
+/// 3. `collapsed_expandable_at` on entry [0] finds only non-collection
+///    children (collections are skipped by design)
+/// 4. `collapsed_expandable_at` on var [4] does NOT recurse into
+///    collections (metrics, roots) and does NOT open roots' entries
+/// 5. Collections (customMap etc.) are correctly identified as
+///    Collection targets when cursor is directly on them
 #[test]
 fn scenario_expand_through_collection_field_into_entry_children() {
     use std::collections::HashMap;
 
     let frames = vec![make_frame(10)];
-    // var[4] = ScenarioHandle (oid=400, not a collection)
     let vars = vec![
-        make_var(0, 0), // null placeholders for vars 0-3
-        make_var(1, 0),
-        make_var(2, 0),
-        make_var(3, 0),
+        VariableInfo {
+            index: 0,
+            value: VariableValue::ObjectRef {
+                id: 100,
+                class_name: "FixtureOptions".to_string(),
+                entry_count: None,
+            },
+        },
+        VariableInfo {
+            index: 1,
+            value: VariableValue::ObjectRef {
+                id: 101,
+                class_name: "ProfileSpec".to_string(),
+                entry_count: None,
+            },
+        },
+        VariableInfo {
+            index: 2,
+            value: VariableValue::ObjectRef {
+                id: 102,
+                class_name: "Scenario01StackFrameTypes".to_string(),
+                entry_count: None,
+            },
+        },
+        VariableInfo {
+            index: 3,
+            value: VariableValue::ObjectRef {
+                id: 103,
+                class_name: "UnixPath".to_string(),
+                entry_count: None,
+            },
+        },
         VariableInfo {
             index: 4,
             value: VariableValue::ObjectRef {
@@ -4343,12 +4395,28 @@ fn scenario_expand_through_collection_field_into_entry_children() {
                 entry_count: None,
             },
         },
+        VariableInfo {
+            index: 5,
+            value: VariableValue::ObjectRef {
+                id: 105,
+                class_name: "ArrayList".to_string(),
+                entry_count: Some(1),
+            },
+        },
+        VariableInfo {
+            index: 6,
+            value: VariableValue::ObjectRef {
+                id: 106,
+                class_name: "UnixPath".to_string(),
+                entry_count: None,
+            },
+        },
     ];
     let mut state = StackState::new(frames);
     state.vars.insert(10, vars);
     state.expanded.insert(10);
 
-    // ScenarioHandle fields: cleanup, metrics, roots
+    // --- ScenarioHandle (oid=400) expanded ---
     state.expansion.object_fields.insert(
         400,
         vec![
@@ -4381,24 +4449,20 @@ fn scenario_expand_through_collection_field_into_entry_children() {
             },
         ],
     );
-
-    // Mark var[4] as expanded
     let var4_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4)).build();
     state
         .expansion
         .expansion_phases
         .insert(var4_path.clone(), ExpansionPhase::Expanded);
 
-    // Mark roots field as expanded (collection open)
+    // --- roots (oid=430) collection open ---
     let roots_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
-        .field(FieldIdx(2)) // roots is field index 2
+        .field(FieldIdx(2))
         .build();
     state
         .expansion
         .expansion_phases
         .insert(roots_path.clone(), ExpansionPhase::Expanded);
-
-    // Set up collection chunks for roots (oid=430)
     let roots_page = CollectionPage {
         offset: 0,
         total_count: 1,
@@ -4423,28 +4487,11 @@ fn scenario_expand_through_collection_field_into_entry_children() {
         },
     );
 
-    // Entry [0] path: Frame(10)/Var(4)/Field(2)/CollectionEntry(430,0)
+    // --- Universe (oid=500) expanded in entry [0] ---
     let entry0_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
         .field(FieldIdx(2))
         .collection_entry(CollectionId(430), EntryIdx(0))
         .build();
-
-    // === TEST 1: entry [0] itself is resolvable ===
-    let target = state.expand_target_at_path(&entry0_path);
-    assert!(
-        target.is_some(),
-        "must resolve entry [0] (Universe oid=500)"
-    );
-    match target.unwrap() {
-        ExpandTarget::Object(oid) => assert_eq!(oid, 500),
-        other => panic!("expected Object(500), got {:?}", other),
-    }
-
-    // === TEST 2: collapsed_expandable_at finds entry [0] ===
-    let targets = state.collapsed_expandable_at(&entry0_path);
-    assert_eq!(targets.len(), 1, "entry [0] is collapsed, should be found");
-
-    // === TEST 3: after expanding entry [0], children are resolvable ===
     state
         .expansion
         .expansion_phases
@@ -4462,10 +4509,28 @@ fn scenario_expand_through_collection_field_into_entry_children() {
                 },
             },
             FieldInfo {
-                name: "directCycle".to_string(),
+                name: "indirectCycle2".to_string(),
                 value: FieldValue::ObjectRef {
                     id: 502,
+                    class_name: "IndirectCycle2NodeA".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "directCycle".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 503,
                     class_name: "DirectCycle".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "enumValue".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 504,
+                    class_name: "SampleEnum".to_string(),
                     entry_count: None,
                     inline_value: None,
                 },
@@ -4473,8 +4538,116 @@ fn scenario_expand_through_collection_field_into_entry_children() {
             FieldInfo {
                 name: "plainRoot".to_string(),
                 value: FieldValue::ObjectRef {
-                    id: 503,
+                    id: 505,
                     class_name: "CustomWithoutStatic".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "staticRoot".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 506,
+                    class_name: "CustomWithStatic".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "hugeWrapperLongs".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 507,
+                    class_name: "EmptyList".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "customMap".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 508,
+                    class_name: "HashMap".to_string(),
+                    entry_count: Some(20480),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "wrapperStringSet".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 509,
+                    class_name: "HashSet".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "wrapperLongDeque".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 510,
+                    class_name: "ArrayDeque".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "customLinkedList".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 511,
+                    class_name: "LinkedList".to_string(),
+                    entry_count: Some(20480),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "wrapperInts".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 512,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(20480),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "customArray".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 513,
+                    class_name: "Object[]".to_string(),
+                    entry_count: Some(4096),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "mixedObjectArray".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 514,
+                    class_name: "Object[]".to_string(),
+                    entry_count: Some(2048),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "primitiveArrays".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 515,
+                    class_name: "PrimitiveArrays".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "primitives".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 516,
+                    class_name: "PrimitiveBox".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "profileSpec".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 517,
+                    class_name: "ProfileSpec".to_string(),
                     entry_count: None,
                     inline_value: None,
                 },
@@ -4482,30 +4655,82 @@ fn scenario_expand_through_collection_field_into_entry_children() {
         ],
     );
 
-    // Child field path:
-    // Frame(10)/Var(4)/Field(2)/CollectionEntry(430,0)/Field(0)
-    let child_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+    // =========================================================
+    // TEST 1: entry [0] resolvable through collection field
+    // =========================================================
+    let target = state.expand_target_at_path(&entry0_path);
+    match target {
+        Some(ExpandTarget::Object(oid)) => assert_eq!(oid, 500),
+        other => panic!("entry [0]: expected Object(500), got {:?}", other),
+    }
+
+    // =========================================================
+    // TEST 2: child fields of Universe resolvable
+    // =========================================================
+    // indirectCycle3 = Field(0) → Object(501)
+    let f0 = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
         .field(FieldIdx(2))
         .collection_entry(CollectionId(430), EntryIdx(0))
         .field(FieldIdx(0))
         .build();
-
-    let child_target = state.expand_target_at_path(&child_path);
-    assert!(
-        child_target.is_some(),
-        "must resolve child field indirectCycle3 (oid=501)"
-    );
-    match child_target.unwrap() {
-        ExpandTarget::Object(oid) => assert_eq!(oid, 501),
-        other => panic!("expected Object(501), got {:?}", other),
+    match state.expand_target_at_path(&f0) {
+        Some(ExpandTarget::Object(oid)) => assert_eq!(oid, 501),
+        other => panic!("Field(0): expected Object(501), got {:?}", other),
+    }
+    // customMap = Field(7) → Collection(508, 20480)
+    let f7 = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+        .field(FieldIdx(2))
+        .collection_entry(CollectionId(430), EntryIdx(0))
+        .field(FieldIdx(7))
+        .build();
+    match state.expand_target_at_path(&f7) {
+        Some(ExpandTarget::Collection(cid, ec)) => {
+            assert_eq!(cid, 508);
+            assert_eq!(ec, 20480);
+        }
+        other => panic!(
+            "Field(7) customMap: expected Collection(508, 20480), \
+             got {:?}",
+            other
+        ),
+    }
+    // profileSpec = Field(16) → Object(517)
+    let f16 = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+        .field(FieldIdx(2))
+        .collection_entry(CollectionId(430), EntryIdx(0))
+        .field(FieldIdx(16))
+        .build();
+    match state.expand_target_at_path(&f16) {
+        Some(ExpandTarget::Object(oid)) => assert_eq!(oid, 517),
+        other => panic!("Field(16): expected Object(517), got {:?}", other),
     }
 
-    // === TEST 4: collapsed_expandable_at on entry [0] finds all 3 children ===
+    // =========================================================
+    // TEST 3: collapsed_expandable_at on entry [0] finds only
+    //         non-collection children (collections are skipped)
+    // =========================================================
     let child_targets = state.collapsed_expandable_at(&entry0_path);
+    // 17 fields total, 6 are collections (customMap, customLinkedList,
+    // wrapperInts, customArray, mixedObjectArray + wrapperStringSet has
+    // entry_count: None so it's NOT a collection target).
+    // Collections: fields 7,10,11,12,13 = 5 collections.
+    // Non-collection ObjectRefs: 17 - 5 = 12
+    let collection_count = child_targets
+        .iter()
+        .filter(|(t, _)| matches!(t, ExpandTarget::Collection(..)))
+        .count();
     assert_eq!(
-        child_targets.len(),
-        3,
-        "3 collapsed ObjectRef children of Universe;\n\
+        collection_count, 0,
+        "collections must be skipped in descendant search"
+    );
+    let object_count = child_targets
+        .iter()
+        .filter(|(t, _)| matches!(t, ExpandTarget::Object(..)))
+        .count();
+    assert_eq!(
+        object_count,
+        12,
+        "12 non-collection ObjectRef children expected;\n\
          got: {:?}",
         child_targets
             .iter()
@@ -4513,7 +4738,36 @@ fn scenario_expand_through_collection_field_into_entry_children() {
             .collect::<Vec<_>>()
     );
 
-    // === TEST 5: flat_items contains all expected paths ===
+    // =========================================================
+    // TEST 4: collapsed_expandable_at on var[4] does NOT open
+    //         collection children (metrics, roots) or their entries
+    // =========================================================
+    let var4_targets = state.collapsed_expandable_at(&var4_path);
+    // ScenarioHandle has 3 fields: cleanup(obj), metrics(coll),
+    // roots(coll). Only cleanup is a non-collection ObjectRef.
+    // metrics and roots are skipped (Collection targets).
+    // The search does NOT recurse into roots' entries.
+    let var4_oids: Vec<u64> = var4_targets
+        .iter()
+        .filter_map(|(t, _)| match t {
+            ExpandTarget::Object(oid) => Some(*oid),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        var4_oids,
+        vec![410],
+        "only cleanup (oid=410) should be found under var[4];\n\
+         got: {:?}",
+        var4_targets
+            .iter()
+            .map(|(t, p)| format!("{:?} @ {:?}", t, p))
+            .collect::<Vec<_>>()
+    );
+
+    // =========================================================
+    // TEST 5: flat_items contains all expected paths
+    // =========================================================
     let flat = state.flat_items();
     assert!(
         flat.iter()
@@ -4522,7 +4776,17 @@ fn scenario_expand_through_collection_field_into_entry_children() {
     );
     assert!(
         flat.iter()
-            .any(|c| matches!(c, RenderCursor::At(p) if *p == child_path)),
-        "flat_items must contain child field path"
+            .any(|c| matches!(c, RenderCursor::At(p) if *p == f0)),
+        "flat_items must contain indirectCycle3 field"
+    );
+    assert!(
+        flat.iter()
+            .any(|c| matches!(c, RenderCursor::At(p) if *p == f7)),
+        "flat_items must contain customMap field"
+    );
+    assert!(
+        flat.iter()
+            .any(|c| matches!(c, RenderCursor::At(p) if *p == f16)),
+        "flat_items must contain profileSpec field"
     );
 }

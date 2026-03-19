@@ -1118,7 +1118,9 @@ impl StackState {
             });
         }
         let mut oid = id;
-        for seg in &segs[2..] {
+        let last_idx = segs.len() - 1;
+        for (i, seg) in segs[2..].iter().enumerate() {
+            let is_last = (i + 2) == last_idx;
             match seg {
                 PathSegment::Field(fidx) => {
                     let fields = self.expansion.object_fields.get(&oid)?;
@@ -1129,7 +1131,7 @@ impl StackState {
                     else {
                         return None;
                     };
-                    if seg == segs.last().unwrap() {
+                    if is_last {
                         return Some(match entry_count {
                             Some(ec) => ExpandTarget::Collection(id, ec),
                             None => ExpandTarget::Object(id),
@@ -1145,7 +1147,7 @@ impl StackState {
                             id,
                             entry_count: Some(ec),
                             ..
-                        } if seg == segs.last().unwrap() => {
+                        } if is_last => {
                             return Some(ExpandTarget::Collection(*id, *ec));
                         }
                         FieldValue::ObjectRef {
@@ -1155,17 +1157,13 @@ impl StackState {
                         } => oid = *id,
                         _ => return None,
                     }
+                    if is_last {
+                        return Some(ExpandTarget::Object(oid));
+                    }
                 }
                 _ => return None,
             }
-            // If this is the last segment, return current oid.
-            if seg == segs.last().unwrap() {
-                return Some(ExpandTarget::Object(oid));
-            }
         }
-        // Fallback: walked all segments, last oid is the target.
-        // This branch shouldn't normally be reached since we check
-        // last segment inside the loop above.
         Some(ExpandTarget::Object(oid))
     }
 
@@ -1205,10 +1203,24 @@ impl StackState {
             if segs[..anchor_len] != *anchor_segs {
                 continue;
             }
+            // Stop at collection boundaries: if the descendant
+            // part of the path crosses a CollectionEntry, it's
+            // behind a collection frontier — skip it.
+            let crosses_collection = segs[anchor_len..]
+                .iter()
+                .any(|s| matches!(s, PathSegment::CollectionEntry(..)));
+            if crosses_collection {
+                continue;
+            }
             if self.expansion_state_for_path(path) != ExpansionPhase::Collapsed {
                 continue;
             }
             if let Some(target) = self.expand_target_at_path(path) {
+                // Skip collections in descendant search — they
+                // must be opened explicitly (cursor directly on them).
+                if matches!(target, ExpandTarget::Collection(..)) {
+                    continue;
+                }
                 result.push((target, path.clone()));
             }
         }
