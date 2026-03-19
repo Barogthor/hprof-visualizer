@@ -213,7 +213,7 @@ development_status:
   13-4-incomplete-file-warning-color: done
   13-5-azerty-qwerty-keymapping: done
   13-6-class-metadata-preload: ready-for-dev
-  13-7-logo-splash-screen: ready-for-dev
+  13-7-logo-splash-screen: review
 
   # ACTION (13.0 testing 2026-03-18): Stack view navigation
   #   is sluggish when the tree is deep due to large

@@ -17,6 +17,7 @@ use indicatif::MultiProgress;
 
 mod config;
 mod progress;
+mod splash;
 
 /// Visualize Java hprof heap dumps in the terminal.
 #[derive(Parser, Debug)]
@@ -78,6 +79,8 @@ fn run() -> Result<(), CliError> {
         tracing::debug!("=== hprof-debug logging active ===");
         chrome_layer.1
     };
+
+    splash::print_splash();
 
     let binary_path = std::env::current_exe().unwrap_or_default();
     let app_config = config::load(&binary_path);
