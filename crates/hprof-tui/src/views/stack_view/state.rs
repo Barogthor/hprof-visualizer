@@ -811,6 +811,11 @@ impl StackState {
     /// Returns the logical parent cursor for the current position, or `None`
     /// if at the top level (Frame-only or NoFrames).
     pub fn parent_cursor(&self) -> Option<RenderCursor> {
+        // SectionHeader path == the parent object's path.
+        // "Navigate to parent" means the object row itself, not its grandparent.
+        if let RenderCursor::SectionHeader(p) = self.nav.cursor() {
+            return Some(RenderCursor::At(p.clone()));
+        }
         let path = self.cursor_path()?;
         let parent = path.parent()?;
         Some(RenderCursor::At(parent))
@@ -1015,11 +1020,15 @@ impl StackState {
                     }
                 }
             }
-            // Clear path-based expansion phases for this frame.
+            // Clear path-based expansion phases and static section state
+            // for this frame.
             let fid = FrameId(frame_id);
             self.expansion
                 .expansion_phases
                 .retain(|p, _| p.segments().first() != Some(&PathSegment::Frame(fid)));
+            self.expansion
+                .static_section_expanded
+                .retain(|p| p.segments().first() != Some(&PathSegment::Frame(fid)));
             let flat = self.flat_items();
             // Reset cursor to frame row when collapsing from
             // inside.

@@ -4006,3 +4006,105 @@ fn is_static_section_expanded_returns_false_on_unknown_path() {
         "unknown path should be collapsed"
     );
 }
+
+// === M-1 fix: frame collapse clears static section state ===
+
+#[test]
+fn frame_collapse_clears_static_section_state() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    let var_path = path_field(10, 0, &[]);
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.expansion.toggle_static_section(&var_path);
+    assert!(
+        state.expansion.is_static_section_expanded(&var_path),
+        "section must be expanded before frame collapse"
+    );
+    // Collapse the frame — must clear static section state for all its objects
+    state.toggle_expand(10, vec![]);
+    // Re-expand frame and object
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    assert!(
+        !state.expansion.is_static_section_expanded(&var_path),
+        "static section must be collapsed after frame collapse and re-expand"
+    );
+}
+
+// === M-1 fix: collapse_all_for_object clears static section state ===
+
+#[test]
+fn collapse_all_for_object_clears_static_section_state() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    let var_path = path_field(10, 0, &[]);
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.expansion.toggle_static_section(&var_path);
+    assert!(state.expansion.is_static_section_expanded(&var_path));
+    // Simulate LRU eviction
+    state.collapse_object_by_id(0xA00);
+    // Reload data (simulates re-expansion after eviction)
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    assert!(
+        !state.expansion.is_static_section_expanded(&var_path),
+        "static section must be collapsed after LRU eviction and data reload"
+    );
+}

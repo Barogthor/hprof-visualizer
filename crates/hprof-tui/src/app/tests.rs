@@ -4688,13 +4688,50 @@ mod static_section_toggle_tests {
         nav_to_section_header(&mut app);
         // Section is collapsed by default
         app.handle_input(InputEvent::Left);
-        // Should navigate to parent (instance field or var)
+        // Should navigate to the object row (depth-2 path), not the frame (depth-1)
+        let cursor = app.stack_state.as_ref().unwrap().cursor().clone();
         assert!(
-            !matches!(
+            matches!(&cursor, RenderCursor::At(p) if p.segments().len() == 2),
+            "cursor must be on object row (depth 2): {:?}",
+            cursor
+        );
+    }
+
+    #[test]
+    fn right_on_collapsed_section_expands() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        app.handle_input(InputEvent::Right);
+        let parent_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        assert!(
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .is_static_section_expanded(&parent_path),
+            "section must be expanded after Right on collapsed header"
+        );
+    }
+
+    #[test]
+    fn right_on_expanded_section_is_noop() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        app.handle_input(InputEvent::Enter); // expand
+        app.handle_input(InputEvent::Right); // no-op
+        let parent_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        assert!(
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .is_static_section_expanded(&parent_path),
+            "section must still be expanded after Right on already-expanded header"
+        );
+        assert!(
+            matches!(
                 app.stack_state.as_ref().unwrap().cursor(),
                 RenderCursor::SectionHeader(_)
             ),
-            "cursor must leave SectionHeader: {:?}",
+            "cursor must stay on SectionHeader after no-op Right: {:?}",
             app.stack_state.as_ref().unwrap().cursor()
         );
     }
