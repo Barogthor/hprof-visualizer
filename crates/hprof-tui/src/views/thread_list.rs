@@ -199,10 +199,18 @@ impl StatefulWidget for SearchableList {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Layout: search row (1), list (fill), legend row (1)
-        let [search_area, list_area, legend_area] = Layout::vertical([
+        // Layout: search (1), sep (1), list (fill), sep (1), legend (1)
+        let [
+            search_area,
+            sep_above_list,
+            list_area,
+            sep_above_legend,
+            legend_area,
+        ] = Layout::vertical([
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
+            Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(inner);
@@ -223,6 +231,18 @@ impl StatefulWidget for SearchableList {
             Line::from(Span::styled("Press / to search", THEME.null_value))
         };
         search_line.render(search_area, buf);
+
+        Line::from(Span::styled(
+            "─".repeat(sep_above_list.width as usize),
+            THEME.border_unfocused,
+        ))
+        .render(sep_above_list, buf);
+
+        Line::from(Span::styled(
+            "─".repeat(sep_above_legend.width as usize),
+            THEME.border_unfocused,
+        ))
+        .render(sep_above_legend, buf);
 
         // Thread list or empty message
         if state.filtered_serials.is_empty() {
@@ -428,5 +448,113 @@ mod tests {
         state.apply_filter("main");
         state.select_serial(3);
         assert_eq!(state.selected_serial(), Some(1));
+    }
+
+    // --- Separator rendering tests (AC #1–#5) ---
+
+    const RENDER_W: u16 = 80;
+    const RENDER_H: u16 = 20;
+
+    fn render_thread_list(
+        threads: Vec<hprof_engine::ThreadInfo>,
+        filter: &str,
+        focused: bool,
+    ) -> (ratatui::buffer::Buffer, ratatui::layout::Rect) {
+        use ratatui::{Terminal, backend::TestBackend};
+        let backend = TestBackend::new(RENDER_W, RENDER_H);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = ThreadListState::new(threads);
+        if !filter.is_empty() {
+            state.apply_filter(filter);
+        }
+        let area = ratatui::layout::Rect::new(0, 0, RENDER_W, RENDER_H);
+        terminal
+            .draw(|f| {
+                f.render_stateful_widget(SearchableList { focused }, area, &mut state);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (buf, area)
+    }
+
+    fn cell_at(buf: &ratatui::buffer::Buffer, x: u16, y: u16) -> &ratatui::buffer::Cell {
+        let idx = y as usize * RENDER_W as usize + x as usize;
+        &buf.content[idx]
+    }
+
+    #[test]
+    fn separators_char_and_style_at_expected_rows() {
+        // AC #1, #2: both separator rows contain ─ with border_unfocused fg color
+        use ratatui::style::Color;
+        let (buf, area) = render_thread_list(make_threads(&["main", "worker"]), "", false);
+        let sep_y1 = area.y + 2;
+        let sep_y2 = area.y + area.height - 3;
+        let c1 = cell_at(&buf, area.x + 1, sep_y1);
+        assert_eq!(c1.symbol(), "─", "sep above list: wrong char");
+        assert_eq!(c1.fg, Color::DarkGray, "sep above list: wrong fg");
+        let c2 = cell_at(&buf, area.x + 1, sep_y2);
+        assert_eq!(c2.symbol(), "─", "sep above legend: wrong char");
+        assert_eq!(c2.fg, Color::DarkGray, "sep above legend: wrong fg");
+    }
+
+    #[test]
+    fn separators_fill_full_inner_width() {
+        // AC #3: separators stretch to fill available inner width
+        let (buf, area) = render_thread_list(make_threads(&["main"]), "", false);
+        let sep_y1 = area.y + 2;
+        let sep_y2 = area.y + area.height - 3;
+        for x in (area.x + 1)..(area.x + area.width - 1) {
+            assert_eq!(
+                cell_at(&buf, x, sep_y1).symbol(),
+                "─",
+                "sep above list missing at x={x}"
+            );
+            assert_eq!(
+                cell_at(&buf, x, sep_y2).symbol(),
+                "─",
+                "sep above legend missing at x={x}"
+            );
+        }
+    }
+
+    #[test]
+    fn separators_visible_when_list_empty_due_to_filter() {
+        // AC #5: both separators still render when filter matches nothing
+        let (buf, area) = render_thread_list(make_threads(&["main"]), "xyz", false);
+        let sep_y1 = area.y + 2;
+        let sep_y2 = area.y + area.height - 3;
+        assert_eq!(cell_at(&buf, area.x + 1, sep_y1).symbol(), "─");
+        assert_eq!(cell_at(&buf, area.x + 1, sep_y2).symbol(), "─");
+    }
+
+    #[test]
+    fn separators_use_unfocused_style_regardless_of_focus() {
+        // AC #4: separators always use border_unfocused fg and no selection modifier
+        use ratatui::style::{Color, Modifier};
+        let (buf, area) = render_thread_list(make_threads(&["main"]), "", true);
+        let sep_y1 = area.y + 2;
+        let sep_y2 = area.y + area.height - 3;
+        let c1 = cell_at(&buf, area.x + 1, sep_y1);
+        assert_eq!(c1.symbol(), "─", "sep above list: wrong char when focused");
+        assert_eq!(
+            c1.fg,
+            Color::DarkGray,
+            "sep above list must use border_unfocused when focused"
+        );
+        assert!(
+            !c1.modifier.contains(Modifier::REVERSED),
+            "sep above list must not have selection highlight when focused"
+        );
+        let c2 = cell_at(&buf, area.x + 1, sep_y2);
+        assert_eq!(
+            c2.symbol(),
+            "─",
+            "sep above legend: wrong char when focused"
+        );
+        assert_eq!(
+            c2.fg,
+            Color::DarkGray,
+            "sep above legend must use border_unfocused when focused"
+        );
     }
 }

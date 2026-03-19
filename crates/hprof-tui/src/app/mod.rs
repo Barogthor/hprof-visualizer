@@ -2479,7 +2479,7 @@ impl<E: NavigationEngine> App<E> {
 
         // Store visible heights for PageUp/PageDown.
         self.thread_list
-            .set_visible_height(list_area.height.saturating_sub(2) as usize);
+            .set_visible_height(list_area.height.saturating_sub(6) as usize);
         if let Some(ref mut ss) = self.stack_state {
             ss.set_visible_height(stack_area.height.saturating_sub(2) as usize);
         }

@@ -209,7 +209,7 @@ development_status:
   13-0-progress-bar-intra-segment: done
   13-1-collapsible-static-fields-section: done
   13-2-enhanced-favorites-navigation: done
-  13-3-ui-separators: ready-for-dev
+  13-3-ui-separators: review
   13-4-incomplete-file-warning-color: ready-for-dev
   13-5-azerty-qwerty-keymapping: ready-for-dev
   13-6-class-metadata-preload: ready-for-dev

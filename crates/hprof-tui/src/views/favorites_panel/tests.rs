@@ -1717,4 +1717,3 @@ mod jump_pin_tests {
         assert_eq!(s.selected_index(), 0);
     }
 }
-
