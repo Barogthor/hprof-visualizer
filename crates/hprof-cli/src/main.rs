@@ -124,11 +124,7 @@ fn run() -> Result<(), CliError> {
         eprintln!("[warn] {w}");
     }
 
-    let keymap_str = cli
-        .keymap
-        .as_deref()
-        .or(app_config.keymap.as_deref())
-        .unwrap_or("azerty");
+    let keymap_str = resolve_keymap(cli.keymap.as_deref(), app_config.keymap.as_deref());
     let keymap_preset = keymap_str
         .parse::<KeymapPreset>()
         .map_err(CliError::InvalidKeymap)?;
@@ -137,6 +133,13 @@ fn run() -> Result<(), CliError> {
     hprof_tui::run_tui(engine, path.display().to_string(), keymap).map_err(CliError::TuiFailed)?;
 
     Ok(())
+}
+
+/// Resolves the effective keymap preset name using CLI > config > default precedence.
+///
+/// Returns the first non-`None` value among `cli`, `config`, or `"azerty"`.
+fn resolve_keymap<'a>(cli: Option<&'a str>, config: Option<&'a str>) -> &'a str {
+    cli.or(config).unwrap_or("azerty")
 }
 
 /// Parses a human-readable memory size string into bytes.
@@ -345,26 +348,17 @@ mod tests {
 
     #[test]
     fn cli_keymap_overrides_config_keymap() {
-        let cli_val = Some("qwerty");
-        let config_val = Some("azerty");
-        let effective = cli_val.or(config_val);
-        assert_eq!(effective, Some("qwerty"));
+        assert_eq!(super::resolve_keymap(Some("qwerty"), Some("azerty")), "qwerty");
     }
 
     #[test]
     fn config_keymap_used_when_cli_absent() {
-        let cli_val: Option<&str> = None;
-        let config_val = Some("azerty");
-        let effective = cli_val.or(config_val);
-        assert_eq!(effective, Some("azerty"));
+        assert_eq!(super::resolve_keymap(None, Some("azerty")), "azerty");
     }
 
     #[test]
     fn both_absent_defaults_to_azerty() {
-        let cli_val: Option<&str> = None;
-        let config_val: Option<&str> = None;
-        let effective = cli_val.or(config_val).unwrap_or("azerty");
-        assert_eq!(effective, "azerty");
+        assert_eq!(super::resolve_keymap(None, None), "azerty");
     }
 
     #[test]

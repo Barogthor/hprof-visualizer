@@ -14,7 +14,11 @@ use ratatui::{
 
 use crate::{keymap::Keymap, theme::THEME};
 
-/// Number of keymap entries documented in the help panel.
+/// Expected number of keymap entries in the help panel.
+///
+/// Used only in tests to catch unintentional additions/removals.
+/// `required_height` derives its value dynamically from `help_entries`.
+#[cfg(test)]
 const ENTRY_COUNT: u16 = 23;
 
 // Context bitmask constants — private to this module.
@@ -124,11 +128,12 @@ pub(crate) fn context_bit(ctx: &HelpContext) -> u8 {
 
 /// Returns the total height (in terminal rows) required to render [`HelpBar`].
 ///
-/// Formula: `2 (borders) + 1 (padding) + div_ceil(ENTRY_COUNT, 2) + 1 (separator)`
-///
-/// With `ENTRY_COUNT = 23`: `2 + 1 + 12 + 1 = 16`.
+/// Formula: `2 (borders) + 1 (padding) + div_ceil(n, 2) + 1 (separator)`
+/// where `n` is the number of entries returned by [`help_entries`].
+/// Derived dynamically so it stays correct when entries are added or removed.
 pub fn required_height() -> u16 {
-    2 + 1 + ENTRY_COUNT.div_ceil(2) + 1
+    let n = help_entries(&Keymap::default()).len() as u16;
+    2 + 1 + n.div_ceil(2) + 1
 }
 
 impl Widget for HelpBar {

@@ -59,7 +59,6 @@ pub struct Keymap {
     pub batch_expand: KeyCode,
     pub toggle_object_ids: KeyCode,
     pub search_activate: KeyCode,
-    pub toggle_help: KeyCode,
 }
 
 impl Default for Keymap {
@@ -82,7 +81,6 @@ impl Keymap {
             batch_expand: KeyCode::Char('c'),
             toggle_object_ids: KeyCode::Char('i'),
             search_activate: KeyCode::Char('s'),
-            toggle_help: KeyCode::Char('?'),
         }
     }
 
@@ -180,7 +178,6 @@ mod tests {
             km.batch_expand,
             km.toggle_object_ids,
             km.search_activate,
-            km.toggle_help,
         ]
     }
 }
