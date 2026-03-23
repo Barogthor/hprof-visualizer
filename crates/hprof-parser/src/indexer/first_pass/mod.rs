@@ -199,6 +199,13 @@ impl<'a> FirstPassContext<'a> {
     }
 }
 
+/// Resolves all unique field `name_string_id` values from every
+/// `ClassDumpInfo` (instance and static fields) into
+/// `ctx.result.index.field_names`.
+///
+/// Called once after heap extraction completes, when all
+/// `class_dumps` entries are fully populated. Missing string
+/// IDs are collected as warnings rather than hard errors.
 fn preload_field_names(ctx: &mut FirstPassContext) {
     let mut field_name_ids = FxHashSet::default();
     for class_dump in ctx.result.index.class_dumps.values() {

@@ -351,7 +351,10 @@ mod tests {
 
     #[test]
     fn cli_keymap_overrides_config_keymap() {
-        assert_eq!(super::resolve_keymap(Some("qwerty"), Some("azerty")), "qwerty");
+        assert_eq!(
+            super::resolve_keymap(Some("qwerty"), Some("azerty")),
+            "qwerty"
+        );
     }
 
     #[test]
