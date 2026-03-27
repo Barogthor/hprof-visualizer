@@ -2565,6 +2565,8 @@ impl<E: NavigationEngine> App<E> {
         } else {
             0
         };
+        let mem_skeleton = self.engine.skeleton_bytes();
+        let mem_cache = self.engine.memory_used().saturating_sub(mem_skeleton);
         frame.render_widget(
             StatusBar {
                 filename: &self.filename,
@@ -2577,6 +2579,9 @@ impl<E: NavigationEngine> App<E> {
                 spinner_state: self.spinner_state,
                 spinner_tick: self.spinner_tick,
                 walker_info: self.current_walker_info(),
+                mem_skeleton,
+                mem_cache,
+                mem_max: self.engine.memory_budget(),
             },
             status_area,
         );

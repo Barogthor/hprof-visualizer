@@ -40,6 +40,25 @@ pub struct StatusBar<'a> {
     /// collection: `(progress, total_count)`.
     /// `None` when no walker is active.
     pub walker_info: Option<(usize, u64)>,
+    /// Non-evictable skeleton memory (indexes loaded at startup), in bytes.
+    pub mem_skeleton: usize,
+    /// LRU object-cache memory currently in use, in bytes.
+    pub mem_cache: usize,
+    /// Total memory budget, in bytes.
+    pub mem_max: u64,
+}
+
+/// Formats a byte count as a human-readable string (B / KB / MB / GB).
+fn fmt_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1}GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{}MB", bytes / 1_048_576)
+    } else if bytes >= 1_024 {
+        format!("{}KB", bytes / 1_024)
+    } else {
+        format!("{}B", bytes)
+    }
 }
 
 pub(crate) fn state_label(state: ThreadState) -> &'static str {
@@ -117,10 +136,23 @@ impl Widget for StatusBar<'_> {
             }
         };
 
+        let mem_part = format!(
+            "  |  sk:{}  lru:{}/{}",
+            fmt_bytes(self.mem_skeleton as u64),
+            fmt_bytes(self.mem_cache as u64),
+            fmt_bytes(self.mem_max),
+        );
+
         let main = Span::styled(
             format!(
-                " {}{}  |  {}  |  {}{}{}  |  [?]help",
-                incomplete_part, self.filename, thread_part, selected_part, pinned_part, warn_part,
+                " {}{}  |  {}  |  {}{}{}{}  |  [?]help",
+                incomplete_part,
+                self.filename,
+                thread_part,
+                selected_part,
+                pinned_part,
+                warn_part,
+                mem_part,
             ),
             THEME.status_bar_bg,
         );
@@ -207,6 +239,9 @@ mod tests {
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
                 walker_info: None,
+                mem_skeleton: 0,
+                mem_cache: 0,
+                mem_max: 0,
             },
             120,
         );
@@ -230,6 +265,9 @@ mod tests {
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
                 walker_info: None,
+                mem_skeleton: 0,
+                mem_cache: 0,
+                mem_max: 0,
             },
             120,
         );
@@ -253,6 +291,9 @@ mod tests {
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
                 walker_info: None,
+                mem_skeleton: 0,
+                mem_cache: 0,
+                mem_max: 0,
             },
             200,
         );
@@ -276,6 +317,9 @@ mod tests {
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
                 walker_info: None,
+                mem_skeleton: 0,
+                mem_cache: 0,
+                mem_max: 0,
             },
             200,
         );
@@ -299,6 +343,9 @@ mod tests {
                 spinner_state: SpinnerState::NavigatingToPin,
                 spinner_tick: 0,
                 walker_info: None,
+                mem_skeleton: 0,
+                mem_cache: 0,
+                mem_max: 0,
             },
             200,
         );
@@ -322,6 +369,9 @@ mod tests {
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
                 walker_info: None,
+                mem_skeleton: 0,
+                mem_cache: 0,
+                mem_max: 0,
             },
             200,
         );
@@ -346,6 +396,9 @@ mod tests {
                 spinner_state: SpinnerState::Idle,
                 spinner_tick: 0,
                 walker_info: None,
+                mem_skeleton: 0,
+                mem_cache: 0,
+                mem_max: 0,
             },
             300,
         );
@@ -362,5 +415,47 @@ mod tests {
             content.contains('…'),
             "must contain ellipsis; got: {content:?}"
         );
+    }
+
+    #[test]
+    fn memory_stats_rendered_in_status_bar() {
+        let content = render_status_bar(
+            StatusBar {
+                filename: "test.hprof",
+                thread_count: 1,
+                selected: None,
+                warning_count: 0,
+                file_indexed_pct: None,
+                last_warning: None,
+                pinned_hidden_count: 0,
+                spinner_state: SpinnerState::Idle,
+                spinner_tick: 0,
+                walker_info: None,
+                mem_skeleton: 128 * 1_048_576,
+                mem_cache: 42 * 1_048_576,
+                mem_max: 8 * 1_073_741_824,
+            },
+            300,
+        );
+        assert!(
+            content.contains("sk:128MB"),
+            "skeleton memory must appear; got: {content:?}"
+        );
+        assert!(
+            content.contains("lru:42MB"),
+            "lru cache memory must appear; got: {content:?}"
+        );
+        assert!(
+            content.contains("8.0GB"),
+            "max memory must appear; got: {content:?}"
+        );
+    }
+
+    #[test]
+    fn fmt_bytes_formats_correctly() {
+        assert_eq!(fmt_bytes(512), "512B");
+        assert_eq!(fmt_bytes(2048), "2KB");
+        assert_eq!(fmt_bytes(5 * 1_048_576), "5MB");
+        assert_eq!(fmt_bytes(2 * 1_073_741_824), "2.0GB");
     }
 }

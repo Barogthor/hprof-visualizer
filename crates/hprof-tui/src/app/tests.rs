@@ -4609,6 +4609,9 @@ mod spinner_state_tests {
             spinner_state: SpinnerState::Resolving,
             spinner_tick: 0,
             walker_info: None,
+            mem_skeleton: 0,
+            mem_cache: 0,
+            mem_max: 0,
         };
         let backend = TestBackend::new(200, 1);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -4646,6 +4649,9 @@ mod spinner_state_tests {
             spinner_state: SpinnerState::Idle,
             spinner_tick: 0,
             walker_info: None,
+            mem_skeleton: 0,
+            mem_cache: 0,
+            mem_max: 0,
         };
         let backend = TestBackend::new(200, 1);
         let mut terminal = Terminal::new(backend).unwrap();
