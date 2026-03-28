@@ -4,6 +4,7 @@
 //! Toggle visibility via `?` from any panel. Call [`required_height`] to
 //! determine the layout slot to reserve.
 
+use crossterm::event::KeyCode;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -11,10 +12,14 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
-use crate::theme::THEME;
+use crate::{keymap::Keymap, theme::THEME};
 
-/// Number of keymap entries documented in the help panel.
-const ENTRY_COUNT: u16 = 21;
+/// Expected number of keymap entries in the help panel.
+///
+/// Used only in tests to catch unintentional additions/removals.
+/// `required_height` derives its value dynamically from `help_entries`.
+#[cfg(test)]
+const ENTRY_COUNT: u16 = 23;
 
 // Context bitmask constants — private to this module.
 const THREAD: u8 = 0b001;
@@ -22,30 +27,70 @@ const STACK: u8 = 0b010;
 const FAV: u8 = 0b100;
 const ALL: u8 = 0b111;
 
-/// Keymap entries: `(key label, action label, context_mask)`.
-const ENTRIES: &[(&str, &str, u8)] = &[
-    ("q / Ctrl+C", "Quit", ALL),
-    ("Esc", "Search off -> clear filter -> back", ALL),
-    ("Tab", "Cycle panel focus", ALL),
-    ("\u{2191} / \u{2193}", "Move selection", ALL),
-    ("PgUp / PgDn", "Scroll one page", ALL),
-    ("Ctrl/Shift+\u{2191}", "Scroll view up", STACK),
-    ("Ctrl/Shift+\u{2193}", "Scroll view down", STACK),
-    ("Ctrl/Shift+PgUp/PgDn", "Scroll view one page", STACK),
-    ("Ctrl+L", "Center selection", STACK),
-    ("Home / End", "Jump to first / last", ALL),
-    ("Enter", "Expand / confirm", THREAD | STACK),
-    ("\u{2192}", "Expand node", STACK),
-    ("\u{2190}", "Unexpand / go to parent", STACK),
-    ("f", "Pin / unpin favorite", STACK | FAV),
-    ("F", "Focus favorites panel", ALL),
-    ("g", "Favorites: go to source", FAV),
-    ("h", "Favorites: hide / show field", FAV),
-    ("H", "Favorites: reveal / hide hidden", FAV),
-    ("i", "Toggle object IDs (stack)", STACK),
-    ("s or /", "Open search (thread list only)", THREAD),
-    ("?", "Toggle help panel", ALL),
-];
+/// Format a [`KeyCode`] for display in the help panel.
+///
+/// Single printable chars are returned as their character; other codes
+/// fall back to their debug representation (not expected in configurable
+/// bindings).
+fn key_label(code: KeyCode) -> String {
+    match code {
+        KeyCode::Char(c) => c.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Build the dynamic keymap entries for the help panel.
+///
+/// Returns `(key_label, action_label, context_mask)` tuples. Key labels
+/// are derived from `keymap` for configurable bindings; all other labels
+/// are hardcoded (layout-independent).
+pub fn help_entries(keymap: &Keymap) -> Vec<(String, &'static str, u8)> {
+    let q = key_label(keymap.quit);
+    let c = key_label(keymap.batch_expand);
+    let b = key_label(keymap.prev_pin);
+    let n = key_label(keymap.next_pin);
+    let f = key_label(keymap.toggle_favorite);
+    let shift_f = key_label(keymap.focus_favorites);
+    let g = key_label(keymap.navigate_to_source);
+    let h = key_label(keymap.hide_field);
+    let shift_h = key_label(keymap.reveal_hidden);
+    let i = key_label(keymap.toggle_object_ids);
+    let s = key_label(keymap.search_activate);
+
+    vec![
+        (format!("{q} / Ctrl+C"), "Quit", ALL),
+        ("Esc".to_string(), "Search off -> clear filter -> back", ALL),
+        ("Tab".to_string(), "Cycle panel focus", ALL),
+        ("\u{2191} / \u{2193}".to_string(), "Move selection", ALL),
+        ("PgUp / PgDn".to_string(), "Scroll one page", ALL),
+        ("Ctrl/Shift+\u{2191}".to_string(), "Scroll view up", STACK),
+        ("Ctrl/Shift+\u{2193}".to_string(), "Scroll view down", STACK),
+        (
+            "Ctrl/Shift+PgUp/PgDn".to_string(),
+            "Scroll view one page",
+            STACK,
+        ),
+        ("Ctrl+L".to_string(), "Center selection", STACK),
+        ("Home / End".to_string(), "Jump to first / last", ALL),
+        ("Enter".to_string(), "Expand / confirm", THREAD | STACK),
+        ("\u{2192}".to_string(), "Expand node", STACK),
+        ("\u{2190}".to_string(), "Unexpand / go to parent", STACK),
+        (c, "Re-expand collapsed", STACK | FAV),
+        (format!("{b} / {n}"), "Favorites: prev/next pin", FAV),
+        (f, "Pin / unpin favorite", STACK | FAV),
+        (shift_f, "Focus favorites panel", ALL),
+        (g, "Favorites: go to source", FAV),
+        (h, "Favorites: hide / show field", FAV),
+        (shift_h, "Favorites: reveal / hide hidden", FAV),
+        (i, "Toggle object IDs (stack)", STACK),
+        (
+            format!("{s} or /"),
+            "Open search (thread list only)",
+            THREAD,
+        ),
+        ("?".to_string(), "Toggle help panel", ALL),
+    ]
+}
 
 /// Panel focus context passed to [`HelpBar`] for context-aware dimming.
 ///
@@ -63,10 +108,11 @@ pub enum HelpContext {
 
 /// Stateless keyboard shortcut help widget.
 ///
-/// Construct with a [`HelpContext`] to apply context-aware dimming: shortcuts
-/// not applicable in the current panel focus are visually dimmed.
+/// Construct with a [`HelpContext`] and a [`Keymap`] to apply context-aware
+/// dimming and display the active key bindings for the current layout.
 pub struct HelpBar {
     pub context: HelpContext,
+    pub keymap: Keymap,
 }
 
 /// Returns the context bitmask bit for a given [`HelpContext`].
@@ -82,11 +128,12 @@ pub(crate) fn context_bit(ctx: &HelpContext) -> u8 {
 
 /// Returns the total height (in terminal rows) required to render [`HelpBar`].
 ///
-/// Formula: `2 (borders) + 1 (padding) + div_ceil(ENTRY_COUNT, 2) + 1 (separator)`
-///
-/// With `ENTRY_COUNT = 21`: `2 + 1 + 11 + 1 = 15`.
+/// Formula: `2 (borders) + 1 (padding) + div_ceil(n, 2) + 1 (separator)`
+/// where `n` is the number of entries returned by [`help_entries`].
+/// Derived dynamically so it stays correct when entries are added or removed.
 pub fn required_height() -> u16 {
-    2 + 1 + ENTRY_COUNT.div_ceil(2) + 1
+    let n = help_entries(&Keymap::default()).len() as u16;
+    2 + 1 + n.div_ceil(2) + 1
 }
 
 impl Widget for HelpBar {
@@ -99,7 +146,7 @@ impl Widget for HelpBar {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let rows = build_rows(self.context);
+        let rows = build_rows(self.context, &self.keymap);
         let text = Text::from(rows);
         Paragraph::new(text).render(inner, buf);
     }
@@ -111,21 +158,22 @@ impl Widget for HelpBar {
 /// by a blank separator line. Entries inapplicable in `ctx` are visually
 /// dimmed (action span styled with `THEME.null_value`); row count is always
 /// stable regardless of context (no omission).
-pub(crate) fn build_rows(ctx: HelpContext) -> Vec<Line<'static>> {
+pub(crate) fn build_rows(ctx: HelpContext, keymap: &Keymap) -> Vec<Line<'static>> {
     let key_col_width: usize = 18;
     let entry_col_width: usize = 36;
     let ctx_bit = context_bit(&ctx);
 
+    let entries = help_entries(keymap);
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     // Blank padding row.
     lines.push(Line::from(""));
 
     let mut i = 0;
-    while i < ENTRIES.len() {
-        let (key_a, action_a, mask_a) = ENTRIES[i];
-        // Override Esc label when navigating (AC6 / Task 3.5).
-        let action_a = if ctx == HelpContext::Navigating && key_a == "Esc" {
+    while i < entries.len() {
+        let (key_a, action_a, mask_a) = &entries[i];
+        // Override Esc label when navigating.
+        let action_a: &str = if ctx == HelpContext::Navigating && key_a == "Esc" {
             "Cancel navigation"
         } else {
             action_a
@@ -134,9 +182,9 @@ pub(crate) fn build_rows(ctx: HelpContext) -> Vec<Line<'static>> {
         let left_key = format!("  {:width$}", key_a, width = key_col_width);
         let left_action = format!("{:<width$}", action_a, width = entry_col_width);
 
-        let spans: Vec<Span<'static>> = if i + 1 < ENTRIES.len() {
-            let (key_b, action_b, mask_b) = ENTRIES[i + 1];
-            let action_b = if ctx == HelpContext::Navigating && key_b == "Esc" {
+        let spans: Vec<Span<'static>> = if i + 1 < entries.len() {
+            let (key_b, action_b, mask_b) = &entries[i + 1];
+            let action_b: &str = if ctx == HelpContext::Navigating && key_b == "Esc" {
                 "Cancel navigation"
             } else {
                 action_b
@@ -183,24 +231,38 @@ pub(crate) fn build_rows(ctx: HelpContext) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::Keymap;
 
-    #[test]
-    fn required_height_returns_fifteen_for_twenty_one_entries() {
-        // div_ceil(21, 2) = 11; 2 + 1 + 11 + 1 = 15
-        assert_eq!(required_height(), 15);
+    fn km() -> Keymap {
+        Keymap::default()
     }
 
     #[test]
-    fn entry_count_constant_matches_entries_slice() {
-        assert_eq!(ENTRY_COUNT as usize, ENTRIES.len());
+    fn required_height_returns_sixteen_for_twenty_three_entries() {
+        // div_ceil(23, 2) = 12; 2 + 1 + 12 + 1 = 16
+        assert_eq!(required_height(), 16);
+    }
+
+    #[test]
+    fn entry_count_matches_help_entries_for_azerty() {
+        assert_eq!(ENTRY_COUNT as usize, help_entries(&Keymap::default()).len());
+    }
+
+    #[test]
+    fn entry_count_matches_help_entries_for_qwerty() {
+        use crate::keymap::KeymapPreset;
+        assert_eq!(
+            ENTRY_COUNT as usize,
+            help_entries(&KeymapPreset::Qwerty.build()).len()
+        );
     }
 
     #[test]
     fn build_rows_produces_correct_line_count() {
-        // 1 padding + ceil(21/2) + 1 separator = 1 + 11 + 1 = 13
-        assert_eq!(build_rows(HelpContext::ThreadList).len(), 13);
-        assert_eq!(build_rows(HelpContext::StackFrames).len(), 13);
-        assert_eq!(build_rows(HelpContext::Favorites).len(), 13);
+        // 1 padding + ceil(23/2) + 1 separator = 1 + 12 + 1 = 14
+        assert_eq!(build_rows(HelpContext::ThreadList, &km()).len(), 14);
+        assert_eq!(build_rows(HelpContext::StackFrames, &km()).len(), 14);
+        assert_eq!(build_rows(HelpContext::Favorites, &km()).len(), 14);
     }
 
     // --- Task 2 tests ---
@@ -214,63 +276,98 @@ mod tests {
 
     #[test]
     fn help_bar_search_entry_applicable_only_in_thread_list() {
-        let idx = ENTRIES
+        let entries = help_entries(&km());
+        let idx = entries
             .iter()
             .position(|(k, _, _)| k.contains("s or"))
             .unwrap();
-        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
-        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
-        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_ne!(entries[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::Favorites), 0);
     }
 
     #[test]
     fn help_bar_camera_scroll_applicable_only_in_stack_frames() {
-        let idx = ENTRIES
+        let entries = help_entries(&km());
+        let idx = entries
             .iter()
             .position(|(k, _, _)| k.contains("Ctrl/Shift+\u{2191}"))
             .unwrap();
-        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
-        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
-        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_ne!(entries[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::Favorites), 0);
     }
 
     #[test]
     fn help_bar_f_key_applicable_in_stack_and_favorites_not_thread() {
-        let idx = ENTRIES.iter().position(|(k, _, _)| *k == "f").unwrap();
-        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
-        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
-        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        let entries = help_entries(&km());
+        let idx = entries
+            .iter()
+            .position(|(k, _, _)| k.as_str() == "f")
+            .unwrap();
+        assert_ne!(entries[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+        assert_ne!(entries[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::ThreadList), 0);
     }
 
     #[test]
     fn help_bar_global_entries_applicable_in_all_contexts() {
+        let entries = help_entries(&km());
         for key_label in ["q / Ctrl+C", "Esc", "?"] {
-            let idx = ENTRIES
+            let idx = entries
                 .iter()
-                .position(|(k, _, _)| *k == key_label)
+                .position(|(k, _, _)| k.as_str() == key_label)
                 .unwrap();
-            assert_eq!(ENTRIES[idx].2, ALL, "mask for '{key_label}' should be ALL");
+            assert_eq!(entries[idx].2, ALL, "mask for '{key_label}' should be ALL");
         }
     }
 
     #[test]
     fn help_bar_all_entries_have_valid_mask() {
-        for (key, _action, mask) in ENTRIES {
-            assert!(*mask != 0 && *mask <= ALL, "invalid mask for entry '{key}'");
+        for (key, _action, mask) in help_entries(&km()) {
+            assert!(mask != 0 && mask <= ALL, "invalid mask for entry '{key}'");
         }
     }
 
     #[test]
     fn help_bar_h_key_applicable_only_in_favorites() {
-        let idx = ENTRIES.iter().position(|(k, _, _)| *k == "h").unwrap();
-        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
-        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
-        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+        let entries = help_entries(&km());
+        let idx = entries
+            .iter()
+            .position(|(k, _, _)| k.as_str() == "h")
+            .unwrap();
+        assert_ne!(entries[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+    }
+
+    #[test]
+    fn help_bar_c_key_applicable_in_stack_and_favorites() {
+        let entries = help_entries(&km());
+        let idx = entries
+            .iter()
+            .position(|(k, _, _)| k.as_str() == "c")
+            .unwrap();
+        assert_ne!(entries[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+        assert_ne!(entries[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+    }
+
+    #[test]
+    fn help_bar_bn_keys_applicable_only_in_favorites() {
+        let entries = help_entries(&km());
+        let idx = entries
+            .iter()
+            .position(|(k, _, _)| k.contains("b / n"))
+            .unwrap();
+        assert_ne!(entries[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::StackFrames), 0);
     }
 
     #[test]
     fn navigating_context_overrides_esc_label() {
-        let rows = build_rows(HelpContext::Navigating);
+        let rows = build_rows(HelpContext::Navigating, &km());
         let text: String = rows
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -298,17 +395,21 @@ mod tests {
     #[test]
     fn build_rows_navigating_same_line_count() {
         assert_eq!(
-            build_rows(HelpContext::Navigating).len(),
-            build_rows(HelpContext::StackFrames).len(),
+            build_rows(HelpContext::Navigating, &km()).len(),
+            build_rows(HelpContext::StackFrames, &km()).len(),
         );
     }
 
     #[test]
     #[allow(non_snake_case)]
     fn help_bar_H_key_applicable_only_in_favorites() {
-        let idx = ENTRIES.iter().position(|(k, _, _)| *k == "H").unwrap();
-        assert_ne!(ENTRIES[idx].2 & context_bit(&HelpContext::Favorites), 0);
-        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::ThreadList), 0);
-        assert_eq!(ENTRIES[idx].2 & context_bit(&HelpContext::StackFrames), 0);
+        let entries = help_entries(&km());
+        let idx = entries
+            .iter()
+            .position(|(k, _, _)| k.as_str() == "H")
+            .unwrap();
+        assert_ne!(entries[idx].2 & context_bit(&HelpContext::Favorites), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::ThreadList), 0);
+        assert_eq!(entries[idx].2 & context_bit(&HelpContext::StackFrames), 0);
     }
 }

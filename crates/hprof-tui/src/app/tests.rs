@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use super::*;
+use crate::keymap::Keymap;
 
 fn cursor_ends_with_collection_entry(cursor: &RenderCursor) -> bool {
     matches!(cursor, RenderCursor::At(p)
@@ -356,6 +357,9 @@ impl NavigationEngine for StubEngine {
     fn skeleton_bytes(&self) -> usize {
         0
     }
+    fn cache_bytes(&self) -> usize {
+        0
+    }
 }
 
 fn make_frame(frame_id: u64) -> FrameInfo {
@@ -458,7 +462,7 @@ mod construction {
     #[test]
     fn app_new_builds_without_panic_with_zero_threads() {
         let engine = StubEngine::with_threads(&[]);
-        let app = App::new(engine, "test.hprof".to_string());
+        let app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         assert_eq!(app.focus, Focus::ThreadList);
         assert_eq!(app.thread_list.selected_serial(), None);
         assert_eq!(app.thread_count, 0);
@@ -467,7 +471,7 @@ mod construction {
     #[test]
     fn app_new_builds_without_panic_with_three_threads() {
         let engine = StubEngine::with_threads(&["main", "worker-1", "worker-2"]);
-        let app = App::new(engine, "test.hprof".to_string());
+        let app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         assert_eq!(app.thread_list.selected_serial(), Some(1));
         assert_eq!(app.thread_count, 3);
     }
@@ -481,7 +485,7 @@ mod thread_navigation {
     #[test]
     fn handle_input_down_in_thread_list_updates_selection() {
         let engine = StubEngine::with_threads(&["main", "worker-1", "worker-2"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Down);
         assert_eq!(app.thread_list.selected_serial(), Some(2));
     }
@@ -489,7 +493,7 @@ mod thread_navigation {
     #[test]
     fn handle_input_search_activate_sets_search_active() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::SearchActivate);
         assert!(app.thread_list.is_search_active());
     }
@@ -497,7 +501,7 @@ mod thread_navigation {
     #[test]
     fn handle_input_search_char_appends_to_filter_query() {
         let engine = StubEngine::with_threads(&["main", "worker"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::SearchActivate);
         app.handle_input(InputEvent::SearchChar('w'));
         app.handle_input(InputEvent::SearchChar('o'));
@@ -508,7 +512,7 @@ mod thread_navigation {
     #[test]
     fn thread_list_search_bar_visible_when_filter_active_not_in_input_mode() {
         let engine = StubEngine::with_threads(&["main", "worker"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         app.handle_input(InputEvent::SearchActivate);
         app.handle_input(InputEvent::SearchChar('w'));
@@ -521,7 +525,7 @@ mod thread_navigation {
     #[test]
     fn search_backspace_uses_pop_for_utf8_safety() {
         let engine = StubEngine::with_threads(&["main", "worker"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         app.handle_input(InputEvent::SearchActivate);
         app.handle_input(InputEvent::SearchChar('é'));
@@ -533,7 +537,7 @@ mod thread_navigation {
     #[test]
     fn thread_list_esc_in_search_mode_preserves_filter() {
         let engine = StubEngine::with_threads(&["main", "worker"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::SearchActivate);
         app.handle_input(InputEvent::SearchChar('w'));
         app.handle_input(InputEvent::Escape);
@@ -545,7 +549,7 @@ mod thread_navigation {
     #[test]
     fn thread_list_second_esc_clears_filter() {
         let engine = StubEngine::with_threads(&["main", "worker"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::SearchActivate);
         app.handle_input(InputEvent::SearchChar('w'));
         app.handle_input(InputEvent::Escape);
@@ -561,7 +565,7 @@ mod thread_navigation {
     fn handle_input_enter_in_thread_list_loads_frames_and_transitions_to_stack_frames() {
         let frames = vec![make_frame(10), make_frame(20)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter);
         assert_eq!(app.focus, Focus::StackFrames);
         let ss = app.stack_state.as_ref().expect("stack_state must be Some");
@@ -572,7 +576,7 @@ mod thread_navigation {
     fn thread_list_enter_in_search_mode_deactivates_input_keeps_filter() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main", "worker"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         app.handle_input(InputEvent::SearchActivate);
         app.handle_input(InputEvent::SearchChar('w'));
@@ -587,7 +591,7 @@ mod thread_navigation {
     fn thread_list_esc_routing_does_not_clear_filter_from_other_focus() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main", "worker"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         app.handle_input(InputEvent::SearchActivate);
         app.handle_input(InputEvent::SearchChar('w'));
@@ -606,14 +610,14 @@ mod thread_navigation {
     #[test]
     fn app_new_captures_thread_count_without_repeated_list_calls() {
         let engine = StubEngine::with_threads(&["a", "b", "c"]);
-        let app = App::new(engine, "x.hprof".to_string());
+        let app = App::new(engine, "x.hprof".to_string(), Keymap::default());
         assert_eq!(app.thread_count, 3);
     }
 
     #[test]
     fn handle_input_enter_with_no_selected_thread_does_not_transition() {
         let engine = StubEngine::with_threads(&[]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter);
         assert_eq!(app.focus, Focus::ThreadList);
         assert!(app.stack_state.is_none());
@@ -623,7 +627,7 @@ mod thread_navigation {
     fn esc_from_stack_frames_to_thread_list_preserves_filter() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main", "worker"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         app.handle_input(InputEvent::SearchActivate);
         app.handle_input(InputEvent::SearchChar('w'));
@@ -647,7 +651,7 @@ mod stack_navigation {
     fn handle_input_up_down_in_stack_frames_moves_cursor() {
         let frames = vec![make_frame(10), make_frame(20), make_frame(30)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Down);
         assert_eq!(
@@ -665,7 +669,7 @@ mod stack_navigation {
     fn handle_input_enter_in_stack_frames_expands_then_collapses() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames, Enter on collapsed frame → expands
         app.handle_input(InputEvent::Enter);
         assert!(app.stack_state.as_ref().unwrap().is_expanded(10));
@@ -678,7 +682,7 @@ mod stack_navigation {
     fn handle_input_escape_in_stack_frames_returns_to_thread_list_preserving_state() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter);
         assert_eq!(app.focus, Focus::StackFrames);
         app.handle_input(InputEvent::Escape);
@@ -692,7 +696,7 @@ mod stack_navigation {
     #[test]
     fn stack_state_is_none_on_construction() {
         let engine = StubEngine::with_threads(&["main"]);
-        let app = App::new(engine, "test.hprof".to_string());
+        let app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         assert!(app.stack_state.is_none());
     }
 
@@ -702,7 +706,7 @@ mod stack_navigation {
             &["main", "worker"],
             &[(1, vec![make_frame(10)]), (2, vec![make_frame(20)])],
         );
-        let app = App::new(engine, "test.hprof".to_string());
+        let app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         assert_eq!(app.focus, Focus::ThreadList);
         assert!(app.stack_state.is_none());
         assert_eq!(app.preview_stack_state.selected_frame_id(), Some(10));
@@ -714,7 +718,7 @@ mod stack_navigation {
             &["main", "worker"],
             &[(1, vec![make_frame(10)]), (2, vec![make_frame(20)])],
         );
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Down);
         assert_eq!(app.focus, Focus::ThreadList);
         assert!(app.stack_state.is_none());
@@ -725,6 +729,42 @@ mod stack_navigation {
     fn variable_value_variants_accessible_via_hprof_engine() {
         let v = VariableValue::Null;
         assert_eq!(v, VariableValue::Null);
+    }
+
+    #[test]
+    fn c_key_on_collapsed_frame_expands_it() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames);
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
+        app.handle_input(InputEvent::Enter); // → Focus::StackFrames
+        assert!(!app.stack_state.as_ref().unwrap().is_expanded(10));
+
+        app.handle_input(InputEvent::BatchExpand);
+
+        assert!(
+            app.stack_state.as_ref().unwrap().is_expanded(10),
+            "c should expand a collapsed frame"
+        );
+    }
+
+    #[test]
+    fn c_key_on_expanded_frame_with_object_var_triggers_pending_expansion() {
+        let frames = vec![make_frame(10)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vec![make_obj_var(0, 42)]);
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
+        app.handle_input(InputEvent::Enter); // → Focus::StackFrames
+        app.handle_input(InputEvent::BatchExpand); // expand frame
+        assert!(app.stack_state.as_ref().unwrap().is_expanded(10));
+        app.handle_input(InputEvent::Down); // cursor → Frame(10)/Var(0)
+        app.pending_expansions.clear(); // clear any from prior expand
+
+        app.handle_input(InputEvent::BatchExpand); // expand ObjectRef
+
+        assert!(
+            !app.pending_expansions.is_empty(),
+            "c on a collapsed ObjectRef var should trigger pending expansion"
+        );
     }
 }
 
@@ -738,7 +778,7 @@ mod object_expansion {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         // Enter StackFrames, expand frame 10, then move down to the ObjectRef var.
         app.handle_input(InputEvent::Enter); // → StackFrames, OnFrame(0)
         app.handle_input(InputEvent::Enter); // expand frame 10
@@ -764,7 +804,7 @@ mod object_expansion {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
@@ -790,7 +830,7 @@ mod object_expansion {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
@@ -837,7 +877,7 @@ mod object_expansion {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
@@ -865,7 +905,7 @@ mod object_expansion {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
@@ -938,7 +978,7 @@ mod object_expansion {
                     value: FieldValue::Int(9),
                 }]),
             );
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         app.handle_input(InputEvent::Enter); // -> StackFrames
         app.handle_input(InputEvent::Enter); // expand frame 10
@@ -951,9 +991,11 @@ mod object_expansion {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
-        // OnObjectField([0]) then OnStaticField([0]).
-        app.handle_input(InputEvent::Down);
-        app.handle_input(InputEvent::Down);
+        // OnObjectField([0]) then toggle static section via Enter.
+        app.handle_input(InputEvent::Down); // → field[0]
+        app.handle_input(InputEvent::Down); // → SectionHeader
+        app.handle_input(InputEvent::Enter); // toggle open
+        app.handle_input(InputEvent::Down); // → StaticField[0]
         assert!(
             cursor_ends_with_static_field(app.stack_state.as_ref().unwrap().cursor()),
             "expected static field cursor, got {:?}",
@@ -1000,7 +1042,7 @@ mod object_expansion {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
@@ -1051,7 +1093,7 @@ mod object_expansion {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Enter); // expand frame 10
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
@@ -1130,7 +1172,7 @@ mod object_expansion {
         let vars = vec![make_obj_var(0, 42)];
         let engine =
             StubEngine::with_threads_and_frames(&["main", "worker"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         // Enter thread 1 (main).
         app.handle_input(InputEvent::Enter);
@@ -1190,7 +1232,7 @@ mod collection_paging {
             },
         }];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        App::new(engine, "test.hprof".to_string())
+        App::new(engine, "test.hprof".to_string(), Keymap::default())
     }
 
     fn make_collection_app(ec: u64) -> App<StubEngine> {
@@ -1212,7 +1254,7 @@ mod collection_paging {
         let engine = StubEngine::with_threads_and_frames(&["main"], frames)
             .with_vars(10, vars)
             .with_expand(42, expand_fields);
-        App::new(engine, "test.hprof".to_string())
+        App::new(engine, "test.hprof".to_string(), Keymap::default())
     }
 
     fn nav_to_collection_field(app: &mut App<StubEngine>) {
@@ -1259,7 +1301,7 @@ mod collection_paging {
         let engine = StubEngine::with_threads_and_frames(&["main"], frames)
             .with_vars(10, vars)
             .with_expand(42, expand_fields);
-        App::new(engine, "test.hprof".to_string())
+        App::new(engine, "test.hprof".to_string(), Keymap::default())
     }
 
     fn make_obj_entry_array_field_collection_app() -> App<StubEngine> {
@@ -1291,7 +1333,7 @@ mod collection_paging {
             .with_vars(10, vars)
             .with_expand(42, expand_fields)
             .with_expand(700, entry_obj_fields);
-        App::new(engine, "test.hprof".to_string())
+        App::new(engine, "test.hprof".to_string(), Keymap::default())
     }
 
     fn make_collection_with_nested_collection_entries_app() -> App<StubEngine> {
@@ -1313,7 +1355,7 @@ mod collection_paging {
         let engine = StubEngine::with_threads_and_frames(&["main"], frames)
             .with_vars(10, vars)
             .with_expand(42, expand_fields);
-        App::new(engine, "test.hprof".to_string())
+        App::new(engine, "test.hprof".to_string(), Keymap::default())
     }
 
     #[test]
@@ -1546,7 +1588,7 @@ mod collection_paging {
             },
         }];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.handle_input(InputEvent::Enter); // expand frame
         app.handle_input(InputEvent::Down); // → OnVar{0,0}
@@ -1610,7 +1652,7 @@ mod collection_paging {
         let engine = StubEngine::with_threads_and_frames(&["main"], frames)
             .with_vars(10, vars)
             .with_expand(42, expand_fields);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         nav_to_collection_field(&mut app);
         app.handle_input(InputEvent::Enter);
         // poll_pages will get None and fall back to
@@ -2067,7 +2109,7 @@ mod collection_paging {
                     },
                 }],
             );
-        App::new(engine, "test.hprof".to_string())
+        App::new(engine, "test.hprof".to_string(), Keymap::default())
     }
 
     fn nav_to_static_empty_collection(app: &mut App<StubEngine>) {
@@ -2077,6 +2119,8 @@ mod collection_paging {
         app.handle_input(InputEvent::Enter); // expand object 42
         poll_all_expansions(app);
         app.handle_input(InputEvent::Down); // → x field
+        app.handle_input(InputEvent::Down); // → SectionHeader
+        app.handle_input(InputEvent::Enter); // toggle static section open
         app.handle_input(InputEvent::Down); // → EMPTY static field
     }
 
@@ -2137,7 +2181,7 @@ mod collection_paging {
         let engine = StubEngine::with_threads_and_frames(&["main"], frames)
             .with_vars(10, vars)
             .with_expand(42, expand_fields);
-        App::new(engine, "test.hprof".to_string())
+        App::new(engine, "test.hprof".to_string(), Keymap::default())
     }
 
     fn nav_to_empty_collection_entry(app: &mut App<StubEngine>) {
@@ -2222,7 +2266,7 @@ mod camera {
     fn camera_scroll_in_stack_frames_shifts_offset_without_moving_cursor() {
         let frames: Vec<_> = (0..5).map(make_frame).collect();
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         app.handle_input(InputEvent::Enter); // -> StackFrames
         app.handle_input(InputEvent::Down); // -> frame 1
@@ -2248,7 +2292,7 @@ mod camera {
     #[test]
     fn camera_scroll_in_thread_list_is_noop() {
         let engine = StubEngine::with_threads(&["main", "worker"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         let before = app.thread_list.selected_serial();
 
         app.handle_input(InputEvent::CameraScrollDown);
@@ -2262,7 +2306,7 @@ mod camera {
     #[test]
     fn camera_scroll_in_search_mode_is_noop_and_keeps_filter() {
         let engine = StubEngine::with_threads(&["main", "worker"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         app.handle_input(InputEvent::SearchActivate);
         app.handle_input(InputEvent::SearchChar('w'));
@@ -2280,7 +2324,7 @@ mod camera {
     fn camera_center_in_stack_frames_centers_view_without_moving_cursor() {
         let frames: Vec<_> = (0..8).map(make_frame).collect();
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         app.handle_input(InputEvent::Enter); // -> StackFrames
         app.handle_input(InputEvent::Down); // -> frame 1
@@ -2308,7 +2352,7 @@ mod camera {
     #[test]
     fn camera_center_in_thread_list_is_noop() {
         let engine = StubEngine::with_threads(&["main", "worker"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         let before = app.thread_list.selected_serial();
 
         app.handle_input(InputEvent::CameraCenterSelection);
@@ -2322,7 +2366,7 @@ mod camera {
     fn camera_page_scroll_in_stack_frames_shifts_offset_without_moving_cursor() {
         let frames: Vec<_> = (0..12).map(make_frame).collect();
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         app.handle_input(InputEvent::Enter); // -> StackFrames
         for _ in 0..7 {
@@ -2349,7 +2393,7 @@ mod camera {
     #[test]
     fn camera_page_scroll_in_thread_list_is_noop() {
         let engine = StubEngine::with_threads(&["main", "worker"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         let before = app.thread_list.selected_serial();
 
         app.handle_input(InputEvent::CameraPageDown);
@@ -2371,7 +2415,7 @@ mod loading_and_warnings {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Down);
@@ -2402,7 +2446,7 @@ mod loading_and_warnings {
         let engine = StubEngine::with_threads_and_frames(&["main"], frames)
             .with_vars(10, vars)
             .with_expand(55, None); // force None → unresolvable
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Down);
@@ -2425,7 +2469,7 @@ mod loading_and_warnings {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 77)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         // Manually inject a disconnected pending expansion (tx dropped immediately).
         let (tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
         drop(tx); // disconnect
@@ -2472,7 +2516,7 @@ mod loading_and_warnings {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 99)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Enter);
         app.handle_input(InputEvent::Down);
@@ -2512,7 +2556,7 @@ mod favorites {
         use ratatui::{Terminal, backend::TestBackend};
 
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned.push(PinnedItem {
             thread_name: "main".to_string(),
             frame_label: "Thread.run()".to_string(),
@@ -2544,7 +2588,7 @@ mod favorites {
     #[test]
     fn toggle_help_sets_show_help_true() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         assert!(!app.show_help);
         let action = app.handle_input(InputEvent::ToggleHelp);
         assert_eq!(action, AppAction::Continue);
@@ -2554,7 +2598,7 @@ mod favorites {
     #[test]
     fn toggle_help_twice_sets_show_help_false() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::ToggleHelp);
         app.handle_input(InputEvent::ToggleHelp);
         assert!(!app.show_help);
@@ -2563,7 +2607,7 @@ mod favorites {
     #[test]
     fn up_still_routes_when_show_help_is_true() {
         let engine = StubEngine::with_threads(&["main", "worker"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Down); // selection moves to worker
         app.show_help = true;
         app.handle_input(InputEvent::Up); // selection moves back to main
@@ -2573,7 +2617,7 @@ mod favorites {
     #[test]
     fn quit_returns_app_action_quit_when_show_help_is_true() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.show_help = true;
         assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
     }
@@ -2583,7 +2627,7 @@ mod favorites {
         use crate::favorites::{PinnedItem, PinnedSnapshot};
 
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned.push(PinnedItem {
             thread_name: "main".to_string(),
             frame_label: "Thread.run()".to_string(),
@@ -2606,7 +2650,7 @@ mod favorites {
     #[test]
     fn favorites_navigate_to_source_empty_list_no_panic() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.focus = Focus::Favorites;
 
         let action = app.handle_input(InputEvent::NavigateToSource);
@@ -2619,7 +2663,7 @@ mod favorites {
     #[test]
     fn favorites_navigate_to_source_zero_match_emits_warning() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         // thread_id=2 — does not exist in this engine (only thread serial=1)
         app.pinned
             .push(make_favorite_item_with_tid(2, "worker", 10));
@@ -2642,7 +2686,7 @@ mod favorites {
             &["main", "worker"],
             &[(1, vec![make_frame(11)]), (2, vec![make_frame(22)])],
         );
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         // "worker" is thread serial=2 in this engine
         app.pinned
             .push(make_favorite_item_with_tid(2, "worker", 22));
@@ -2665,7 +2709,7 @@ mod favorites {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned
             .push(make_field_favorite_item("main", 10, 0, vec![1]));
         app.sync_favorites_selection();
@@ -2705,7 +2749,7 @@ mod favorites {
                     },
                 }]),
             );
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned.push(PinnedItem {
             thread_name: "main".to_string(),
             frame_label: "Thread.run()".to_string(),
@@ -2756,7 +2800,7 @@ mod favorites {
                     },
                 }]),
             );
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned.push(PinnedItem {
             thread_name: "main".to_string(),
             frame_label: "Thread.run()".to_string(),
@@ -2802,7 +2846,7 @@ mod favorites {
             },
         }];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned.push(PinnedItem {
             thread_name: "main".to_string(),
             frame_label: "Thread.run()".to_string(),
@@ -2860,7 +2904,7 @@ mod favorites {
                     },
                 }]),
             );
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned.push(PinnedItem {
             thread_name: "main".to_string(),
             frame_label: "Thread.run()".to_string(),
@@ -2909,7 +2953,7 @@ mod favorites {
             &["dup", "dup"],
             &[(1, vec![make_frame(11)]), (2, vec![make_frame(22)])],
         );
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         // thread_id=1 → "dup" serial=1, frame_id=11
         app.pinned.push(make_favorite_item("dup", 11));
         app.sync_favorites_selection();
@@ -2935,7 +2979,7 @@ mod favorites {
             &["main"],
             &[(1, vec![make_frame(10), make_frame(20)])],
         );
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned.push(make_favorite_item("main", 20));
         app.sync_favorites_selection();
         app.focus = Focus::Favorites;
@@ -2953,7 +2997,7 @@ mod favorites {
     fn favorites_f_last_item_empty_panel_focus() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter);
         assert_eq!(app.focus, Focus::StackFrames);
         app.pinned.push(make_favorite_item("main", 10));
@@ -2964,7 +3008,7 @@ mod favorites {
         assert_eq!(app.focus, Focus::StackFrames);
 
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned.push(make_favorite_item("main", 10));
         app.sync_favorites_selection();
         app.focus = Focus::Favorites;
@@ -2979,7 +3023,7 @@ mod favorites {
         use crate::views::stack_view::{ChunkState, CollectionChunks};
 
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         let collection_id = 0x55;
         let mut chunk_pages = HashMap::new();
@@ -3118,7 +3162,7 @@ mod favorites {
     #[test]
     fn favorites_snapshot_hides_unloaded_chunk_sentinels() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         // 250 entries → eager page has [0..100], chunks [100..200]
         // and [200..250] are NOT loaded in the snapshot.
@@ -3142,15 +3186,81 @@ mod favorites {
         );
     }
 
+    #[test]
+    fn c_key_expands_collapsed_pinned_subtree() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
+
+        let mut object_fields = HashMap::new();
+        object_fields.insert(
+            1u64,
+            vec![FieldInfo {
+                name: "x".to_string(),
+                value: FieldValue::Int(1),
+            }],
+        );
+        let root_path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+        let mut local_collapsed = HashSet::new();
+        local_collapsed.insert(root_path.clone());
+        app.pinned.push(PinnedItem {
+            thread_name: "main".to_string(),
+            frame_label: "Foo.bar()".to_string(),
+            item_label: "var[0]".to_string(),
+            snapshot: PinnedSnapshot::Subtree {
+                root_id: 1,
+                object_fields,
+                object_static_fields: HashMap::new(),
+                collection_chunks: HashMap::new(),
+                truncated: false,
+            },
+            local_collapsed,
+            hidden_fields: HashSet::new(),
+            show_hidden: false,
+            key: make_pin_key_var(1, "main", 1, 0),
+        });
+        app.sync_favorites_selection();
+        app.focus = Focus::Favorites;
+
+        assert!(!app.pinned[0].local_collapsed.is_empty());
+
+        // 'c' should clear local_collapsed (expand all)
+        app.handle_input(InputEvent::BatchExpand);
+
+        assert!(
+            app.pinned[0].local_collapsed.is_empty(),
+            "local_collapsed must be empty after 'c' expand"
+        );
+        assert_eq!(
+            app.favorites_list_state.abs_row(),
+            0,
+            "c must not move cursor away from current position"
+        );
+    }
+
+    #[test]
+    fn bn_keys_noop_when_no_pinned_items() {
+        let engine = StubEngine::with_threads(&["main"]);
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
+        app.focus = Focus::Favorites;
+
+        app.handle_input(InputEvent::PrevPin);
+        assert!(app.pinned.is_empty());
+        assert_eq!(app.favorites_list_state.selected_index(), 0);
+
+        app.handle_input(InputEvent::NextPin);
+        assert!(app.pinned.is_empty());
+        assert_eq!(app.favorites_list_state.selected_index(), 0);
+    }
+
     // 6.16
     #[test]
     fn handle_favorites_input_h_noop_when_no_pinned_items() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.focus = Focus::Favorites;
 
         // No panic expected; pinned remains empty.
-        app.handle_input(InputEvent::SearchChar('h'));
+        app.handle_input(InputEvent::HideField);
         assert!(app.pinned.is_empty());
     }
 }
@@ -3163,14 +3273,14 @@ mod focus {
     #[test]
     fn handle_input_quit_returns_app_action_quit() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
     }
 
     #[test]
     fn tab_from_thread_list_with_no_stack_state_is_noop() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         assert_eq!(app.focus, Focus::ThreadList);
         app.handle_input(InputEvent::Tab);
         assert_eq!(app.focus, Focus::ThreadList);
@@ -3180,7 +3290,7 @@ mod focus {
     fn tab_from_thread_list_with_stack_state_moves_to_stack_frames() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames, stack_state = Some(...)
         app.focus = Focus::ThreadList; // simulate returning to thread list
         app.handle_input(InputEvent::Tab);
@@ -3191,7 +3301,7 @@ mod focus {
     fn tab_from_stack_frames_returns_to_thread_list() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         assert_eq!(app.focus, Focus::StackFrames);
         app.handle_input(InputEvent::Tab);
@@ -3199,18 +3309,18 @@ mod focus {
     }
 
     #[test]
-    fn search_char_s_in_non_search_mode_activates_search() {
+    fn search_activate_in_non_search_mode_activates_search() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         assert!(!app.thread_list.is_search_active());
-        app.handle_input(InputEvent::SearchChar('s'));
+        app.handle_input(InputEvent::SearchActivate);
         assert!(app.thread_list.is_search_active());
     }
 
     #[test]
     fn quit_from_thread_list_with_search_active_returns_quit() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::SearchActivate);
         assert!(app.thread_list.is_search_active());
         assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
@@ -3220,7 +3330,7 @@ mod focus {
     fn quit_from_stack_frames_returns_quit() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         assert_eq!(app.handle_input(InputEvent::Quit), AppAction::Quit);
     }
@@ -3229,7 +3339,7 @@ mod focus {
     fn tab_from_thread_list_with_search_active_moves_to_stack_frames() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter); // → StackFrames
         app.focus = Focus::ThreadList;
         app.handle_input(InputEvent::SearchActivate);
@@ -3242,7 +3352,7 @@ mod focus {
     #[test]
     fn toggle_object_ids_noop_outside_stack_frames_focus() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         assert!(!app.show_object_ids);
 
         app.handle_input(InputEvent::ToggleObjectIds);
@@ -3254,7 +3364,7 @@ mod focus {
     fn toggle_object_ids_in_stack_frames_focus_toggles_flag() {
         let frames = vec![make_frame(10)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.handle_input(InputEvent::Enter);
         assert_eq!(app.focus, Focus::StackFrames);
         assert!(!app.show_object_ids);
@@ -3283,7 +3393,7 @@ mod async_navigation {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned
             .push(make_field_favorite_item("main", 10, 0, vec![1]));
         app.sync_favorites_selection();
@@ -3318,7 +3428,7 @@ mod async_navigation {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned
             .push(make_field_favorite_item("main", 10, 0, vec![1]));
         app.sync_favorites_selection();
@@ -3351,7 +3461,7 @@ mod async_navigation {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         // Open the stack first from ThreadList focus so stack_state is Some.
         app.handle_input(InputEvent::Enter); // ThreadList → opens stack
         // Set visible height before navigation (persists since stack won't be recreated).
@@ -3402,7 +3512,7 @@ mod async_navigation {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned
             .push(make_field_favorite_item("main", 10, 0, vec![1]));
         app.sync_favorites_selection();
@@ -3450,7 +3560,7 @@ mod async_navigation {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         // Navigate to StackFrames to open stack, then pre-expand object 42.
         app.handle_input(InputEvent::Enter);
@@ -3499,7 +3609,7 @@ mod async_navigation {
         // StubEngine default: any object → [x:Int, child:ObjectRef(999)].
         // object 999 → field 1 = ObjectRef(999) again (self-referential via default).
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         // Open stack + pre-expand 42 and 999 so all Field hops are cached.
         app.handle_input(InputEvent::Enter);
@@ -3583,7 +3693,7 @@ mod async_navigation {
         let vars = vec![make_obj_var(0, 42)];
         // Default engine: 42→[x,child:999], 999→[x,child:999]
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         // Pin: Frame(10) → Var(0) → Field(1) → Field(0)
         // Field(1) on 42 = child(999); Field(0) on 999 = x(Int)
@@ -3673,7 +3783,7 @@ mod async_navigation {
         let engine = StubEngine::with_threads_and_frames(&["main"], frames)
             .with_vars(10, vars)
             .with_expand(42, None); // force expansion failure
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned
             .push(make_field_favorite_item("main", 10, 0, vec![1]));
         app.sync_favorites_selection();
@@ -3710,7 +3820,7 @@ mod async_navigation {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         let path1 = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
             .field(FieldIdx(0))
@@ -3793,7 +3903,7 @@ mod async_navigation {
             },
         }];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         let pin_key = crate::favorites::PinKey {
             thread_id: ThreadId(1),
@@ -3870,7 +3980,7 @@ mod async_navigation {
         .with_vars(10, vec![make_obj_var(0, 42)])
         .with_vars(20, vec![make_obj_var(0, 55)]);
 
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
         app.pinned.push(crate::favorites::PinnedItem {
             thread_name: "main".to_string(),
             frame_label: "Thread.run()".to_string(),
@@ -3930,7 +4040,7 @@ mod async_navigation {
         let frames = vec![make_frame(10)];
         let vars = vec![make_obj_var(0, 42)];
         let engine = StubEngine::with_threads_and_frames(&["main"], frames).with_vars(10, vars);
-        let mut app = App::new(engine, "test.hprof".to_string());
+        let mut app = App::new(engine, "test.hprof".to_string(), Keymap::default());
 
         // Set small visible height so scroll offset is non-trivial.
         app.handle_input(InputEvent::Enter);
@@ -3985,7 +4095,7 @@ mod spinner_state_tests {
     #[test]
     fn operation_under_threshold_never_shows_loading() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
         let (tx, rx) = mpsc::channel();
         let path = NavigationPathBuilder::frame_only(FrameId(0));
         app.pending_expansions.insert(
@@ -4011,7 +4121,7 @@ mod spinner_state_tests {
     #[test]
     fn operation_over_threshold_shows_loading() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
         let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
         let path = NavigationPathBuilder::frame_only(FrameId(0));
         app.pending_expansions.insert(
@@ -4037,7 +4147,7 @@ mod spinner_state_tests {
     #[test]
     fn spinner_stays_when_one_of_two_operations_completes() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
 
         let (tx1, rx1) = mpsc::channel();
         let path1 = NavigationPathBuilder::frame_only(FrameId(0));
@@ -4098,7 +4208,7 @@ mod spinner_state_tests {
     #[test]
     fn navigating_to_pin_takes_priority_over_resolving() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
 
         // Simulate pending navigation.
         app.pending_navigation = Some(PendingNavigation {
@@ -4160,7 +4270,7 @@ mod spinner_state_tests {
     #[test]
     fn spinner_tick_increments_when_not_idle() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
         assert_eq!(app.spinner_tick, 0);
 
         // Idle — tick should not increment in render.
@@ -4189,7 +4299,7 @@ mod spinner_state_tests {
     #[test]
     fn escape_during_nav_removes_awaited_expansion() {
         let engine = StubEngine::with_threads_and_frames(&["main"], vec![make_frame(0)]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
         app.open_stack_for_selected_thread(1);
 
         app.pending_navigation = Some(PendingNavigation {
@@ -4229,7 +4339,7 @@ mod spinner_state_tests {
     #[test]
     fn escape_during_nav_with_unrelated_ops_transitions_to_resolving() {
         let engine = StubEngine::with_threads_and_frames(&["main"], vec![make_frame(0)]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
         app.open_stack_for_selected_thread(1);
 
         app.pending_navigation = Some(PendingNavigation {
@@ -4290,7 +4400,7 @@ mod spinner_state_tests {
     #[test]
     fn escape_during_nav_without_pending_ops_goes_idle() {
         let engine = StubEngine::with_threads_and_frames(&["main"], vec![make_frame(0)]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
         app.open_stack_for_selected_thread(1);
 
         app.pending_navigation = Some(PendingNavigation {
@@ -4314,7 +4424,7 @@ mod spinner_state_tests {
     #[test]
     fn escape_during_resolving_stays_resolving() {
         let engine = StubEngine::with_threads_and_frames(&["main"], vec![make_frame(0)]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
         app.open_stack_for_selected_thread(1);
 
         app.spinner_state = SpinnerState::Resolving;
@@ -4341,7 +4451,7 @@ mod spinner_state_tests {
     #[test]
     fn fast_operation_loading_shown_stays_false() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
         let (tx, rx) = mpsc::channel();
         let path = NavigationPathBuilder::frame_only(FrameId(0));
         app.pending_expansions.insert(
@@ -4371,7 +4481,7 @@ mod spinner_state_tests {
     #[test]
     fn minimum_spinner_duration_prevents_early_clear() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
 
         // Simulate: spinner just turned on.
         app.spinner_state = SpinnerState::Idle;
@@ -4424,7 +4534,7 @@ mod spinner_state_tests {
     #[test]
     fn navigating_to_pin_also_arms_minimum_display_timer() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
         app.spinner_state = SpinnerState::Idle;
         app.loading_until = None;
 
@@ -4448,7 +4558,7 @@ mod spinner_state_tests {
     #[test]
     fn resolving_to_navigating_does_not_reset_timer() {
         let engine = StubEngine::with_threads(&["main"]);
-        let mut app = App::new(engine, "t.hprof".into());
+        let mut app = App::new(engine, "t.hprof".into(), Keymap::default());
 
         // Start in Resolving state with timer armed.
         let (_tx, rx) = mpsc::channel::<Option<Vec<FieldInfo>>>();
@@ -4502,6 +4612,9 @@ mod spinner_state_tests {
             spinner_state: SpinnerState::Resolving,
             spinner_tick: 0,
             walker_info: None,
+            mem_skeleton: 0,
+            mem_cache: 0,
+            mem_max: 0,
         };
         let backend = TestBackend::new(200, 1);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -4539,6 +4652,9 @@ mod spinner_state_tests {
             spinner_state: SpinnerState::Idle,
             spinner_tick: 0,
             walker_info: None,
+            mem_skeleton: 0,
+            mem_cache: 0,
+            mem_max: 0,
         };
         let backend = TestBackend::new(200, 1);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -4553,6 +4669,211 @@ mod spinner_state_tests {
         assert!(
             !content.contains("Resolving") && !content.contains("Navigating to pin"),
             "no spinner text when Idle; got: {content:?}"
+        );
+    }
+}
+
+// === Story 13.1: Static section toggle keyboard tests ===
+
+mod static_section_toggle_tests {
+    use super::*;
+
+    fn make_static_toggle_app() -> App<StubEngine> {
+        let frames = vec![{
+            let mut f = make_frame(10);
+            f.has_variables = true;
+            f
+        }];
+        let vars = vec![make_obj_var(0, 42)];
+        let engine = StubEngine::with_threads_and_frames(&["main"], frames)
+            .with_vars(10, vars)
+            .with_expand(
+                42,
+                Some(vec![FieldInfo {
+                    name: "x".to_string(),
+                    value: FieldValue::Int(1),
+                }]),
+            )
+            .with_class_of(42, 500)
+            .with_static_fields(
+                500,
+                vec![
+                    FieldInfo {
+                        name: "S1".to_string(),
+                        value: FieldValue::Int(1),
+                    },
+                    FieldInfo {
+                        name: "S2".to_string(),
+                        value: FieldValue::Int(2),
+                    },
+                ],
+            );
+        App::new(engine, "test.hprof".to_string(), Keymap::default())
+    }
+
+    fn poll_all_expansions(app: &mut App<StubEngine>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.pending_expansions.is_empty() && std::time::Instant::now() < deadline {
+            app.poll_expansions();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn nav_to_section_header(app: &mut App<StubEngine>) {
+        app.handle_input(InputEvent::Enter); // → StackFrames
+        app.handle_input(InputEvent::Enter); // expand frame
+        app.handle_input(InputEvent::Down); // → OnVar
+        app.handle_input(InputEvent::Enter); // expand object 42
+        poll_all_expansions(app);
+        app.handle_input(InputEvent::Down); // → field x
+        app.handle_input(InputEvent::Down); // → SectionHeader
+    }
+
+    #[test]
+    fn enter_toggles_static_section() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        assert!(
+            matches!(
+                app.stack_state.as_ref().unwrap().cursor(),
+                RenderCursor::SectionHeader(_)
+            ),
+            "cursor must be on SectionHeader"
+        );
+        // Enter → expand
+        app.handle_input(InputEvent::Enter);
+        let parent_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        assert!(
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .is_static_section_expanded(&parent_path),
+            "static section must be expanded after Enter"
+        );
+        // Enter again → collapse
+        app.handle_input(InputEvent::Enter);
+        assert!(
+            !app.stack_state
+                .as_ref()
+                .unwrap()
+                .is_static_section_expanded(&parent_path),
+            "static section must be collapsed after second Enter"
+        );
+    }
+
+    #[test]
+    fn left_on_expanded_collapses_without_parent_nav() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        app.handle_input(InputEvent::Enter); // expand
+        // Cursor stays on SectionHeader after toggle
+        assert!(
+            matches!(
+                app.stack_state.as_ref().unwrap().cursor(),
+                RenderCursor::SectionHeader(_)
+            ),
+            "cursor on header after expand"
+        );
+        app.handle_input(InputEvent::Left); // collapse
+        let parent_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        assert!(
+            !app.stack_state
+                .as_ref()
+                .unwrap()
+                .is_static_section_expanded(&parent_path),
+            "section must be collapsed after Left"
+        );
+        // Cursor still on SectionHeader (not parent)
+        assert!(
+            matches!(
+                app.stack_state.as_ref().unwrap().cursor(),
+                RenderCursor::SectionHeader(_)
+            ),
+            "cursor must stay on header, got: {:?}",
+            app.stack_state.as_ref().unwrap().cursor()
+        );
+    }
+
+    #[test]
+    fn left_on_collapsed_navigates_to_parent() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        // Section is collapsed by default
+        app.handle_input(InputEvent::Left);
+        // Should navigate to the object row (depth-2 path), not the frame (depth-1)
+        let cursor = app.stack_state.as_ref().unwrap().cursor().clone();
+        assert!(
+            matches!(&cursor, RenderCursor::At(p) if p.segments().len() == 2),
+            "cursor must be on object row (depth 2): {:?}",
+            cursor
+        );
+    }
+
+    #[test]
+    fn right_on_collapsed_section_expands() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        app.handle_input(InputEvent::Right);
+        let parent_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        assert!(
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .is_static_section_expanded(&parent_path),
+            "section must be expanded after Right on collapsed header"
+        );
+    }
+
+    #[test]
+    fn right_on_expanded_section_is_noop() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        app.handle_input(InputEvent::Enter); // expand
+        app.handle_input(InputEvent::Right); // no-op
+        let parent_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+        assert!(
+            app.stack_state
+                .as_ref()
+                .unwrap()
+                .is_static_section_expanded(&parent_path),
+            "section must still be expanded after Right on already-expanded header"
+        );
+        assert!(
+            matches!(
+                app.stack_state.as_ref().unwrap().cursor(),
+                RenderCursor::SectionHeader(_)
+            ),
+            "cursor must stay on SectionHeader after no-op Right: {:?}",
+            app.stack_state.as_ref().unwrap().cursor()
+        );
+    }
+
+    #[test]
+    fn flat_and_display_alignment_after_toggle() {
+        let mut app = make_static_toggle_app();
+        nav_to_section_header(&mut app);
+        // Before toggle (collapsed)
+        let s = app.stack_state.as_ref().unwrap();
+        assert_eq!(
+            s.flat_items().len(),
+            s.build_items().len(),
+            "flat/display alignment when collapsed"
+        );
+        // After toggle (expanded)
+        app.handle_input(InputEvent::Enter);
+        let s = app.stack_state.as_ref().unwrap();
+        assert_eq!(
+            s.flat_items().len(),
+            s.build_items().len(),
+            "flat/display alignment when expanded"
+        );
+        // After second toggle (re-collapsed)
+        app.handle_input(InputEvent::Enter);
+        let s = app.stack_state.as_ref().unwrap();
+        assert_eq!(
+            s.flat_items().len(),
+            s.build_items().len(),
+            "flat/display alignment when re-collapsed"
         );
     }
 }

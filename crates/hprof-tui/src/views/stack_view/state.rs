@@ -19,6 +19,15 @@ use super::types::{
     STATIC_FIELDS_RENDER_LIMIT, StaticFieldIdx, VarIdx,
 };
 
+/// Target for batch expansion via `c`.
+#[derive(Debug, Clone)]
+pub enum ExpandTarget {
+    /// Regular object — expand via `start_object_expansion`.
+    Object(u64),
+    /// Collection — expand via `StartCollection` path (id, entry_count).
+    Collection(u64, u64),
+}
+
 /// State for the stack frame panel.
 pub struct StackState {
     // === Frames & Vars ===
@@ -811,6 +820,11 @@ impl StackState {
     /// Returns the logical parent cursor for the current position, or `None`
     /// if at the top level (Frame-only or NoFrames).
     pub fn parent_cursor(&self) -> Option<RenderCursor> {
+        // SectionHeader path == the parent object's path.
+        // "Navigate to parent" means the object row itself, not its grandparent.
+        if let RenderCursor::SectionHeader(p) = self.nav.cursor() {
+            return Some(RenderCursor::At(p.clone()));
+        }
         let path = self.cursor_path()?;
         let parent = path.parent()?;
         Some(RenderCursor::At(parent))
@@ -867,6 +881,7 @@ impl StackState {
     ) {
         self.expansion.set_expansion_done(path, object_id, fields);
         self.expansion.object_static_fields.remove(&object_id);
+        self.nav.sync(&self.flat_items());
     }
 
     /// Stores resolved static fields for an expanded object.
@@ -938,6 +953,22 @@ impl StackState {
         self.expansion.collapse_all_for_object(object_id);
     }
 
+    /// Returns whether the `[static fields]` section at
+    /// `path` is expanded.
+    pub fn is_static_section_expanded(&self, path: &NavigationPath) -> bool {
+        self.expansion.is_static_section_expanded(path)
+    }
+
+    /// Toggles the `[static fields]` section, resyncs nav
+    /// and restores cursor to the section header.
+    pub fn toggle_static_section(&mut self, path: &NavigationPath) {
+        self.expansion.toggle_static_section(path);
+        let flat = self.flat_items();
+        self.nav.sync(&flat);
+        self.nav
+            .set_cursor_and_sync(RenderCursor::SectionHeader(path.clone()), &flat);
+    }
+
     /// Recursively collapses the target path and all
     /// descendant paths.
     ///
@@ -999,11 +1030,15 @@ impl StackState {
                     }
                 }
             }
-            // Clear path-based expansion phases for this frame.
+            // Clear path-based expansion phases and static section state
+            // for this frame.
             let fid = FrameId(frame_id);
             self.expansion
                 .expansion_phases
                 .retain(|p, _| p.segments().first() != Some(&PathSegment::Frame(fid)));
+            self.expansion
+                .static_section_expanded
+                .retain(|p| p.segments().first() != Some(&PathSegment::Frame(fid)));
             let flat = self.flat_items();
             // Reset cursor to frame row when collapsing from
             // inside.
@@ -1029,11 +1064,177 @@ impl StackState {
         self.expanded.contains(&frame_id)
     }
 
+    /// Returns whether vars for `frame_id` are already cached.
+    pub fn has_cached_vars(&self, frame_id: u64) -> bool {
+        self.vars.contains_key(&frame_id)
+    }
+
+    /// Marks a path as `Expanded` without re-inserting field data.
+    ///
+    /// Used when the object's fields are already cached (expanded at
+    /// a different path) to avoid LRU re-insertion panics.
+    /// Marks a path as `Expanded` without re-inserting field data.
+    ///
+    /// Caller must call [`sync_nav`] after all paths are marked.
+    pub fn mark_path_expanded(&mut self, path: &NavigationPath) {
+        self.expansion
+            .expansion_phases
+            .insert(path.clone(), ExpansionPhase::Expanded);
+    }
+
+    /// Syncs cursor with current flat_items. Call after batch
+    /// mutations to expansion_phases.
+    pub fn sync_nav(&mut self) {
+        self.nav.sync(&self.flat_items());
+    }
+
+    /// Resolves the expandable target at `path`.
+    ///
+    /// Walks through vars and fields caches following path segments.
+    /// Returns `None` for primitives or unknown paths.
+    pub(crate) fn expand_target_at_path(&self, path: &NavigationPath) -> Option<ExpandTarget> {
+        let segs = path.segments();
+        if segs.len() < 2 {
+            return None;
+        }
+        let PathSegment::Frame(fid) = segs[0] else {
+            return None;
+        };
+        let PathSegment::Var(vidx) = segs[1] else {
+            return None;
+        };
+        let vars = self.vars.get(&fid.0)?;
+        let var = vars.get(vidx.0)?;
+        let VariableValue::ObjectRef {
+            id, entry_count, ..
+        } = var.value
+        else {
+            return None;
+        };
+        if segs.len() == 2 {
+            return Some(match entry_count {
+                Some(ec) => ExpandTarget::Collection(id, ec),
+                None => ExpandTarget::Object(id),
+            });
+        }
+        let mut oid = id;
+        let last_idx = segs.len() - 1;
+        for (i, seg) in segs[2..].iter().enumerate() {
+            let is_last = (i + 2) == last_idx;
+            match seg {
+                PathSegment::Field(fidx) => {
+                    let fields = self.expansion.object_fields.get(&oid)?;
+                    let field = fields.get(fidx.0)?;
+                    let FieldValue::ObjectRef {
+                        id, entry_count, ..
+                    } = field.value
+                    else {
+                        return None;
+                    };
+                    if is_last {
+                        return Some(match entry_count {
+                            Some(ec) => ExpandTarget::Collection(id, ec),
+                            None => ExpandTarget::Object(id),
+                        });
+                    }
+                    oid = id;
+                }
+                PathSegment::CollectionEntry(cid, eidx) => {
+                    let cc = self.expansion.collection_chunks.get(&cid.0)?;
+                    let entry = cc.find_entry(eidx.0)?;
+                    match &entry.value {
+                        FieldValue::ObjectRef {
+                            id,
+                            entry_count: Some(ec),
+                            ..
+                        } if is_last => {
+                            return Some(ExpandTarget::Collection(*id, *ec));
+                        }
+                        FieldValue::ObjectRef {
+                            id,
+                            entry_count: None,
+                            ..
+                        } => oid = *id,
+                        _ => return None,
+                    }
+                    if is_last {
+                        return Some(ExpandTarget::Object(oid));
+                    }
+                }
+                _ => return None,
+            }
+        }
+        Some(ExpandTarget::Object(oid))
+    }
+
+    /// Returns collapsed expandable objects visible under `anchor`.
+    ///
+    /// If `anchor` itself is collapsed and expandable, returns just it.
+    /// Otherwise finds visible descendants whose path starts with
+    /// `anchor`'s segments and that are collapsed expandable ObjectRefs.
+    pub fn collapsed_expandable_at(
+        &self,
+        anchor: &NavigationPath,
+    ) -> Vec<(ExpandTarget, NavigationPath)> {
+        // If anchor itself is collapsed, just return it.
+        if self.expansion_state_for_path(anchor) == ExpansionPhase::Collapsed
+            && let Some(target) = self.expand_target_at_path(anchor)
+        {
+            return vec![(target, anchor.clone())];
+        }
+        // If anchor is a collection (expanded or not), stop here —
+        // don't recurse into collection entries automatically.
+        if let Some(ExpandTarget::Collection(..)) = self.expand_target_at_path(anchor) {
+            return vec![];
+        }
+        // Find collapsed descendants.
+        let anchor_segs = anchor.segments();
+        let anchor_len = anchor_segs.len();
+        let flat = self.flat_items();
+        let mut result = Vec::new();
+        for cursor in &flat {
+            let RenderCursor::At(path) = cursor else {
+                continue;
+            };
+            let segs = path.segments();
+            if segs.len() <= anchor_len {
+                continue;
+            }
+            if segs[..anchor_len] != *anchor_segs {
+                continue;
+            }
+            // Stop at collection boundaries: if the descendant
+            // part of the path crosses a CollectionEntry, it's
+            // behind a collection frontier — skip it.
+            let crosses_collection = segs[anchor_len..]
+                .iter()
+                .any(|s| matches!(s, PathSegment::CollectionEntry(..)));
+            if crosses_collection {
+                continue;
+            }
+            if self.expansion_state_for_path(path) != ExpansionPhase::Collapsed {
+                continue;
+            }
+            if let Some(target) = self.expand_target_at_path(path) {
+                // Skip collections in descendant search — they
+                // must be opened explicitly (cursor directly on them).
+                if matches!(target, ExpandTarget::Collection(..)) {
+                    continue;
+                }
+                result.push((target, path.clone()));
+            }
+        }
+        result
+    }
+
+    /// Re-expands a previously collapsed frame using cached vars.
+    pub fn re_expand_frame(&mut self, frame_id: u64) {
+        self.expanded.insert(frame_id);
+        self.nav.sync(&self.flat_items());
+    }
+
     fn is_non_interactive_cursor(cursor: &RenderCursor) -> bool {
-        matches!(
-            cursor,
-            RenderCursor::SectionHeader(_) | RenderCursor::OverflowRow(_)
-        )
+        matches!(cursor, RenderCursor::OverflowRow(_))
     }
 
     fn first_interactive_index(flat: &[RenderCursor]) -> Option<usize> {
@@ -1403,6 +1604,9 @@ impl StackState {
             return;
         }
         out.push(RenderCursor::SectionHeader(parent_path.clone()));
+        if !self.expansion.is_static_section_expanded(parent_path) {
+            return;
+        }
         let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
         for (si, field) in static_fields.iter().take(shown).enumerate() {
             let static_path = NavigationPathBuilder::extend(parent_path.clone())
@@ -1444,14 +1648,13 @@ impl StackState {
                 out.push(RenderCursor::LoadingNode(static_field_path.clone()));
             }
             ExpansionPhase::Failed => {}
-            ExpansionPhase::Expanded => {
-                let fields = self.expansion.object_fields.get(&obj_id);
-                let field_count = fields.map(|f| f.len()).unwrap_or(0);
-                if field_count == 0 {
+            ExpansionPhase::Expanded => match self.expansion.object_fields.get(&obj_id) {
+                None => {
                     out.push(RenderCursor::LoadingNode(static_field_path.clone()));
-                } else {
+                }
+                Some(field_list) if field_list.is_empty() => {}
+                Some(field_list) => {
                     visited.insert(obj_id);
-                    let field_list = fields.unwrap();
                     for (idx, field) in field_list.iter().enumerate() {
                         let child_path = NavigationPathBuilder::extend(static_field_path.clone())
                             .field(FieldIdx(idx))
@@ -1478,7 +1681,7 @@ impl StackState {
                     }
                     visited.remove(&obj_id);
                 }
-            }
+            },
         }
     }
 
@@ -1588,43 +1791,49 @@ impl StackState {
             }
             ExpansionPhase::Failed => {}
             ExpansionPhase::Expanded => {
-                let fields = self.expansion.object_fields.get(&obj_id);
-                let field_count = fields.map(|f| f.len()).unwrap_or(0);
-                if field_count == 0 {
-                    out.push(RenderCursor::LoadingNode(entry_path.clone()));
-                } else {
-                    visited.insert(obj_id);
-                    let field_list = fields.unwrap();
-                    for (idx, field) in field_list.iter().enumerate() {
-                        let child_path = NavigationPathBuilder::extend(entry_path.clone())
-                            .field(FieldIdx(idx))
-                            .build();
-                        // Cyclic refs emitted as At (non-recursive)
-                        // so they remain navigable; cycle detection
-                        // is in the accessor.
-                        let is_cyclic = matches!(
-                            field.value,
-                            FieldValue::ObjectRef { id, .. }
-                            if visited.contains(&id)
-                        );
-                        out.push(RenderCursor::At(child_path.clone()));
-                        if is_cyclic {
-                            continue;
-                        }
-                        if let FieldValue::ObjectRef {
-                            id,
-                            entry_count: Some(_),
-                            ..
-                        } = field.value
-                        {
-                            self.emit_collection_children(&child_path, CollectionId(id), out);
-                            continue;
-                        }
-                        if let FieldValue::ObjectRef { id, .. } = field.value {
-                            self.emit_collection_entry_obj_children(&child_path, id, visited, out);
-                        }
+                match self.expansion.object_fields.get(&obj_id) {
+                    None => {
+                        out.push(RenderCursor::LoadingNode(entry_path.clone()));
                     }
-                    visited.remove(&obj_id);
+                    Some(field_list) if field_list.is_empty() => {}
+                    Some(field_list) => {
+                        visited.insert(obj_id);
+                        for (idx, field) in field_list.iter().enumerate() {
+                            let child_path = NavigationPathBuilder::extend(entry_path.clone())
+                                .field(FieldIdx(idx))
+                                .build();
+                            // Cyclic refs emitted as At (non-recursive)
+                            // so they remain navigable; cycle detection
+                            // is in the accessor.
+                            let is_cyclic = matches!(
+                                field.value,
+                                FieldValue::ObjectRef { id, .. }
+                                if visited.contains(&id)
+                            );
+                            out.push(RenderCursor::At(child_path.clone()));
+                            if is_cyclic {
+                                continue;
+                            }
+                            if let FieldValue::ObjectRef {
+                                id,
+                                entry_count: Some(_),
+                                ..
+                            } = field.value
+                            {
+                                self.emit_collection_children(&child_path, CollectionId(id), out);
+                                continue;
+                            }
+                            if let FieldValue::ObjectRef { id, .. } = field.value {
+                                self.emit_collection_entry_obj_children(
+                                    &child_path,
+                                    id,
+                                    visited,
+                                    out,
+                                );
+                            }
+                        }
+                        visited.remove(&obj_id);
+                    }
                 }
                 self.emit_collection_entry_static_rows(entry_path, obj_id, out);
             }
@@ -1644,6 +1853,9 @@ impl StackState {
             return;
         }
         out.push(RenderCursor::SectionHeader(entry_path.clone()));
+        if !self.expansion.is_static_section_expanded(entry_path) {
+            return;
+        }
         let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
         for (si, field) in static_fields.iter().take(shown).enumerate() {
             let static_path = NavigationPathBuilder::extend(entry_path.clone())
@@ -1685,14 +1897,13 @@ impl StackState {
                 out.push(RenderCursor::LoadingNode(static_path.clone()));
             }
             ExpansionPhase::Failed => {}
-            ExpansionPhase::Expanded => {
-                let fields = self.expansion.object_fields.get(&obj_id);
-                let field_count = fields.map(|f| f.len()).unwrap_or(0);
-                if field_count == 0 {
+            ExpansionPhase::Expanded => match self.expansion.object_fields.get(&obj_id) {
+                None => {
                     out.push(RenderCursor::LoadingNode(static_path.clone()));
-                } else {
+                }
+                Some(field_list) if field_list.is_empty() => {}
+                Some(field_list) => {
                     visited.insert(obj_id);
-                    let field_list = fields.unwrap();
                     for (idx, field) in field_list.iter().enumerate() {
                         let child_path = NavigationPathBuilder::extend(static_path.clone())
                             .field(FieldIdx(idx))
@@ -1724,7 +1935,7 @@ impl StackState {
                     }
                     visited.remove(&obj_id);
                 }
-            }
+            },
         }
     }
 
@@ -1774,6 +1985,7 @@ impl StackState {
                     None,
                     Some(&self.expansion.expansion_phases),
                     None,
+                    Some(&self.expansion.static_section_expanded),
                 );
                 items.extend(tree_items);
             }

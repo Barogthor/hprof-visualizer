@@ -3,6 +3,7 @@ use hprof_engine::{
 };
 use ratatui::widgets::{List, ListItem};
 
+use super::expansion::ExpansionRegistry;
 use super::*;
 use crate::theme::THEME;
 
@@ -2679,9 +2680,12 @@ mod static_fields_rendering_tests {
                 value: FieldValue::Int(1),
             }],
         );
+        // Toggle static section open for the entry path
+        let entry_path = path_coll_entry(10, 0, &[0], 0xC00, 0);
+        state.expansion.toggle_static_section(&entry_path);
         let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
         assert!(
-            rendered.iter().any(|l| l.contains("[static]")),
+            rendered.iter().any(|l| l.contains("[static fields]")),
             "static header must be rendered: {rendered:?}"
         );
         assert!(
@@ -2750,6 +2754,9 @@ mod static_fields_rendering_tests {
             })
             .collect();
         state.set_static_fields(0x710, static_fields);
+        // Toggle static section open for the collection entry
+        let entry_path = path_coll_entry(10, 0, &[0], 0xC10, 0);
+        state.expansion.toggle_static_section(&entry_path);
 
         state.move_down(); // Frame(10) -> Var
         state.move_down(); // Var -> items field[0]
@@ -2764,9 +2771,9 @@ mod static_fields_rendering_tests {
             state.cursor()
         );
 
-        // Skip non-interactive [static] header
-        state.move_down();
-        // Should be on static field 0
+        // Navigate through [static fields] header
+        state.move_down(); // → SectionHeader
+        state.move_down(); // → static field 0
         assert!(
             matches!(state.cursor(), RenderCursor::At(p)
                 if p.segments().last().is_some_and(|s| matches!(s, PathSegment::StaticField(StaticFieldIdx(0))))),
@@ -2819,13 +2826,17 @@ mod static_fields_rendering_tests {
                 value: FieldValue::Int(42),
             }],
         );
+        state
+            .expansion
+            .toggle_static_section(&path_field(10, 0, &[]));
 
         state.move_down(); // Frame(10) -> Var
         state.move_down(); // Var -> instance field[0]
         assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
 
-        // Must skip non-interactive [static] header
-        state.move_down();
+        // Navigate through [static fields] header
+        state.move_down(); // → SectionHeader
+        state.move_down(); // → StaticField[0]
         assert!(
             matches!(state.cursor(), RenderCursor::At(p)
                 if matches!(p.segments().last(), Some(PathSegment::StaticField(StaticFieldIdx(0))))),
@@ -2833,7 +2844,14 @@ mod static_fields_rendering_tests {
             state.cursor()
         );
 
-        // Must also skip header when moving back up
+        // Move up lands on SectionHeader (now navigable)
+        state.move_up();
+        assert!(
+            matches!(state.cursor(), RenderCursor::SectionHeader(_)),
+            "cursor must be on SectionHeader, got: {:?}",
+            state.cursor()
+        );
+        // One more move_up → field[0]
         state.move_up();
         assert_eq!(state.cursor(), &rc_field(10, 0, &[0]));
     }
@@ -2858,10 +2876,14 @@ mod static_fields_rendering_tests {
             })
             .collect();
         state.set_static_fields(0xB00, static_fields);
+        state
+            .expansion
+            .toggle_static_section(&path_field(10, 0, &[]));
 
         state.move_down(); // Frame(10) -> Var
         state.move_down(); // Var -> instance field
-        state.move_down(); // instance field -> static[0], skipping [static]
+        state.move_down(); // instance field -> SectionHeader
+        state.move_down(); // SectionHeader -> static[0]
         for _ in 0..19 {
             state.move_down();
         }
@@ -2926,10 +2948,14 @@ mod static_fields_rendering_tests {
                 value: FieldValue::Int(7),
             }],
         );
+        state
+            .expansion
+            .toggle_static_section(&path_field(10, 0, &[]));
 
         state.move_down(); // Frame(10) -> Var
         state.move_down(); // Var -> instance field
-        state.move_down(); // instance field -> static field (skip [static] header)
+        state.move_down(); // instance field -> SectionHeader
+        state.move_down(); // SectionHeader -> static field[0]
         assert!(
             matches!(state.cursor(), RenderCursor::At(p)
                 if matches!(p.segments().last(), Some(PathSegment::StaticField(StaticFieldIdx(0))))),
@@ -3034,12 +3060,16 @@ mod static_fields_rendering_tests {
                 value: FieldValue::Int(3),
             }],
         );
+        // Toggle static section open for collection entry
+        let entry_toggle_path = path_coll_entry(10, 0, &[0], 0xD00, 0);
+        state.expansion.toggle_static_section(&entry_toggle_path);
 
         state.move_down(); // Frame(10) -> Var
         state.move_down(); // Var -> items field[0]
         state.move_down(); // items field -> entry[0]
         state.move_down(); // entry[0] -> entry obj field[0]
-        state.move_down(); // -> static field (skipping [static] header)
+        state.move_down(); // -> SectionHeader
+        state.move_down(); // -> StaticField[0]
         assert!(
             matches!(state.cursor(), RenderCursor::At(p)
                 if p.segments().last().is_some_and(|s| matches!(s, PathSegment::StaticField(StaticFieldIdx(0))))),
@@ -3551,4 +3581,1212 @@ mod path_isolation_tests {
         // The data cache is populated regardless.
         assert!(state.expansion.object_fields.contains_key(&0x300),);
     }
+}
+
+// === Task 1.5/1.6: Static section collapse state tests ===
+
+#[test]
+fn toggle_static_section_on_fresh_registry_returns_true() {
+    let mut reg = ExpansionRegistry::new();
+    let path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+    let result = reg.toggle_static_section(&path);
+    assert!(result, "first toggle should expand (return true)");
+    assert!(reg.is_static_section_expanded(&path));
+}
+
+#[test]
+fn toggle_static_section_twice_returns_false() {
+    let mut reg = ExpansionRegistry::new();
+    let path = NavigationPathBuilder::new(FrameId(1), VarIdx(0)).build();
+    reg.toggle_static_section(&path);
+    let result = reg.toggle_static_section(&path);
+    assert!(!result, "second toggle should collapse (return false)");
+    assert!(!reg.is_static_section_expanded(&path));
+}
+
+// === Task 2.3: emit_static_rows collapsed → only SectionHeader ===
+
+#[test]
+fn emit_static_rows_collapsed_only_section_header() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done_at_path(
+        &path_field(10, 0, &[]),
+        0xA00,
+        vec![FieldInfo {
+            name: "inst".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![
+            FieldInfo {
+                name: "S1".to_string(),
+                value: FieldValue::Int(1),
+            },
+            FieldInfo {
+                name: "S2".to_string(),
+                value: FieldValue::Int(2),
+            },
+        ],
+    );
+    // Static section is collapsed by default
+    let flat = state.flat_items();
+    let header_count = flat
+        .iter()
+        .filter(|c| matches!(c, RenderCursor::SectionHeader(_)))
+        .count();
+    assert_eq!(header_count, 1, "SectionHeader must be emitted");
+    let static_field_count = flat
+        .iter()
+        .filter(|c| {
+            if let RenderCursor::At(p) = c {
+                p.segments()
+                    .iter()
+                    .any(|s| matches!(s, PathSegment::StaticField(_)))
+            } else {
+                false
+            }
+        })
+        .count();
+    assert_eq!(
+        static_field_count, 0,
+        "no static field cursors when collapsed"
+    );
+    let overflow_count = flat
+        .iter()
+        .filter(|c| matches!(c, RenderCursor::OverflowRow(_)))
+        .count();
+    assert_eq!(overflow_count, 0, "no overflow when collapsed");
+}
+
+// === Task 2.4: emit_static_rows after toggle → fields visible ===
+
+#[test]
+fn emit_static_rows_after_toggle_shows_fields() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done_at_path(
+        &path_field(10, 0, &[]),
+        0xA00,
+        vec![FieldInfo {
+            name: "inst".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![
+            FieldInfo {
+                name: "S1".to_string(),
+                value: FieldValue::Int(1),
+            },
+            FieldInfo {
+                name: "S2".to_string(),
+                value: FieldValue::Int(2),
+            },
+        ],
+    );
+    let parent_path = path_field(10, 0, &[]);
+    state.toggle_static_section(&parent_path);
+    let flat = state.flat_items();
+    let static_field_count = flat
+        .iter()
+        .filter(|c| {
+            if let RenderCursor::At(p) = c {
+                p.segments()
+                    .iter()
+                    .any(|s| matches!(s, PathSegment::StaticField(_)))
+            } else {
+                false
+            }
+        })
+        .count();
+    assert_eq!(
+        static_field_count, 2,
+        "static field cursors visible after toggle"
+    );
+}
+
+// === Task 2.5: collection entry static rows collapse gate ===
+
+#[test]
+fn emit_collection_entry_static_rows_collapsed() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xB00)]);
+    state.set_expansion_done_at_path(
+        &path_field(10, 0, &[]),
+        0xB00,
+        vec![FieldInfo {
+            name: "items".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 0xC00,
+                class_name: "java.util.ArrayList".to_string(),
+                entry_count: Some(1),
+                inline_value: None,
+            },
+        }],
+    );
+    state
+        .expansion
+        .expansion_phases
+        .insert(path_field(10, 0, &[0]), ExpansionPhase::Expanded);
+    state.expansion.collection_chunks.insert(
+        0xC00,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(CollectionPage {
+                entries: vec![hprof_engine::EntryInfo {
+                    index: 0,
+                    key: None,
+                    value: FieldValue::ObjectRef {
+                        id: 0x700,
+                        class_name: "Node".to_string(),
+                        entry_count: None,
+                        inline_value: None,
+                    },
+                }],
+                total_count: 1,
+                offset: 0,
+                has_more: false,
+            }),
+            chunk_pages: std::collections::HashMap::new(),
+        },
+    );
+    state.set_expansion_done_at_path(
+        &path_coll_entry(10, 0, &[0], 0xC00, 0),
+        0x700,
+        vec![FieldInfo {
+            name: "value".to_string(),
+            value: FieldValue::Int(7),
+        }],
+    );
+    state.set_static_fields(
+        0x700,
+        vec![FieldInfo {
+            name: "STATIC_ONE".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    // Collapsed by default — only SectionHeader, no static fields
+    let flat = state.flat_items();
+    let static_field_count = flat
+        .iter()
+        .filter(|c| {
+            if let RenderCursor::At(p) = c {
+                p.segments()
+                    .iter()
+                    .any(|s| matches!(s, PathSegment::StaticField(_)))
+            } else {
+                false
+            }
+        })
+        .count();
+    assert_eq!(
+        static_field_count, 0,
+        "collection entry static fields collapsed by default"
+    );
+    // Toggle open — now static fields visible
+    let entry_path = path_coll_entry(10, 0, &[0], 0xC00, 0);
+    state.toggle_static_section(&entry_path);
+    let flat = state.flat_items();
+    let static_field_count = flat
+        .iter()
+        .filter(|c| {
+            if let RenderCursor::At(p) = c {
+                p.segments()
+                    .iter()
+                    .any(|s| matches!(s, PathSegment::StaticField(_)))
+            } else {
+                false
+            }
+        })
+        .count();
+    assert_eq!(
+        static_field_count, 1,
+        "collection entry static field visible after toggle"
+    );
+}
+
+// === Task 4.3: header text with uncapped count ===
+
+#[test]
+fn static_header_shows_uncapped_field_count() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done_at_path(
+        &path_field(10, 0, &[]),
+        0xA00,
+        vec![FieldInfo {
+            name: "inst".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    let statics: Vec<FieldInfo> = (0..25)
+        .map(|i| FieldInfo {
+            name: format!("S_{i}"),
+            value: FieldValue::Int(i),
+        })
+        .collect();
+    state.set_static_fields(0xA00, statics);
+    // Collapsed header: ▸ [static fields] (25)
+    let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
+    assert!(
+        rendered.iter().any(|l| l.contains("[static fields] (25)")),
+        "header must show real count 25, not capped 20: {rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|l| l.contains("\u{25B8}")),
+        "collapsed indicator must be ▸: {rendered:?}"
+    );
+    // Toggle open → ▾ [static fields] (25)
+    state
+        .expansion
+        .toggle_static_section(&path_field(10, 0, &[]));
+    let rendered: Vec<String> = state.build_items().into_iter().map(item_text).collect();
+    assert!(
+        rendered.iter().any(|l| l.contains("\u{25BE}")),
+        "expanded indicator must be ▾: {rendered:?}"
+    );
+}
+
+// === Task 3.4: snapshot mode static fields collapsed ===
+
+#[test]
+fn render_variable_tree_snapshot_static_collapsed() {
+    use crate::views::tree_render::{RenderOptions, TreeRoot, render_variable_tree};
+    let mut object_fields = std::collections::HashMap::new();
+    object_fields.insert(
+        10,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    let mut object_static_fields = std::collections::HashMap::new();
+    object_static_fields.insert(
+        10,
+        vec![FieldInfo {
+            name: "CONST".to_string(),
+            value: FieldValue::Int(99),
+        }],
+    );
+    let items = render_variable_tree(
+        TreeRoot::Subtree { root_id: 10 },
+        &object_fields,
+        &object_static_fields,
+        &std::collections::HashMap::new(),
+        &{
+            let mut m = std::collections::HashMap::new();
+            m.insert(10, ExpansionPhase::Expanded);
+            m
+        },
+        &std::collections::HashMap::new(),
+        RenderOptions {
+            show_object_ids: false,
+            snapshot_mode: true,
+            show_hidden: false,
+        },
+        None,
+        None,
+        None,
+        None, // static_section_expanded = None → collapsed
+    );
+    let texts: Vec<String> = items.into_iter().map(item_text).collect();
+    // Static section not shown at all in snapshot mode
+    assert!(
+        !texts.iter().any(|t| t.contains("[static fields]")),
+        "header must not appear in snapshot: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("CONST")),
+        "static field must be hidden in snapshot: {texts:?}"
+    );
+}
+
+// === Task 6.5: collapse object → static section reset ===
+
+#[test]
+fn collapse_object_clears_static_section_state() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    let var_path = path_field(10, 0, &[]);
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    // Toggle static open
+    state.expansion.toggle_static_section(&var_path);
+    assert!(state.expansion.is_static_section_expanded(&var_path));
+    // Collapse the object
+    state.collapse_object_recursive(&var_path);
+    // Re-expand
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    // Static section must be collapsed
+    assert!(
+        !state.expansion.is_static_section_expanded(&var_path),
+        "static section must be collapsed after object collapse"
+    );
+}
+
+// === Task 6.6: thread switch clears static section ===
+
+#[test]
+fn thread_switch_resets_static_section() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    let var_path = path_field(10, 0, &[]);
+    state.expansion.toggle_static_section(&var_path);
+    assert!(state.expansion.is_static_section_expanded(&var_path));
+    // Simulate thread switch → new state
+    let state2 = StackState::new(vec![make_frame(20)]);
+    assert!(
+        !state2.expansion.is_static_section_expanded(&var_path),
+        "fresh state must have collapsed static sections"
+    );
+}
+
+// === Task 6.7: per-path isolation ===
+
+#[test]
+fn static_section_per_path_isolation() {
+    let mut reg = ExpansionRegistry::new();
+    let path_a = NavigationPathBuilder::new(FrameId(1), VarIdx(0))
+        .field(FieldIdx(0))
+        .build();
+    let path_b = NavigationPathBuilder::new(FrameId(1), VarIdx(0))
+        .field(FieldIdx(1))
+        .build();
+    reg.toggle_static_section(&path_a);
+    assert!(reg.is_static_section_expanded(&path_a));
+    assert!(
+        !reg.is_static_section_expanded(&path_b),
+        "path_b must be independent from path_a"
+    );
+}
+
+#[test]
+fn is_static_section_expanded_returns_false_on_unknown_path() {
+    let reg = ExpansionRegistry::new();
+    let path = NavigationPathBuilder::new(FrameId(42), VarIdx(0)).build();
+    assert!(
+        !reg.is_static_section_expanded(&path),
+        "unknown path should be collapsed"
+    );
+}
+
+// === M-1 fix: frame collapse clears static section state ===
+
+#[test]
+fn frame_collapse_clears_static_section_state() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    let var_path = path_field(10, 0, &[]);
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.expansion.toggle_static_section(&var_path);
+    assert!(
+        state.expansion.is_static_section_expanded(&var_path),
+        "section must be expanded before frame collapse"
+    );
+    // Collapse the frame — must clear static section state for all its objects
+    state.toggle_expand(10, vec![]);
+    // Re-expand frame and object
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    assert!(
+        !state.expansion.is_static_section_expanded(&var_path),
+        "static section must be collapsed after frame collapse and re-expand"
+    );
+}
+
+// === M-1 fix: collapse_all_for_object clears static section state ===
+
+#[test]
+fn collapse_all_for_object_clears_static_section_state() {
+    let frames = vec![make_frame(10)];
+    let mut state = StackState::new(frames);
+    state.toggle_expand(10, vec![make_var_object_ref(0, 0xA00)]);
+    let var_path = path_field(10, 0, &[]);
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.expansion.toggle_static_section(&var_path);
+    assert!(state.expansion.is_static_section_expanded(&var_path));
+    // Simulate LRU eviction
+    state.collapse_object_by_id(0xA00);
+    // Reload data (simulates re-expansion after eviction)
+    state.set_expansion_done_at_path(
+        &var_path,
+        0xA00,
+        vec![FieldInfo {
+            name: "x".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    state.set_static_fields(
+        0xA00,
+        vec![FieldInfo {
+            name: "S".to_string(),
+            value: FieldValue::Int(1),
+        }],
+    );
+    assert!(
+        !state.expansion.is_static_section_expanded(&var_path),
+        "static section must be collapsed after LRU eviction and data reload"
+    );
+}
+
+#[test]
+fn expand_target_at_collection_entry_path() {
+    use std::collections::HashMap;
+    let frames = vec![make_frame(10)];
+    // Var 0 is a collection (entry_count = Some(3))
+    let vars = vec![VariableInfo {
+        index: 0,
+        value: VariableValue::ObjectRef {
+            id: 42,
+            class_name: "ArrayList".to_string(),
+            entry_count: Some(3),
+        },
+    }];
+    let mut state = StackState::new(frames);
+    state.vars.insert(10, vars);
+    state.expanded.insert(10);
+
+    // Set up collection chunks with an eager page
+    let page = CollectionPage {
+        offset: 0,
+        total_count: 3,
+        has_more: false,
+        entries: vec![
+            hprof_engine::EntryInfo {
+                index: 0,
+                key: None,
+                value: FieldValue::ObjectRef {
+                    id: 100,
+                    class_name: "Item".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            hprof_engine::EntryInfo {
+                index: 1,
+                key: None,
+                value: FieldValue::ObjectRef {
+                    id: 101,
+                    class_name: "Item".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+        ],
+    };
+    let chunks = CollectionChunks {
+        total_count: 3,
+        eager_page: Some(page),
+        chunk_pages: HashMap::new(),
+    };
+    state.expansion.collection_chunks.insert(42, chunks);
+    // Mark var path as expanded (collection is open)
+    let var_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(var_path.clone(), ExpansionPhase::Expanded);
+
+    // Build entry path: Frame(10)/Var(0)/CollectionEntry(42, 0)
+    let entry_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+        .collection_entry(CollectionId(42), EntryIdx(0))
+        .build();
+
+    // expand_target_at_path should resolve to Object(100)
+    let target = state.expand_target_at_path(&entry_path);
+    assert!(
+        target.is_some(),
+        "expand_target_at_path must resolve collection entry; \
+         got None"
+    );
+    match target.unwrap() {
+        ExpandTarget::Object(oid) => assert_eq!(oid, 100),
+        other => panic!("expected Object(100), got {:?}", other),
+    }
+
+    // Also test: entry path should be collapsed
+    assert_eq!(
+        state.expansion_state_for_path(&entry_path),
+        ExpansionPhase::Collapsed,
+    );
+
+    // collapsed_expandable_at on the entry should find it
+    let targets = state.collapsed_expandable_at(&entry_path);
+    assert_eq!(targets.len(), 1, "should find 1 target");
+    match &targets[0].0 {
+        ExpandTarget::Object(oid) => assert_eq!(*oid, 100),
+        other => panic!("expected Object(100), got {:?}", other),
+    }
+}
+
+#[test]
+fn expand_target_at_collection_entry_child_field() {
+    use std::collections::HashMap;
+    let frames = vec![make_frame(10)];
+    let vars = vec![VariableInfo {
+        index: 0,
+        value: VariableValue::ObjectRef {
+            id: 42,
+            class_name: "ArrayList".to_string(),
+            entry_count: Some(3),
+        },
+    }];
+    let mut state = StackState::new(frames);
+    state.vars.insert(10, vars);
+    state.expanded.insert(10);
+
+    // Collection page: entry 0 → ObjectRef(100)
+    let page = CollectionPage {
+        offset: 0,
+        total_count: 1,
+        has_more: false,
+        entries: vec![hprof_engine::EntryInfo {
+            index: 0,
+            key: None,
+            value: FieldValue::ObjectRef {
+                id: 100,
+                class_name: "Item".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }],
+    };
+    let chunks = CollectionChunks {
+        total_count: 1,
+        eager_page: Some(page),
+        chunk_pages: HashMap::new(),
+    };
+    state.expansion.collection_chunks.insert(42, chunks);
+
+    // Mark collection var as expanded
+    let var_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0)).build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(var_path, ExpansionPhase::Expanded);
+
+    // Mark entry 0 as expanded with fields
+    let entry_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+        .collection_entry(CollectionId(42), EntryIdx(0))
+        .build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(entry_path.clone(), ExpansionPhase::Expanded);
+    state.expansion.object_fields.insert(
+        100,
+        vec![FieldInfo {
+            name: "child".to_string(),
+            value: FieldValue::ObjectRef {
+                id: 200,
+                class_name: "Inner".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }],
+    );
+
+    // Path to field 0 of entry 0's object
+    let field_path = NavigationPathBuilder::new(FrameId(10), VarIdx(0))
+        .collection_entry(CollectionId(42), EntryIdx(0))
+        .field(FieldIdx(0))
+        .build();
+
+    let target = state.expand_target_at_path(&field_path);
+    assert!(
+        target.is_some(),
+        "expand_target_at_path must resolve collection entry \
+         child field; got None"
+    );
+    match target.unwrap() {
+        ExpandTarget::Object(oid) => assert_eq!(oid, 200),
+        other => panic!("expected Object(200), got {:?}", other),
+    }
+
+    // Also verify flat_items contains the field path
+    let flat = state.flat_items();
+    let has_field = flat
+        .iter()
+        .any(|c| matches!(c, RenderCursor::At(p) if *p == field_path));
+    assert!(
+        has_field,
+        "flat_items must contain the field path;\n\
+         flat_items: {:?}",
+        flat
+    );
+
+    // collapsed_expandable_at on the field should find it
+    let targets = state.collapsed_expandable_at(&field_path);
+    assert_eq!(
+        targets.len(),
+        1,
+        "should find 1 target for field;\n\
+         field expansion_state: {:?}",
+        state.expansion_state_for_path(&field_path)
+    );
+}
+
+/// Realistic scenario from user's heap dump:
+///
+/// ```text
+/// - HeapDumpFixture.runScenario() [frame 10]
+///   + [0] FixtureOptions (oid=100)
+///   + [1] ProfileSpec (oid=101)
+///   + [2] Scenario01StackFrameTypes (oid=102)
+///   + [3] UnixPath (oid=103)
+///   - [4] ScenarioHandle (oid=400)
+///     + cleanup: Lambda (oid=410)
+///     + metrics: LinkedHashMap (oid=420, 7 entries)    ← collection
+///     - roots: ArrayList (oid=430, 1 entry)            ← collection
+///       - [0] Universe (oid=500)                       ← entry
+///         + indirectCycle3: IndirectCycle3NodeA (oid=501)
+///         + indirectCycle2: IndirectCycle2NodeA (oid=502)
+///         + directCycle: DirectCycle (oid=503)
+///         + enumValue: SampleEnum (oid=504)
+///         + plainRoot: CustomWithoutStatic (oid=505)
+///         + staticRoot: CustomWithStatic (oid=506)
+///         + hugeWrapperLongs: EmptyList (oid=507)
+///         + customMap: HashMap (oid=508, 20480 entries) ← collection
+///         + wrapperStringSet: HashSet (oid=509)         ← collection-like
+///         + wrapperLongDeque: ArrayDeque (oid=510)
+///         + customLinkedList: LinkedList (oid=511, 20480)← collection
+///         + wrapperInts: ArrayList (oid=512, 20480)     ← collection
+///         + customArray: Object[] (oid=513, 4096)       ← collection
+///         + mixedObjectArray: Object[] (oid=514, 2048)  ← collection
+///         + primitiveArrays: PrimitiveArrays (oid=515)
+///         + primitives: PrimitiveBox (oid=516)
+///         + profileSpec: ProfileSpec (oid=517)
+///   + [5] ArrayList (oid=105, 1 entries)               ← collection var
+///   + [6] UnixPath (oid=106)
+/// ```
+///
+/// Tests:
+/// 1. Entry [0] in roots resolvable through collection field
+/// 2. Children of Universe resolvable (mix of objects & collections)
+/// 3. `collapsed_expandable_at` on entry [0] finds only non-collection
+///    children (collections are skipped by design)
+/// 4. `collapsed_expandable_at` on var [4] does NOT recurse into
+///    collections (metrics, roots) and does NOT open roots' entries
+/// 5. Collections (customMap etc.) are correctly identified as
+///    Collection targets when cursor is directly on them
+#[test]
+fn scenario_expand_through_collection_field_into_entry_children() {
+    use std::collections::HashMap;
+
+    let frames = vec![make_frame(10)];
+    let vars = vec![
+        VariableInfo {
+            index: 0,
+            value: VariableValue::ObjectRef {
+                id: 100,
+                class_name: "FixtureOptions".to_string(),
+                entry_count: None,
+            },
+        },
+        VariableInfo {
+            index: 1,
+            value: VariableValue::ObjectRef {
+                id: 101,
+                class_name: "ProfileSpec".to_string(),
+                entry_count: None,
+            },
+        },
+        VariableInfo {
+            index: 2,
+            value: VariableValue::ObjectRef {
+                id: 102,
+                class_name: "Scenario01StackFrameTypes".to_string(),
+                entry_count: None,
+            },
+        },
+        VariableInfo {
+            index: 3,
+            value: VariableValue::ObjectRef {
+                id: 103,
+                class_name: "UnixPath".to_string(),
+                entry_count: None,
+            },
+        },
+        VariableInfo {
+            index: 4,
+            value: VariableValue::ObjectRef {
+                id: 400,
+                class_name: "ScenarioHandle".to_string(),
+                entry_count: None,
+            },
+        },
+        VariableInfo {
+            index: 5,
+            value: VariableValue::ObjectRef {
+                id: 105,
+                class_name: "ArrayList".to_string(),
+                entry_count: Some(1),
+            },
+        },
+        VariableInfo {
+            index: 6,
+            value: VariableValue::ObjectRef {
+                id: 106,
+                class_name: "UnixPath".to_string(),
+                entry_count: None,
+            },
+        },
+    ];
+    let mut state = StackState::new(frames);
+    state.vars.insert(10, vars);
+    state.expanded.insert(10);
+
+    // --- ScenarioHandle (oid=400) expanded ---
+    state.expansion.object_fields.insert(
+        400,
+        vec![
+            FieldInfo {
+                name: "cleanup".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 410,
+                    class_name: "Lambda".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "metrics".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 420,
+                    class_name: "LinkedHashMap".to_string(),
+                    entry_count: Some(7),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "roots".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 430,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(1),
+                    inline_value: None,
+                },
+            },
+        ],
+    );
+    let var4_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4)).build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(var4_path.clone(), ExpansionPhase::Expanded);
+
+    // --- roots (oid=430) collection open ---
+    let roots_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+        .field(FieldIdx(2))
+        .build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(roots_path.clone(), ExpansionPhase::Expanded);
+    let roots_page = CollectionPage {
+        offset: 0,
+        total_count: 1,
+        has_more: false,
+        entries: vec![hprof_engine::EntryInfo {
+            index: 0,
+            key: None,
+            value: FieldValue::ObjectRef {
+                id: 500,
+                class_name: "Universe".to_string(),
+                entry_count: None,
+                inline_value: None,
+            },
+        }],
+    };
+    state.expansion.collection_chunks.insert(
+        430,
+        CollectionChunks {
+            total_count: 1,
+            eager_page: Some(roots_page),
+            chunk_pages: HashMap::new(),
+        },
+    );
+
+    // --- Universe (oid=500) expanded in entry [0] ---
+    let entry0_path = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+        .field(FieldIdx(2))
+        .collection_entry(CollectionId(430), EntryIdx(0))
+        .build();
+    state
+        .expansion
+        .expansion_phases
+        .insert(entry0_path.clone(), ExpansionPhase::Expanded);
+    state.expansion.object_fields.insert(
+        500,
+        vec![
+            FieldInfo {
+                name: "indirectCycle3".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 501,
+                    class_name: "IndirectCycle3NodeA".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "indirectCycle2".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 502,
+                    class_name: "IndirectCycle2NodeA".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "directCycle".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 503,
+                    class_name: "DirectCycle".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "enumValue".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 504,
+                    class_name: "SampleEnum".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "plainRoot".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 505,
+                    class_name: "CustomWithoutStatic".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "staticRoot".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 506,
+                    class_name: "CustomWithStatic".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "hugeWrapperLongs".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 507,
+                    class_name: "EmptyList".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "customMap".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 508,
+                    class_name: "HashMap".to_string(),
+                    entry_count: Some(20480),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "wrapperStringSet".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 509,
+                    class_name: "HashSet".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "wrapperLongDeque".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 510,
+                    class_name: "ArrayDeque".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "customLinkedList".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 511,
+                    class_name: "LinkedList".to_string(),
+                    entry_count: Some(20480),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "wrapperInts".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 512,
+                    class_name: "ArrayList".to_string(),
+                    entry_count: Some(20480),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "customArray".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 513,
+                    class_name: "Object[]".to_string(),
+                    entry_count: Some(4096),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "mixedObjectArray".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 514,
+                    class_name: "Object[]".to_string(),
+                    entry_count: Some(2048),
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "primitiveArrays".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 515,
+                    class_name: "PrimitiveArrays".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "primitives".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 516,
+                    class_name: "PrimitiveBox".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+            FieldInfo {
+                name: "profileSpec".to_string(),
+                value: FieldValue::ObjectRef {
+                    id: 517,
+                    class_name: "ProfileSpec".to_string(),
+                    entry_count: None,
+                    inline_value: None,
+                },
+            },
+        ],
+    );
+
+    // =========================================================
+    // TEST 1: entry [0] resolvable through collection field
+    // =========================================================
+    let target = state.expand_target_at_path(&entry0_path);
+    match target {
+        Some(ExpandTarget::Object(oid)) => assert_eq!(oid, 500),
+        other => panic!("entry [0]: expected Object(500), got {:?}", other),
+    }
+
+    // =========================================================
+    // TEST 2: child fields of Universe resolvable
+    // =========================================================
+    // indirectCycle3 = Field(0) → Object(501)
+    let f0 = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+        .field(FieldIdx(2))
+        .collection_entry(CollectionId(430), EntryIdx(0))
+        .field(FieldIdx(0))
+        .build();
+    match state.expand_target_at_path(&f0) {
+        Some(ExpandTarget::Object(oid)) => assert_eq!(oid, 501),
+        other => panic!("Field(0): expected Object(501), got {:?}", other),
+    }
+    // customMap = Field(7) → Collection(508, 20480)
+    let f7 = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+        .field(FieldIdx(2))
+        .collection_entry(CollectionId(430), EntryIdx(0))
+        .field(FieldIdx(7))
+        .build();
+    match state.expand_target_at_path(&f7) {
+        Some(ExpandTarget::Collection(cid, ec)) => {
+            assert_eq!(cid, 508);
+            assert_eq!(ec, 20480);
+        }
+        other => panic!(
+            "Field(7) customMap: expected Collection(508, 20480), \
+             got {:?}",
+            other
+        ),
+    }
+    // profileSpec = Field(16) → Object(517)
+    let f16 = NavigationPathBuilder::new(FrameId(10), VarIdx(4))
+        .field(FieldIdx(2))
+        .collection_entry(CollectionId(430), EntryIdx(0))
+        .field(FieldIdx(16))
+        .build();
+    match state.expand_target_at_path(&f16) {
+        Some(ExpandTarget::Object(oid)) => assert_eq!(oid, 517),
+        other => panic!("Field(16): expected Object(517), got {:?}", other),
+    }
+
+    // =========================================================
+    // TEST 3: collapsed_expandable_at on entry [0] finds only
+    //         non-collection children (collections are skipped)
+    // =========================================================
+    let child_targets = state.collapsed_expandable_at(&entry0_path);
+    // 17 fields total, 6 are collections (customMap, customLinkedList,
+    // wrapperInts, customArray, mixedObjectArray + wrapperStringSet has
+    // entry_count: None so it's NOT a collection target).
+    // Collections: fields 7,10,11,12,13 = 5 collections.
+    // Non-collection ObjectRefs: 17 - 5 = 12
+    let collection_count = child_targets
+        .iter()
+        .filter(|(t, _)| matches!(t, ExpandTarget::Collection(..)))
+        .count();
+    assert_eq!(
+        collection_count, 0,
+        "collections must be skipped in descendant search"
+    );
+    let object_count = child_targets
+        .iter()
+        .filter(|(t, _)| matches!(t, ExpandTarget::Object(..)))
+        .count();
+    assert_eq!(
+        object_count,
+        12,
+        "12 non-collection ObjectRef children expected;\n\
+         got: {:?}",
+        child_targets
+            .iter()
+            .map(|(t, p)| format!("{:?} @ {:?}", t, p))
+            .collect::<Vec<_>>()
+    );
+
+    // =========================================================
+    // TEST 4: collapsed_expandable_at on var[4] does NOT open
+    //         collection children (metrics, roots) or their entries
+    // =========================================================
+    let var4_targets = state.collapsed_expandable_at(&var4_path);
+    // ScenarioHandle has 3 fields: cleanup(obj), metrics(coll),
+    // roots(coll). Only cleanup is a non-collection ObjectRef.
+    // metrics and roots are skipped (Collection targets).
+    // The search does NOT recurse into roots' entries.
+    let var4_oids: Vec<u64> = var4_targets
+        .iter()
+        .filter_map(|(t, _)| match t {
+            ExpandTarget::Object(oid) => Some(*oid),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        var4_oids,
+        vec![410],
+        "only cleanup (oid=410) should be found under var[4];\n\
+         got: {:?}",
+        var4_targets
+            .iter()
+            .map(|(t, p)| format!("{:?} @ {:?}", t, p))
+            .collect::<Vec<_>>()
+    );
+
+    // =========================================================
+    // TEST 5: flat_items contains all expected paths
+    // =========================================================
+    let flat = state.flat_items();
+    assert!(
+        flat.iter()
+            .any(|c| matches!(c, RenderCursor::At(p) if *p == entry0_path)),
+        "flat_items must contain entry [0]"
+    );
+    assert!(
+        flat.iter()
+            .any(|c| matches!(c, RenderCursor::At(p) if *p == f0)),
+        "flat_items must contain indirectCycle3 field"
+    );
+    assert!(
+        flat.iter()
+            .any(|c| matches!(c, RenderCursor::At(p) if *p == f7)),
+        "flat_items must contain customMap field"
+    );
+    assert!(
+        flat.iter()
+            .any(|c| matches!(c, RenderCursor::At(p) if *p == f16)),
+        "flat_items must contain profileSpec field"
+    );
 }

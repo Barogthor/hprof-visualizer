@@ -1,0 +1,14 @@
+# hprof-visualizer configuration
+# Place this file in the same directory as the binary or in the
+# working directory from which you launch hprof-visualizer.
+# All settings are optional; defaults apply when absent.
+
+# Memory budget for heap dump loading (e.g. "4G", "512M").
+# Without this setting the budget is auto-calculated as 50% of total RAM.
+# memory_limit = "4G"
+
+# Keyboard layout preset.
+# Accepted values: azerty | qwerty
+# Default: azerty
+# Can be overridden at runtime with: --keymap <azerty|qwerty>
+# keymap = "azerty"

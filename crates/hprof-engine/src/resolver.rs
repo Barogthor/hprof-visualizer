@@ -17,8 +17,10 @@ use crate::engine::{FieldInfo, FieldValue};
 /// subclass fields last. Unknown field types produce a break in decoding
 /// (safe fallback — cannot determine byte width).
 ///
-/// `records_bytes` is the records section data slice used to
-/// resolve field names from [`HprofStringRef`] offsets.
+/// `_records_bytes` is kept for call-site compatibility.
+///
+/// Field names are resolved from `index.field_names`, preloaded during
+/// first-pass indexing.
 ///
 /// Returns an empty `Vec` if the data is truncated or class info
 /// is missing.
@@ -26,7 +28,7 @@ pub fn decode_fields(
     raw: &RawInstance,
     index: &PreciseIndex,
     id_size: u32,
-    records_bytes: &[u8],
+    _records_bytes: &[u8],
 ) -> Vec<FieldInfo> {
     let mut ordered_defs: Vec<(u64, u8)> = Vec::new();
     collect_fields(raw.class_object_id, index, &mut ordered_defs);
@@ -36,9 +38,9 @@ pub fn decode_fields(
 
     for (name_string_id, field_type) in ordered_defs {
         let name = index
-            .strings
+            .field_names
             .get(&name_string_id)
-            .map(|sref| sref.resolve(records_bytes))
+            .cloned()
             .unwrap_or_else(|| format!("<field:{name_string_id}>"));
 
         let value = match read_field_value(&mut cursor, field_type, id_size) {
@@ -166,7 +168,46 @@ mod tests {
                 },
             );
         }
+        for &(name_id, _) in fields {
+            if let Some(sref) = index.strings.get(&name_id) {
+                index.field_names.insert(name_id, sref.resolve(&buf));
+            }
+        }
         (index, buf)
+    }
+
+    #[test]
+    fn decode_fields_prefers_preloaded_field_name_cache() {
+        let (mut index, buf) = make_index_with_class(100, 0, &[(1, 10)], &[(1, "from_strings")]);
+        index
+            .field_names
+            .insert(1, "from_field_names_cache".to_string());
+        let raw = RawInstance {
+            class_object_id: 100,
+            data: 5i32.to_be_bytes().to_vec(),
+        };
+
+        let fields = decode_fields(&raw, &index, 8, &buf);
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "from_field_names_cache");
+        assert_eq!(fields[0].value, FieldValue::Int(5));
+    }
+
+    #[test]
+    fn decode_fields_missing_cache_entry_uses_placeholder_without_string_fallback() {
+        let (mut index, buf) = make_index_with_class(100, 0, &[(1, 10)], &[(1, "from_strings")]);
+        index.field_names.clear();
+        let raw = RawInstance {
+            class_object_id: 100,
+            data: 9i32.to_be_bytes().to_vec(),
+        };
+
+        let fields = decode_fields(&raw, &index, 8, &buf);
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "<field:1>");
+        assert_eq!(fields[0].value, FieldValue::Int(9));
     }
 
     #[test]
@@ -229,6 +270,8 @@ mod tests {
                 len: 1,
             },
         );
+        index.field_names.insert(1, "x".to_string());
+        index.field_names.insert(2, "y".to_string());
 
         let mut data = Vec::new();
         data.extend_from_slice(&3i32.to_be_bytes()); // y (sub)

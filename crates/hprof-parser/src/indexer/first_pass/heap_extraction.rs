@@ -4,10 +4,6 @@
 use std::io::Cursor;
 use std::ops::Range;
 
-use byteorder::{BigEndian, ReadBytesExt};
-use hprof_api::ProgressNotifier;
-use rayon::prelude::*;
-
 use super::hprof_primitives::{
     PARALLEL_THRESHOLD, gc_root_skip_size, parse_class_dump, primitive_element_size, skip_n,
 };
@@ -16,6 +12,8 @@ use super::{ClassDumpEntry, FilterEntry, FirstPassContext, RawFrameRoot, RawThre
 use crate::indexer::HeapRecordRange;
 use crate::read_id;
 use crate::tags::HeapSubTag;
+use byteorder::{BigEndian, ReadBytesExt};
+use hprof_api::ProgressNotifier;
 
 /// Per-worker output from heap segment extraction.
 pub(super) struct HeapSegmentResult {
@@ -306,6 +304,9 @@ pub(super) fn merge_segment_result(ctx: &mut FirstPassContext, seg_result: HeapS
             .add(entry.data_offset, entry.object_id);
     }
     for ep in seg_result.segment_entry_points {
+        // Results are sorted by payload_start, so the
+        // first entry point per segment_index has the
+        // lowest scan_offset — skip duplicates.
         let already = ctx
             .segment_entry_points
             .iter()
@@ -369,8 +370,9 @@ pub(super) fn compute_batch_ranges(
 }
 
 /// Extracts all heap segments — parallel or sequential
-/// depending on total heap size. Reports segment-level
-/// progress via [`ProgressNotifier::segment_completed`].
+/// depending on total heap size and thread count.
+/// Reports byte-level progress via
+/// [`ProgressNotifier::heap_bytes_extracted`].
 pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNotifier) {
     let total_heap_bytes: u64 = ctx
         .result
@@ -382,8 +384,6 @@ pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNot
     let ranges: Vec<_> = ctx.result.heap_record_ranges.clone();
     let data = ctx.data;
     let id_size = ctx.id_size;
-    let total_segments = ranges.len();
-    let mut segments_done: usize = 0;
 
     // Intra-segment chunk size (story 10.2).
     let max_chunk_bytes = match ctx.budget.bytes() {
@@ -402,57 +402,92 @@ pub(super) fn extract_all(ctx: &mut FirstPassContext, notifier: &mut ProgressNot
         .map(|b| b.max(BATCH_FLOOR))
         .unwrap_or(u64::MAX);
 
-    if total_heap_bytes >= PARALLEL_THRESHOLD {
+    // Parallel path: total heap >= threshold AND more
+    // than 1 rayon thread available. When
+    // current_num_threads() == 1, rayon::scope workers
+    // have no thread to run on while the main thread
+    // blocks on rx.iter() — deadlock.
+    if total_heap_bytes >= PARALLEL_THRESHOLD && rayon::current_num_threads() > 1 {
         #[cfg(feature = "dev-profiling")]
         let _par_span = tracing::info_span!("parallel_heap_extraction").entered();
 
         let batches = compute_batch_ranges(&ranges, max_batch_payload);
 
+        // bytes_done is cumulative across ALL batches so
+        // the progress bar never regresses at a batch
+        // boundary.
+        let mut bytes_done: u64 = 0;
+
         for (batch_idx, batch_range) in batches.iter().enumerate() {
             let batch = &ranges[batch_range.clone()];
-            let batch_payload: u64 = batch.iter().map(|r| r.payload_length).sum();
 
             #[cfg(feature = "dev-profiling")]
-            tracing::info!(
-                "heap extraction batch {}/{}: \
-                 {} segment(s), {} bytes payload, \
-                 limit {} bytes",
-                batch_idx + 1,
-                batches.len(),
-                batch.len(),
-                batch_payload,
-                max_batch_payload,
-            );
+            {
+                let batch_payload: u64 = batch.iter().map(|r| r.payload_length).sum();
+                tracing::info!(
+                    "heap extraction batch {}/{}: \
+                     {} segment(s), {} bytes payload, \
+                     limit {} bytes",
+                    batch_idx + 1,
+                    batches.len(),
+                    batch.len(),
+                    batch_payload,
+                    max_batch_payload,
+                );
+            }
             #[cfg(not(feature = "dev-profiling"))]
-            let _ = (batch_idx, batch_payload);
+            let _ = batch_idx;
 
-            let batch_results: Vec<HeapSegmentParsingResult> = batch
-                .par_iter()
-                .map(|r| {
-                    let start = r.payload_start as usize;
-                    let end = start + r.payload_length as usize;
-                    extract_heap_segment(&data[start..end], start, id_size, max_chunk_bytes)
-                })
-                .collect();
+            let (tx, rx) = std::sync::mpsc::channel();
 
-            for parsing_result in batch_results {
-                parsing_result.merge_into(ctx);
-                segments_done += 1;
-                notifier.segment_completed(segments_done, total_segments);
+            rayon::in_place_scope(|s| {
+                for r in batch {
+                    let tx = tx.clone();
+                    s.spawn(move |_| {
+                        let start = r.payload_start as usize;
+                        let end = start + r.payload_length as usize;
+                        let result = extract_heap_segment(
+                            &data[start..end],
+                            start,
+                            id_size,
+                            max_chunk_bytes,
+                        );
+                        let _ = tx.send((r.payload_start, r.payload_length, result));
+                    });
+                }
+                // CRITICAL: drop original tx so
+                // rx.iter() terminates when all worker
+                // clones are dropped.
+                drop(tx);
+            });
+
+            // Drain after scope — calling thread
+            // participates in rayon work-stealing
+            // while the scope waits, maximising
+            // parallelism. Sort by payload_start
+            // before merging (SegmentFilterBuilder
+            // requires non-decreasing offset order).
+            let mut batch_results: Vec<_> = rx.into_iter().collect();
+            batch_results.sort_unstable_by_key(|(start, _, _)| *start);
+            for (_, payload_len, result) in batch_results.drain(..) {
+                result.merge_into(ctx);
+                bytes_done += payload_len;
+                notifier.heap_bytes_extracted(bytes_done, total_heap_bytes);
             }
         }
     } else {
         #[cfg(feature = "dev-profiling")]
         let _seq_span = tracing::info_span!("sequential_heap_extraction").entered();
 
+        let mut bytes_done: u64 = 0;
         for r in &ranges {
             let start = r.payload_start as usize;
             let end = start + r.payload_length as usize;
             let parsing_result =
                 extract_heap_segment(&data[start..end], start, id_size, max_chunk_bytes);
             parsing_result.merge_into(ctx);
-            segments_done += 1;
-            notifier.segment_completed(segments_done, total_segments);
+            bytes_done += r.payload_length;
+            notifier.heap_bytes_extracted(bytes_done, total_heap_bytes);
         }
     }
 }

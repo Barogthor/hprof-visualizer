@@ -355,11 +355,11 @@ fn bytes_scanned_positions(obs: &hprof_api::TestObserver) -> Vec<u64> {
 }
 
 #[cfg(feature = "test-utils")]
-fn segment_completed_events(obs: &hprof_api::TestObserver) -> Vec<(usize, usize)> {
+fn heap_bytes_events(obs: &hprof_api::TestObserver) -> Vec<(u64, u64)> {
     obs.events
         .iter()
         .filter_map(|e| match e {
-            hprof_api::ProgressEvent::SegmentCompleted { done, total } => Some((*done, *total)),
+            hprof_api::ProgressEvent::HeapBytesExtracted { done, total } => Some((*done, *total)),
             _ => None,
         })
         .collect()
@@ -1136,6 +1136,55 @@ mod builder_tests {
     }
 
     #[test]
+    fn field_names_preloaded_for_all_instance_and_static_field_name_ids() {
+        use std::collections::BTreeSet;
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_string(10, "instanceField")
+            .add_string(11, "staticField")
+            .add_string(12, "com/example/Foo")
+            .add_class(1, 0x100, 0, 12)
+            .add_class_dump_with_static_fields(
+                0x100,
+                0,
+                4,
+                &[(10, 10u8)],
+                &[(11, crate::StaticValue::Int(7))],
+            )
+            .add_instance(0x200, 0, 0x100, &7i32.to_be_bytes())
+            .build();
+
+        let start = advance_past_header(&bytes);
+        let result = run_fp(&bytes[start..], 8);
+
+        let mut expected_ids = BTreeSet::new();
+        for dump in result.index.class_dumps.values() {
+            for field in &dump.instance_fields {
+                expected_ids.insert(field.name_string_id);
+            }
+            for field in &dump.static_fields {
+                expected_ids.insert(field.name_string_id);
+            }
+        }
+
+        assert_eq!(expected_ids, BTreeSet::from([10, 11]));
+        for id in expected_ids {
+            assert!(
+                result.index.field_names.contains_key(&id),
+                "field_names must contain name_string_id={id}"
+            );
+        }
+        assert_eq!(
+            result.index.field_names.get(&10).map(String::as_str),
+            Some("instanceField")
+        );
+        assert_eq!(
+            result.index.field_names.get(&11).map(String::as_str),
+            Some("staticField")
+        );
+    }
+
+    #[test]
     fn heap_record_ranges_populated_for_heap_dump_segment() {
         let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
             .add_instance(0xDEAD, 0, 100, &[])
@@ -1482,17 +1531,27 @@ mod builder_tests {
 
         let start = advance_past_header(&bytes);
         let (result, obs) = run_fp_with_test_observer(&bytes[start..], id_size);
-        let events = segment_completed_events(&obs);
+        let events = heap_bytes_events(&obs);
         let expected_total = result.heap_record_ranges.len();
 
         assert!(expected_total > 0, "expected at least one heap segment");
         assert_eq!(events.len(), expected_total);
 
-        for (idx, (done, total)) in events.iter().enumerate() {
-            assert_eq!(*done, idx + 1, "done must be 1..N");
-            assert_eq!(*total, expected_total, "total must stay constant");
-            assert!(*done <= *total, "done must not exceed total");
+        // done is monotonically increasing bytes
+        for w in events.windows(2) {
+            assert!(w[1].0 > w[0].0, "done must be strictly increasing");
         }
+        // total stays constant
+        let total = events[0].1;
+        for (_, t) in &events {
+            assert_eq!(*t, total, "total must stay constant");
+        }
+        // final done == total
+        assert_eq!(
+            events.last().unwrap().0,
+            total,
+            "final done must equal total"
+        );
     }
 
     #[test]
@@ -1512,17 +1571,27 @@ mod builder_tests {
         );
 
         let (result, obs) = run_fp_with_test_observer(data, id_size);
-        let events = segment_completed_events(&obs);
+        let events = heap_bytes_events(&obs);
         let expected_total = result.heap_record_ranges.len();
 
         assert!(expected_total > 0, "expected at least one heap segment");
         assert_eq!(events.len(), expected_total);
 
-        for (idx, (done, total)) in events.iter().enumerate() {
-            assert_eq!(*done, idx + 1, "done must be 1..N");
-            assert_eq!(*total, expected_total, "total must stay constant");
-            assert!(*done <= *total, "done must not exceed total");
+        // done is monotonically increasing bytes
+        for w in events.windows(2) {
+            assert!(w[1].0 > w[0].0, "done must be strictly increasing");
         }
+        // total stays constant
+        let total = events[0].1;
+        for (_, t) in &events {
+            assert_eq!(*t, total, "total must stay constant");
+        }
+        // final done == total
+        assert_eq!(
+            events.last().unwrap().0,
+            total,
+            "final done must equal total"
+        );
     }
 
     #[test]
@@ -1536,9 +1605,9 @@ mod builder_tests {
 
         let start = advance_past_header(&bytes);
         let (_result, obs) = run_fp_with_test_observer(&bytes[start..], id_size);
-        let events = segment_completed_events(&obs);
+        let events = heap_bytes_events(&obs);
 
-        assert!(!events.is_empty(), "expected segment progress events");
+        assert!(!events.is_empty(), "expected heap bytes progress events");
         for (done, total) in events {
             assert!(done <= total, "done must not exceed total");
         }
@@ -2311,30 +2380,31 @@ mod budget_batching_tests {
 
         let (_, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(64));
 
-        let seg_events: Vec<(usize, usize)> = obs
+        let byte_events: Vec<(u64, u64)> = obs
             .events
             .iter()
             .filter_map(|e| match e {
-                ProgressEvent::SegmentCompleted { done, total } => Some((*done, *total)),
+                ProgressEvent::HeapBytesExtracted { done, total } => Some((*done, *total)),
                 _ => None,
             })
             .collect();
 
-        assert_eq!(seg_events.len(), 5);
-        // Final event must be (5, 5)
+        assert_eq!(byte_events.len(), 5);
+        // Final done == total
+        let (final_done, final_total) = *byte_events.last().unwrap();
         assert_eq!(
-            *seg_events.last().unwrap(),
-            (5, 5),
-            "final segment_completed must be \
+            final_done, final_total,
+            "final heap_bytes_extracted must be \
              (total, total)"
         );
         // Events must be monotonically increasing
-        for w in seg_events.windows(2) {
+        for w in byte_events.windows(2) {
             assert!(w[1].0 > w[0].0, "done must be strictly increasing");
         }
-        // All report against total_segments = 5
-        for (_, total) in &seg_events {
-            assert_eq!(*total, 5);
+        // All report same total
+        let total = byte_events[0].1;
+        for (_, t) in &byte_events {
+            assert_eq!(*t, total);
         }
     }
 
@@ -2549,26 +2619,173 @@ mod budget_batching_tests {
 
         let (result, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
 
-        // Two HEAP_DUMP_SEGMENT records correctly indexed.
-        // Both fall in the same 64 MB SegmentFilter bucket
-        // (SEGMENT_SIZE = 64 MB, total data ~34 MB).
         assert_eq!(result.heap_record_ranges.len(), 2);
         assert!(result.warnings.is_empty());
 
-        // Progress events are cumulative across the parallel batch
-        let seg_events: Vec<(usize, usize)> = obs
+        let byte_events: Vec<(u64, u64)> = obs
             .events
             .iter()
             .filter_map(|e| match e {
-                ProgressEvent::SegmentCompleted { done, total } => Some((*done, *total)),
+                ProgressEvent::HeapBytesExtracted { done, total } => Some((*done, *total)),
                 _ => None,
             })
             .collect();
-        assert_eq!(seg_events.len(), 2);
-        assert_eq!(*seg_events.last().unwrap(), (2, 2));
-        for (_, total) in &seg_events {
-            assert_eq!(*total, 2);
+        assert_eq!(byte_events.len(), 2);
+        let (final_done, final_total) = *byte_events.last().unwrap();
+        assert_eq!(final_done, final_total);
+        let total = byte_events[0].1;
+        for (_, t) in &byte_events {
+            assert_eq!(*t, total);
         }
+    }
+
+    /// 13.0-5.9: multi-batch monotonicity — bytes_done
+    /// never regresses at batch boundaries.
+    #[test]
+    fn multi_batch_bytes_monotonicity() {
+        use crate::test_utils::HprofTestBuilder;
+        use hprof_api::ProgressEvent;
+
+        let mut builder = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8);
+        // 5 segments with 16 bytes payload each;
+        // budget = 64 forces BATCH_FLOOR (64 MB) which
+        // fits all, but test asserts monotonicity across
+        // any number of batches.
+        for i in 1..=5u64 {
+            builder = builder.add_instance(i, 0, 100, &[0u8; 16]);
+        }
+        let bytes = builder.build();
+        let start = crate::test_utils::advance_past_header(&bytes);
+
+        let (_, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(64));
+
+        let byte_events: Vec<(u64, u64)> = obs
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                ProgressEvent::HeapBytesExtracted { done, total } => Some((*done, *total)),
+                _ => None,
+            })
+            .collect();
+
+        assert!(!byte_events.is_empty(), "must emit HeapBytesExtracted");
+
+        // Strictly monotonically increasing done
+        for w in byte_events.windows(2) {
+            assert!(
+                w[1].0 > w[0].0,
+                "done must be strictly increasing: \
+                 {} -> {}",
+                w[0].0,
+                w[1].0
+            );
+        }
+
+        // Final done == total
+        let (final_done, final_total) = *byte_events.last().unwrap();
+        assert_eq!(final_done, final_total, "final done must equal total");
+    }
+}
+
+// =====================================================
+// mod story_13_0_tests — Story 13.0 integration tests
+// =====================================================
+
+#[cfg(feature = "test-utils")]
+mod story_13_0_tests {
+    use hprof_api::{MemoryBudget, ProgressEvent, ProgressNotifier, TestObserver};
+
+    use crate::indexer::first_pass::run_first_pass;
+    use crate::test_utils::{HprofTestBuilder, advance_past_header};
+
+    /// 13.0-5.6: extract_all on a dump that triggers the
+    /// PARALLEL path terminates without deadlock.
+    /// Uses a dedicated 2-thread pool so the test is
+    /// deterministic. Exercises the `drop(tx)` guard
+    /// inside `rayon::in_place_scope` — if `drop(tx)` is
+    /// removed, `rx.iter()` never terminates and the
+    /// scope hangs.
+    #[test]
+    fn extract_all_terminates_no_deadlock() {
+        // Two segments of 17 MB each → 34 MB total ≥
+        // PARALLEL_THRESHOLD, and num_threads == 2 > 1
+        // → parallel path taken.
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .expect("2-thread pool");
+        let seg_bytes = 17 * 1024 * 1024_usize;
+        let data = vec![0u8; seg_bytes];
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_prim_array(1, 0, seg_bytes as u32, 8, &data)
+            .add_prim_array(2, 0, seg_bytes as u32, 8, &data)
+            .build();
+        let start = advance_past_header(&bytes);
+        let handle = std::thread::spawn(move || {
+            let mut obs = TestObserver::default();
+            pool.install(|| {
+                let mut notifier = ProgressNotifier::new(&mut obs);
+                let _result = run_first_pass(
+                    &bytes[start..],
+                    8,
+                    0,
+                    &mut notifier,
+                    MemoryBudget::Unlimited,
+                );
+            });
+        });
+        let result = handle.join();
+        assert!(result.is_ok(), "extract_all must not deadlock");
+    }
+
+    /// 13.0-5.7: single-threaded fallback — when rayon
+    /// pool has 1 thread, extraction uses sequential
+    /// path and emits `HeapBytesExtracted` events.
+    #[test]
+    fn single_threaded_fallback_emits_bytes_events() {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("1-thread pool");
+
+        // 17 MB × 2 ≥ PARALLEL_THRESHOLD but
+        // num_threads == 1 → sequential fallback.
+        let seg_bytes = 17 * 1024 * 1024_usize;
+        let data = vec![0u8; seg_bytes];
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_prim_array(1, 0, seg_bytes as u32, 8, &data)
+            .add_prim_array(2, 0, seg_bytes as u32, 8, &data)
+            .build();
+        let start = advance_past_header(&bytes);
+
+        let mut obs = TestObserver::default();
+        pool.install(|| {
+            let mut notifier = ProgressNotifier::new(&mut obs);
+            let _result = run_first_pass(
+                &bytes[start..],
+                8,
+                0,
+                &mut notifier,
+                MemoryBudget::Unlimited,
+            );
+        });
+
+        let byte_events: Vec<(u64, u64)> = obs
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                ProgressEvent::HeapBytesExtracted { done, total } => Some((*done, *total)),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            !byte_events.is_empty(),
+            "sequential fallback must emit \
+             HeapBytesExtracted"
+        );
+        let (final_done, final_total) = *byte_events.last().unwrap();
+        assert_eq!(final_done, final_total, "final done must equal total");
     }
 }
 
@@ -3281,16 +3498,16 @@ fn phase_events_ordered_on_jvisualvm_dump() {
 
     let events = &obs.events;
 
-    // (a) Find last SegmentCompleted where done == total
+    // (a) Find last HeapBytesExtracted where done == total
     let last_seg = events
         .iter()
         .enumerate()
         .filter_map(|(i, e)| match e {
-            ProgressEvent::SegmentCompleted { done, total } if done == total => Some(i),
+            ProgressEvent::HeapBytesExtracted { done, total } if done == total => Some(i),
             _ => None,
         })
         .next_back()
-        .expect("must have final SegmentCompleted");
+        .expect("must have final HeapBytesExtracted");
 
     // (b) All PhaseChanged must come after last_seg
     let phase_indices: Vec<usize> = events

@@ -236,7 +236,7 @@ pub(super) fn append_fields_expanded(
     }
 }
 
-/// Appends a `[static]` header followed by static-field rows
+/// Appends a `[static fields]` header followed by static-field rows
 /// for `object_id`. Caps output at `STATIC_FIELDS_RENDER_LIMIT`
 /// and appends a `[+N more]` sentinel when fields are truncated.
 pub(super) fn append_static_items(
@@ -254,21 +254,32 @@ pub(super) fn append_static_items(
         return;
     }
 
-    let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
-    let hidden = static_fields.len().saturating_sub(shown);
+    // Snapshot/favorites mode: no static section at all.
+    if ctx.static_section_expanded.is_none() {
+        return;
+    }
+
+    let total = static_fields.len();
+    let expanded = ctx.is_static_section_expanded(parent_path);
     dbg_log!(
-        "append_static_items(0x{:X}): total={} shown={} \
-         hidden={}",
+        "append_static_items(0x{:X}): total={} expanded={}",
         object_id,
-        static_fields.len(),
-        shown,
-        hidden
+        total,
+        expanded,
     );
 
+    let indicator = if expanded { "\u{25BE}" } else { "\u{25B8}" };
     items.push(ListItem::new(Line::from(Span::styled(
-        format!("{indent}[static]"),
+        format!("{indent}{indicator} [static fields] ({total})"),
         THEME.null_value,
     ))));
+
+    if !expanded {
+        return;
+    }
+
+    let shown = total.min(STATIC_FIELDS_RENDER_LIMIT);
+    let hidden = total.saturating_sub(shown);
 
     let field_indent = format!("{indent}  ");
     let child_indent = format!("{indent}    ");

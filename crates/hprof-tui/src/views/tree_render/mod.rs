@@ -73,6 +73,9 @@ pub(super) struct RenderCtx<'a> {
     hidden_fields: Option<&'a HashSet<HideKey>>,
     /// Mirrors `RenderOptions::show_hidden`.
     show_hidden: bool,
+    /// Tracks which `[static fields]` sections are expanded.
+    /// `None` → treat as all collapsed (snapshot/favorites mode).
+    static_section_expanded: Option<&'a HashSet<NavigationPath>>,
 }
 
 impl<'a> RenderCtx<'a> {
@@ -109,6 +112,16 @@ impl<'a> RenderCtx<'a> {
         helpers::get_phase(object_id, self.object_phases)
     }
 
+    /// Whether the `[static fields]` section at `path` is
+    /// expanded. Returns `false` when `path` is `None` or
+    /// `static_section_expanded` is `None` (snapshot/favorites).
+    pub(super) fn is_static_section_expanded(&self, path: Option<&NavigationPath>) -> bool {
+        match (self.static_section_expanded, path) {
+            (Some(set), Some(p)) => set.contains(p),
+            _ => false,
+        }
+    }
+
     fn has_snapshot_data(&self, object_id: u64) -> bool {
         self.object_fields.contains_key(&object_id)
             || self.object_static_fields.contains_key(&object_id)
@@ -138,6 +151,7 @@ pub(crate) fn render_variable_tree(
     hidden_fields: Option<&HashSet<HideKey>>,
     expansion_phases: Option<&HashMap<NavigationPath, ExpansionPhase>>,
     local_collapsed: Option<&HashSet<NavigationPath>>,
+    static_section_expanded: Option<&HashSet<NavigationPath>>,
 ) -> Vec<ListItem<'static>> {
     let ctx = RenderCtx {
         object_fields,
@@ -151,6 +165,7 @@ pub(crate) fn render_variable_tree(
         snapshot_mode: options.snapshot_mode,
         hidden_fields,
         show_hidden: options.show_hidden,
+        static_section_expanded,
     };
     let build_paths = expansion_phases.is_some() || local_collapsed.is_some();
     let mut items = Vec::new();

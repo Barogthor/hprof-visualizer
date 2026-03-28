@@ -4,7 +4,7 @@
 //! the terminal and drives the 16ms event loop (60 fps target, NFR4).
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io,
     sync::{
         Arc,
@@ -24,11 +24,12 @@ use ratatui::{
 use crate::{
     favorites::{PinnedItem, PinnedSnapshot, snapshot_from_cursor},
     input::{self, InputEvent},
+    keymap::Keymap,
     views::{
         favorites_panel::{FavoritesPanel, FavoritesPanelState},
         help_bar::{self, HelpBar, HelpContext},
         stack_view::{
-            ChunkState, CollectionChunks, ExpansionPhase, FrameId, NavigationPath,
+            ChunkState, CollectionChunks, ExpandTarget, ExpansionPhase, FrameId, NavigationPath,
             NavigationPathBuilder, PathSegment, RenderCursor, StackState, StackView, ThreadId,
             compute_chunk_ranges,
         },
@@ -187,11 +188,13 @@ pub struct App<E: NavigationEngine> {
     /// non-idle. Arms on `Idle → non-Idle`; resets to `None` on return
     /// to `Idle`.
     loading_until: Option<Instant>,
+    /// Active keyboard layout mapping for configurable key bindings.
+    keymap: Keymap,
 }
 
 impl<E: NavigationEngine> App<E> {
     /// Constructs the app from a ready engine. Loads thread list immediately.
-    pub fn new(engine: E, filename: String) -> Self {
+    pub fn new(engine: E, filename: String, keymap: Keymap) -> Self {
         let engine = Arc::new(engine);
         let threads = engine.list_threads();
         let thread_count = threads.len();
@@ -230,6 +233,7 @@ impl<E: NavigationEngine> App<E> {
             spinner_state: SpinnerState::Idle,
             spinner_tick: 0,
             loading_until: None,
+            keymap,
         }
     }
 
@@ -890,6 +894,13 @@ impl<E: NavigationEngine> App<E> {
                     }
                 }
             }
+            // c — batch expand current pinned item
+            InputEvent::BatchExpand => {
+                let idx = self.favorites_list_state.selected_index();
+                if let Some(item) = self.pinned.get_mut(idx) {
+                    item.local_collapsed.clear();
+                }
+            }
             InputEvent::Left => {
                 if !self.pinned.is_empty()
                     && self
@@ -965,12 +976,8 @@ impl<E: NavigationEngine> App<E> {
                 self.navigate_to_path(thread_id, &nav_path);
                 self.focus = Focus::StackFrames;
             }
-            // h — hide / show field (AC1, AC2)
-            // 'h'/'H' are caught here as SearchChar because input::from_key maps
-            // unbound printable keys to SearchChar. Focus-based dispatch ensures
-            // these arms fire only when the favorites panel is focused, leaving
-            // thread-list incremental search fully intact.
-            InputEvent::SearchChar('h') => {
+            // h — hide / show field
+            InputEvent::HideField => {
                 if let Some((key, is_hidden)) = self.favorites_list_state.field_key_at_cursor() {
                     let idx = self.favorites_list_state.selected_index();
                     if let Some(item) = self.pinned.get_mut(idx) {
@@ -985,8 +992,17 @@ impl<E: NavigationEngine> App<E> {
                     }
                 }
             }
+            // b / n — jump between pinned items
+            // FUTURE: guard with is_search_active() if favorites search is added
+            InputEvent::PrevPin => {
+                self.favorites_list_state.jump_to_prev_pin();
+            }
+            // FUTURE: guard with is_search_active() if favorites search is added
+            InputEvent::NextPin => {
+                self.favorites_list_state.jump_to_next_pin();
+            }
             // H — toggle reveal mode for hidden rows in current snapshot
-            InputEvent::SearchChar('H') => {
+            InputEvent::RevealHidden => {
                 let idx = self.favorites_list_state.selected_index();
                 if let Some(item) = self.pinned.get_mut(idx) {
                     item.show_hidden = !item.show_hidden;
@@ -1139,9 +1155,6 @@ impl<E: NavigationEngine> App<E> {
                 InputEvent::Tab => {
                     self.cycle_focus();
                 }
-                InputEvent::SearchChar('s') => {
-                    self.thread_list.activate_search();
-                }
                 InputEvent::Quit => return AppAction::Quit,
                 _ => {}
             }
@@ -1248,6 +1261,19 @@ impl<E: NavigationEngine> App<E> {
                 }
             }
             InputEvent::Right => {
+                // Expand static section if collapsed; no-op if expanded
+                if let Some(s) = &self.stack_state
+                    && let RenderCursor::SectionHeader(path) = s.cursor().clone()
+                {
+                    if !s.is_static_section_expanded(&path) {
+                        self.stack_state
+                            .as_mut()
+                            .unwrap()
+                            .toggle_static_section(&path);
+                        return AppAction::Continue;
+                    }
+                    return AppAction::Continue;
+                }
                 enum RightCmd {
                     ExpandFrame(u64),
                     StartObj(u64, NavigationPath),
@@ -1404,6 +1430,18 @@ impl<E: NavigationEngine> App<E> {
                 }
             }
             InputEvent::Left => {
+                // Collapse expanded static section; if already
+                // collapsed, fall through to NavigateToParent.
+                if let Some(s) = &self.stack_state
+                    && let RenderCursor::SectionHeader(path) = s.cursor().clone()
+                    && s.is_static_section_expanded(&path)
+                {
+                    self.stack_state
+                        .as_mut()
+                        .unwrap()
+                        .toggle_static_section(&path);
+                    return AppAction::Continue;
+                }
                 enum LeftCmd {
                     CollapseFrame(u64),
                     CollapseObj(u64, NavigationPath),
@@ -1550,6 +1588,16 @@ impl<E: NavigationEngine> App<E> {
                 }
             }
             InputEvent::Enter => {
+                // Toggle static section on SectionHeader
+                if let Some(s) = &self.stack_state
+                    && let RenderCursor::SectionHeader(path) = s.cursor().clone()
+                {
+                    self.stack_state
+                        .as_mut()
+                        .unwrap()
+                        .toggle_static_section(&path);
+                    return AppAction::Continue;
+                }
                 enum Cmd {
                     CollapseFrame(u64),
                     ExpandFrame(u64),
@@ -1804,6 +1852,91 @@ impl<E: NavigationEngine> App<E> {
                         self.pending_pages.retain(|&(id, _), _| id != cid);
                     }
                     None => {}
+                }
+            }
+            // c — progressive expand from cursor position
+            InputEvent::BatchExpand => {
+                let cursor_info = self.stack_state.as_ref().and_then(|s| {
+                    let path = match s.cursor().clone() {
+                        RenderCursor::At(p) | RenderCursor::LoadingNode(p) => p,
+                        _ => return None,
+                    };
+                    let PathSegment::Frame(fid) = path.segments().first()? else {
+                        return None;
+                    };
+                    Some((fid.0, path))
+                });
+                if let Some((fid, cursor_path)) = cursor_info {
+                    if !self
+                        .stack_state
+                        .as_ref()
+                        .is_some_and(|s| s.is_expanded(fid))
+                    {
+                        // Frame collapsed → expand it.
+                        let vars = self.engine.get_local_variables(fid);
+                        if let Some(s) = &mut self.stack_state {
+                            s.toggle_expand(fid, vars);
+                        }
+                    } else if cursor_path.segments().len() >= 2 {
+                        // Expand collapsed objects under cursor
+                        // (only when on a specific node, not the
+                        // frame header).
+                        let targets = self
+                            .stack_state
+                            .as_ref()
+                            .map(|s| s.collapsed_expandable_at(&cursor_path))
+                            .unwrap_or_default();
+                        let mut seen_oids = HashSet::new();
+                        let pending_oids: HashSet<u64> = self
+                            .pending_expansions
+                            .values()
+                            .map(|pe| pe.object_id)
+                            .collect();
+                        let mut needs_sync = false;
+                        for (target, path) in targets {
+                            match target {
+                                ExpandTarget::Object(oid) => {
+                                    if !seen_oids.contains(&oid) && !pending_oids.contains(&oid) {
+                                        seen_oids.insert(oid);
+                                        self.start_object_expansion(oid, path);
+                                    }
+                                }
+                                ExpandTarget::Collection(cid, ec) => {
+                                    if seen_oids.contains(&cid)
+                                        || pending_oids.contains(&cid)
+                                        || ec > 100
+                                    {
+                                        continue;
+                                    }
+                                    seen_oids.insert(cid);
+                                    let limit = (ec as usize).min(100);
+                                    let chunks = CollectionChunks {
+                                        total_count: ec,
+                                        eager_page: None,
+                                        chunk_pages: compute_chunk_ranges(ec)
+                                            .into_iter()
+                                            .map(|(o, _)| (o, ChunkState::Collapsed))
+                                            .collect(),
+                                    };
+                                    if let Some(s) = &mut self.stack_state {
+                                        s.expansion.collection_chunks.insert(cid, chunks);
+                                        s.expansion
+                                            .expansion_phases
+                                            .insert(path.clone(), ExpansionPhase::Expanded);
+                                    }
+                                    self.start_collection_page_load(cid, 0, limit);
+                                    self.engine.spawn_walker(cid);
+                                    if let Some(pp) = self.pending_pages.get_mut(&(cid, 0)) {
+                                        pp.parent_path = Some(path);
+                                    }
+                                    needs_sync = true;
+                                }
+                            }
+                        }
+                        if needs_sync && let Some(s) = &mut self.stack_state {
+                            s.sync_nav();
+                        }
+                    }
                 }
             }
             InputEvent::ToggleFavorite => {
@@ -2343,7 +2476,7 @@ impl<E: NavigationEngine> App<E> {
 
         // Store visible heights for PageUp/PageDown.
         self.thread_list
-            .set_visible_height(list_area.height.saturating_sub(2) as usize);
+            .set_visible_height(list_area.height.saturating_sub(6) as usize);
         if let Some(ref mut ss) = self.stack_state {
             ss.set_visible_height(stack_area.height.saturating_sub(2) as usize);
         }
@@ -2432,6 +2565,8 @@ impl<E: NavigationEngine> App<E> {
         } else {
             0
         };
+        let mem_skeleton = self.engine.skeleton_bytes();
+        let mem_cache = self.engine.cache_bytes();
         frame.render_widget(
             StatusBar {
                 filename: &self.filename,
@@ -2444,6 +2579,9 @@ impl<E: NavigationEngine> App<E> {
                 spinner_state: self.spinner_state,
                 spinner_tick: self.spinner_tick,
                 walker_info: self.current_walker_info(),
+                mem_skeleton,
+                mem_cache,
+                mem_max: self.engine.memory_budget(),
             },
             status_area,
         );
@@ -2458,7 +2596,13 @@ impl<E: NavigationEngine> App<E> {
                     Focus::Favorites => HelpContext::Favorites,
                 }
             };
-            frame.render_widget(HelpBar { context: ctx }, area);
+            frame.render_widget(
+                HelpBar {
+                    context: ctx,
+                    keymap: self.keymap.clone(),
+                },
+                area,
+            );
         }
     }
 }
@@ -2508,6 +2652,7 @@ impl Drop for TerminalGuard {
 pub fn run_tui<E: NavigationEngine + Send + Sync + 'static>(
     engine: E,
     filename: String,
+    keymap: Keymap,
 ) -> io::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -2529,22 +2674,23 @@ pub fn run_tui<E: NavigationEngine + Send + Sync + 'static>(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    run_loop(&mut terminal, engine, filename)
+    run_loop(&mut terminal, engine, filename, keymap)
 }
 
 fn run_loop<E: NavigationEngine + Send + Sync + 'static>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     engine: E,
     filename: String,
+    keymap: Keymap,
 ) -> io::Result<()> {
-    let mut app = App::new(engine, filename);
+    let mut app = App::new(engine, filename, keymap);
 
     loop {
         // 1. Input handling — Escape clears pending nav before polls can resume.
         if event::poll(Duration::from_millis(16))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && let Some(ev) = input::from_key(key)
+            && let Some(ev) = input::from_key(key, &app.keymap)
             && app.handle_input(ev) == AppAction::Quit
         {
             return Ok(());

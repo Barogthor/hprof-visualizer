@@ -30,8 +30,8 @@ pub trait ParseProgressObserver {
     /// `total`. Called once per segment regardless of
     /// parallel or sequential path. `done` is strictly
     /// monotonically increasing — the counter is
-    /// incremented in the main thread after
-    /// `par_iter().collect()`, never inside workers.
+    /// incremented on the main thread after each
+    /// segment result is merged.
     fn on_segment_completed(&mut self, done: usize, total: usize);
 
     /// Thread name resolution progress.
@@ -42,6 +42,15 @@ pub trait ParseProgressObserver {
     /// `on_segment_completed`, this does NOT increment
     /// by 1. Never called when `total == 0`.
     fn on_names_resolved(&mut self, done: usize, total: usize);
+
+    /// Heap extraction byte-level progress.
+    ///
+    /// `done` and `total` are `u64` (not `usize`) because
+    /// byte counts can exceed 4 GB on 32-bit targets.
+    /// Called once per segment completion with cumulative
+    /// bytes extracted so far. Default no-op so existing
+    /// impls don't break.
+    fn on_heap_bytes_extracted(&mut self, _done: u64, _total: u64) {}
 
     /// A named loading phase has started.
     ///
@@ -93,6 +102,12 @@ impl<'a> ProgressNotifier<'a> {
         self.0.on_names_resolved(done, total);
     }
 
+    /// Reports heap extraction byte-level progress.
+    pub fn heap_bytes_extracted(&mut self, done: u64, total: u64) {
+        debug_assert!(done <= total);
+        self.0.on_heap_bytes_extracted(done, total);
+    }
+
     /// Reports a loading phase transition.
     pub fn phase_changed(&mut self, phase: &str) {
         self.0.on_phase_changed(phase);
@@ -104,6 +119,7 @@ impl<'a> ProgressNotifier<'a> {
 pub enum ProgressEvent {
     BytesScanned(u64),
     SegmentCompleted { done: usize, total: usize },
+    HeapBytesExtracted { done: u64, total: u64 },
     NamesResolved { done: usize, total: usize },
     PhaseChanged(String),
 }
@@ -122,6 +138,10 @@ impl ParseProgressObserver for TestObserver {
     fn on_segment_completed(&mut self, done: usize, total: usize) {
         self.events
             .push(ProgressEvent::SegmentCompleted { done, total });
+    }
+    fn on_heap_bytes_extracted(&mut self, done: u64, total: u64) {
+        self.events
+            .push(ProgressEvent::HeapBytesExtracted { done, total });
     }
     fn on_names_resolved(&mut self, done: usize, total: usize) {
         self.events
@@ -176,9 +196,10 @@ mod test_utils_tests {
         let mut obs = TestObserver::default();
         obs.on_bytes_scanned(100);
         obs.on_segment_completed(1, 3);
+        obs.on_heap_bytes_extracted(1024, 4096);
         obs.on_names_resolved(2, 4);
         obs.on_phase_changed("phase\u{2026}");
-        assert_eq!(obs.events.len(), 4);
+        assert_eq!(obs.events.len(), 5);
         assert_eq!(obs.events[0], ProgressEvent::BytesScanned(100));
         assert_eq!(
             obs.events[1],
@@ -186,10 +207,17 @@ mod test_utils_tests {
         );
         assert_eq!(
             obs.events[2],
-            ProgressEvent::NamesResolved { done: 2, total: 4 }
+            ProgressEvent::HeapBytesExtracted {
+                done: 1024,
+                total: 4096
+            }
         );
         assert_eq!(
             obs.events[3],
+            ProgressEvent::NamesResolved { done: 2, total: 4 }
+        );
+        assert_eq!(
+            obs.events[4],
             ProgressEvent::PhaseChanged("phase\u{2026}".to_owned())
         );
     }

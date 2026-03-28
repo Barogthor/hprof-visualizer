@@ -868,6 +868,7 @@ mod collection_tests {
                 len: value.len() as u32,
             },
         );
+        index.field_names.insert(id, value.to_string());
     }
 
     fn make_int_index(
@@ -886,6 +887,7 @@ mod collection_tests {
                 len: field_name.len() as u32,
             },
         );
+        index.field_names.insert(1, field_name.to_string());
         index.class_dumps.insert(
             class_id,
             ClassDumpInfo {
@@ -1409,6 +1411,28 @@ mod static_fields_tests {
                 inline_value: None,
             }
         );
+    }
+
+    #[test]
+    fn get_static_fields_prefers_preloaded_field_name_cache() {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_string(1, "counter-from-strings")
+            .add_class_dump_with_static_fields(100, 0, 0, &[], &[(1, StaticValue::Int(42))])
+            .build();
+        let mut engine = engine_from_bytes(&bytes);
+
+        let hfile = std::sync::Arc::get_mut(&mut engine.hfile)
+            .expect("engine must own a unique Arc<HprofFile> in tests");
+        hfile
+            .index
+            .field_names
+            .insert(1, "counter-from-cache".to_string());
+
+        let fields = engine.get_static_fields(100);
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "counter-from-cache");
+        assert_eq!(fields[0].value, crate::engine::FieldValue::Int(42));
     }
 
     #[test]

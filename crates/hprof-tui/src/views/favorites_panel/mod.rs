@@ -19,8 +19,7 @@ use crate::{
     views::{
         stack_view::{
             ChunkState, CollectionChunks, CollectionId, EntryIdx, ExpansionPhase, FieldIdx,
-            FrameId, NavigationPath, NavigationPathBuilder, STATIC_FIELDS_RENDER_LIMIT,
-            StaticFieldIdx, VarIdx, compute_chunk_ranges,
+            FrameId, NavigationPath, NavigationPathBuilder, VarIdx, compute_chunk_ranges,
         },
         tree_render::{RenderOptions, TreeRoot, render_variable_tree},
     },
@@ -239,6 +238,24 @@ impl FavoritesPanelState {
             .copied()
     }
 
+    /// Jump to the previous pinned item's header row.
+    pub fn jump_to_prev_pin(&mut self) {
+        if self.selected_item > 0 {
+            self.selected_item -= 1;
+            self.sub_row = 0;
+            self.clamp_sub_row();
+        }
+    }
+
+    /// Jump to the next pinned item's header row.
+    pub fn jump_to_next_pin(&mut self) {
+        if self.selected_item + 1 < self.items_len {
+            self.selected_item += 1;
+            self.sub_row = 0;
+            self.clamp_sub_row();
+        }
+    }
+
     pub(crate) fn clamp_sub_row(&mut self) {
         let max_sub_row = self
             .row_counts
@@ -336,144 +353,13 @@ impl<'a> MetadataCollector<'a> {
             || self.collection_chunks.contains_key(&object_id)
     }
 
-    fn collect_static_rows(&mut self, object_id: u64, parent_path: &NavigationPath, depth: usize) {
-        let Some(static_fields) = self.object_static_fields.get(&object_id) else {
-            return;
-        };
-        if static_fields.is_empty() {
-            return;
-        }
-
-        self.push_row(None); // [static]
-        let shown = static_fields.len().min(STATIC_FIELDS_RENDER_LIMIT);
-        for (si, field) in static_fields.iter().take(shown).enumerate() {
-            let static_path = NavigationPathBuilder::extend(parent_path.clone())
-                .static_field(StaticFieldIdx(si))
-                .build();
-
-            let (child_phase, toggleable, is_collection) =
-                if let FieldValue::ObjectRef {
-                    id, entry_count, ..
-                } = field.value
-                {
-                    self.resolve_at_path(id, entry_count, &static_path)
-                } else {
-                    (ExpansionPhase::Collapsed, false, false)
-                };
-
-            let row = self.push_row(if toggleable {
-                Some(static_path.clone())
-            } else {
-                None
-            });
-            if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
-                self.kind_map
-                    .insert(row, (id, matches!(child_phase, ExpansionPhase::Collapsed)));
-            }
-
-            if is_collection {
-                if matches!(child_phase, ExpansionPhase::Expanded)
-                    && let FieldValue::ObjectRef {
-                        id,
-                        entry_count: Some(_),
-                        ..
-                    } = field.value
-                    && let Some(cc) = self.collection_chunks.get(&id)
-                {
-                    self.collect_collection_rows(id, cc, &static_path);
-                }
-                continue;
-            }
-
-            if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
-                let mut visited = HashSet::new();
-                self.collect_static_object_rows(id, &static_path, &mut visited, depth + 1);
-            }
-        }
-
-        if static_fields.len() > shown {
-            self.push_row(None); // [+N more static fields]
-        }
-    }
-
-    fn collect_static_object_rows(
+    fn collect_static_rows(
         &mut self,
-        obj_id: u64,
-        path: &NavigationPath,
-        visited: &mut HashSet<u64>,
-        depth: usize,
+        _object_id: u64,
+        _parent_path: &NavigationPath,
+        _depth: usize,
     ) {
-        if depth >= 16 {
-            return;
-        }
-        match self.phase_for_path(obj_id, path) {
-            ExpansionPhase::Collapsed | ExpansionPhase::Failed => {}
-            ExpansionPhase::Loading => unreachable!("frozen snapshot"),
-            ExpansionPhase::Expanded => {
-                let field_list = self
-                    .object_fields
-                    .get(&obj_id)
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]);
-                if field_list.is_empty() {
-                    self.push_row(None);
-                    return;
-                }
-
-                visited.insert(obj_id);
-                for (fi, field) in field_list.iter().enumerate() {
-                    if let FieldValue::ObjectRef { id, .. } = &field.value
-                        && visited.contains(id)
-                    {
-                        self.push_row(None);
-                        continue;
-                    }
-
-                    let child_path = NavigationPathBuilder::extend(path.clone())
-                        .field(FieldIdx(fi))
-                        .build();
-
-                    let (child_phase, toggleable, is_collection) =
-                        if let FieldValue::ObjectRef {
-                            id, entry_count, ..
-                        } = field.value
-                        {
-                            self.resolve_at_path(id, entry_count, &child_path)
-                        } else {
-                            (ExpansionPhase::Collapsed, false, false)
-                        };
-
-                    let row = self.push_row(if toggleable {
-                        Some(child_path.clone())
-                    } else {
-                        None
-                    });
-                    if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
-                        self.kind_map
-                            .insert(row, (id, matches!(child_phase, ExpansionPhase::Collapsed)));
-                    }
-
-                    if is_collection {
-                        if matches!(child_phase, ExpansionPhase::Expanded)
-                            && let FieldValue::ObjectRef {
-                                id,
-                                entry_count: Some(_),
-                                ..
-                            } = field.value
-                            && let Some(cc) = self.collection_chunks.get(&id)
-                        {
-                            self.collect_collection_rows(id, cc, &child_path);
-                        }
-                        continue;
-                    }
-
-                    if toggleable && let FieldValue::ObjectRef { id, .. } = field.value {
-                        self.collect_static_object_rows(id, &child_path, visited, depth + 1);
-                    }
-                }
-                visited.remove(&obj_id);
-            }
-        }
+        // Static fields are not shown in snapshots — skip entirely.
     }
 
     fn collect_frame_rows(&mut self, vars: &[VariableInfo], frame_id: u64) {
@@ -868,6 +754,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                     Some(&item.hidden_fields),
                     None,
                     Some(&item.local_collapsed),
+                    None,
                 )
                 .len()
                     + 1
@@ -929,6 +816,7 @@ fn collect_row_metadata(item: &PinnedItem) -> RowMetadata {
                     Some(&item.hidden_fields),
                     None,
                     Some(&item.local_collapsed),
+                    None,
                 )
                 .len()
                     + 1
@@ -1044,6 +932,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         Some(&item.hidden_fields),
                         None,
                         Some(&item.local_collapsed),
+                        None,
                     );
                     items.extend(tree);
                 }
@@ -1080,6 +969,7 @@ impl StatefulWidget for FavoritesPanel<'_> {
                         Some(&item.hidden_fields),
                         None,
                         Some(&item.local_collapsed),
+                        None,
                     );
                     items.extend(tree);
                 }

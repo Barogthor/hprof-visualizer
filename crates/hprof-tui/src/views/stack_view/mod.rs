@@ -9,7 +9,7 @@ mod state;
 mod types;
 mod widget;
 
-pub use state::StackState;
+pub use state::{ExpandTarget, StackState};
 pub use types::{
     ChunkOffset, ChunkState, CollectionChunks, CollectionId, EntryIdx, ExpansionPhase, FieldIdx,
     FrameId, NavigationPath, NavigationPathBuilder, PathSegment, RenderCursor, StaticFieldIdx,

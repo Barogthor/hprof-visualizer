@@ -30,7 +30,7 @@ cargo fmt -- --check  # Check formatting without modifying
 
 ## Git rules
 - Do not add a co-authored
-- Always check if files are ignored before adding them for staging
+- DO NOT EVER ADD IGNORED FILES without APPROVAL
 
 ## Report document
 - When asking for a report, always persist the result in a file preferably markdown in the folder docs/report at the project root.

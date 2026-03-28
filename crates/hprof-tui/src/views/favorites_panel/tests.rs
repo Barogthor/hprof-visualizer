@@ -406,13 +406,14 @@ mod rendering_tests {
             30,
         );
 
+        // Static fields not shown in snapshots at all.
         assert!(
-            text.contains("[static]"),
-            "expected static section, got: {text:?}"
+            !text.contains("[static fields]"),
+            "static header must not appear in snapshot: {text:?}"
         );
         assert!(
-            text.contains("SOME_STATIC"),
-            "expected static field label, got: {text:?}"
+            !text.contains("SOME_STATIC"),
+            "static field must be hidden in snapshot: {text:?}"
         );
     }
 }
@@ -571,6 +572,7 @@ mod row_metadata_tests {
             None,
             None,
             None,
+            None,
         );
 
         assert_eq!(row_count, rendered.len() + 2);
@@ -700,6 +702,7 @@ mod row_metadata_tests {
             None,
             None,
             None,
+            None,
         );
 
         assert_eq!(row_count, rendered.len() + 2);
@@ -809,6 +812,7 @@ mod row_metadata_tests {
                 snapshot_mode: true,
                 show_hidden: false,
             },
+            None,
             None,
             None,
             None,
@@ -1091,6 +1095,7 @@ mod hide_field_tests {
             None,
             None,
             None,
+            None,
         );
         // header=1, ObjectRef row=1, 2 child primitives=2, separator=1 → row_count=5
         assert_eq!(row_count_base, 5);
@@ -1130,6 +1135,7 @@ mod hide_field_tests {
                 show_hidden: false,
             },
             Some(&hide_set),
+            None,
             None,
             None,
         );
@@ -1172,6 +1178,7 @@ mod hide_field_tests {
                 show_hidden: true,
             },
             Some(&item_revealed.hidden_fields),
+            None,
             None,
             None,
         );
@@ -1329,6 +1336,7 @@ mod path_based_collapse_tests {
             None,
             None,
             Some(&item.local_collapsed),
+            None,
         );
         items.iter().map(|li| format!("{li:?}")).collect()
     }
@@ -1640,5 +1648,72 @@ mod path_based_collapse_tests {
         // Collapsed var[0] + expanded var[1] with child x: 1
         // header=1, var0(+)=1, var1(-)=1, x:1=1, separator=1 → 5
         assert_eq!(row_count, 5);
+    }
+}
+
+mod jump_pin_tests {
+    use super::*;
+
+    fn state_with_items(count: usize) -> FavoritesPanelState {
+        let mut s = FavoritesPanelState::default();
+        s.set_items_len(count);
+        // Give each item 3 rows
+        let counts = vec![3; count];
+        let km = vec![HashMap::new(); count];
+        let sm = vec![HashMap::new(); count];
+        let fm = vec![HashMap::new(); count];
+        let pm = vec![Vec::new(); count];
+        s.update_row_metadata(counts, km, sm, fm, pm);
+        s
+    }
+
+    #[test]
+    fn jump_to_prev_pin_from_item_2() {
+        let mut s = state_with_items(3);
+        s.set_selected_index(Some(2));
+        s.jump_to_prev_pin();
+        assert_eq!(s.selected_index(), 1);
+    }
+
+    #[test]
+    fn jump_to_prev_pin_at_first_item_is_noop() {
+        let mut s = state_with_items(3);
+        s.jump_to_prev_pin();
+        assert_eq!(s.selected_index(), 0);
+    }
+
+    #[test]
+    fn jump_to_next_pin_from_item_0() {
+        let mut s = state_with_items(3);
+        s.jump_to_next_pin();
+        assert_eq!(s.selected_index(), 1);
+    }
+
+    #[test]
+    fn jump_to_next_pin_at_last_item_is_noop() {
+        let mut s = state_with_items(3);
+        s.set_selected_index(Some(2));
+        s.jump_to_next_pin();
+        assert_eq!(s.selected_index(), 2);
+    }
+
+    #[test]
+    fn jump_to_next_pin_resets_sub_row() {
+        let mut s = state_with_items(3);
+        // Manually set sub_row > 0 via move_down
+        s.move_down();
+        s.move_down();
+        s.jump_to_next_pin();
+        // After jump, sub_row should be 0
+        // We verify by checking abs_row = sum(row_counts[0..1]) + 0
+        assert_eq!(s.abs_row(), 3); // 3 rows for item 0, sub_row=0
+    }
+
+    #[test]
+    fn jump_to_next_pin_empty_items_no_panic() {
+        let mut s = FavoritesPanelState::default();
+        s.set_items_len(0);
+        s.jump_to_next_pin();
+        assert_eq!(s.selected_index(), 0);
     }
 }

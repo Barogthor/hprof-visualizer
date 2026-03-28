@@ -6,6 +6,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::keymap::Keymap;
+
 /// High-level TUI input events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
@@ -59,62 +61,117 @@ pub enum InputEvent {
     ToggleHelp,
     /// Quit the application.
     Quit,
+    /// Hide or show the field at the cursor in the favorites panel.
+    HideField,
+    /// Reveal all hidden fields in the current pinned snapshot.
+    RevealHidden,
+    /// Jump to the previous pinned item header in the favorites panel.
+    PrevPin,
+    /// Jump to the next pinned item header in the favorites panel.
+    NextPin,
+    /// Batch-expand the current pinned item or stack frame node.
+    BatchExpand,
 }
 
-/// Translates a [`KeyEvent`] into an [`InputEvent`], returning `None`
-/// for events that have no TUI binding.
-pub fn from_key(key: KeyEvent) -> Option<InputEvent> {
+/// Translates a [`KeyEvent`] into an [`InputEvent`] using the active
+/// [`Keymap`] for configurable bindings. Returns `None` for events
+/// that have no TUI binding.
+///
+/// Layout-independent keys (arrows, Enter, Esc, Ctrl modifiers, …) are
+/// hardcoded. Configurable single-character keys are looked up via `keymap`.
+pub fn from_key(key: KeyEvent, keymap: &Keymap) -> Option<InputEvent> {
+    // --- Layout-independent hardcoded keys ---
     match (key.code, key.modifiers) {
-        (KeyCode::Char('q'), KeyModifiers::NONE) => Some(InputEvent::Quit),
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => Some(InputEvent::Quit),
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Some(InputEvent::Quit),
         (KeyCode::Up, mods)
             if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::SHIFT) =>
         {
-            Some(InputEvent::CameraScrollUp)
+            return Some(InputEvent::CameraScrollUp);
         }
         (KeyCode::Down, mods)
             if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::SHIFT) =>
         {
-            Some(InputEvent::CameraScrollDown)
+            return Some(InputEvent::CameraScrollDown);
         }
         (KeyCode::PageUp, mods)
             if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::SHIFT) =>
         {
-            Some(InputEvent::CameraPageUp)
+            return Some(InputEvent::CameraPageUp);
         }
         (KeyCode::PageDown, mods)
             if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::SHIFT) =>
         {
-            Some(InputEvent::CameraPageDown)
+            return Some(InputEvent::CameraPageDown);
         }
-        (KeyCode::Char('l'), KeyModifiers::CONTROL) => Some(InputEvent::CameraCenterSelection),
-        (KeyCode::Up, _) => Some(InputEvent::Up),
-        (KeyCode::Down, _) => Some(InputEvent::Down),
-        (KeyCode::Right, _) => Some(InputEvent::Right),
-        (KeyCode::Left, _) => Some(InputEvent::Left),
-        (KeyCode::Home, _) => Some(InputEvent::Home),
-        (KeyCode::End, _) => Some(InputEvent::End),
-        (KeyCode::PageUp, _) => Some(InputEvent::PageUp),
-        (KeyCode::PageDown, _) => Some(InputEvent::PageDown),
-        (KeyCode::Enter, _) => Some(InputEvent::Enter),
-        (KeyCode::Esc, _) => Some(InputEvent::Escape),
+        (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
+            return Some(InputEvent::CameraCenterSelection);
+        }
+        (KeyCode::Up, _) => return Some(InputEvent::Up),
+        (KeyCode::Down, _) => return Some(InputEvent::Down),
+        (KeyCode::Right, _) => return Some(InputEvent::Right),
+        (KeyCode::Left, _) => return Some(InputEvent::Left),
+        (KeyCode::Home, _) => return Some(InputEvent::Home),
+        (KeyCode::End, _) => return Some(InputEvent::End),
+        (KeyCode::PageUp, _) => return Some(InputEvent::PageUp),
+        (KeyCode::PageDown, _) => return Some(InputEvent::PageDown),
+        (KeyCode::Enter, _) => return Some(InputEvent::Enter),
+        (KeyCode::Esc, _) => return Some(InputEvent::Escape),
         (KeyCode::Char('/'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-            Some(InputEvent::SearchActivate)
+            return Some(InputEvent::SearchActivate);
         }
-        (KeyCode::Backspace, _) => Some(InputEvent::SearchBackspace),
-        (KeyCode::Char('f'), KeyModifiers::NONE) => Some(InputEvent::ToggleFavorite),
-        (KeyCode::Char('F'), KeyModifiers::SHIFT) => Some(InputEvent::FocusFavorites),
-        (KeyCode::Char('g'), KeyModifiers::NONE) => Some(InputEvent::NavigateToSource),
-        (KeyCode::Char('i'), KeyModifiers::NONE) => Some(InputEvent::ToggleObjectIds),
-        (KeyCode::Tab, _) => Some(InputEvent::Tab),
+        (KeyCode::Backspace, _) => return Some(InputEvent::SearchBackspace),
+        (KeyCode::Tab, _) => return Some(InputEvent::Tab),
         (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-            Some(InputEvent::ToggleHelp)
+            return Some(InputEvent::ToggleHelp);
         }
-        (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-            Some(InputEvent::SearchChar(c))
-        }
-        _ => None,
+        _ => {}
     }
+
+    // --- Configurable single-char keys via keymap ---
+    if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
+        let code = key.code;
+        if code == keymap.quit {
+            return Some(InputEvent::Quit);
+        }
+        if code == keymap.toggle_favorite {
+            return Some(InputEvent::ToggleFavorite);
+        }
+        if code == keymap.focus_favorites {
+            return Some(InputEvent::FocusFavorites);
+        }
+        if code == keymap.navigate_to_source {
+            return Some(InputEvent::NavigateToSource);
+        }
+        if code == keymap.toggle_object_ids {
+            return Some(InputEvent::ToggleObjectIds);
+        }
+        if code == keymap.hide_field {
+            return Some(InputEvent::HideField);
+        }
+        if code == keymap.reveal_hidden {
+            return Some(InputEvent::RevealHidden);
+        }
+        if code == keymap.prev_pin {
+            return Some(InputEvent::PrevPin);
+        }
+        if code == keymap.next_pin {
+            return Some(InputEvent::NextPin);
+        }
+        if code == keymap.batch_expand {
+            return Some(InputEvent::BatchExpand);
+        }
+        if code == keymap.search_activate {
+            return Some(InputEvent::SearchActivate);
+        }
+    }
+
+    // --- SearchChar catch-all for unbound printable keys ---
+    if let (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) = (key.code, key.modifiers)
+    {
+        return Some(InputEvent::SearchChar(c));
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -122,6 +179,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     use super::*;
+    use crate::keymap::Keymap;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent {
@@ -132,10 +190,14 @@ mod tests {
         }
     }
 
+    fn km() -> Keymap {
+        Keymap::default()
+    }
+
     #[test]
     fn from_key_maps_quit_on_q() {
         assert_eq!(
-            from_key(key(KeyCode::Char('q'), KeyModifiers::NONE)),
+            from_key(key(KeyCode::Char('q'), KeyModifiers::NONE), &km()),
             Some(InputEvent::Quit)
         );
     }
@@ -143,7 +205,7 @@ mod tests {
     #[test]
     fn from_key_maps_quit_on_ctrl_c() {
         assert_eq!(
-            from_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            from_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL), &km()),
             Some(InputEvent::Quit)
         );
     }
@@ -151,27 +213,27 @@ mod tests {
     #[test]
     fn from_key_maps_arrow_keys() {
         assert_eq!(
-            from_key(key(KeyCode::Up, KeyModifiers::NONE)),
+            from_key(key(KeyCode::Up, KeyModifiers::NONE), &km()),
             Some(InputEvent::Up)
         );
         assert_eq!(
-            from_key(key(KeyCode::Down, KeyModifiers::NONE)),
+            from_key(key(KeyCode::Down, KeyModifiers::NONE), &km()),
             Some(InputEvent::Down)
         );
         assert_eq!(
-            from_key(key(KeyCode::Right, KeyModifiers::NONE)),
+            from_key(key(KeyCode::Right, KeyModifiers::NONE), &km()),
             Some(InputEvent::Right)
         );
         assert_eq!(
-            from_key(key(KeyCode::Left, KeyModifiers::NONE)),
+            from_key(key(KeyCode::Left, KeyModifiers::NONE), &km()),
             Some(InputEvent::Left)
         );
         assert_eq!(
-            from_key(key(KeyCode::Home, KeyModifiers::NONE)),
+            from_key(key(KeyCode::Home, KeyModifiers::NONE), &km()),
             Some(InputEvent::Home)
         );
         assert_eq!(
-            from_key(key(KeyCode::End, KeyModifiers::NONE)),
+            from_key(key(KeyCode::End, KeyModifiers::NONE), &km()),
             Some(InputEvent::End)
         );
     }
@@ -179,11 +241,11 @@ mod tests {
     #[test]
     fn from_key_maps_enter_and_escape() {
         assert_eq!(
-            from_key(key(KeyCode::Enter, KeyModifiers::NONE)),
+            from_key(key(KeyCode::Enter, KeyModifiers::NONE), &km()),
             Some(InputEvent::Enter)
         );
         assert_eq!(
-            from_key(key(KeyCode::Esc, KeyModifiers::NONE)),
+            from_key(key(KeyCode::Esc, KeyModifiers::NONE), &km()),
             Some(InputEvent::Escape)
         );
     }
@@ -191,7 +253,7 @@ mod tests {
     #[test]
     fn from_key_maps_search_activate_on_slash() {
         assert_eq!(
-            from_key(key(KeyCode::Char('/'), KeyModifiers::NONE)),
+            from_key(key(KeyCode::Char('/'), KeyModifiers::NONE), &km()),
             Some(InputEvent::SearchActivate)
         );
     }
@@ -199,7 +261,7 @@ mod tests {
     #[test]
     fn from_key_maps_search_activate_on_shift_slash() {
         assert_eq!(
-            from_key(key(KeyCode::Char('/'), KeyModifiers::SHIFT)),
+            from_key(key(KeyCode::Char('/'), KeyModifiers::SHIFT), &km()),
             Some(InputEvent::SearchActivate)
         );
     }
@@ -207,7 +269,7 @@ mod tests {
     #[test]
     fn from_key_maps_backspace_to_search_backspace() {
         assert_eq!(
-            from_key(key(KeyCode::Backspace, KeyModifiers::NONE)),
+            from_key(key(KeyCode::Backspace, KeyModifiers::NONE), &km()),
             Some(InputEvent::SearchBackspace)
         );
     }
@@ -215,11 +277,11 @@ mod tests {
     #[test]
     fn from_key_maps_printable_chars_to_search_char() {
         assert_eq!(
-            from_key(key(KeyCode::Char('a'), KeyModifiers::NONE)),
+            from_key(key(KeyCode::Char('a'), KeyModifiers::NONE), &km()),
             Some(InputEvent::SearchChar('a'))
         );
         assert_eq!(
-            from_key(key(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            from_key(key(KeyCode::Char('A'), KeyModifiers::SHIFT), &km()),
             Some(InputEvent::SearchChar('A'))
         );
     }
@@ -227,7 +289,7 @@ mod tests {
     #[test]
     fn from_key_maps_f_to_toggle_favorite() {
         assert_eq!(
-            from_key(key(KeyCode::Char('f'), KeyModifiers::NONE)),
+            from_key(key(KeyCode::Char('f'), KeyModifiers::NONE), &km()),
             Some(InputEvent::ToggleFavorite)
         );
     }
@@ -235,7 +297,7 @@ mod tests {
     #[test]
     fn from_key_maps_shift_f_to_focus_favorites() {
         assert_eq!(
-            from_key(key(KeyCode::Char('F'), KeyModifiers::SHIFT)),
+            from_key(key(KeyCode::Char('F'), KeyModifiers::SHIFT), &km()),
             Some(InputEvent::FocusFavorites)
         );
     }
@@ -243,7 +305,7 @@ mod tests {
     #[test]
     fn from_key_maps_g_to_navigate_to_source() {
         assert_eq!(
-            from_key(key(KeyCode::Char('g'), KeyModifiers::NONE)),
+            from_key(key(KeyCode::Char('g'), KeyModifiers::NONE), &km()),
             Some(InputEvent::NavigateToSource)
         );
     }
@@ -251,7 +313,7 @@ mod tests {
     #[test]
     fn from_key_maps_i_to_toggle_object_ids() {
         assert_eq!(
-            from_key(key(KeyCode::Char('i'), KeyModifiers::NONE)),
+            from_key(key(KeyCode::Char('i'), KeyModifiers::NONE), &km()),
             Some(InputEvent::ToggleObjectIds)
         );
     }
@@ -259,7 +321,7 @@ mod tests {
     #[test]
     fn from_key_maps_tab_to_tab() {
         assert_eq!(
-            from_key(key(KeyCode::Tab, KeyModifiers::NONE)),
+            from_key(key(KeyCode::Tab, KeyModifiers::NONE), &km()),
             Some(InputEvent::Tab)
         );
     }
@@ -267,27 +329,67 @@ mod tests {
     #[test]
     fn from_key_maps_question_mark_to_toggle_help() {
         assert_eq!(
-            from_key(key(KeyCode::Char('?'), KeyModifiers::NONE)),
+            from_key(key(KeyCode::Char('?'), KeyModifiers::NONE), &km()),
             Some(InputEvent::ToggleHelp)
         );
         assert_eq!(
-            from_key(key(KeyCode::Char('?'), KeyModifiers::SHIFT)),
+            from_key(key(KeyCode::Char('?'), KeyModifiers::SHIFT), &km()),
             Some(InputEvent::ToggleHelp)
         );
     }
 
     #[test]
-    fn from_key_maps_s_to_search_char() {
+    fn from_key_maps_s_to_search_activate() {
         assert_eq!(
-            from_key(key(KeyCode::Char('s'), KeyModifiers::NONE)),
-            Some(InputEvent::SearchChar('s'))
+            from_key(key(KeyCode::Char('s'), KeyModifiers::NONE), &km()),
+            Some(InputEvent::SearchActivate)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_h_to_hide_field() {
+        assert_eq!(
+            from_key(key(KeyCode::Char('h'), KeyModifiers::NONE), &km()),
+            Some(InputEvent::HideField)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_shift_h_to_reveal_hidden() {
+        assert_eq!(
+            from_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT), &km()),
+            Some(InputEvent::RevealHidden)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_b_to_prev_pin() {
+        assert_eq!(
+            from_key(key(KeyCode::Char('b'), KeyModifiers::NONE), &km()),
+            Some(InputEvent::PrevPin)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_n_to_next_pin() {
+        assert_eq!(
+            from_key(key(KeyCode::Char('n'), KeyModifiers::NONE), &km()),
+            Some(InputEvent::NextPin)
+        );
+    }
+
+    #[test]
+    fn from_key_maps_c_to_batch_expand() {
+        assert_eq!(
+            from_key(key(KeyCode::Char('c'), KeyModifiers::NONE), &km()),
+            Some(InputEvent::BatchExpand)
         );
     }
 
     #[test]
     fn from_key_maps_ctrl_up_to_camera_scroll_up() {
         assert_eq!(
-            from_key(key(KeyCode::Up, KeyModifiers::CONTROL)),
+            from_key(key(KeyCode::Up, KeyModifiers::CONTROL), &km()),
             Some(InputEvent::CameraScrollUp)
         );
     }
@@ -295,7 +397,7 @@ mod tests {
     #[test]
     fn from_key_maps_ctrl_down_to_camera_scroll_down() {
         assert_eq!(
-            from_key(key(KeyCode::Down, KeyModifiers::CONTROL)),
+            from_key(key(KeyCode::Down, KeyModifiers::CONTROL), &km()),
             Some(InputEvent::CameraScrollDown)
         );
     }
@@ -303,7 +405,7 @@ mod tests {
     #[test]
     fn from_key_maps_shift_up_to_camera_scroll_up() {
         assert_eq!(
-            from_key(key(KeyCode::Up, KeyModifiers::SHIFT)),
+            from_key(key(KeyCode::Up, KeyModifiers::SHIFT), &km()),
             Some(InputEvent::CameraScrollUp)
         );
     }
@@ -311,7 +413,7 @@ mod tests {
     #[test]
     fn from_key_maps_shift_down_to_camera_scroll_down() {
         assert_eq!(
-            from_key(key(KeyCode::Down, KeyModifiers::SHIFT)),
+            from_key(key(KeyCode::Down, KeyModifiers::SHIFT), &km()),
             Some(InputEvent::CameraScrollDown)
         );
     }
@@ -319,7 +421,7 @@ mod tests {
     #[test]
     fn from_key_maps_ctrl_l_to_camera_center_selection() {
         assert_eq!(
-            from_key(key(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            from_key(key(KeyCode::Char('l'), KeyModifiers::CONTROL), &km()),
             Some(InputEvent::CameraCenterSelection)
         );
     }
@@ -327,7 +429,7 @@ mod tests {
     #[test]
     fn from_key_maps_ctrl_page_up_to_camera_page_up() {
         assert_eq!(
-            from_key(key(KeyCode::PageUp, KeyModifiers::CONTROL)),
+            from_key(key(KeyCode::PageUp, KeyModifiers::CONTROL), &km()),
             Some(InputEvent::CameraPageUp)
         );
     }
@@ -335,7 +437,7 @@ mod tests {
     #[test]
     fn from_key_maps_ctrl_page_down_to_camera_page_down() {
         assert_eq!(
-            from_key(key(KeyCode::PageDown, KeyModifiers::CONTROL)),
+            from_key(key(KeyCode::PageDown, KeyModifiers::CONTROL), &km()),
             Some(InputEvent::CameraPageDown)
         );
     }
@@ -343,7 +445,7 @@ mod tests {
     #[test]
     fn from_key_maps_shift_page_up_to_camera_page_up() {
         assert_eq!(
-            from_key(key(KeyCode::PageUp, KeyModifiers::SHIFT)),
+            from_key(key(KeyCode::PageUp, KeyModifiers::SHIFT), &km()),
             Some(InputEvent::CameraPageUp)
         );
     }
@@ -351,7 +453,7 @@ mod tests {
     #[test]
     fn from_key_maps_shift_page_down_to_camera_page_down() {
         assert_eq!(
-            from_key(key(KeyCode::PageDown, KeyModifiers::SHIFT)),
+            from_key(key(KeyCode::PageDown, KeyModifiers::SHIFT), &km()),
             Some(InputEvent::CameraPageDown)
         );
     }
@@ -359,7 +461,7 @@ mod tests {
     #[test]
     fn from_key_plain_up_still_maps_to_up() {
         assert_eq!(
-            from_key(key(KeyCode::Up, KeyModifiers::NONE)),
+            from_key(key(KeyCode::Up, KeyModifiers::NONE), &km()),
             Some(InputEvent::Up)
         );
     }
@@ -367,24 +469,27 @@ mod tests {
     #[test]
     fn ctrl_up_does_not_map_to_up() {
         assert_ne!(
-            from_key(key(KeyCode::Up, KeyModifiers::CONTROL)),
+            from_key(key(KeyCode::Up, KeyModifiers::CONTROL), &km()),
             Some(InputEvent::Up)
         );
     }
 
     #[test]
     fn from_key_returns_none_for_unbound_keys() {
-        assert_eq!(from_key(key(KeyCode::F(1), KeyModifiers::NONE)), None);
+        assert_eq!(
+            from_key(key(KeyCode::F(1), KeyModifiers::NONE), &km()),
+            None
+        );
     }
 
     #[test]
     fn from_key_maps_page_up_and_page_down() {
         assert_eq!(
-            from_key(key(KeyCode::PageUp, KeyModifiers::NONE)),
+            from_key(key(KeyCode::PageUp, KeyModifiers::NONE), &km()),
             Some(InputEvent::PageUp)
         );
         assert_eq!(
-            from_key(key(KeyCode::PageDown, KeyModifiers::NONE)),
+            from_key(key(KeyCode::PageDown, KeyModifiers::NONE), &km()),
             Some(InputEvent::PageDown)
         );
     }
