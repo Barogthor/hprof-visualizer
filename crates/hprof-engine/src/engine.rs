@@ -326,6 +326,9 @@ pub trait NavigationEngine {
     /// `PreciseIndex` held permanently in `HprofFile`.
     fn skeleton_bytes(&self) -> usize;
 
+    /// Returns the byte size of the evictable LRU object cache.
+    fn cache_bytes(&self) -> usize;
+
     /// Drains completed background walkers, applying
     /// pending skip-index checkpoints. Call once per
     /// tick to keep walker state up-to-date.
@@ -411,6 +414,9 @@ mod tests {
             true
         }
         fn skeleton_bytes(&self) -> usize {
+            0
+        }
+        fn cache_bytes(&self) -> usize {
             0
         }
     }

@@ -357,6 +357,9 @@ impl NavigationEngine for StubEngine {
     fn skeleton_bytes(&self) -> usize {
         0
     }
+    fn cache_bytes(&self) -> usize {
+        0
+    }
 }
 
 fn make_frame(frame_id: u64) -> FrameInfo {

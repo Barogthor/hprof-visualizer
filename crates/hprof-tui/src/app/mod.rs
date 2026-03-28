@@ -2566,7 +2566,7 @@ impl<E: NavigationEngine> App<E> {
             0
         };
         let mem_skeleton = self.engine.skeleton_bytes();
-        let mem_cache = self.engine.memory_used().saturating_sub(mem_skeleton);
+        let mem_cache = self.engine.cache_bytes();
         frame.render_widget(
             StatusBar {
                 filename: &self.filename,

@@ -1092,6 +1092,10 @@ impl NavigationEngine for Engine {
         self.hfile.index.memory_size()
     }
 
+    fn cache_bytes(&self) -> usize {
+        self.object_cache.total_bytes()
+    }
+
     fn drain_walkers(&self) {
         let ids: Vec<u64> = {
             let walkers = self.walkers.lock().unwrap_or_else(|e| e.into_inner());

@@ -48,16 +48,16 @@ pub struct StatusBar<'a> {
     pub mem_max: u64,
 }
 
-/// Formats a byte count as a human-readable string (B / KB / MB / GB).
+/// Formats a byte count as a human-readable string (KB / MB / GB).
+///
+/// Always shows one decimal place; clamps to `0.0KB` minimum.
 fn fmt_bytes(bytes: u64) -> String {
     if bytes >= 1_073_741_824 {
         format!("{:.1}GB", bytes as f64 / 1_073_741_824.0)
     } else if bytes >= 1_048_576 {
-        format!("{}MB", bytes / 1_048_576)
-    } else if bytes >= 1_024 {
-        format!("{}KB", bytes / 1_024)
+        format!("{:.1}MB", bytes as f64 / 1_048_576.0)
     } else {
-        format!("{}B", bytes)
+        format!("{:.1}KB", bytes as f64 / 1_024.0)
     }
 }
 
@@ -137,28 +137,44 @@ impl Widget for StatusBar<'_> {
         };
 
         let mem_part = format!(
-            "  |  sk:{}  lru:{}/{}",
+            "sk:{}  lru:{}/{}",
             fmt_bytes(self.mem_skeleton as u64),
             fmt_bytes(self.mem_cache as u64),
             fmt_bytes(self.mem_max),
         );
 
-        let main = Span::styled(
-            format!(
-                " {}{}  |  {}  |  {}{}{}{}  |  [?]help",
-                incomplete_part,
-                self.filename,
-                thread_part,
-                selected_part,
-                pinned_part,
-                warn_part,
-                mem_part,
-            ),
-            THEME.status_bar_bg,
+        let left_text = format!(
+            " {}{}  |  {}  |  {}{}{}",
+            incomplete_part,
+            self.filename,
+            thread_part,
+            selected_part,
+            pinned_part,
+            warn_part,
         );
+
+        let right_text = format!("{mem_part}  [?]help ");
+        let bg = THEME.status_bar_bg;
+
+        // Compute padding to right-align the memory + help block.
+        let left_vis: usize = left_text.chars().count()
+            + walker_part.chars().count()
+            + nav_part.chars().count();
+        let right_vis = right_text.chars().count();
+        let w = area.width as usize;
+        let pad = if left_vis + right_vis < w {
+            w - left_vis - right_vis
+        } else {
+            2 // minimal separator
+        };
+
+        let left = Span::styled(left_text, bg);
         let walker = Span::styled(walker_part, THEME.nav_spinner);
         let nav = Span::styled(nav_part, THEME.nav_spinner);
-        Line::from(vec![main, walker, nav]).render(area, buf);
+        let spacer = Span::styled(" ".repeat(pad), bg);
+        let right = Span::styled(right_text, bg);
+        Line::from(vec![left, walker, nav, spacer, right])
+            .render(area, buf);
     }
 }
 
@@ -438,11 +454,11 @@ mod tests {
             300,
         );
         assert!(
-            content.contains("sk:128MB"),
+            content.contains("sk:128.0MB"),
             "skeleton memory must appear; got: {content:?}"
         );
         assert!(
-            content.contains("lru:42MB"),
+            content.contains("lru:42.0MB"),
             "lru cache memory must appear; got: {content:?}"
         );
         assert!(
@@ -453,9 +469,13 @@ mod tests {
 
     #[test]
     fn fmt_bytes_formats_correctly() {
-        assert_eq!(fmt_bytes(512), "512B");
-        assert_eq!(fmt_bytes(2048), "2KB");
-        assert_eq!(fmt_bytes(5 * 1_048_576), "5MB");
+        assert_eq!(fmt_bytes(0), "0.0KB");
+        assert_eq!(fmt_bytes(512), "0.5KB");
+        assert_eq!(fmt_bytes(2048), "2.0KB");
+        assert_eq!(fmt_bytes(5 * 1_048_576), "5.0MB");
+        assert_eq!(fmt_bytes(
+            5 * 1_048_576 + 524_288), "5.5MB"
+        );
         assert_eq!(fmt_bytes(2 * 1_073_741_824), "2.0GB");
     }
 }

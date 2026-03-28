@@ -79,6 +79,16 @@ impl ObjectCache {
     pub fn len(&self) -> usize {
         self.0.lock().unwrap().len()
     }
+
+    /// Returns the sum of precomputed sizes for all cached entries.
+    pub fn total_bytes(&self) -> usize {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, (_, size))| *size)
+            .sum()
+    }
 }
 
 /// Approximates the heap memory of a `Vec<FieldInfo>`.
