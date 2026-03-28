@@ -145,21 +145,15 @@ impl Widget for StatusBar<'_> {
 
         let left_text = format!(
             " {}{}  |  {}  |  {}{}{}",
-            incomplete_part,
-            self.filename,
-            thread_part,
-            selected_part,
-            pinned_part,
-            warn_part,
+            incomplete_part, self.filename, thread_part, selected_part, pinned_part, warn_part,
         );
 
         let right_text = format!("{mem_part}  [?]help ");
         let bg = THEME.status_bar_bg;
 
         // Compute padding to right-align the memory + help block.
-        let left_vis: usize = left_text.chars().count()
-            + walker_part.chars().count()
-            + nav_part.chars().count();
+        let left_vis: usize =
+            left_text.chars().count() + walker_part.chars().count() + nav_part.chars().count();
         let right_vis = right_text.chars().count();
         let w = area.width as usize;
         let pad = if left_vis + right_vis < w {
@@ -173,8 +167,7 @@ impl Widget for StatusBar<'_> {
         let nav = Span::styled(nav_part, THEME.nav_spinner);
         let spacer = Span::styled(" ".repeat(pad), bg);
         let right = Span::styled(right_text, bg);
-        Line::from(vec![left, walker, nav, spacer, right])
-            .render(area, buf);
+        Line::from(vec![left, walker, nav, spacer, right]).render(area, buf);
     }
 }
 
@@ -473,9 +466,7 @@ mod tests {
         assert_eq!(fmt_bytes(512), "0.5KB");
         assert_eq!(fmt_bytes(2048), "2.0KB");
         assert_eq!(fmt_bytes(5 * 1_048_576), "5.0MB");
-        assert_eq!(fmt_bytes(
-            5 * 1_048_576 + 524_288), "5.5MB"
-        );
+        assert_eq!(fmt_bytes(5 * 1_048_576 + 524_288), "5.5MB");
         assert_eq!(fmt_bytes(2 * 1_073_741_824), "2.0GB");
     }
 }
