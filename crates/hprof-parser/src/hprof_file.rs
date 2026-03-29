@@ -683,51 +683,49 @@ fn scan_segment_for_instances(
 }
 
 fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u8, Vec<u8>)> {
-    use std::io::Cursor;
+    use crate::indexer::first_pass::value_byte_size;
 
-    let mut cursor = Cursor::new(data);
-    loop {
-        let sub_tag = match cursor.read_u8() {
-            Ok(t) => HeapSubTag::from(t),
-            Err(_) => return None,
-        };
-        if sub_tag == HeapSubTag::PrimArrayDump {
-            let arr_id = match read_id(&mut cursor, id_size) {
-                Ok(id) => id,
-                Err(_) => return None,
-            };
-            let _stack_serial = match cursor.read_u32::<BigEndian>() {
-                Ok(v) => v,
-                Err(_) => return None,
-            };
-            let num_elements = match cursor.read_u32::<BigEndian>() {
-                Ok(n) => n as usize,
-                Err(_) => return None,
-            };
-            let elem_type = match cursor.read_u8() {
-                Ok(t) => t,
-                Err(_) => return None,
-            };
-            let elem_size = {
-                use crate::indexer::first_pass::value_byte_size;
-                value_byte_size(elem_type, id_size)
-            };
-            if elem_size == 0 {
-                return None;
-            }
-            let byte_count = num_elements.checked_mul(elem_size)?;
-            let pos = cursor.position() as usize;
-            if pos + byte_count > data.len() {
-                return None;
-            }
-            if arr_id == target_id {
-                return Some((elem_type, data[pos..pos + byte_count].to_vec()));
-            }
-            cursor.set_position((pos + byte_count) as u64);
-        } else if !skip_sub_record(&mut cursor, sub_tag, id_size) {
-            return None;
+    let mut result = None;
+    walk_heap_subrecords(data, id_size, |sub_tag, _tag_pos, cursor| {
+        if sub_tag != HeapSubTag::PrimArrayDump {
+            return SubRecordAction::Continue;
         }
-    }
+        let arr_id = match read_id(cursor, id_size) {
+            Ok(id) => id,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let _serial = match cursor.read_u32::<BigEndian>() {
+            Ok(v) => v,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let num_elements = match cursor.read_u32::<BigEndian>() {
+            Ok(n) => n as usize,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let elem_type = match cursor.read_u8() {
+            Ok(t) => t,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let elem_size = value_byte_size(elem_type, id_size);
+        if elem_size == 0 {
+            return SubRecordAction::Break;
+        }
+        let byte_count = match num_elements.checked_mul(elem_size) {
+            Some(n) => n,
+            None => return SubRecordAction::Break,
+        };
+        let pos = cursor.position() as usize;
+        if pos + byte_count > data.len() {
+            return SubRecordAction::Break;
+        }
+        if arr_id == target_id {
+            result = Some((elem_type, data[pos..pos + byte_count].to_vec()));
+            return SubRecordAction::Break;
+        }
+        cursor.set_position((pos + byte_count) as u64);
+        SubRecordAction::Consumed
+    });
+    result
 }
 
 fn scan_for_object_array_meta(
