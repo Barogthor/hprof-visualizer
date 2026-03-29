@@ -850,6 +850,27 @@ mod resolve_string_tests {
         let engine = engine_from_bytes(&bytes);
         assert!(engine.resolve_string(0x100).is_none());
     }
+
+    fn make_engine_with_string(id: u64, content: &str) -> Engine {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_string(id, content)
+            .build();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &bytes).unwrap();
+        Engine::from_file(tmp.path(), &EngineConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn cached_resolve_string_returns_same_arc() {
+        let engine = make_engine_with_string(42, "hello");
+        let sref = engine.hfile.index.strings.get(&42).unwrap();
+
+        let a = engine.cached_resolve_string(sref);
+        let b = engine.cached_resolve_string(sref);
+
+        assert_eq!(&*a, "hello");
+        assert!(Arc::ptr_eq(&a, &b), "second call should return cached Arc");
+    }
 }
 
 mod collection_tests {

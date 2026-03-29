@@ -224,6 +224,10 @@ pub struct Engine {
     skip_indexes: Mutex<StdHashMap<u64, crate::pagination::SkipIndex>>,
     /// Active background walkers keyed by collection ID.
     walkers: Mutex<StdHashMap<u64, crate::pagination::WalkerHandle>>,
+    /// On-demand cache for resolved hprof string refs.
+    /// Not tracked by `memory_counter` — bounded by
+    /// distinct string IDs (typically < 200 KB).
+    string_cache: Mutex<FxHashMap<u64, Arc<str>>>,
 }
 
 impl Engine {
@@ -253,6 +257,7 @@ impl Engine {
             object_cache: crate::cache::ObjectCache::new(),
             skip_indexes: Mutex::new(StdHashMap::new()),
             walkers: Mutex::new(StdHashMap::new()),
+            string_cache: Mutex::new(FxHashMap::default()),
         })
     }
 
@@ -287,6 +292,7 @@ impl Engine {
             object_cache: crate::cache::ObjectCache::new(),
             skip_indexes: Mutex::new(StdHashMap::new()),
             walkers: Mutex::new(StdHashMap::new()),
+            string_cache: Mutex::new(FxHashMap::default()),
         })
     }
 
@@ -598,6 +604,27 @@ impl Engine {
         }
     }
 
+    /// Resolves a [`hprof_parser::HprofStringRef`] with caching.
+    ///
+    /// First call for a given `sref.id` delegates to
+    /// `hfile.resolve_string()`; subsequent calls return
+    /// the cached `Arc<str>`.
+    fn cached_resolve_string(
+        &self,
+        sref: &hprof_parser::HprofStringRef,
+    ) -> Arc<str> {
+        let mut cache = self
+            .string_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = cache.get(&sref.id) {
+            return Arc::clone(cached);
+        }
+        let resolved: Arc<str> = self.hfile.resolve_string(sref).into();
+        cache.insert(sref.id, Arc::clone(&resolved));
+        resolved
+    }
+
     fn resolve_name(&self, name_string_id: u64) -> String {
         if let Some(name) = self.hfile.index.field_names.get(&name_string_id) {
             return name.clone();
@@ -606,7 +633,7 @@ impl Engine {
             .index
             .strings
             .get(&name_string_id)
-            .map(|sref| self.hfile.resolve_string(sref))
+            .map(|sref| self.cached_resolve_string(sref).to_string())
             .unwrap_or_else(|| format!("<unknown:{}>", name_string_id))
     }
 
