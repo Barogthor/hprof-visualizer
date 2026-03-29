@@ -100,7 +100,7 @@ pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNo
         let header = match parse_record_header(&mut cursor) {
             Ok(h) => h,
             Err(e) => {
-                ctx.push_warning(format!("EOF mid-header: {e}"));
+                ctx.push_warning(|| format!("EOF mid-header: {e}"));
                 break;
             }
         };
@@ -110,19 +110,23 @@ pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNo
         let payload_end = match payload_start.checked_add(header.length as usize) {
             Some(end) if end <= data.len() => end,
             Some(end) => {
-                ctx.push_warning(format!(
-                    "record {tag} payload end {end} \
+                ctx.push_warning(|| {
+                    format!(
+                        "record {tag} payload end {end} \
                          exceeds file size {}",
-                    data.len()
-                ));
+                        data.len()
+                    )
+                });
                 break;
             }
             None => {
-                ctx.push_warning(format!(
-                    "record {tag} payload length \
+                ctx.push_warning(|| {
+                    format!(
+                        "record {tag} payload length \
                          overflow: {}",
-                    header.length
-                ));
+                        header.length
+                    )
+                });
                 break;
             }
         };
@@ -179,23 +183,27 @@ pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNo
             Ok(record) => {
                 let consumed = payload_cursor.position() as usize == header.length as usize;
                 if !consumed {
-                    ctx.push_warning(format!(
-                        "record {tag} at offset \
-                         {payload_start}: parsed OK but \
-                         consumed {} of {} bytes \
-                         (extra bytes ignored)",
-                        payload_cursor.position(),
-                        header.length,
-                    ));
+                    ctx.push_warning(|| {
+                        format!(
+                            "record {tag} at offset \
+                             {payload_start}: parsed OK but \
+                             consumed {} of {} bytes \
+                             (extra bytes ignored)",
+                            payload_cursor.position(),
+                            header.length,
+                        )
+                    });
                 }
                 ctx.insert_record(record);
                 ctx.result.records_indexed += 1;
             }
             Err(e) => {
-                ctx.push_warning(format!(
-                    "record {tag} at offset \
-                     {payload_start}: {e}"
-                ));
+                ctx.push_warning(|| {
+                    format!(
+                        "record {tag} at offset \
+                         {payload_start}: {e}"
+                    )
+                });
             }
         }
 

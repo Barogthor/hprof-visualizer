@@ -125,7 +125,7 @@ impl<'a> FirstPassContext<'a> {
         }
     }
 
-    fn push_warning(&mut self, msg: String) {
+    fn push_warning(&mut self, msg: impl FnOnce() -> String) {
         Self::push_warning_raw(
             &mut self.result.warnings,
             &mut self.suppressed_warnings,
@@ -136,9 +136,13 @@ impl<'a> FirstPassContext<'a> {
     /// Pushes a warning using separate mutable refs
     /// (for use where `&mut self` would cause borrow
     /// conflicts).
-    fn push_warning_raw(warnings: &mut Vec<String>, suppressed: &mut u64, msg: String) {
+    fn push_warning_raw(
+        warnings: &mut Vec<String>,
+        suppressed: &mut u64,
+        msg: impl FnOnce() -> String,
+    ) {
         if warnings.len() < MAX_WARNINGS {
-            warnings.push(msg);
+            warnings.push(msg());
         } else {
             *suppressed += 1;
         }
@@ -170,7 +174,7 @@ impl<'a> FirstPassContext<'a> {
             .expect("seg_builder already consumed")
             .finish();
         for w in warnings {
-            self.push_warning(w);
+            self.push_warning(|| w);
         }
         self.built_filters = Some((Vec::new(), Vec::new()));
         let mut entry_points = std::mem::take(&mut self.segment_entry_points);
@@ -233,9 +237,9 @@ fn preload_field_names(ctx: &mut FirstPassContext) {
     }
 
     for name_string_id in missing_name_ids {
-        ctx.push_warning(format!(
-            "field name string id {name_string_id} missing from STRING records"
-        ));
+        ctx.push_warning(|| {
+            format!("field name string id {name_string_id} missing from STRING records")
+        });
     }
 
     for (name_string_id, name) in resolved_names {

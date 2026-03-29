@@ -324,7 +324,7 @@ pub(super) fn merge_segment_result(ctx: &mut FirstPassContext, seg_result: HeapS
             .insert(entry.class_object_id, entry.info);
     }
     for w in seg_result.warnings {
-        ctx.push_warning(w);
+        ctx.push_warning(|| w);
     }
 }
 

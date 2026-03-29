@@ -141,7 +141,7 @@ pub(super) fn resolve_all(
             &ctx.result.heap_record_ranges,
         );
         for w in warns {
-            ctx.push_warning(w);
+            ctx.push_warning(|| w);
         }
         for (&id, &offset) in &found {
             ctx.result.index.instance_offsets.insert(id, offset);
@@ -186,7 +186,7 @@ pub(super) fn resolve_all(
                 &ctx.result.heap_record_ranges,
             );
             for w in warns1 {
-                ctx.push_warning(w);
+                ctx.push_warning(|| w);
             }
             for (id, offset) in &found1 {
                 ctx.result.index.instance_offsets.insert(*id, *offset);
@@ -238,7 +238,7 @@ pub(super) fn resolve_all(
                     &ctx.result.heap_record_ranges,
                 );
                 for w in warns2 {
-                    ctx.push_warning(w);
+                    ctx.push_warning(|| w);
                 }
                 for (&id, &offset) in &found2 {
                     ctx.result.index.instance_offsets.insert(id, offset);
