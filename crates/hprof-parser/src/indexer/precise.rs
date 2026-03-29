@@ -46,18 +46,18 @@ impl OffsetCache {
 
     /// Returns the offset for `id`, if cached.
     pub fn get(&self, id: u64) -> Option<u64> {
-        self.inner.read().unwrap().get(&id).copied()
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).get(&id).copied()
     }
 
     /// Inserts a single offset.
     pub fn insert(&self, id: u64, offset: u64) {
-        self.inner.write().unwrap().insert(id, offset);
+        self.inner.write().unwrap_or_else(|e| e.into_inner()).insert(id, offset);
     }
 
     /// Inserts all entries from `offsets` in a single
     /// write-lock acquisition.
     pub fn insert_batch(&self, offsets: &FxHashMap<u64, u64>) {
-        let mut guard = self.inner.write().unwrap();
+        let mut guard = self.inner.write().unwrap_or_else(|e| e.into_inner());
         for (&id, &off) in offsets {
             guard.insert(id, off);
         }
@@ -65,33 +65,33 @@ impl OffsetCache {
 
     /// Returns the number of cached entries.
     pub fn len(&self) -> usize {
-        self.inner.read().unwrap().len()
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// Returns `true` if the cache is empty.
     pub fn is_empty(&self) -> bool {
-        self.inner.read().unwrap().is_empty()
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
 
     /// Returns `true` if `id` is in the cache.
     pub fn contains(&self, id: &u64) -> bool {
-        self.inner.read().unwrap().contains_key(id)
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).contains_key(id)
     }
 
     /// Returns all values as a `Vec`.
     pub fn values(&self) -> Vec<u64> {
-        self.inner.read().unwrap().values().copied().collect()
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).values().copied().collect()
     }
 
     /// Returns all keys as a `Vec`.
     pub fn keys(&self) -> Vec<u64> {
-        self.inner.read().unwrap().keys().copied().collect()
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).keys().copied().collect()
     }
 
     /// Returns the capacity of the inner map (for
     /// memory size calculations).
     pub fn capacity(&self) -> usize {
-        self.inner.read().unwrap().capacity()
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).capacity()
     }
 }
 
@@ -477,6 +477,29 @@ mod tests {
         let f = index.stack_frames.get(&10).unwrap();
         assert_eq!(f.frame_id, 10);
         assert_eq!(f.line_number, 42);
+    }
+
+    #[test]
+    fn offset_cache_recovers_from_poisoned_lock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(OffsetCache::new());
+        cache.insert(1, 100);
+
+        // Poison the lock by panicking while holding a write guard.
+        let cache2 = Arc::clone(&cache);
+        let handle = thread::spawn(move || {
+            let _guard = cache2.inner.write().unwrap();
+            panic!("intentional poison");
+        });
+        let _ = handle.join();
+
+        // The lock is now poisoned. Operations must still work.
+        assert_eq!(cache.get(1), Some(100));
+        cache.insert(2, 200);
+        assert_eq!(cache.get(2), Some(200));
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]
