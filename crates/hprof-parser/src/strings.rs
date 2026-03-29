@@ -44,13 +44,9 @@ impl HprofStringRef {
     pub fn resolve(&self, data: &[u8]) -> String {
         let start = self.offset as usize;
         #[allow(clippy::manual_saturating_arithmetic)]
-        let end = start
-            .checked_add(self.len as usize)
-            .unwrap_or(usize::MAX);
+        let end = start.checked_add(self.len as usize).unwrap_or(usize::MAX);
         match data.get(start..end) {
-            Some(bytes) => {
-                String::from_utf8_lossy(bytes).into_owned()
-            }
+            Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
             None => String::new(),
         }
     }

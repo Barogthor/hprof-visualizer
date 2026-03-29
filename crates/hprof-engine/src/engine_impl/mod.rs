@@ -464,13 +464,13 @@ impl Engine {
     /// Reads an instance by offset if available, falling back to
     /// `find_instance`.
     fn read_instance(hfile: &HprofFile, obj_id: u64) -> Option<RawInstance> {
-        if let Some(off) = hfile.index.instance_offsets.get(obj_id)
+        if let Some(off) = hfile.index.get_offset(obj_id)
             && let Some(raw) = hfile.read_instance_at_offset(off)
         {
             return Some(raw);
         }
         if let Some((raw, offset)) = hfile.find_instance(obj_id) {
-            hfile.index.instance_offsets.insert(obj_id, offset);
+            hfile.index.insert_offset(obj_id, offset);
             return Some(raw);
         }
         None
@@ -479,7 +479,7 @@ impl Engine {
     /// Reads a primitive array by offset if available, falling back to
     /// `find_prim_array`.
     fn read_prim_array(hfile: &HprofFile, arr_id: u64) -> Option<(u8, Vec<u8>)> {
-        if let Some(off) = hfile.index.instance_offsets.get(arr_id)
+        if let Some(off) = hfile.index.get_offset(arr_id)
             && let Some(r) = hfile.read_prim_array_at_offset(off)
         {
             return Some(r);
@@ -609,14 +609,8 @@ impl Engine {
     /// First call for a given `sref.id` delegates to
     /// `hfile.resolve_string()`; subsequent calls return
     /// the cached `Arc<str>`.
-    fn cached_resolve_string(
-        &self,
-        sref: &hprof_parser::HprofStringRef,
-    ) -> Arc<str> {
-        let mut cache = self
-            .string_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    fn cached_resolve_string(&self, sref: &hprof_parser::HprofStringRef) -> Arc<str> {
+        let mut cache = self.string_cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(cached) = cache.get(&sref.id) {
             return Arc::clone(cached);
         }

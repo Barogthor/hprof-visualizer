@@ -32,31 +32,38 @@ use crate::{ClassDef, ClassDumpInfo, HprofStringRef, HprofThread, StackFrame, St
 /// Callers use `.get()`, `.insert()`, `.insert_batch()`
 /// without knowing about the lock.
 #[derive(Debug)]
-pub struct OffsetCache {
+pub(crate) struct OffsetCache {
     inner: RwLock<FxHashMap<u64, u64>>,
 }
 
 impl OffsetCache {
     /// Creates an empty cache.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: RwLock::new(FxHashMap::default()),
         }
     }
 
     /// Returns the offset for `id`, if cached.
-    pub fn get(&self, id: u64) -> Option<u64> {
-        self.inner.read().unwrap_or_else(|e| e.into_inner()).get(&id).copied()
+    pub(crate) fn get(&self, id: u64) -> Option<u64> {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .copied()
     }
 
     /// Inserts a single offset.
-    pub fn insert(&self, id: u64, offset: u64) {
-        self.inner.write().unwrap_or_else(|e| e.into_inner()).insert(id, offset);
+    pub(crate) fn insert(&self, id: u64, offset: u64) {
+        self.inner
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, offset);
     }
 
     /// Inserts all entries from `offsets` in a single
     /// write-lock acquisition.
-    pub fn insert_batch(&self, offsets: &FxHashMap<u64, u64>) {
+    pub(crate) fn insert_batch(&self, offsets: &FxHashMap<u64, u64>) {
         let mut guard = self.inner.write().unwrap_or_else(|e| e.into_inner());
         for (&id, &off) in offsets {
             guard.insert(id, off);
@@ -64,34 +71,46 @@ impl OffsetCache {
     }
 
     /// Returns the number of cached entries.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.inner.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    /// Returns `true` if the cache is empty.
-    pub fn is_empty(&self) -> bool {
-        self.inner.read().unwrap_or_else(|e| e.into_inner()).is_empty()
-    }
-
     /// Returns `true` if `id` is in the cache.
-    pub fn contains(&self, id: &u64) -> bool {
-        self.inner.read().unwrap_or_else(|e| e.into_inner()).contains_key(id)
+    pub(crate) fn contains(&self, id: &u64) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(id)
     }
 
     /// Returns all values as a `Vec`.
-    pub fn values(&self) -> Vec<u64> {
-        self.inner.read().unwrap_or_else(|e| e.into_inner()).values().copied().collect()
+    pub(crate) fn values(&self) -> Vec<u64> {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .copied()
+            .collect()
     }
 
     /// Returns all keys as a `Vec`.
-    pub fn keys(&self) -> Vec<u64> {
-        self.inner.read().unwrap_or_else(|e| e.into_inner()).keys().copied().collect()
+    #[cfg(test)]
+    pub(crate) fn keys(&self) -> Vec<u64> {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .copied()
+            .collect()
     }
 
     /// Returns the capacity of the inner map (for
     /// memory size calculations).
-    pub fn capacity(&self) -> usize {
-        self.inner.read().unwrap_or_else(|e| e.into_inner()).capacity()
+    pub(crate) fn capacity(&self) -> usize {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .capacity()
     }
 }
 
@@ -150,7 +169,10 @@ pub struct PreciseIndex {
     ///
     /// Uses interior mutability (`RwLock`) so callers can insert
     /// offsets without `&mut self` on `HprofFile`.
-    pub instance_offsets: OffsetCache,
+    ///
+    /// Access through delegating methods (`get_offset`,
+    /// `insert_offset`, etc.) rather than this field directly.
+    pub(crate) instance_offsets: OffsetCache,
 }
 
 impl PreciseIndex {
@@ -192,6 +214,36 @@ impl PreciseIndex {
             field_names: FxHashMap::with_capacity_and_hasher(class_cap, Default::default()),
             instance_offsets: OffsetCache::new(),
         }
+    }
+}
+
+// ── Public offset-cache façade ──────────────────────────
+
+impl PreciseIndex {
+    /// Returns the cached byte offset for `id`, if any.
+    pub fn get_offset(&self, id: u64) -> Option<u64> {
+        self.instance_offsets.get(id)
+    }
+
+    /// Caches a single object-ID → byte-offset mapping.
+    pub fn insert_offset(&self, id: u64, offset: u64) {
+        self.instance_offsets.insert(id, offset);
+    }
+
+    /// Caches multiple object-ID → byte-offset mappings
+    /// in a single lock acquisition.
+    pub fn insert_offset_batch(&self, offsets: &FxHashMap<u64, u64>) {
+        self.instance_offsets.insert_batch(offsets);
+    }
+
+    /// Returns `true` if `id` has a cached offset.
+    pub fn contains_offset(&self, id: &u64) -> bool {
+        self.instance_offsets.contains(id)
+    }
+
+    /// Returns the number of cached offsets.
+    pub fn offset_count(&self) -> usize {
+        self.instance_offsets.len()
     }
 }
 

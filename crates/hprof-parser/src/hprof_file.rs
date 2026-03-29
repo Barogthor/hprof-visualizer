@@ -41,23 +41,36 @@ pub struct ObjectArrayMeta {
 /// Result of a batch instance resolution.
 ///
 /// Contains both the parsed instances and their byte
-/// offsets for caching in `OffsetCache`.
+/// offsets for caching via
+/// [`PreciseIndex::insert_offset_batch`].
+///
+/// # Iteration order
+///
+/// Both `instances` and `offsets` are [`FxHashMap`]s
+/// with **unspecified iteration order**. If an object ID
+/// matches multiple segment filters (BinaryFuse8 false
+/// positives), the winning entry is arbitrary but always
+/// valid — it points to a physically present record.
+///
+/// Callers that need deterministic ordering should
+/// collect into a `Vec` and sort.
 #[derive(Debug)]
 pub struct BatchResult {
     /// Parsed `INSTANCE_DUMP` results keyed by object ID.
+    ///
+    /// Iteration order is **unspecified** (see struct docs).
     pub instances: FxHashMap<u64, RawInstance>,
     /// Byte offsets (relative to records section) keyed
-    /// by object ID, for cache insertion.
+    /// by object ID, suitable for passing to
+    /// [`PreciseIndex::insert_offset_batch`].
+    ///
+    /// Iteration order is **unspecified** (see struct docs).
     pub offsets: FxHashMap<u64, u64>,
 }
 
 /// Returns `true` if `offset + len` exceeds `limit`,
 /// treating overflow as out-of-bounds.
-fn exceeds_bounds(
-    offset: usize,
-    len: usize,
-    limit: usize,
-) -> bool {
+fn exceeds_bounds(offset: usize, len: usize, limit: usize) -> bool {
     match offset.checked_add(len) {
         Some(end) => end > limit,
         None => true,
@@ -244,9 +257,7 @@ impl HprofFile {
         if exceeds_bounds(byte_offset, id_sz, records.len()) {
             return None;
         }
-        let mut cursor = std::io::Cursor::new(
-            &records[byte_offset..byte_offset + id_sz],
-        );
+        let mut cursor = std::io::Cursor::new(&records[byte_offset..byte_offset + id_sz]);
         read_id(&mut cursor, self.header.id_size).ok()
     }
 
@@ -392,16 +403,26 @@ impl HprofFile {
 
     /// Resolves multiple object instances in a single
     /// pass per segment, returning parsed instances and
-    /// their byte offsets.
+    /// their byte offsets as a [`BatchResult`].
     ///
     /// Groups IDs by candidate segment (via
     /// `segment_filters.contains()`), then performs ONE
     /// linear scan per distinct segment collecting all
-    /// matching INSTANCE_DUMP records.
+    /// matching `INSTANCE_DUMP` records. Segments are
+    /// scanned in parallel via rayon.
     ///
-    /// This method is side-effect-free: it does NOT read
-    /// or write `OffsetCache`. The caller pre-partitions
-    /// IDs (cached vs uncached) and inserts offsets after.
+    /// # Side effects
+    ///
+    /// This method is **side-effect-free**: it does NOT
+    /// read or write the offset cache. The caller should
+    /// pre-partition IDs (cached vs uncached) and call
+    /// [`PreciseIndex::insert_offset_batch`] after.
+    ///
+    /// # Ordering
+    ///
+    /// The returned [`BatchResult`] maps have
+    /// **unspecified iteration order**. See [`BatchResult`]
+    /// docs for details.
     pub fn batch_find_instances(&self, object_ids: &[u64]) -> BatchResult {
         use crate::indexer::segment::SEGMENT_SIZE;
         self.batch_find_instances_inner(object_ids, SEGMENT_SIZE)
@@ -502,6 +523,159 @@ impl HprofFile {
         }
 
         result
+    }
+
+    /// Walks every heap sub-record, dispatching typed
+    /// callbacks to `visitor`.
+    ///
+    /// Iterates all [`HeapRecordRange`]s in order. The
+    /// visitor can return [`ControlFlow::Break`] from any
+    /// callback to stop the walk early.
+    ///
+    /// Sub-record types not handled by [`HeapVisitor`]
+    /// (GC roots, unknown tags) are silently skipped.
+    pub fn visit_heap(&self, visitor: &mut dyn crate::visitor::HeapVisitor) {
+        use crate::indexer::first_pass::{parse_class_dump, value_byte_size};
+        use std::ops::ControlFlow;
+
+        let records = self.records_bytes();
+        let id_size = self.header.id_size;
+
+        for r in &self.heap_record_ranges {
+            let start = r.payload_start as usize;
+            let end = (r.payload_start + r.payload_length) as usize;
+            if start >= records.len() {
+                continue;
+            }
+            let slice = &records[start..end.min(records.len())];
+            let mut broke = false;
+
+            walk_heap_subrecords(slice, id_size, |sub_tag, _tag_pos, cursor| match sub_tag {
+                HeapSubTag::InstanceDump => {
+                    let obj_id = match read_id(cursor, id_size) {
+                        Ok(id) => id,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let _serial = match cursor.read_u32::<BigEndian>() {
+                        Ok(v) => v,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let class_id = match read_id(cursor, id_size) {
+                        Ok(id) => id,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let num_bytes = match cursor.read_u32::<BigEndian>() {
+                        Ok(n) => n as usize,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let pos = cursor.position() as usize;
+                    if exceeds_bounds(pos, num_bytes, slice.len()) {
+                        return SubRecordAction::Break;
+                    }
+                    let data = &slice[pos..pos + num_bytes];
+                    let flow = visitor.on_instance(obj_id, class_id, data);
+                    cursor.set_position((pos + num_bytes) as u64);
+                    if flow == ControlFlow::Break(()) {
+                        broke = true;
+                        return SubRecordAction::Break;
+                    }
+                    SubRecordAction::Consumed
+                }
+                HeapSubTag::ObjectArrayDump => {
+                    let arr_id = match read_id(cursor, id_size) {
+                        Ok(id) => id,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let _serial = match cursor.read_u32::<BigEndian>() {
+                        Ok(v) => v,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let num_elements = match cursor.read_u32::<BigEndian>() {
+                        Ok(n) => n,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let class_id = match read_id(cursor, id_size) {
+                        Ok(id) => id,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let byte_count = match (num_elements as usize).checked_mul(id_size as usize) {
+                        Some(n) => n,
+                        None => return SubRecordAction::Break,
+                    };
+                    let pos = cursor.position() as usize;
+                    if exceeds_bounds(pos, byte_count, slice.len()) {
+                        return SubRecordAction::Break;
+                    }
+                    let data = &slice[pos..pos + byte_count];
+                    let flow = visitor.on_object_array(arr_id, class_id, num_elements, data);
+                    cursor.set_position((pos + byte_count) as u64);
+                    if flow == ControlFlow::Break(()) {
+                        broke = true;
+                        return SubRecordAction::Break;
+                    }
+                    SubRecordAction::Consumed
+                }
+                HeapSubTag::PrimArrayDump => {
+                    let arr_id = match read_id(cursor, id_size) {
+                        Ok(id) => id,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let _serial = match cursor.read_u32::<BigEndian>() {
+                        Ok(v) => v,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let num_elements = match cursor.read_u32::<BigEndian>() {
+                        Ok(n) => n,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let elem_type = match cursor.read_u8() {
+                        Ok(t) => t,
+                        Err(_) => return SubRecordAction::Break,
+                    };
+                    let elem_size = value_byte_size(elem_type, id_size);
+                    if elem_size == 0 {
+                        return SubRecordAction::Break;
+                    }
+                    let byte_count = match (num_elements as usize).checked_mul(elem_size) {
+                        Some(n) => n,
+                        None => return SubRecordAction::Break,
+                    };
+                    let pos = cursor.position() as usize;
+                    if exceeds_bounds(pos, byte_count, slice.len()) {
+                        return SubRecordAction::Break;
+                    }
+                    let data = &slice[pos..pos + byte_count];
+                    let flow = visitor.on_prim_array(arr_id, elem_type, num_elements, data);
+                    cursor.set_position((pos + byte_count) as u64);
+                    if flow == ControlFlow::Break(()) {
+                        broke = true;
+                        return SubRecordAction::Break;
+                    }
+                    SubRecordAction::Consumed
+                }
+                HeapSubTag::ClassDump => {
+                    let pos = cursor.position() as usize;
+                    let cd_data = &slice[pos..];
+                    let mut cd_cursor = std::io::Cursor::new(cd_data);
+                    if let Some(info) = parse_class_dump(&mut cd_cursor, id_size) {
+                        let consumed = cd_cursor.position() as usize;
+                        cursor.set_position((pos + consumed) as u64);
+                        let flow = visitor.on_class_dump(&info);
+                        if flow == ControlFlow::Break(()) {
+                            broke = true;
+                            return SubRecordAction::Break;
+                        }
+                        SubRecordAction::Consumed
+                    } else {
+                        SubRecordAction::Break
+                    }
+                }
+                _ => SubRecordAction::Continue,
+            });
+            if broke {
+                break;
+            }
+        }
     }
 }
 
@@ -728,16 +902,12 @@ fn scan_for_object_array_meta(
             None => return SubRecordAction::Break,
         };
         let pos = cursor.position() as usize;
-        let elements_offset = match data_base_offset
-            .checked_add(pos as u64)
-        {
+        let elements_offset = match data_base_offset.checked_add(pos as u64) {
             Some(o) => o,
             None => return SubRecordAction::Break,
         };
-        let abs_end = (data_base_offset as usize)
-            .checked_add(data.len());
-        let elem_end = (elements_offset as usize)
-            .checked_add(byte_count);
+        let abs_end = (data_base_offset as usize).checked_add(data.len());
+        let elem_end = (elements_offset as usize).checked_add(byte_count);
         if match (elem_end, abs_end) {
             (Some(e), Some(a)) => e > a,
             _ => true,
@@ -818,9 +988,7 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_
             if read_id(cursor, id_size).is_err() {
                 return false;
             }
-            let byte_count = match (num_elements as usize)
-                .checked_mul(id_size as usize)
-            {
+            let byte_count = match (num_elements as usize).checked_mul(id_size as usize) {
                 Some(n) => n,
                 None => return false,
             };
@@ -844,9 +1012,7 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_
             if elem_size == 0 {
                 return false;
             }
-            let byte_count = match (num_elements as usize)
-                .checked_mul(elem_size)
-            {
+            let byte_count = match (num_elements as usize).checked_mul(elem_size) {
                 Some(n) => n,
                 None => return false,
             };
@@ -867,10 +1033,7 @@ mod tests {
         let num_bytes: usize = 10;
         let data_len: usize = 100;
         let overflows = pos.checked_add(num_bytes).is_none();
-        assert!(
-            overflows,
-            "pos + num_bytes must be detected as overflow"
-        );
+        assert!(overflows, "pos + num_bytes must be detected as overflow");
         assert!(
             pos.wrapping_add(num_bytes) < data_len,
             "wrapping_add would pass a naive bounds check"
@@ -1735,5 +1898,138 @@ mod builder_tests {
         let (class_id, elems) = hfile.find_object_array(0xA).expect("composition must work");
         assert_eq!(class_id, 100);
         assert_eq!(elems, elements);
+    }
+
+    // ── 4.2: HeapVisitor ──
+
+    fn build_hfile(bytes: &[u8]) -> HprofFile {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(bytes).unwrap();
+        tmp.flush().unwrap();
+        HprofFile::from_path(tmp.path()).unwrap()
+    }
+
+    #[test]
+    fn visit_heap_calls_on_instance_for_each_instance() {
+        use crate::visitor::HeapVisitor;
+        use std::ops::ControlFlow;
+
+        struct Collector {
+            instances: Vec<(u64, u64)>,
+        }
+        impl HeapVisitor for Collector {
+            fn on_instance(&mut self, id: u64, class_id: u64, _data: &[u8]) -> ControlFlow<()> {
+                self.instances.push((id, class_id));
+                ControlFlow::Continue(())
+            }
+        }
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xA, 0, 100, &[1, 2])
+            .add_instance(0xB, 0, 200, &[3, 4])
+            .build();
+        let hfile = build_hfile(&bytes);
+
+        let mut v = Collector { instances: vec![] };
+        hfile.visit_heap(&mut v);
+
+        assert_eq!(v.instances.len(), 2);
+        assert!(v.instances.contains(&(0xA, 100)), "must visit instance 0xA");
+        assert!(v.instances.contains(&(0xB, 200)), "must visit instance 0xB");
+    }
+
+    #[test]
+    fn visit_heap_break_stops_early() {
+        use crate::visitor::HeapVisitor;
+        use std::ops::ControlFlow;
+
+        struct StopAfterFirst {
+            count: usize,
+        }
+        impl HeapVisitor for StopAfterFirst {
+            fn on_instance(&mut self, _id: u64, _class_id: u64, _data: &[u8]) -> ControlFlow<()> {
+                self.count += 1;
+                ControlFlow::Break(())
+            }
+        }
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_instance(0xA, 0, 100, &[1])
+            .add_instance(0xB, 0, 200, &[2])
+            .build();
+        let hfile = build_hfile(&bytes);
+
+        let mut v = StopAfterFirst { count: 0 };
+        hfile.visit_heap(&mut v);
+
+        assert_eq!(v.count, 1, "must stop after first");
+    }
+
+    #[test]
+    fn visit_heap_visits_prim_arrays() {
+        use crate::visitor::HeapVisitor;
+        use std::ops::ControlFlow;
+
+        struct PrimCollector {
+            arrays: Vec<(u64, u8, u32)>,
+        }
+        impl HeapVisitor for PrimCollector {
+            fn on_prim_array(
+                &mut self,
+                id: u64,
+                element_type: u8,
+                num_elements: u32,
+                _data: &[u8],
+            ) -> ControlFlow<()> {
+                self.arrays.push((id, element_type, num_elements));
+                ControlFlow::Continue(())
+            }
+        }
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_prim_array(0xC, 0, 3, 8, &[10, 20, 30])
+            .build();
+        let hfile = build_hfile(&bytes);
+
+        let mut v = PrimCollector { arrays: vec![] };
+        hfile.visit_heap(&mut v);
+
+        assert_eq!(v.arrays.len(), 1);
+        assert_eq!(v.arrays[0], (0xC, 8, 3));
+    }
+
+    #[test]
+    fn visit_heap_visits_object_arrays() {
+        use crate::visitor::HeapVisitor;
+        use std::ops::ControlFlow;
+
+        struct ObjArrCollector {
+            arrays: Vec<(u64, u64, u32)>,
+        }
+        impl HeapVisitor for ObjArrCollector {
+            fn on_object_array(
+                &mut self,
+                id: u64,
+                class_id: u64,
+                num_elements: u32,
+                _elements_data: &[u8],
+            ) -> ControlFlow<()> {
+                self.arrays.push((id, class_id, num_elements));
+                ControlFlow::Continue(())
+            }
+        }
+
+        let elements = vec![0x10u64, 0x20, 0x30];
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_object_array(0xD, 0, 500, &elements)
+            .build();
+        let hfile = build_hfile(&bytes);
+
+        let mut v = ObjArrCollector { arrays: vec![] };
+        hfile.visit_heap(&mut v);
+
+        assert_eq!(v.arrays.len(), 1);
+        assert_eq!(v.arrays[0], (0xD, 500, 3));
     }
 }

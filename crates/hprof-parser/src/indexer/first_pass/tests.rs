@@ -3558,22 +3558,16 @@ fn push_warning_closure_not_called_beyond_cap() {
     let mut suppressed: u64 = 0;
 
     for i in 0..super::hprof_primitives::MAX_WARNINGS {
-        super::FirstPassContext::push_warning_raw(
-            &mut warnings,
-            &mut suppressed,
-            || format!("warn {i}"),
-        );
+        super::FirstPassContext::push_warning_raw(&mut warnings, &mut suppressed, || {
+            format!("warn {i}")
+        });
     }
     assert_eq!(warnings.len(), super::hprof_primitives::MAX_WARNINGS);
 
-    super::FirstPassContext::push_warning_raw(
-        &mut warnings,
-        &mut suppressed,
-        || {
-            call_count.fetch_add(1, Ordering::SeqCst);
-            "overflow".to_string()
-        },
-    );
+    super::FirstPassContext::push_warning_raw(&mut warnings, &mut suppressed, || {
+        call_count.fetch_add(1, Ordering::SeqCst);
+        "overflow".to_string()
+    });
 
     assert_eq!(call_count.load(Ordering::SeqCst), 0);
     assert_eq!(suppressed, 1);

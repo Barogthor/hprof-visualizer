@@ -288,11 +288,11 @@ fn extract_hash_map(
     let uncached_heads: Vec<u64> = table_elements[start_slot..]
         .iter()
         .copied()
-        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .filter(|&id| id != 0 && !hfile.index.contains_offset(&id))
         .collect();
     if uncached_heads.len() >= BATCH_THRESHOLD {
         let batch = hfile.batch_find_instances(&uncached_heads);
-        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        hfile.index.insert_offset_batch(&batch.offsets);
     }
 
     let adjusted_offset = offset - checkpoint_index;
@@ -423,11 +423,11 @@ fn extract_hash_map(
                 FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
                 _ => None,
             })
-            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .filter(|id| !hfile.index.contains_offset(id))
             .collect();
         if !obj_ids.is_empty() {
             let batch = hfile.batch_find_instances(&obj_ids);
-            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+            hfile.index.insert_offset_batch(&batch.offsets);
         }
     }
 
@@ -456,11 +456,11 @@ fn extract_hash_map_full(
     let uncached_heads: Vec<u64> = table_elements
         .iter()
         .copied()
-        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .filter(|&id| id != 0 && !hfile.index.contains_offset(&id))
         .collect();
     if uncached_heads.len() >= BATCH_THRESHOLD {
         let batch = hfile.batch_find_instances(&uncached_heads);
-        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        hfile.index.insert_offset_batch(&batch.offsets);
     }
 
     let target_count = offset + limit;
@@ -542,11 +542,11 @@ fn extract_hash_map_full(
                 FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
                 _ => None,
             })
-            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .filter(|id| !hfile.index.contains_offset(id))
             .collect();
         if !obj_ids.is_empty() {
             let batch = hfile.batch_find_instances(&obj_ids);
-            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+            hfile.index.insert_offset_batch(&batch.offsets);
         }
     }
 
@@ -723,11 +723,11 @@ fn extract_linked_list(
                 FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
                 _ => None,
             })
-            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .filter(|id| !hfile.index.contains_offset(id))
             .collect();
         if !obj_ids.is_empty() {
             let batch = hfile.batch_find_instances(&obj_ids);
-            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+            hfile.index.insert_offset_batch(&batch.offsets);
         }
     }
 
@@ -799,12 +799,12 @@ fn paginate_object_array(
     let uncached: Vec<u64> = element_ids
         .iter()
         .copied()
-        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .filter(|&id| id != 0 && !hfile.index.contains_offset(&id))
         .collect();
 
     if !uncached.is_empty() {
         let batch = hfile.batch_find_instances(&uncached);
-        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        hfile.index.insert_offset_batch(&batch.offsets);
     }
 
     // Step 3: Resolve all elements (batch-found IDs now

@@ -12,11 +12,7 @@ use crate::indexer::IndexResult;
 const MAX_VALIDATION_WARNINGS: usize = 50;
 
 /// Pushes a validation warning, respecting the cap.
-fn push_validation_warning(
-    warnings: &mut Vec<String>,
-    suppressed: &mut usize,
-    msg: String,
-) {
+fn push_validation_warning(warnings: &mut Vec<String>, suppressed: &mut usize, msg: String) {
     let validation_count = warnings
         .iter()
         .filter(|w| w.starts_with("validation:"))
@@ -36,12 +32,8 @@ fn push_validation_warning(
 /// data.
 pub(crate) fn validate_index(result: &mut IndexResult) {
     let mut suppressed = 0usize;
-    check_class_object_id_consistency(
-        result, &mut suppressed,
-    );
-    check_super_class_cycles(
-        result, &mut suppressed,
-    );
+    check_class_object_id_consistency(result, &mut suppressed);
+    check_super_class_cycles(result, &mut suppressed);
     if suppressed > 0 {
         result.warnings.push(format!(
             "validation: ... {suppressed} additional \
@@ -51,17 +43,11 @@ pub(crate) fn validate_index(result: &mut IndexResult) {
     }
 }
 
-fn check_class_object_id_consistency(
-    result: &mut IndexResult,
-    suppressed: &mut usize,
-) {
+fn check_class_object_id_consistency(result: &mut IndexResult, suppressed: &mut usize) {
     for class_def in result.index.classes.values() {
         let id = class_def.class_object_id;
         if !result.index.class_dumps.contains_key(&id)
-            && result
-                .index
-                .class_names_by_id
-                .contains_key(&id)
+            && result.index.class_names_by_id.contains_key(&id)
         {
             push_validation_warning(
                 &mut result.warnings,
@@ -76,10 +62,7 @@ fn check_class_object_id_consistency(
     }
 }
 
-fn check_super_class_cycles(
-    result: &mut IndexResult,
-    suppressed: &mut usize,
-) {
+fn check_super_class_cycles(result: &mut IndexResult, suppressed: &mut usize) {
     let class_dumps = &result.index.class_dumps;
     let mut visited_global = FxHashSet::default();
     let mut in_cycle = FxHashSet::default();
@@ -97,10 +80,7 @@ fn check_super_class_cycles(
                 break;
             }
             if path_set.contains(&current) {
-                let cycle_start = path
-                    .iter()
-                    .position(|&id| id == current)
-                    .unwrap();
+                let cycle_start = path.iter().position(|&id| id == current).unwrap();
                 for &cid in &path[cycle_start..] {
                     in_cycle.insert(cid);
                 }
@@ -110,9 +90,7 @@ fn check_super_class_cycles(
             path_set.insert(current);
 
             match class_dumps.get(&current) {
-                Some(info)
-                    if info.super_class_id != 0 =>
-                {
+                Some(info) if info.super_class_id != 0 => {
                     current = info.super_class_id;
                 }
                 _ => break,
@@ -125,13 +103,9 @@ fn check_super_class_cycles(
     }
 
     if !in_cycle.is_empty() {
-        let mut ids: Vec<_> =
-            in_cycle.into_iter().collect();
+        let mut ids: Vec<_> = in_cycle.into_iter().collect();
         ids.sort_unstable();
-        let formatted: Vec<_> = ids
-            .iter()
-            .map(|id| format!("0x{id:x}"))
-            .collect();
+        let formatted: Vec<_> = ids.iter().map(|id| format!("0x{id:x}")).collect();
         push_validation_warning(
             &mut result.warnings,
             suppressed,
@@ -159,8 +133,7 @@ mod tests {
             segment_filters: Vec::new(),
             heap_record_ranges: Vec::new(),
             #[cfg(feature = "test-utils")]
-            diagnostics:
-                crate::indexer::DiagnosticInfo::default(),
+            diagnostics: crate::indexer::DiagnosticInfo::default(),
         }
     }
 
@@ -215,10 +188,10 @@ mod tests {
             .insert(0xA, "com.example.Foo".to_string());
         validate_index(&mut result);
         assert!(
-            result.warnings.iter().any(|w| {
-                w.contains("LOAD_CLASS")
-                    && w.contains("0xa")
-            }),
+            result
+                .warnings
+                .iter()
+                .any(|w| { w.contains("LOAD_CLASS") && w.contains("0xa") }),
             "should warn about missing CLASS_DUMP: {:?}",
             result.warnings
         );
@@ -249,10 +222,7 @@ mod tests {
         );
         validate_index(&mut result);
         assert!(
-            result
-                .warnings
-                .iter()
-                .any(|w| w.contains("cycle")),
+            result.warnings.iter().any(|w| w.contains("cycle")),
             "should warn about cycle: {:?}",
             result.warnings
         );
@@ -283,10 +253,7 @@ mod tests {
         );
         validate_index(&mut result);
         assert!(
-            !result
-                .warnings
-                .iter()
-                .any(|w| w.contains("cycle")),
+            !result.warnings.iter().any(|w| w.contains("cycle")),
             "valid hierarchy must not produce cycle warnings"
         );
     }

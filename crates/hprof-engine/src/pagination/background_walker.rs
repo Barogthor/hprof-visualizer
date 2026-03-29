@@ -202,12 +202,12 @@ fn walk_hash_map(
     let uncached_heads: Vec<u64> = table_elements
         .iter()
         .copied()
-        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .filter(|&id| id != 0 && !hfile.index.contains_offset(&id))
         .collect();
 
     if !uncached_heads.is_empty() {
         let batch = hfile.batch_find_instances(&uncached_heads);
-        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        hfile.index.insert_offset_batch(&batch.offsets);
 
         // For non-ConcurrentHashMap: decode each head's
         // `next` field to collect depth-1 node IDs
@@ -221,13 +221,13 @@ fn walk_hash_map(
                     hfile.records_bytes(),
                 );
                 let next_id = extract_next_id(&head_fields);
-                if next_id != 0 && !hfile.index.instance_offsets.contains(&next_id) {
+                if next_id != 0 && !hfile.index.contains_offset(&next_id) {
                     depth1_ids.push(next_id);
                 }
             }
             if !depth1_ids.is_empty() {
                 let batch2 = hfile.batch_find_instances(&depth1_ids);
-                hfile.index.instance_offsets.insert_batch(&batch2.offsets);
+                hfile.index.insert_offset_batch(&batch2.offsets);
             }
         }
     }
@@ -722,7 +722,7 @@ mod tests {
         for i in 0..50usize {
             let head_id = 0x200u64 + i as u64;
             assert!(
-                hfile.index.instance_offsets.contains(&head_id),
+                hfile.index.contains_offset(&head_id),
                 "head node 0x{head_id:X} must be in OffsetCache"
             );
         }
@@ -798,7 +798,7 @@ mod tests {
         for c in 0..25usize {
             let depth1_id = 0x200u64 + (c * 2 + 1) as u64;
             assert!(
-                hfile.index.instance_offsets.contains(&depth1_id),
+                hfile.index.contains_offset(&depth1_id),
                 "depth-1 node 0x{depth1_id:X} must be in OffsetCache"
             );
         }

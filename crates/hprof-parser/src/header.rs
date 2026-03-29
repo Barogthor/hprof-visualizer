@@ -41,9 +41,7 @@ pub struct HprofHeader {
 /// Returns `Err(HprofError::TruncatedRecord)` if the
 /// arithmetic overflows (corrupt / impossibly large
 /// version string).
-fn records_start_offset(
-    null_pos: usize,
-) -> Result<usize, HprofError> {
+fn records_start_offset(null_pos: usize) -> Result<usize, HprofError> {
     null_pos
         .checked_add(1 + 4 + 8)
         .ok_or(HprofError::TruncatedRecord)
@@ -102,8 +100,7 @@ mod tests {
 
     #[test]
     fn records_start_offset_overflow_returns_truncated() {
-        let err = records_start_offset(usize::MAX - 5)
-            .unwrap_err();
+        let err = records_start_offset(usize::MAX - 5).unwrap_err();
         assert!(matches!(err, HprofError::TruncatedRecord));
     }
 
