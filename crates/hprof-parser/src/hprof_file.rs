@@ -545,6 +545,57 @@ impl HprofFile {
     }
 }
 
+/// Controls iteration in [`walk_heap_subrecords`].
+#[allow(dead_code)] // callers added in Tasks 2-5
+enum SubRecordAction {
+    /// Callback did not consume the sub-record body.
+    /// The walker calls `skip_sub_record` to advance
+    /// past it.
+    Continue,
+    /// Callback already advanced the cursor past the
+    /// sub-record body.
+    Consumed,
+    /// Stop the walk immediately.
+    Break,
+}
+
+/// Walks every heap sub-record in `data`, invoking
+/// `callback` for each one.
+///
+/// The cursor is positioned just **after** the sub-tag
+/// byte when the callback is invoked. The callback must
+/// return [`SubRecordAction`] to indicate whether it
+/// consumed the sub-record body or wants the walker to
+/// skip it.
+///
+/// Stops on `SubRecordAction::Break`, I/O error, or
+/// when `skip_sub_record` fails (truncated data).
+#[allow(dead_code)] // callers added in Tasks 2-5
+fn walk_heap_subrecords<F>(data: &[u8], id_size: u32, mut callback: F)
+where
+    F: FnMut(HeapSubTag, u64, &mut std::io::Cursor<&[u8]>) -> SubRecordAction,
+{
+    use std::io::Cursor;
+
+    let mut cursor = Cursor::new(data);
+    loop {
+        let tag_pos = cursor.position();
+        let sub_tag = match cursor.read_u8() {
+            Ok(t) => HeapSubTag::from(t),
+            Err(_) => return,
+        };
+        match callback(sub_tag, tag_pos, &mut cursor) {
+            SubRecordAction::Break => return,
+            SubRecordAction::Consumed => {}
+            SubRecordAction::Continue => {
+                if !skip_sub_record(&mut cursor, sub_tag, id_size) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<(RawInstance, u64)> {
     use std::io::Cursor;
 
@@ -980,6 +1031,109 @@ mod tests {
         assert!(hfile.index_warnings.is_empty());
         assert_eq!(hfile.records_attempted, 0);
         assert_eq!(hfile.records_indexed, 0);
+    }
+
+    // ── walk_heap_subrecords tests ──
+
+    #[test]
+    fn walk_full_traversal_visits_all_sub_records() {
+        let id_size: u32 = 8;
+        let mut payload = Vec::new();
+
+        // Instance A (obj_id=0xAA, class=100, data=[0x11])
+        payload.push(0x21);
+        payload.extend_from_slice(&0xAAu64.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&100u64.to_be_bytes());
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.push(0x11);
+
+        // Instance B (obj_id=0xBB, class=200, data=[0x22])
+        payload.push(0x21);
+        payload.extend_from_slice(&0xBBu64.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&200u64.to_be_bytes());
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.push(0x22);
+
+        let mut visited = Vec::new();
+        walk_heap_subrecords(&payload, id_size, |sub_tag, tag_pos, _cursor| {
+            visited.push((sub_tag, tag_pos));
+            SubRecordAction::Continue
+        });
+        assert_eq!(visited.len(), 2);
+        assert_eq!(visited[0].0, HeapSubTag::InstanceDump);
+        assert_eq!(visited[0].1, 0);
+        assert_eq!(visited[1].0, HeapSubTag::InstanceDump);
+        assert_eq!(visited[1].1, 26); // 1+8+4+8+4+1 = 26
+    }
+
+    #[test]
+    fn walk_break_stops_iteration() {
+        let id_size: u32 = 8;
+        let mut payload = Vec::new();
+
+        for obj_id in [0xAAu64, 0xBBu64] {
+            payload.push(0x21);
+            payload.extend_from_slice(&obj_id.to_be_bytes());
+            payload.extend_from_slice(&0u32.to_be_bytes());
+            payload.extend_from_slice(&100u64.to_be_bytes());
+            payload.extend_from_slice(&0u32.to_be_bytes());
+        }
+
+        let mut count = 0u32;
+        walk_heap_subrecords(&payload, id_size, |_sub_tag, _tag_pos, _cursor| {
+            count += 1;
+            SubRecordAction::Break
+        });
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn walk_truncated_sub_record_exits_silently() {
+        let payload = vec![0x21, 0x00, 0x00];
+        let mut count = 0u32;
+        walk_heap_subrecords(&payload, 8, |_sub_tag, _tag_pos, _cursor| {
+            count += 1;
+            SubRecordAction::Continue
+        });
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn walk_consumed_action_skips_auto_skip() {
+        let id_size: u32 = 8;
+        let mut payload = Vec::new();
+        payload.push(0x21);
+        payload.extend_from_slice(&0xAAu64.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.extend_from_slice(&100u64.to_be_bytes());
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.push(0xFF);
+
+        let mut visited = Vec::new();
+        walk_heap_subrecords(&payload, id_size, |sub_tag, _tag_pos, cursor| {
+            visited.push(sub_tag);
+            let _ = read_id(cursor, id_size);
+            let _ = cursor.read_u32::<BigEndian>();
+            let _ = read_id(cursor, id_size);
+            if let Ok(n) = cursor.read_u32::<BigEndian>() {
+                let pos = cursor.position() as usize;
+                cursor.set_position((pos + n as usize) as u64);
+            }
+            SubRecordAction::Consumed
+        });
+        assert_eq!(visited.len(), 1);
+    }
+
+    #[test]
+    fn walk_empty_data_invokes_no_callbacks() {
+        let mut count = 0u32;
+        walk_heap_subrecords(&[], 8, |_sub_tag, _tag_pos, _cursor| {
+            count += 1;
+            SubRecordAction::Continue
+        });
+        assert_eq!(count, 0);
     }
 }
 
