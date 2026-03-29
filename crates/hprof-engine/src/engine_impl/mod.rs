@@ -14,7 +14,7 @@ use std::sync::Arc;
 use hprof_api::{NullProgressObserver, ParseProgressObserver, ProgressNotifier};
 use rayon::prelude::*;
 
-use hprof_parser::{HprofFile, PreciseIndex, RawInstance, StaticValue};
+use hprof_parser::{HprofFile, IdSize, PreciseIndex, RawInstance, StaticValue};
 
 use hprof_parser::jvm_to_java;
 
@@ -54,7 +54,7 @@ const COLLECTION_CLASS_SUFFIXES: &[&str] = &[
 pub(crate) fn collection_entry_count(
     raw: &RawInstance,
     index: &PreciseIndex,
-    id_size: u32,
+    id_size: IdSize,
     records_bytes: &[u8],
 ) -> Option<u64> {
     let class_name = index.class_names_by_id.get(&raw.class_object_id)?;
@@ -82,9 +82,9 @@ pub(crate) fn collection_entry_count(
 }
 
 /// Returns the byte size of a field given its type code.
-pub(crate) fn field_byte_size(type_code: u8, id_size: u32) -> usize {
+pub(crate) fn field_byte_size(type_code: u8, id_size: IdSize) -> usize {
     match type_code {
-        2 => id_size as usize,
+        2 => id_size.as_usize(),
         4 => 1,
         5 => 2,
         6 => 4,
@@ -294,6 +294,11 @@ impl Engine {
             walkers: Mutex::new(StdHashMap::new()),
             string_cache: Mutex::new(FxHashMap::default()),
         })
+    }
+
+    /// Returns the identifier size used in this heap dump.
+    fn id_size(&self) -> IdSize {
+        self.hfile.header.id_size
     }
 
     /// Resolves all thread metadata (name + state) once
@@ -558,7 +563,7 @@ impl Engine {
             let entry_count = collection_entry_count(
                 &child_raw,
                 &self.hfile.index,
-                self.hfile.header.id_size,
+                self.id_size(),
                 self.hfile.records_bytes(),
             );
             (class_name, entry_count, inline_value)
@@ -566,7 +571,7 @@ impl Engine {
             ("Object[]".to_string(), Some(meta.num_elements as u64), None)
         } else if let Some((elem_type, bytes)) = self.hfile.find_prim_array(object_id) {
             let type_name = prim_array_type_name(elem_type);
-            let elem_size = field_byte_size(elem_type, 0);
+            let elem_size = field_byte_size(elem_type, self.id_size());
             let count = if elem_size > 0 {
                 bytes.len() / elem_size
             } else {
@@ -654,7 +659,7 @@ impl Engine {
         let mut fields = crate::resolver::decode_fields(
             &raw,
             &self.hfile.index,
-            self.hfile.header.id_size,
+            self.id_size(),
             self.hfile.records_bytes(),
         );
         for field in &mut fields {
@@ -940,7 +945,7 @@ impl NavigationEngine for Engine {
                             let ec = collection_entry_count(
                                 &raw,
                                 &self.hfile.index,
-                                self.hfile.header.id_size,
+                                self.id_size(),
                                 self.hfile.records_bytes(),
                             );
                             (cn, ec)
@@ -948,7 +953,7 @@ impl NavigationEngine for Engine {
                             ("Object[]".to_string(), Some(meta.num_elements as u64))
                         } else if let Some((etype, bytes)) = self.hfile.find_prim_array(object_id) {
                             let type_name = prim_array_type_name(etype).to_string();
-                            let esz = field_byte_size(etype, self.hfile.header.id_size);
+                            let esz = field_byte_size(etype, self.id_size());
                             let cnt = if esz > 0 { bytes.len() / esz } else { 0 };
                             (format!("{type_name}[]"), Some(cnt as u64))
                         } else {
@@ -1069,7 +1074,7 @@ impl NavigationEngine for Engine {
         let fields = crate::resolver::decode_fields(
             &raw,
             &self.hfile.index,
-            self.hfile.header.id_size,
+            self.id_size(),
             self.hfile.records_bytes(),
         );
         let value_id = fields.iter().find_map(|f| {
