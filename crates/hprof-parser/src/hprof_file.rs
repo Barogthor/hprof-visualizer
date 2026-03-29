@@ -734,49 +734,48 @@ fn scan_for_object_array_meta(
     id_size: u32,
     data_base_offset: u64,
 ) -> Option<ObjectArrayMeta> {
-    use std::io::Cursor;
-
-    let mut cursor = Cursor::new(data);
-    loop {
-        let sub_tag = match cursor.read_u8() {
-            Ok(t) => HeapSubTag::from(t),
-            Err(_) => return None,
-        };
-        if sub_tag == HeapSubTag::ObjectArrayDump {
-            let arr_id = match read_id(&mut cursor, id_size) {
-                Ok(id) => id,
-                Err(_) => return None,
-            };
-            let _stack_serial = match cursor.read_u32::<BigEndian>() {
-                Ok(v) => v,
-                Err(_) => return None,
-            };
-            let num_elements = match cursor.read_u32::<BigEndian>() {
-                Ok(n) => n,
-                Err(_) => return None,
-            };
-            let class_id = match read_id(&mut cursor, id_size) {
-                Ok(id) => id,
-                Err(_) => return None,
-            };
-            let byte_count = (num_elements as usize).checked_mul(id_size as usize)?;
-            let pos = cursor.position() as usize;
-            let elements_offset = data_base_offset + pos as u64;
-            if elements_offset as usize + byte_count > data_base_offset as usize + data.len() {
-                return None;
-            }
-            if arr_id == target_id {
-                return Some(ObjectArrayMeta {
-                    class_id,
-                    num_elements,
-                    elements_offset,
-                });
-            }
-            cursor.set_position((pos + byte_count) as u64);
-        } else if !skip_sub_record(&mut cursor, sub_tag, id_size) {
-            return None;
+    let mut result = None;
+    walk_heap_subrecords(data, id_size, |sub_tag, _tag_pos, cursor| {
+        if sub_tag != HeapSubTag::ObjectArrayDump {
+            return SubRecordAction::Continue;
         }
-    }
+        let arr_id = match read_id(cursor, id_size) {
+            Ok(id) => id,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let _serial = match cursor.read_u32::<BigEndian>() {
+            Ok(v) => v,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let num_elements = match cursor.read_u32::<BigEndian>() {
+            Ok(n) => n,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let class_id = match read_id(cursor, id_size) {
+            Ok(id) => id,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let byte_count = match (num_elements as usize).checked_mul(id_size as usize) {
+            Some(n) => n,
+            None => return SubRecordAction::Break,
+        };
+        let pos = cursor.position() as usize;
+        let elements_offset = data_base_offset + pos as u64;
+        if elements_offset as usize + byte_count > data_base_offset as usize + data.len() {
+            return SubRecordAction::Break;
+        }
+        if arr_id == target_id {
+            result = Some(ObjectArrayMeta {
+                class_id,
+                num_elements,
+                elements_offset,
+            });
+            return SubRecordAction::Break;
+        }
+        cursor.set_position((pos + byte_count) as u64);
+        SubRecordAction::Consumed
+    });
+    result
 }
 
 fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_size: u32) -> bool {
