@@ -322,6 +322,11 @@ pub fn run_first_pass(
     // lookups.
     thread_resolution::resolve_all(&mut ctx, &filters, &entry_points, notifier);
 
+    // Post-indexation coherence validation.
+    crate::indexer::validation::validate_index(
+        &mut ctx.result,
+    );
+
     // Store filters back for finish() to consume.
     ctx.built_filters = Some((filters, Vec::new()));
 

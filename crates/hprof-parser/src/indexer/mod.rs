@@ -11,6 +11,7 @@
 pub mod first_pass;
 pub(crate) mod precise;
 pub(crate) mod segment;
+pub(crate) mod validation;
 
 use precise::PreciseIndex;
 use segment::SegmentFilter;
