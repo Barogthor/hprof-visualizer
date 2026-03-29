@@ -546,7 +546,6 @@ impl HprofFile {
 }
 
 /// Controls iteration in [`walk_heap_subrecords`].
-#[allow(dead_code)] // callers added in Tasks 2-5
 enum SubRecordAction {
     /// Callback did not consume the sub-record body.
     /// The walker calls `skip_sub_record` to advance
@@ -570,7 +569,6 @@ enum SubRecordAction {
 ///
 /// Stops on `SubRecordAction::Break`, I/O error, or
 /// when `skip_sub_record` fails (truncated data).
-#[allow(dead_code)] // callers added in Tasks 2-5
 fn walk_heap_subrecords<F>(data: &[u8], id_size: u32, mut callback: F)
 where
     F: FnMut(HeapSubTag, u64, &mut std::io::Cursor<&[u8]>) -> SubRecordAction,
@@ -597,55 +595,45 @@ where
 }
 
 fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<(RawInstance, u64)> {
-    use std::io::Cursor;
-
-    let mut cursor = Cursor::new(data);
-    loop {
-        let tag_pos = cursor.position();
-        let sub_tag = match cursor.read_u8() {
-            Ok(t) => HeapSubTag::from(t),
-            Err(_) => return None,
-        };
-        match sub_tag {
-            HeapSubTag::InstanceDump => {
-                let obj_id = match read_id(&mut cursor, id_size) {
-                    Ok(id) => id,
-                    Err(_) => return None,
-                };
-                let _stack_serial = match cursor.read_u32::<BigEndian>() {
-                    Ok(v) => v,
-                    Err(_) => return None,
-                };
-                let class_object_id = match read_id(&mut cursor, id_size) {
-                    Ok(id) => id,
-                    Err(_) => return None,
-                };
-                let num_bytes = match cursor.read_u32::<BigEndian>() {
-                    Ok(n) => n as usize,
-                    Err(_) => return None,
-                };
-                let pos = cursor.position() as usize;
-                if pos + num_bytes > data.len() {
-                    return None;
-                }
-                if obj_id == target_id {
-                    return Some((
-                        RawInstance {
-                            class_object_id,
-                            data: data[pos..pos + num_bytes].to_vec(),
-                        },
-                        tag_pos,
-                    ));
-                }
-                cursor.set_position((pos + num_bytes) as u64);
-            }
-            _ => {
-                if !skip_sub_record(&mut cursor, sub_tag, id_size) {
-                    return None;
-                }
-            }
+    let mut result = None;
+    walk_heap_subrecords(data, id_size, |sub_tag, tag_pos, cursor| {
+        if sub_tag != HeapSubTag::InstanceDump {
+            return SubRecordAction::Continue;
         }
-    }
+        let obj_id = match read_id(cursor, id_size) {
+            Ok(id) => id,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let _serial = match cursor.read_u32::<BigEndian>() {
+            Ok(v) => v,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let class_object_id = match read_id(cursor, id_size) {
+            Ok(id) => id,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let num_bytes = match cursor.read_u32::<BigEndian>() {
+            Ok(n) => n as usize,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let pos = cursor.position() as usize;
+        if pos + num_bytes > data.len() {
+            return SubRecordAction::Break;
+        }
+        if obj_id == target_id {
+            result = Some((
+                RawInstance {
+                    class_object_id,
+                    data: data[pos..pos + num_bytes].to_vec(),
+                },
+                tag_pos,
+            ));
+            return SubRecordAction::Break;
+        }
+        cursor.set_position((pos + num_bytes) as u64);
+        SubRecordAction::Consumed
+    });
+    result
 }
 
 // TODO: scan loop below is duplicated from scan_for_instance.
