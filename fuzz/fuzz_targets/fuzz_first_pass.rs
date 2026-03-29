@@ -11,7 +11,7 @@ fuzz_target!(|data: &[u8]| {
                 }
                 (&data[h.records_start..], h.id_size)
             }
-            Err(_) => (data, 8),
+            Err(_) => (data, hprof_parser::IdSize::Eight),
         };
     let mut obs = hprof_api::NullProgressObserver;
     let mut notifier =

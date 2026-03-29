@@ -7,7 +7,12 @@ fuzz_target!(|data: &[u8]| {
     if data.is_empty() {
         return;
     }
-    let id_size = if data[0] & 1 == 0 { 4u32 } else { 8 };
+    use hprof_parser::IdSize;
+    let id_size = if data[0] & 1 == 0 {
+        IdSize::Four
+    } else {
+        IdSize::Eight
+    };
     let payload = &data[1..];
     let payload_len = payload.len() as u32;
     let mut cursor = Cursor::new(payload);
