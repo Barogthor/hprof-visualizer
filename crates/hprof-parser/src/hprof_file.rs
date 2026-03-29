@@ -179,47 +179,10 @@ impl HprofFile {
     ///
     /// Returns `None` if the array is not found (absent or filter false-positive).
     pub fn find_prim_array(&self, array_id: u64) -> Option<(u8, Vec<u8>)> {
-        use crate::indexer::segment::SEGMENT_SIZE;
-
-        let records = self.records_bytes();
         let id_size = self.header.id_size;
-
-        let candidate_segs: Vec<usize> = self
-            .segment_filters
-            .iter()
-            .filter(|f| f.contains(array_id))
-            .map(|f| f.segment_index)
-            .collect();
-
-        if candidate_segs.is_empty() {
-            return None;
-        }
-
-        for r in &self.heap_record_ranges {
-            let payload_end = r.payload_start + r.payload_length;
-
-            let overlaps = candidate_segs.iter().any(|&seg| {
-                let seg_start = seg as u64 * SEGMENT_SIZE as u64;
-                let seg_end = seg_start + SEGMENT_SIZE as u64;
-                r.payload_start < seg_end && payload_end > seg_start
-            });
-
-            if !overlaps {
-                continue;
-            }
-
-            let start = r.payload_start as usize;
-            let end = (payload_end as usize).min(records.len());
-            if start >= records.len() {
-                continue;
-            }
-
-            if let Some(result) = scan_for_prim_array(&records[start..end], array_id, id_size) {
-                return Some(result);
-            }
-        }
-
-        None
+        self.scan_candidate_segments(array_id, |slice, _payload_start| {
+            scan_for_prim_array(slice, array_id, id_size)
+        })
     }
 
     /// Finds an `OBJECT_ARRAY_DUMP` (sub-tag `0x22`) for `array_id`.
@@ -245,49 +208,10 @@ impl HprofFile {
     ///
     /// Returns `None` if not found.
     pub fn find_object_array_meta(&self, array_id: u64) -> Option<ObjectArrayMeta> {
-        use crate::indexer::segment::SEGMENT_SIZE;
-
-        let records = self.records_bytes();
         let id_size = self.header.id_size;
-
-        let candidate_segs: Vec<usize> = self
-            .segment_filters
-            .iter()
-            .filter(|f| f.contains(array_id))
-            .map(|f| f.segment_index)
-            .collect();
-
-        if candidate_segs.is_empty() {
-            return None;
-        }
-
-        for r in &self.heap_record_ranges {
-            let payload_end = r.payload_start + r.payload_length;
-
-            let overlaps = candidate_segs.iter().any(|&seg| {
-                let seg_start = seg as u64 * SEGMENT_SIZE as u64;
-                let seg_end = seg_start + SEGMENT_SIZE as u64;
-                r.payload_start < seg_end && payload_end > seg_start
-            });
-
-            if !overlaps {
-                continue;
-            }
-
-            let start = r.payload_start as usize;
-            let end = (payload_end as usize).min(records.len());
-            if start >= records.len() {
-                continue;
-            }
-
-            if let Some(result) =
-                scan_for_object_array_meta(&records[start..end], array_id, id_size, r.payload_start)
-            {
-                return Some(result);
-            }
-        }
-
-        None
+        self.scan_candidate_segments(array_id, |slice, payload_start| {
+            scan_for_object_array_meta(slice, array_id, id_size, payload_start)
+        })
     }
 
     /// Reads a single element from an `OBJECT_ARRAY_DUMP`
@@ -376,23 +300,25 @@ impl HprofFile {
         Some((elem_type, data[pos..pos + byte_count].to_vec()))
     }
 
-    /// Finds and returns the raw instance dump for `object_id`.
+    /// Scans heap segments that might contain `target_id`
+    /// (per BinaryFuse8 filters) and returns the first
+    /// match from `scanner`.
     ///
-    /// Uses BinaryFuse8 segment filters to narrow candidate segments, then
-    /// performs a targeted scan of overlapping heap record payloads.
-    ///
-    /// Returns `None` if the object is not found (absent or filter
-    /// false-positive).
-    pub fn find_instance(&self, object_id: u64) -> Option<(RawInstance, u64)> {
+    /// `scanner` receives `(payload_slice,
+    /// payload_start_offset)` for each overlapping heap
+    /// record range.
+    fn scan_candidate_segments<T, F>(&self, target_id: u64, scanner: F) -> Option<T>
+    where
+        F: Fn(&[u8], u64) -> Option<T>,
+    {
         use crate::indexer::segment::SEGMENT_SIZE;
 
         let records = self.records_bytes();
-        let id_size = self.header.id_size;
 
         let candidate_segs: Vec<usize> = self
             .segment_filters
             .iter()
-            .filter(|f| f.contains(object_id))
+            .filter(|f| f.contains(target_id))
             .map(|f| f.segment_index)
             .collect();
 
@@ -419,15 +345,28 @@ impl HprofFile {
                 continue;
             }
 
-            if let Some((raw, rel_offset)) =
-                scan_for_instance(&records[start..end], object_id, id_size)
-            {
-                let abs_offset = start as u64 + rel_offset;
-                return Some((raw, abs_offset));
+            if let Some(result) = scanner(&records[start..end], r.payload_start) {
+                return Some(result);
             }
         }
 
         None
+    }
+
+    /// Finds and returns the raw instance dump for `object_id`.
+    ///
+    /// Uses BinaryFuse8 segment filters to narrow candidate segments, then
+    /// performs a targeted scan of overlapping heap record payloads.
+    ///
+    /// Returns `None` if the object is not found (absent or filter
+    /// false-positive).
+    pub fn find_instance(&self, object_id: u64) -> Option<(RawInstance, u64)> {
+        let id_size = self.header.id_size;
+        self.scan_candidate_segments(object_id, |slice, payload_start| {
+            let (raw, rel_offset) = scan_for_instance(slice, object_id, id_size)?;
+            let abs_offset = payload_start + rel_offset;
+            Some((raw, abs_offset))
+        })
     }
 
     /// Resolves multiple object instances in a single
