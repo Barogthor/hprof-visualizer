@@ -603,6 +603,14 @@ fn scan_segment_for_instances(
         };
         let pos = cursor.position() as usize;
         if pos + num_bytes > data.len() {
+            #[cfg(feature = "dev-profiling")]
+            tracing::warn!(
+                "scan_segment_for_instances: \
+                 truncated INSTANCE_DUMP 0x{obj_id:X} \
+                 at offset {pos}: declared {num_bytes} \
+                 bytes but only {} available",
+                data.len().saturating_sub(pos)
+            );
             return SubRecordAction::Break;
         }
         if target_ids.contains(&obj_id) {
