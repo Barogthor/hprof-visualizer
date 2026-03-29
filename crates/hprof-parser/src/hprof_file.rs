@@ -636,92 +636,49 @@ fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<(RawIn
     result
 }
 
-// TODO: scan loop below is duplicated from scan_for_instance.
-// Keep both in sync if HeapSubTag handling or skip_sub_record
-// semantics change. A future refactor could extract
-// walk_heap_subrecords() — deferred because scan_for_instance
-// has early-return semantics that complicate a callback approach.
-//
-// This scanner only collects INSTANCE_DUMP records.
-// OBJECT_ARRAY_DUMP and PRIMITIVE_ARRAY_DUMP have their
-// own lookup paths (find_object_array, find_prim_array).
-// Story 11.4 adds O(1) arithmetic for OBJECT_ARRAY.
-// CLASS_DUMP records are already indexed in
-// class_definitions (PreciseIndex) during first pass.
-// TODO: full batch-array parsing if a future story
-// needs it.
 fn scan_segment_for_instances(
     data: &[u8],
     target_ids: &HashSet<u64>,
     id_size: u32,
 ) -> Vec<(u64, RawInstance, u64)> {
-    use std::io::Cursor;
-
-    let mut cursor = Cursor::new(data);
     let mut results = Vec::new();
-
-    loop {
-        let tag_pos = cursor.position();
-        let sub_tag = match cursor.read_u8() {
-            Ok(t) => HeapSubTag::from(t),
-            Err(_) => break,
-        };
-        match sub_tag {
-            HeapSubTag::InstanceDump => {
-                let obj_id = match read_id(&mut cursor, id_size) {
-                    Ok(id) => id,
-                    Err(_) => break,
-                };
-                let _stack_serial = match cursor.read_u32::<BigEndian>() {
-                    Ok(v) => v,
-                    Err(_) => break,
-                };
-                let class_object_id = match read_id(&mut cursor, id_size) {
-                    Ok(id) => id,
-                    Err(_) => break,
-                };
-                let num_bytes = match cursor.read_u32::<BigEndian>() {
-                    Ok(n) => n as usize,
-                    Err(_) => break,
-                };
-                let pos = cursor.position() as usize;
-                if pos + num_bytes > data.len() {
-                    // Truncated INSTANCE_DUMP body — the
-                    // record spans past the end of the
-                    // slice (segment boundary). Advance
-                    // to slice end and continue; the next
-                    // read_u8() will break the loop.
-                    #[cfg(feature = "dev-profiling")]
-                    tracing::warn!(
-                        "scan_segment_for_instances: \
-                         truncated INSTANCE_DUMP 0x{obj_id:X} \
-                         at offset {pos}: declared {num_bytes} bytes \
-                         but only {} available",
-                        data.len().saturating_sub(pos)
-                    );
-                    cursor.set_position(data.len() as u64);
-                    break;
-                }
-                if target_ids.contains(&obj_id) {
-                    results.push((
-                        obj_id,
-                        RawInstance {
-                            class_object_id,
-                            data: data[pos..pos + num_bytes].to_vec(),
-                        },
-                        tag_pos,
-                    ));
-                }
-                cursor.set_position((pos + num_bytes) as u64);
-            }
-            _ => {
-                if !skip_sub_record(&mut cursor, sub_tag, id_size) {
-                    break;
-                }
-            }
+    walk_heap_subrecords(data, id_size, |sub_tag, tag_pos, cursor| {
+        if sub_tag != HeapSubTag::InstanceDump {
+            return SubRecordAction::Continue;
         }
-    }
-
+        let obj_id = match read_id(cursor, id_size) {
+            Ok(id) => id,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let _serial = match cursor.read_u32::<BigEndian>() {
+            Ok(v) => v,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let class_object_id = match read_id(cursor, id_size) {
+            Ok(id) => id,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let num_bytes = match cursor.read_u32::<BigEndian>() {
+            Ok(n) => n as usize,
+            Err(_) => return SubRecordAction::Break,
+        };
+        let pos = cursor.position() as usize;
+        if pos + num_bytes > data.len() {
+            return SubRecordAction::Break;
+        }
+        if target_ids.contains(&obj_id) {
+            results.push((
+                obj_id,
+                RawInstance {
+                    class_object_id,
+                    data: data[pos..pos + num_bytes].to_vec(),
+                },
+                tag_pos,
+            ));
+        }
+        cursor.set_position((pos + num_bytes) as u64);
+        SubRecordAction::Consumed
+    });
     results
 }
 
