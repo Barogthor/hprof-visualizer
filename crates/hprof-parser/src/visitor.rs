@@ -49,12 +49,14 @@ pub trait HeapVisitor {
     /// - `num_elements`: number of elements
     /// - `elements_data`: raw element ID bytes
     ///   (each element is `id_size` bytes, big-endian)
+    /// - `id_size`: bytes per object ID (4 or 8)
     fn on_object_array(
         &mut self,
         _id: u64,
         _class_id: u64,
         _num_elements: u32,
         _elements_data: &[u8],
+        _id_size: u32,
     ) -> ControlFlow<()> {
         ControlFlow::Continue(())
     }

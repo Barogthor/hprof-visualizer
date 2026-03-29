@@ -607,7 +607,8 @@ impl HprofFile {
                         return SubRecordAction::Break;
                     }
                     let data = &slice[pos..pos + byte_count];
-                    let flow = visitor.on_object_array(arr_id, class_id, num_elements, data);
+                    let flow =
+                        visitor.on_object_array(arr_id, class_id, num_elements, data, id_size);
                     cursor.set_position((pos + byte_count) as u64);
                     if flow == ControlFlow::Break(()) {
                         broke = true;
@@ -2014,7 +2015,9 @@ mod builder_tests {
                 class_id: u64,
                 num_elements: u32,
                 _elements_data: &[u8],
+                id_size: u32,
             ) -> ControlFlow<()> {
+                assert_eq!(id_size, 8);
                 self.arrays.push((id, class_id, num_elements));
                 ControlFlow::Continue(())
             }
