@@ -14,6 +14,7 @@ use rustc_hash::FxHashMap;
 use super::hprof_primitives::{
     gc_root_skip_size, parse_class_dump, primitive_element_size, skip_n,
 };
+use crate::id::IdSize;
 use crate::indexer::segment::{SEGMENT_SIZE, SegmentFilter};
 use crate::read_id;
 use crate::tags::HeapSubTag;
@@ -78,7 +79,7 @@ pub(crate) fn scan_segment_for_objects(
     data: &[u8],
     scan_offset: usize,
     scan_end: usize,
-    id_size: u32,
+    id_size: IdSize,
     target_ids: &HashSet<u64>,
 ) -> Vec<(u64, u64)> {
     let end = scan_end.min(data.len());
@@ -158,7 +159,7 @@ pub(crate) fn scan_segment_for_objects(
                 let Ok(_) = read_id(&mut cursor, id_size) else {
                     break;
                 };
-                if !skip_n(&mut cursor, num_elements as usize * id_size as usize) {
+                if !skip_n(&mut cursor, num_elements as usize * id_size.as_usize()) {
                     break;
                 }
             }
@@ -193,7 +194,7 @@ pub(crate) fn batch_lookup_by_filter(
     filters: &[SegmentFilter],
     entry_points: &[SegmentEntryPoint],
     data: &[u8],
-    id_size: u32,
+    id_size: IdSize,
     target_ids: &HashSet<u64>,
     heap_ranges: &[crate::indexer::HeapRecordRange],
 ) -> (FxHashMap<u64, u64>, Vec<String>) {
@@ -294,11 +295,12 @@ mod tests {
 
     /// Builds raw sub-record bytes for an
     /// INSTANCE_DUMP (sub-tag 0x21).
-    fn make_instance_sub(obj_id: u64, class_id: u64, id_size: u32) -> Vec<u8> {
+    fn make_instance_sub(obj_id: u64, class_id: u64, id_size: IdSize) -> Vec<u8> {
+        let sz = id_size.as_usize();
         let mut buf = vec![0x21u8];
-        buf.extend_from_slice(&obj_id.to_be_bytes()[8 - id_size as usize..]);
+        buf.extend_from_slice(&obj_id.to_be_bytes()[8 - sz..]);
         buf.extend_from_slice(&0u32.to_be_bytes());
-        buf.extend_from_slice(&class_id.to_be_bytes()[8 - id_size as usize..]);
+        buf.extend_from_slice(&class_id.to_be_bytes()[8 - sz..]);
         buf.extend_from_slice(&0u32.to_be_bytes());
         buf
     }
@@ -318,7 +320,7 @@ mod tests {
 
     #[test]
     fn batch_lookup_finds_known_objects() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut data = Vec::new();
         data.extend(make_instance_sub(0xA, 100, id_size));
         let pos_b = data.len();
@@ -346,7 +348,7 @@ mod tests {
 
     #[test]
     fn batch_lookup_missing_id_absent_from_result() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let data = make_instance_sub(0xA, 100, id_size);
         let filters = build_filter_seg0(&[0xA]);
         let ep = vec![SegmentEntryPoint {
@@ -370,7 +372,7 @@ mod tests {
 
     #[test]
     fn batch_lookup_multiple_ids_same_segment() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut data = Vec::new();
         data.extend(make_instance_sub(1, 100, id_size));
         data.extend(make_instance_sub(2, 100, id_size));
@@ -393,7 +395,7 @@ mod tests {
 
     #[test]
     fn scan_finds_instance_dump() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let data = make_instance_sub(42, 100, id_size);
 
         let target: HashSet<u64> = [42].into_iter().collect();
@@ -406,7 +408,7 @@ mod tests {
 
     #[test]
     fn scan_finds_prim_array_dump() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut data = Vec::new();
         data.push(0x23); // PRIM_ARRAY_DUMP
         data.extend_from_slice(&99u64.to_be_bytes());
@@ -424,7 +426,7 @@ mod tests {
 
     #[test]
     fn scan_skips_non_target_objects() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let data = make_instance_sub(1, 100, id_size);
 
         let target: HashSet<u64> = [999].into_iter().collect();

@@ -11,6 +11,7 @@
 use std::ops::ControlFlow;
 
 use crate::ClassDumpInfo;
+use crate::id::IdSize;
 
 /// Visitor trait for heap sub-record traversal.
 ///
@@ -56,7 +57,7 @@ pub trait HeapVisitor {
         _class_id: u64,
         _num_elements: u32,
         _elements_data: &[u8],
-        _id_size: u32,
+        _id_size: IdSize,
     ) -> ControlFlow<()> {
         ControlFlow::Continue(())
     }

@@ -8,6 +8,7 @@ use std::io::Cursor;
 
 use hprof_api::MemorySize;
 
+use crate::id::IdSize;
 use crate::{HprofError, read_id};
 
 /// A lazy reference to a `STRING_IN_UTF8` record's content.
@@ -71,17 +72,17 @@ impl HprofStringRef {
 ///   than expected
 pub fn parse_string_ref(
     cursor: &mut Cursor<&[u8]>,
-    id_size: u32,
+    id_size: IdSize,
     payload_length: u32,
     record_body_start: u64,
 ) -> Result<HprofStringRef, HprofError> {
-    if payload_length < id_size {
+    if payload_length < id_size.as_u32() {
         return Err(HprofError::TruncatedRecord);
     }
 
     let id = read_id(cursor, id_size)?;
-    let content_len = payload_length - id_size;
-    let offset = record_body_start + id_size as u64;
+    let content_len = payload_length - id_size.as_u32();
+    let offset = record_body_start + id_size.as_u32() as u64;
 
     // Advance cursor past the content bytes
     let new_pos = cursor.position() + content_len as u64;
@@ -129,7 +130,7 @@ mod tests {
         data.extend_from_slice(&5u64.to_be_bytes()); // id = 5
         data.extend_from_slice(b"main"); // content
         let mut cursor = Cursor::new(data.as_slice());
-        let s = parse_string_ref(&mut cursor, 8, 8 + 4, 100).unwrap();
+        let s = parse_string_ref(&mut cursor, IdSize::Eight, 8 + 4, 100).unwrap();
         assert_eq!(s.id, 5);
         assert_eq!(s.offset, 100 + 8); // record_body_start + id_size
         assert_eq!(s.len, 4);
@@ -141,7 +142,7 @@ mod tests {
         data.extend_from_slice(&7u32.to_be_bytes()); // id = 7
         data.extend_from_slice(b"hello"); // content
         let mut cursor = Cursor::new(data.as_slice());
-        let s = parse_string_ref(&mut cursor, 4, 4 + 5, 50).unwrap();
+        let s = parse_string_ref(&mut cursor, IdSize::Four, 4 + 5, 50).unwrap();
         assert_eq!(s.id, 7);
         assert_eq!(s.offset, 50 + 4);
         assert_eq!(s.len, 5);
@@ -151,7 +152,7 @@ mod tests {
     fn parse_string_ref_truncated_payload() {
         let data = vec![0u8; 4];
         let mut cursor = Cursor::new(data.as_slice());
-        let err = parse_string_ref(&mut cursor, 8, 8, 0).unwrap_err();
+        let err = parse_string_ref(&mut cursor, IdSize::Eight, 8, 0).unwrap_err();
         assert!(matches!(err, HprofError::TruncatedRecord));
     }
 
@@ -160,7 +161,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&42u64.to_be_bytes()); // id = 42
         let mut cursor = Cursor::new(data.as_slice());
-        let s = parse_string_ref(&mut cursor, 8, 8, 0).unwrap();
+        let s = parse_string_ref(&mut cursor, IdSize::Eight, 8, 0).unwrap();
         assert_eq!(s.id, 42);
         assert_eq!(s.len, 0);
     }
@@ -171,7 +172,7 @@ mod tests {
         data.extend_from_slice(&1u64.to_be_bytes());
         data.extend_from_slice(b"abc");
         let mut cursor = Cursor::new(data.as_slice());
-        let _ = parse_string_ref(&mut cursor, 8, 8 + 3, 0).unwrap();
+        let _ = parse_string_ref(&mut cursor, IdSize::Eight, 8 + 3, 0).unwrap();
         assert_eq!(cursor.position(), 11); // 8 (id) + 3 (content)
     }
 
@@ -180,7 +181,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&1u64.to_be_bytes());
         let mut cursor = Cursor::new(data.as_slice());
-        let err = parse_string_ref(&mut cursor, 8, 4, 0).unwrap_err();
+        let err = parse_string_ref(&mut cursor, IdSize::Eight, 4, 0).unwrap_err();
         assert!(matches!(err, HprofError::TruncatedRecord));
     }
 
@@ -190,7 +191,7 @@ mod tests {
         data.extend_from_slice(&1u64.to_be_bytes());
         // payload says 100 bytes of content, but buffer has none
         let mut cursor = Cursor::new(data.as_slice());
-        let err = parse_string_ref(&mut cursor, 8, 8 + 100, 0).unwrap_err();
+        let err = parse_string_ref(&mut cursor, IdSize::Eight, 8 + 100, 0).unwrap_err();
         assert!(matches!(err, HprofError::TruncatedRecord));
     }
 }
@@ -213,7 +214,7 @@ mod builder_tests {
         let rec = parse_record_header(&mut cursor).unwrap();
         assert_eq!(rec.tag, 0x01);
         let body_start = cursor.position();
-        let s = parse_string_ref(&mut cursor, 8, rec.length, body_start).unwrap();
+        let s = parse_string_ref(&mut cursor, IdSize::Eight, rec.length, body_start).unwrap();
         assert_eq!(s.id, 99);
         assert_eq!(s.len, 8); // "thread-1".len()
         // Verify offset points to string content in the payload
@@ -234,7 +235,7 @@ mod builder_tests {
         let rec = parse_record_header(&mut cursor).unwrap();
         assert_eq!(rec.tag, 0x01);
         let body_start = cursor.position();
-        let s = parse_string_ref(&mut cursor, 4, rec.length, body_start).unwrap();
+        let s = parse_string_ref(&mut cursor, IdSize::Four, rec.length, body_start).unwrap();
         assert_eq!(s.id, 3);
         assert_eq!(s.len, 3); // "foo".len()
         let resolved = String::from_utf8_lossy(

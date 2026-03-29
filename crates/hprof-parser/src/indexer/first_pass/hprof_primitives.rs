@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use byteorder::{BigEndian, ReadBytesExt};
 
+use crate::id::IdSize;
 use crate::java_types::{
     PRIM_TYPE_BOOLEAN, PRIM_TYPE_BYTE, PRIM_TYPE_CHAR, PRIM_TYPE_DOUBLE, PRIM_TYPE_FLOAT,
     PRIM_TYPE_INT, PRIM_TYPE_LONG, PRIM_TYPE_OBJECT_REF, PRIM_TYPE_SHORT,
@@ -87,8 +88,8 @@ pub(super) fn primitive_element_size(type_byte: u8) -> usize {
 
 /// Returns the skip size for fixed-size GC root sub-tags,
 /// or `None` for anything else.
-pub(super) fn gc_root_skip_size(sub_tag: HeapSubTag, id_size: u32) -> Option<usize> {
-    let id = id_size as usize;
+pub(super) fn gc_root_skip_size(sub_tag: HeapSubTag, id_size: IdSize) -> Option<usize> {
+    let id = id_size.as_usize();
     match sub_tag {
         HeapSubTag::GcRootJniGlobal | HeapSubTag::GcRootThreadBlock => Some(id),
         HeapSubTag::GcRootJniLocal => Some(2 * id),
@@ -101,9 +102,9 @@ pub(super) fn gc_root_skip_size(sub_tag: HeapSubTag, id_size: u32) -> Option<usi
 
 /// Returns the byte size of a value with the given hprof
 /// type code.
-pub(crate) fn value_byte_size(type_code: u8, id_size: u32) -> usize {
+pub(crate) fn value_byte_size(type_code: u8, id_size: IdSize) -> usize {
     match type_code {
-        PRIM_TYPE_OBJECT_REF => id_size as usize,
+        PRIM_TYPE_OBJECT_REF => id_size.as_usize(),
         PRIM_TYPE_BOOLEAN | PRIM_TYPE_BYTE => 1,
         PRIM_TYPE_CHAR | PRIM_TYPE_SHORT => 2,
         PRIM_TYPE_FLOAT | PRIM_TYPE_INT => 4,
@@ -116,7 +117,7 @@ pub(crate) fn value_byte_size(type_code: u8, id_size: u32) -> usize {
 /// byte), returning `None` on any read failure.
 fn read_static_value(
     cursor: &mut Cursor<&[u8]>,
-    id_size: u32,
+    id_size: IdSize,
     type_code: u8,
 ) -> Option<StaticValue> {
     match type_code {
@@ -138,12 +139,15 @@ fn read_static_value(
     }
 }
 
-pub(crate) fn parse_class_dump(cursor: &mut Cursor<&[u8]>, id_size: u32) -> Option<ClassDumpInfo> {
+pub(crate) fn parse_class_dump(
+    cursor: &mut Cursor<&[u8]>,
+    id_size: IdSize,
+) -> Option<ClassDumpInfo> {
     let class_object_id = read_id(cursor, id_size).ok()?;
     let _stack_trace_serial = cursor.read_u32::<BigEndian>().ok()?;
     let super_class_id = read_id(cursor, id_size).ok()?;
     // skip classloader, signers, prot_domain, r1, r2
-    if !skip_n(cursor, 5 * id_size as usize) {
+    if !skip_n(cursor, 5 * id_size.as_usize()) {
         return None;
     }
     let instance_size = cursor.read_u32::<BigEndian>().ok()?;
@@ -254,15 +258,15 @@ pub(crate) fn parse_class_dump(cursor: &mut Cursor<&[u8]>, id_size: u32) -> Opti
 mod tests {
     use super::*;
 
-    fn push_id(buf: &mut Vec<u8>, id: u64, id_size: u32) {
-        if id_size == 8 {
+    fn push_id(buf: &mut Vec<u8>, id: u64, id_size: IdSize) {
+        if id_size == IdSize::Eight {
             buf.extend_from_slice(&id.to_be_bytes());
         } else {
             buf.extend_from_slice(&(id as u32).to_be_bytes());
         }
     }
 
-    fn make_minimal_class_dump_body(id_size: u32) -> Vec<u8> {
+    fn make_minimal_class_dump_body(id_size: IdSize) -> Vec<u8> {
         let mut body = Vec::new();
         push_id(&mut body, 100, id_size); // class_object_id
         body.extend_from_slice(&0u32.to_be_bytes()); // stack_trace_serial
@@ -286,7 +290,7 @@ mod tests {
 
     #[test]
     fn parse_class_dump_with_static_fields_returns_correct_count_and_values() {
-        let id_size = 8;
+        let id_size = IdSize::Eight;
         let mut body = make_minimal_class_dump_body(id_size);
 
         body.extend_from_slice(&2u16.to_be_bytes()); // static_fields_count
@@ -320,7 +324,7 @@ mod tests {
 
     #[test]
     fn parse_class_dump_no_static_fields_returns_empty_vec() {
-        let id_size = 8;
+        let id_size = IdSize::Eight;
         let mut body = make_minimal_class_dump_body(id_size);
         body.extend_from_slice(&0u16.to_be_bytes()); // static_fields_count
         body.extend_from_slice(&1u16.to_be_bytes()); // instance_fields_count
@@ -338,7 +342,7 @@ mod tests {
         // the cursor past the value (unknown byte size).  Rather than dropping
         // the whole class dump (losing class identity), it returns a partial
         // ClassDumpInfo with empty field lists so the class is still indexed.
-        let id_size = 8;
+        let id_size = IdSize::Eight;
         let mut body = make_minimal_class_dump_body(id_size);
         body.extend_from_slice(&1u16.to_be_bytes()); // static_fields_count
         push_id(&mut body, 10, id_size);

@@ -13,6 +13,7 @@ use hprof_api::ProgressNotifier;
 use super::FirstPassContext;
 use super::hprof_primitives::value_byte_size;
 use super::offset_lookup::batch_lookup_by_filter;
+use crate::id::IdSize;
 use crate::indexer::precise::PreciseIndex;
 use crate::indexer::segment::SegmentFilter;
 use crate::java_types::PRIM_TYPE_OBJECT_REF;
@@ -255,7 +256,11 @@ pub(super) fn resolve_all(
 
 /// Reads an `INSTANCE_DUMP` sub-record at `offset` in
 /// `data`.
-fn read_raw_instance_at<'a>(data: &'a [u8], offset: u64, id_size: u32) -> Option<RawInstance<'a>> {
+fn read_raw_instance_at<'a>(
+    data: &'a [u8],
+    offset: u64,
+    id_size: IdSize,
+) -> Option<RawInstance<'a>> {
     let start = offset as usize;
     if start >= data.len() {
         return None;
@@ -286,7 +291,7 @@ fn extract_obj_refs(
     class_object_id: u64,
     target_names: &[&str],
     index: &PreciseIndex,
-    id_size: u32,
+    id_size: IdSize,
     records_data: &[u8],
 ) -> Vec<ObjRef> {
     let mut chain: Vec<u64> = Vec::new();

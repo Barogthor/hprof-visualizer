@@ -24,6 +24,7 @@ use hprof_api::{MemoryBudget, ProgressNotifier};
 use rustc_hash::FxHashSet;
 
 use crate::ClassDumpInfo;
+use crate::id::IdSize;
 #[cfg(feature = "test-utils")]
 use crate::indexer::DiagnosticInfo;
 use crate::indexer::IndexResult;
@@ -78,7 +79,7 @@ mod tests;
 /// Mutable state threaded through all first-pass phases.
 struct FirstPassContext<'a> {
     data: &'a [u8],
-    id_size: u32,
+    id_size: IdSize,
     base_offset: u64,
     result: IndexResult,
     seg_builder: Option<SegmentFilterBuilder>,
@@ -97,7 +98,7 @@ struct FirstPassContext<'a> {
 }
 
 impl<'a> FirstPassContext<'a> {
-    fn new(data: &'a [u8], id_size: u32, base_offset: u64, budget: MemoryBudget) -> Self {
+    fn new(data: &'a [u8], id_size: IdSize, base_offset: u64, budget: MemoryBudget) -> Self {
         Self {
             data,
             id_size,
@@ -295,7 +296,7 @@ fn field_names_heap_bytes(index: &PreciseIndex) -> usize {
 ///   extraction.
 pub fn run_first_pass(
     data: &[u8],
-    id_size: u32,
+    id_size: IdSize,
     base_offset: u64,
     notifier: &mut ProgressNotifier,
     budget: MemoryBudget,

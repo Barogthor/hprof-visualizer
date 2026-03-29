@@ -14,6 +14,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
 
 use crate::HprofError;
+use crate::id::IdSize;
 
 /// Known hprof format versions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,8 +30,8 @@ pub enum HprofVersion {
 pub struct HprofHeader {
     /// Format version of the dump.
     pub version: HprofVersion,
-    /// Byte width of object IDs in this dump (4 or 8).
-    pub id_size: u32,
+    /// Byte width of object IDs in this dump.
+    pub id_size: IdSize,
     /// Byte offset where records begin (after version
     /// string, id_size, and timestamp).
     pub records_start: usize,
@@ -74,14 +75,10 @@ pub fn parse_header(data: &[u8]) -> Result<HprofHeader, HprofError> {
     };
 
     let mut cursor = Cursor::new(&data[null_pos + 1..]);
-    let id_size = cursor
+    let raw_id_size = cursor
         .read_u32::<BigEndian>()
         .map_err(|_| HprofError::TruncatedRecord)?;
-    if id_size != 4 && id_size != 8 {
-        return Err(HprofError::CorruptedData(format!(
-            "invalid id_size: {id_size}, expected 4 or 8"
-        )));
-    }
+    let id_size = IdSize::from_raw(raw_id_size)?;
     let _timestamp = cursor
         .read_u64::<BigEndian>()
         .map_err(|_| HprofError::TruncatedRecord)?;
@@ -187,7 +184,7 @@ mod tests {
         data.extend_from_slice(&0u64.to_be_bytes());
         let header = parse_header(&data).unwrap();
         assert_eq!(header.version, HprofVersion::V1_0_1);
-        assert_eq!(header.id_size, 4);
+        assert_eq!(header.id_size, IdSize::Four);
     }
 
     #[test]
@@ -197,7 +194,7 @@ mod tests {
         data.extend_from_slice(&0u64.to_be_bytes());
         let header = parse_header(&data).unwrap();
         assert_eq!(header.version, HprofVersion::V1_0_2);
-        assert_eq!(header.id_size, 8);
+        assert_eq!(header.id_size, IdSize::Eight);
     }
 }
 
@@ -213,7 +210,7 @@ mod builder_tests {
             .build();
         let header = parse_header(&bytes).unwrap();
         assert_eq!(header.version, HprofVersion::V1_0_2);
-        assert_eq!(header.id_size, 8);
+        assert_eq!(header.id_size, IdSize::Eight);
     }
 
     #[test]
@@ -221,6 +218,6 @@ mod builder_tests {
         let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.1", 4).build();
         let header = parse_header(&bytes).unwrap();
         assert_eq!(header.version, HprofVersion::V1_0_1);
-        assert_eq!(header.id_size, 4);
+        assert_eq!(header.id_size, IdSize::Four);
     }
 }

@@ -9,6 +9,7 @@ use std::io::Cursor;
 
 use hprof_api::MemorySize;
 
+use crate::id::IdSize;
 use crate::{HprofError, read_id};
 
 /// A parsed `LOAD_CLASS` record (tag `0x02`).
@@ -192,7 +193,10 @@ impl MemorySize for RawInstance {
 ///
 /// ## Errors
 /// - [`HprofError::TruncatedRecord`] if the payload is shorter than expected
-pub fn parse_load_class(cursor: &mut Cursor<&[u8]>, id_size: u32) -> Result<ClassDef, HprofError> {
+pub fn parse_load_class(
+    cursor: &mut Cursor<&[u8]>,
+    id_size: IdSize,
+) -> Result<ClassDef, HprofError> {
     let class_serial = cursor
         .read_u32::<BigEndian>()
         .map_err(|_| HprofError::TruncatedRecord)?;
@@ -224,7 +228,7 @@ pub fn parse_load_class(cursor: &mut Cursor<&[u8]>, id_size: u32) -> Result<Clas
 ///   name_string_id).
 pub fn parse_start_thread(
     cursor: &mut Cursor<&[u8]>,
-    id_size: u32,
+    id_size: IdSize,
 ) -> Result<HprofThread, HprofError> {
     let thread_serial = cursor
         .read_u32::<BigEndian>()
@@ -254,7 +258,7 @@ pub fn parse_start_thread(
 /// - [`HprofError::TruncatedRecord`] if the payload is shorter than expected
 pub fn parse_stack_frame(
     cursor: &mut Cursor<&[u8]>,
-    id_size: u32,
+    id_size: IdSize,
 ) -> Result<StackFrame, HprofError> {
     let frame_id = read_id(cursor, id_size)?;
     let method_name_string_id = read_id(cursor, id_size)?;
@@ -284,7 +288,7 @@ pub fn parse_stack_frame(
 /// - [`HprofError::TruncatedRecord`] if the payload is shorter than expected
 pub fn parse_stack_trace(
     cursor: &mut Cursor<&[u8]>,
-    id_size: u32,
+    id_size: IdSize,
 ) -> Result<StackTrace, HprofError> {
     let stack_trace_serial = cursor
         .read_u32::<BigEndian>()
@@ -301,10 +305,12 @@ pub fn parse_stack_trace(
         .len()
         .saturating_sub(cursor.position() as usize);
     let required = (num_frames as usize)
-        .checked_mul(id_size as usize)
+        .checked_mul(id_size.as_usize())
         .ok_or_else(|| {
             HprofError::CorruptedData(format!(
-                "stack trace frame list size overflow: num_frames={num_frames}, id_size={id_size}"
+                "stack trace frame list size overflow: \
+                 num_frames={num_frames}, \
+                 id_size={id_size:?}"
             ))
         })?;
     if required > remaining {
@@ -497,7 +503,7 @@ mod tests {
         data.extend_from_slice(&0u32.to_be_bytes()); // stack_trace_serial
         data.extend_from_slice(&200u64.to_be_bytes()); // class_name_string_id
         let mut cursor = Cursor::new(data.as_slice());
-        let def = parse_load_class(&mut cursor, 8).unwrap();
+        let def = parse_load_class(&mut cursor, IdSize::Eight).unwrap();
         assert_eq!(def.class_serial, 1);
         assert_eq!(def.class_object_id, 100);
         assert_eq!(def.stack_trace_serial, 0);
@@ -512,7 +518,7 @@ mod tests {
         data.extend_from_slice(&3u32.to_be_bytes()); // stack_trace_serial
         data.extend_from_slice(&99u32.to_be_bytes()); // class_name_string_id (4 bytes)
         let mut cursor = Cursor::new(data.as_slice());
-        let def = parse_load_class(&mut cursor, 4).unwrap();
+        let def = parse_load_class(&mut cursor, IdSize::Four).unwrap();
         assert_eq!(def.class_serial, 2);
         assert_eq!(def.class_object_id, 50);
         assert_eq!(def.stack_trace_serial, 3);
@@ -524,7 +530,7 @@ mod tests {
         // Only 4 bytes — not enough for full LOAD_CLASS record
         let data = 1u32.to_be_bytes().to_vec();
         let mut cursor = Cursor::new(data.as_slice());
-        let err = parse_load_class(&mut cursor, 8).unwrap_err();
+        let err = parse_load_class(&mut cursor, IdSize::Eight).unwrap_err();
         assert!(matches!(err, HprofError::TruncatedRecord));
     }
 
@@ -540,7 +546,7 @@ mod tests {
         data.extend_from_slice(&20u64.to_be_bytes()); // group_name_string_id
         data.extend_from_slice(&30u64.to_be_bytes()); // group_parent_name_string_id
         let mut cursor = Cursor::new(data.as_slice());
-        let t = parse_start_thread(&mut cursor, 8).unwrap();
+        let t = parse_start_thread(&mut cursor, IdSize::Eight).unwrap();
         assert_eq!(t.thread_serial, 1);
         assert_eq!(t.object_id, 100);
         assert_eq!(t.stack_trace_serial, 0);
@@ -559,7 +565,7 @@ mod tests {
         data.extend_from_slice(&22u32.to_be_bytes()); // group_name_string_id
         data.extend_from_slice(&33u32.to_be_bytes()); // group_parent_name_string_id
         let mut cursor = Cursor::new(data.as_slice());
-        let t = parse_start_thread(&mut cursor, 4).unwrap();
+        let t = parse_start_thread(&mut cursor, IdSize::Four).unwrap();
         assert_eq!(t.thread_serial, 5);
         assert_eq!(t.object_id, 200);
         assert_eq!(t.stack_trace_serial, 1);
@@ -572,7 +578,7 @@ mod tests {
     fn parse_start_thread_truncated() {
         let data = vec![0u8; 4]; // only thread_serial bytes
         let mut cursor = Cursor::new(data.as_slice());
-        let err = parse_start_thread(&mut cursor, 8).unwrap_err();
+        let err = parse_start_thread(&mut cursor, IdSize::Eight).unwrap_err();
         assert!(matches!(err, HprofError::TruncatedRecord));
     }
 
@@ -588,7 +594,7 @@ mod tests {
         data.extend_from_slice(&5u32.to_be_bytes()); // class_serial
         data.extend_from_slice(&42i32.to_be_bytes()); // line_number (positive)
         let mut cursor = Cursor::new(data.as_slice());
-        let f = parse_stack_frame(&mut cursor, 8).unwrap();
+        let f = parse_stack_frame(&mut cursor, IdSize::Eight).unwrap();
         assert_eq!(f.frame_id, 1);
         assert_eq!(f.method_name_string_id, 2);
         assert_eq!(f.method_sig_string_id, 3);
@@ -607,7 +613,7 @@ mod tests {
         data.extend_from_slice(&5u32.to_be_bytes());
         data.extend_from_slice(&0i32.to_be_bytes());
         let mut cursor = Cursor::new(data.as_slice());
-        let f = parse_stack_frame(&mut cursor, 8).unwrap();
+        let f = parse_stack_frame(&mut cursor, IdSize::Eight).unwrap();
         assert_eq!(f.line_number, 0);
     }
 
@@ -621,7 +627,7 @@ mod tests {
         data.extend_from_slice(&5u32.to_be_bytes());
         data.extend_from_slice(&(-1i32).to_be_bytes());
         let mut cursor = Cursor::new(data.as_slice());
-        let f = parse_stack_frame(&mut cursor, 8).unwrap();
+        let f = parse_stack_frame(&mut cursor, IdSize::Eight).unwrap();
         assert_eq!(f.line_number, -1);
     }
 
@@ -635,7 +641,7 @@ mod tests {
         data.extend_from_slice(&7u32.to_be_bytes()); // class_serial
         data.extend_from_slice(&100i32.to_be_bytes()); // line_number
         let mut cursor = Cursor::new(data.as_slice());
-        let f = parse_stack_frame(&mut cursor, 4).unwrap();
+        let f = parse_stack_frame(&mut cursor, IdSize::Four).unwrap();
         assert_eq!(f.frame_id, 10);
         assert_eq!(f.method_name_string_id, 20);
         assert_eq!(f.method_sig_string_id, 30);
@@ -648,7 +654,7 @@ mod tests {
     fn parse_stack_frame_truncated() {
         let data = vec![0u8; 8]; // only one id worth of bytes
         let mut cursor = Cursor::new(data.as_slice());
-        let err = parse_stack_frame(&mut cursor, 8).unwrap_err();
+        let err = parse_stack_frame(&mut cursor, IdSize::Eight).unwrap_err();
         assert!(matches!(err, HprofError::TruncatedRecord));
     }
 
@@ -664,7 +670,7 @@ mod tests {
         data.extend_from_slice(&20u64.to_be_bytes()); // frame_id[1]
         data.extend_from_slice(&30u64.to_be_bytes()); // frame_id[2]
         let mut cursor = Cursor::new(data.as_slice());
-        let st = parse_stack_trace(&mut cursor, 8).unwrap();
+        let st = parse_stack_trace(&mut cursor, IdSize::Eight).unwrap();
         assert_eq!(st.stack_trace_serial, 1);
         assert_eq!(st.thread_serial, 2);
         assert_eq!(st.frame_ids, vec![10, 20, 30]);
@@ -679,7 +685,7 @@ mod tests {
         data.extend_from_slice(&100u32.to_be_bytes()); // frame_id[0]
         data.extend_from_slice(&200u32.to_be_bytes()); // frame_id[1]
         let mut cursor = Cursor::new(data.as_slice());
-        let st = parse_stack_trace(&mut cursor, 4).unwrap();
+        let st = parse_stack_trace(&mut cursor, IdSize::Four).unwrap();
         assert_eq!(st.stack_trace_serial, 5);
         assert_eq!(st.thread_serial, 6);
         assert_eq!(st.frame_ids, vec![100, 200]);
@@ -692,7 +698,7 @@ mod tests {
         data.extend_from_slice(&1u32.to_be_bytes()); // thread_serial
         data.extend_from_slice(&0u32.to_be_bytes()); // num_frames = 0
         let mut cursor = Cursor::new(data.as_slice());
-        let st = parse_stack_trace(&mut cursor, 8).unwrap();
+        let st = parse_stack_trace(&mut cursor, IdSize::Eight).unwrap();
         assert!(st.frame_ids.is_empty());
     }
 
@@ -707,7 +713,7 @@ mod tests {
         data.extend_from_slice(&20u64.to_be_bytes()); // frame_id[1]
         // only 2 frames present, 3 missing
         let mut cursor = Cursor::new(data.as_slice());
-        let err = parse_stack_trace(&mut cursor, 8).unwrap_err();
+        let err = parse_stack_trace(&mut cursor, IdSize::Eight).unwrap_err();
         assert!(matches!(err, HprofError::TruncatedRecord));
     }
 }
@@ -729,7 +735,7 @@ mod builder_tests {
         let mut cursor = Cursor::new(&bytes[hdr_end..]);
         let rec = parse_record_header(&mut cursor).unwrap();
         assert_eq!(rec.tag, RecordTag::LoadClass.as_u8());
-        let def = parse_load_class(&mut cursor, 8).unwrap();
+        let def = parse_load_class(&mut cursor, IdSize::Eight).unwrap();
         assert_eq!(def.class_serial, 1);
         assert_eq!(def.class_object_id, 100);
         assert_eq!(def.stack_trace_serial, 0);
@@ -745,7 +751,7 @@ mod builder_tests {
         let mut cursor = Cursor::new(&bytes[hdr_end..]);
         let rec = parse_record_header(&mut cursor).unwrap();
         assert_eq!(rec.tag, RecordTag::StartThread.as_u8());
-        let t = parse_start_thread(&mut cursor, 8).unwrap();
+        let t = parse_start_thread(&mut cursor, IdSize::Eight).unwrap();
         assert_eq!(t.thread_serial, 1);
         assert_eq!(t.object_id, 100);
         assert_eq!(t.stack_trace_serial, 0);
@@ -763,7 +769,7 @@ mod builder_tests {
         let mut cursor = Cursor::new(&bytes[hdr_end..]);
         let rec = parse_record_header(&mut cursor).unwrap();
         assert_eq!(rec.tag, RecordTag::StackFrame.as_u8());
-        let f = parse_stack_frame(&mut cursor, 8).unwrap();
+        let f = parse_stack_frame(&mut cursor, IdSize::Eight).unwrap();
         assert_eq!(f.frame_id, 1);
         assert_eq!(f.method_name_string_id, 2);
         assert_eq!(f.method_sig_string_id, 3);
@@ -781,7 +787,7 @@ mod builder_tests {
         let mut cursor = Cursor::new(&bytes[hdr_end..]);
         let rec = parse_record_header(&mut cursor).unwrap();
         assert_eq!(rec.tag, RecordTag::StackTrace.as_u8());
-        let st = parse_stack_trace(&mut cursor, 8).unwrap();
+        let st = parse_stack_trace(&mut cursor, IdSize::Eight).unwrap();
         assert_eq!(st.stack_trace_serial, 10);
         assert_eq!(st.thread_serial, 2);
         assert_eq!(st.frame_ids, vec![100, 200, 300]);

@@ -7,6 +7,7 @@ use hprof_api::ProgressNotifier;
 
 use super::FirstPassContext;
 use super::hprof_primitives::maybe_report_progress;
+use crate::id::IdSize;
 use crate::indexer::HeapRecordRange;
 use crate::tags::RecordTag;
 use crate::{
@@ -30,7 +31,7 @@ enum ParsedRecord {
 fn try_parse(
     tag: RecordTag,
     cursor: &mut Cursor<&[u8]>,
-    id_size: u32,
+    id_size: IdSize,
     payload_start: u64,
     header_length: u32,
 ) -> Result<ParsedRecord, HprofError> {

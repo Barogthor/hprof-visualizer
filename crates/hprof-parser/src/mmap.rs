@@ -91,6 +91,6 @@ mod builder_tests {
         let header = parse_header(&mmap).unwrap();
 
         assert_eq!(header.version, HprofVersion::V1_0_2);
-        assert_eq!(header.id_size, 8);
+        assert_eq!(header.id_size, crate::id::IdSize::Eight);
     }
 }

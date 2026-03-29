@@ -95,6 +95,7 @@ impl OffsetCache {
 
     /// Returns all keys as a `Vec`.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn keys(&self) -> Vec<u64> {
         self.inner
             .read()

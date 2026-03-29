@@ -24,7 +24,7 @@ pub(crate) mod header;
 pub use header::{HprofHeader, HprofVersion, parse_header};
 
 pub(crate) mod id;
-pub use id::read_id;
+pub use id::{IdSize, read_id};
 
 pub(crate) mod record;
 pub use record::{RecordHeader, parse_record_header, skip_record};

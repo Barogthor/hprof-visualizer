@@ -18,6 +18,7 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
+use crate::id::IdSize;
 use crate::indexer::{first_pass::run_first_pass, precise::PreciseIndex, segment::SegmentFilter};
 use crate::tags::HeapSubTag;
 use crate::{HprofError, HprofHeader, RawInstance, open_readonly, parse_header, read_id};
@@ -249,7 +250,7 @@ impl HprofFile {
         if index >= meta.num_elements {
             return None;
         }
-        let id_sz = self.header.id_size as usize;
+        let id_sz = self.header.id_size.as_usize();
         let byte_offset = (index as usize)
             .checked_mul(id_sz)?
             .checked_add(meta.elements_offset as usize)?;
@@ -598,7 +599,7 @@ impl HprofFile {
                         Ok(id) => id,
                         Err(_) => return SubRecordAction::Break,
                     };
-                    let byte_count = match (num_elements as usize).checked_mul(id_size as usize) {
+                    let byte_count = match (num_elements as usize).checked_mul(id_size.as_usize()) {
                         Some(n) => n,
                         None => return SubRecordAction::Break,
                     };
@@ -704,7 +705,7 @@ enum SubRecordAction {
 ///
 /// Stops on `SubRecordAction::Break`, I/O error, or
 /// when `skip_sub_record` fails (truncated data).
-fn walk_heap_subrecords<F>(data: &[u8], id_size: u32, mut callback: F)
+fn walk_heap_subrecords<F>(data: &[u8], id_size: IdSize, mut callback: F)
 where
     F: FnMut(HeapSubTag, u64, &mut std::io::Cursor<&[u8]>) -> SubRecordAction,
 {
@@ -729,7 +730,7 @@ where
     }
 }
 
-fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<(RawInstance, u64)> {
+fn scan_for_instance(data: &[u8], target_id: u64, id_size: IdSize) -> Option<(RawInstance, u64)> {
     let mut result = None;
     walk_heap_subrecords(data, id_size, |sub_tag, tag_pos, cursor| {
         if sub_tag != HeapSubTag::InstanceDump {
@@ -774,7 +775,7 @@ fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<(RawIn
 fn scan_segment_for_instances(
     data: &[u8],
     target_ids: &HashSet<u64>,
-    id_size: u32,
+    id_size: IdSize,
 ) -> Vec<(u64, RawInstance, u64)> {
     let mut results = Vec::new();
     walk_heap_subrecords(data, id_size, |sub_tag, tag_pos, cursor| {
@@ -825,7 +826,7 @@ fn scan_segment_for_instances(
     results
 }
 
-fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u8, Vec<u8>)> {
+fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: IdSize) -> Option<(u8, Vec<u8>)> {
     use crate::indexer::first_pass::value_byte_size;
 
     let mut result = None;
@@ -874,7 +875,7 @@ fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u8,
 fn scan_for_object_array_meta(
     data: &[u8],
     target_id: u64,
-    id_size: u32,
+    id_size: IdSize,
     data_base_offset: u64,
 ) -> Option<ObjectArrayMeta> {
     let mut result = None;
@@ -898,7 +899,7 @@ fn scan_for_object_array_meta(
             Ok(id) => id,
             Err(_) => return SubRecordAction::Break,
         };
-        let byte_count = match (num_elements as usize).checked_mul(id_size as usize) {
+        let byte_count = match (num_elements as usize).checked_mul(id_size.as_usize()) {
             Some(n) => n,
             None => return SubRecordAction::Break,
         };
@@ -929,7 +930,11 @@ fn scan_for_object_array_meta(
     result
 }
 
-fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_size: u32) -> bool {
+fn skip_sub_record(
+    cursor: &mut std::io::Cursor<&[u8]>,
+    sub_tag: HeapSubTag,
+    id_size: IdSize,
+) -> bool {
     use crate::indexer::first_pass::{parse_class_dump, value_byte_size};
     use std::io::Cursor;
 
@@ -948,15 +953,15 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_
 
     match sub_tag {
         HeapSubTag::GcRootJniGlobal | HeapSubTag::GcRootThreadBlock => {
-            skip_n(cursor, id_size as usize)
+            skip_n(cursor, id_size.as_usize())
         }
-        HeapSubTag::GcRootJniLocal => skip_n(cursor, 2 * id_size as usize),
+        HeapSubTag::GcRootJniLocal => skip_n(cursor, 2 * id_size.as_usize()),
         HeapSubTag::GcRootJavaFrame
         | HeapSubTag::GcRootThreadObj
-        | HeapSubTag::GcRootInternedString => skip_n(cursor, id_size as usize + 8),
-        HeapSubTag::GcRootNativeStack => skip_n(cursor, id_size as usize + 8),
+        | HeapSubTag::GcRootInternedString => skip_n(cursor, id_size.as_usize() + 8),
+        HeapSubTag::GcRootNativeStack => skip_n(cursor, id_size.as_usize() + 8),
         HeapSubTag::GcRootStickyClass | HeapSubTag::GcRootMonitorUsed => {
-            skip_n(cursor, id_size as usize + 4)
+            skip_n(cursor, id_size.as_usize() + 4)
         }
         HeapSubTag::ClassDump => parse_class_dump(cursor, id_size).is_some(),
         HeapSubTag::InstanceDump => {
@@ -989,7 +994,7 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_
             if read_id(cursor, id_size).is_err() {
                 return false;
             }
-            let byte_count = match (num_elements as usize).checked_mul(id_size as usize) {
+            let byte_count = match (num_elements as usize).checked_mul(id_size.as_usize()) {
                 Some(n) => n,
                 None => return false,
             };
@@ -1143,7 +1148,7 @@ mod tests {
 
         let hfile = HprofFile::from_path(tmp.path()).unwrap();
         assert_eq!(hfile.header.version, HprofVersion::V1_0_2);
-        assert_eq!(hfile.header.id_size, 8);
+        assert_eq!(hfile.header.id_size, IdSize::Eight);
         assert!(hfile.index.strings.is_empty());
         assert!(hfile.index_warnings.is_empty());
         assert_eq!(hfile.records_attempted, 0);
@@ -1154,7 +1159,7 @@ mod tests {
 
     #[test]
     fn walk_full_traversal_visits_all_sub_records() {
-        let id_size: u32 = 8;
+        let id_size = IdSize::Eight;
         let mut payload = Vec::new();
 
         // Instance A (obj_id=0xAA, class=100, data=[0x11])
@@ -1187,7 +1192,7 @@ mod tests {
 
     #[test]
     fn walk_break_stops_iteration() {
-        let id_size: u32 = 8;
+        let id_size = IdSize::Eight;
         let mut payload = Vec::new();
 
         for obj_id in [0xAAu64, 0xBBu64] {
@@ -1210,7 +1215,7 @@ mod tests {
     fn walk_truncated_sub_record_exits_silently() {
         let payload = vec![0x21, 0x00, 0x00];
         let mut count = 0u32;
-        walk_heap_subrecords(&payload, 8, |_sub_tag, _tag_pos, _cursor| {
+        walk_heap_subrecords(&payload, IdSize::Eight, |_sub_tag, _tag_pos, _cursor| {
             count += 1;
             SubRecordAction::Continue
         });
@@ -1219,7 +1224,7 @@ mod tests {
 
     #[test]
     fn walk_consumed_action_skips_auto_skip() {
-        let id_size: u32 = 8;
+        let id_size = IdSize::Eight;
         let mut payload = Vec::new();
         payload.push(0x21);
         payload.extend_from_slice(&0xAAu64.to_be_bytes());
@@ -1246,7 +1251,7 @@ mod tests {
     #[test]
     fn walk_empty_data_invokes_no_callbacks() {
         let mut count = 0u32;
-        walk_heap_subrecords(&[], 8, |_sub_tag, _tag_pos, _cursor| {
+        walk_heap_subrecords(&[], IdSize::Eight, |_sub_tag, _tag_pos, _cursor| {
             count += 1;
             SubRecordAction::Continue
         });
@@ -2015,9 +2020,9 @@ mod builder_tests {
                 class_id: u64,
                 num_elements: u32,
                 _elements_data: &[u8],
-                id_size: u32,
+                id_size: IdSize,
             ) -> ControlFlow<()> {
-                assert_eq!(id_size, 8);
+                assert_eq!(id_size, IdSize::Eight);
                 self.arrays.push((id, class_id, num_elements));
                 ControlFlow::Continue(())
             }

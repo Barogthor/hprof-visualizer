@@ -9,6 +9,7 @@ use super::hprof_primitives::{
 };
 use super::offset_lookup::{EntryPointTracker, SegmentEntryPoint};
 use super::{ClassDumpEntry, FilterEntry, FirstPassContext, RawFrameRoot, RawThreadObject};
+use crate::id::IdSize;
 use crate::indexer::HeapRecordRange;
 use crate::read_id;
 use crate::tags::HeapSubTag;
@@ -82,7 +83,7 @@ impl HeapSegmentParsingResult {
 pub(super) fn extract_heap_segment(
     payload: &[u8],
     data_offset: usize,
-    id_size: u32,
+    id_size: IdSize,
     max_chunk_bytes: usize,
 ) -> HeapSegmentParsingResult {
     let mut cursor = Cursor::new(payload);
@@ -237,7 +238,7 @@ pub(super) fn extract_heap_segment(
                 let Ok(_) = read_id(&mut cursor, id_size) else {
                     break;
                 };
-                skip_n(&mut cursor, num_elements as usize * id_size as usize)
+                skip_n(&mut cursor, num_elements as usize * id_size.as_usize())
             }
 
             HeapSubTag::PrimArrayDump => {

@@ -25,14 +25,17 @@ use crate::tags::HeapSubTag;
 use crate::{ClassDumpInfo, read_id};
 
 /// Runs `run_first_pass` with a `NullProgressObserver`.
-fn run_fp(data: &[u8], id_size: u32) -> IndexResult {
+fn run_fp(data: &[u8], id_size: IdSize) -> IndexResult {
     let mut obs = NullProgressObserver;
     let mut notifier = ProgressNotifier::new(&mut obs);
     run_first_pass(data, id_size, 0, &mut notifier, MemoryBudget::Unlimited)
 }
 
 #[cfg(feature = "test-utils")]
-fn run_fp_with_test_observer(data: &[u8], id_size: u32) -> (IndexResult, hprof_api::TestObserver) {
+fn run_fp_with_test_observer(
+    data: &[u8],
+    id_size: IdSize,
+) -> (IndexResult, hprof_api::TestObserver) {
     let mut obs = hprof_api::TestObserver::default();
     let result = {
         let mut notifier = ProgressNotifier::new(&mut obs);
@@ -50,7 +53,11 @@ const SUB_DIVIDE_THRESHOLD: u64 = 16 * 1024 * 1024;
 /// (`InstanceDump`, `ObjectArrayDump`, `PrimArrayDump`)
 /// without extracting data. Returns `false` on read failure.
 #[cfg(feature = "test-utils")]
-fn skip_heap_object(cursor: &mut Cursor<&[u8]>, sub_tag: HeapSubTag, id_size: u32) -> Option<bool> {
+fn skip_heap_object(
+    cursor: &mut Cursor<&[u8]>,
+    sub_tag: HeapSubTag,
+    id_size: IdSize,
+) -> Option<bool> {
     match sub_tag {
         HeapSubTag::InstanceDump => {
             let Ok(_) = read_id(cursor, id_size) else {
@@ -80,7 +87,7 @@ fn skip_heap_object(cursor: &mut Cursor<&[u8]>, sub_tag: HeapSubTag, id_size: u3
             let Ok(_) = read_id(cursor, id_size) else {
                 return Some(false);
             };
-            Some(skip_n(cursor, n as usize * id_size as usize))
+            Some(skip_n(cursor, n as usize * id_size.as_usize()))
         }
         HeapSubTag::PrimArrayDump => {
             let Ok(_) = read_id(cursor, id_size) else {
@@ -108,7 +115,7 @@ fn skip_heap_object(cursor: &mut Cursor<&[u8]>, sub_tag: HeapSubTag, id_size: u3
 /// Scans a heap segment payload extracting only
 /// `CLASS_DUMP` (0x20) sub-records.
 #[cfg(feature = "test-utils")]
-fn extract_class_dumps_only(payload: &[u8], id_size: u32) -> Vec<(u64, ClassDumpInfo)> {
+fn extract_class_dumps_only(payload: &[u8], id_size: IdSize) -> Vec<(u64, ClassDumpInfo)> {
     let mut cursor = Cursor::new(payload);
     let mut results = Vec::new();
 
@@ -145,7 +152,7 @@ fn subdivide_segment(
     data: &[u8],
     offset: u64,
     len: u64,
-    id_size: u32,
+    id_size: IdSize,
     threshold: u64,
 ) -> Vec<(u64, u64)> {
     if len <= threshold {
@@ -218,9 +225,9 @@ fn make_record_with_declared_length(tag: u8, declared_length: u32, payload: &[u8
     rec
 }
 
-fn make_string_payload(id: u64, content: &str, id_size: u32) -> Vec<u8> {
+fn make_string_payload(id: u64, content: &str, id_size: IdSize) -> Vec<u8> {
     let mut p = Vec::new();
-    if id_size == 8 {
+    if id_size == IdSize::Eight {
         p.write_u64::<BigEndian>(id).unwrap();
     } else {
         p.write_u32::<BigEndian>(id as u32).unwrap();
@@ -234,17 +241,17 @@ fn make_load_class_payload(
     class_object_id: u64,
     stack_trace_serial: u32,
     class_name_string_id: u64,
-    id_size: u32,
+    id_size: IdSize,
 ) -> Vec<u8> {
     let mut p = Vec::new();
     p.write_u32::<BigEndian>(class_serial).unwrap();
-    if id_size == 8 {
+    if id_size == IdSize::Eight {
         p.write_u64::<BigEndian>(class_object_id).unwrap();
     } else {
         p.write_u32::<BigEndian>(class_object_id as u32).unwrap();
     }
     p.write_u32::<BigEndian>(stack_trace_serial).unwrap();
-    if id_size == 8 {
+    if id_size == IdSize::Eight {
         p.write_u64::<BigEndian>(class_name_string_id).unwrap();
     } else {
         p.write_u32::<BigEndian>(class_name_string_id as u32)
@@ -260,11 +267,11 @@ fn make_start_thread_payload(
     name_string_id: u64,
     group_name_string_id: u64,
     group_parent_name_string_id: u64,
-    id_size: u32,
+    id_size: IdSize,
 ) -> Vec<u8> {
     let mut p = Vec::new();
     p.write_u32::<BigEndian>(thread_serial).unwrap();
-    if id_size == 8 {
+    if id_size == IdSize::Eight {
         p.write_u64::<BigEndian>(object_id).unwrap();
         p.write_u32::<BigEndian>(stack_trace_serial).unwrap();
         p.write_u64::<BigEndian>(name_string_id).unwrap();
@@ -290,10 +297,10 @@ fn make_stack_frame_payload(
     source_file_id: u64,
     class_serial: u32,
     line_number: i32,
-    id_size: u32,
+    id_size: IdSize,
 ) -> Vec<u8> {
     let mut p = Vec::new();
-    if id_size == 8 {
+    if id_size == IdSize::Eight {
         p.write_u64::<BigEndian>(frame_id).unwrap();
         p.write_u64::<BigEndian>(method_name_id).unwrap();
         p.write_u64::<BigEndian>(method_sig_id).unwrap();
@@ -313,14 +320,14 @@ fn make_stack_trace_payload(
     stack_trace_serial: u32,
     thread_serial: u32,
     frame_ids: &[u64],
-    id_size: u32,
+    id_size: IdSize,
 ) -> Vec<u8> {
     let mut p = Vec::new();
     p.write_u32::<BigEndian>(stack_trace_serial).unwrap();
     p.write_u32::<BigEndian>(thread_serial).unwrap();
     p.write_u32::<BigEndian>(frame_ids.len() as u32).unwrap();
     for &fid in frame_ids {
-        if id_size == 8 {
+        if id_size == IdSize::Eight {
             p.write_u64::<BigEndian>(fid).unwrap();
         } else {
             p.write_u32::<BigEndian>(fid as u32).unwrap();
@@ -373,17 +380,29 @@ mod progress_tests {
     fn progress_observer_called_once_with_zero_for_empty_data() {
         let mut obs = NullProgressObserver;
         let mut notifier = ProgressNotifier::new(&mut obs);
-        let _result = run_first_pass(&[], 8, 0, &mut notifier, MemoryBudget::Unlimited);
+        let _result = run_first_pass(
+            &[],
+            IdSize::Eight,
+            0,
+            &mut notifier,
+            MemoryBudget::Unlimited,
+        );
     }
 
     #[cfg(feature = "test-utils")]
     #[test]
     fn progress_observer_called_for_single_record() {
-        let payload = make_string_payload(1, "hello", 8);
+        let payload = make_string_payload(1, "hello", IdSize::Eight);
         let data = make_record(0x01, &payload);
         let mut obs = hprof_api::TestObserver::default();
         let mut notifier = ProgressNotifier::new(&mut obs);
-        run_first_pass(&data, 8, 0, &mut notifier, MemoryBudget::Unlimited);
+        run_first_pass(
+            &data,
+            IdSize::Eight,
+            0,
+            &mut notifier,
+            MemoryBudget::Unlimited,
+        );
         let calls = bytes_scanned_positions(&obs);
         assert!(!calls.is_empty(), "observer must be called at least once");
         assert_eq!(
@@ -405,7 +424,13 @@ mod progress_tests {
         }
         let mut obs = hprof_api::TestObserver::default();
         let mut notifier = ProgressNotifier::new(&mut obs);
-        run_first_pass(&data, 8, 0, &mut notifier, MemoryBudget::Unlimited);
+        run_first_pass(
+            &data,
+            IdSize::Eight,
+            0,
+            &mut notifier,
+            MemoryBudget::Unlimited,
+        );
         let values = bytes_scanned_positions(&obs);
         assert!(
             values.len() > 1,
@@ -427,7 +452,13 @@ mod progress_tests {
         data.extend_from_slice(&[0u8; 50]);
         let mut obs = hprof_api::TestObserver::default();
         let mut notifier = ProgressNotifier::new(&mut obs);
-        run_first_pass(&data, 8, 0, &mut notifier, MemoryBudget::Unlimited);
+        run_first_pass(
+            &data,
+            IdSize::Eight,
+            0,
+            &mut notifier,
+            MemoryBudget::Unlimited,
+        );
         let calls = bytes_scanned_positions(&obs);
         let reported = *calls.last().expect("observer must be called at least once");
         let declared_end = 9u64 + DECLARED_PAYLOAD as u64;
@@ -453,7 +484,7 @@ mod heap_parsing_tests {
     fn heap_dump_0x0c_record_produces_segment_filter() {
         let obj_id: u64 = 0x1234;
         let data = make_record(0x0C, &make_instance_sub(obj_id, 100));
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(
             result.segment_filters.len(),
             1,
@@ -469,7 +500,7 @@ mod heap_parsing_tests {
         payload.write_u8(0x21).unwrap();
         payload.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
         let data = make_record(0x1C, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(obj_id1));
     }
@@ -483,7 +514,7 @@ mod heap_parsing_tests {
         payload.write_u64::<BigEndian>(gc_root_id).unwrap();
         payload.extend_from_slice(&make_instance_sub(obj_id, 200));
         let data = make_record(0x1C, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(obj_id));
     }
@@ -496,7 +527,7 @@ mod heap_parsing_tests {
         payload.extend_from_slice(&[0x00, 0x01]);
         let data = make_record(0x1C, &payload);
 
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(
             result
                 .warnings
@@ -525,7 +556,7 @@ mod heap_parsing_tests {
         payload.write_u16::<BigEndian>(0).unwrap();
         payload.extend_from_slice(&make_instance_sub(obj_id, class_id));
         let data = make_record(0x1C, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(obj_id));
     }
@@ -538,7 +569,7 @@ mod error_handling_tests {
     #[test]
     fn eof_mid_header_produces_warning_and_no_records() {
         let data = &[0x01u8];
-        let result = run_fp(data, 8);
+        let result = run_fp(data, IdSize::Eight);
         assert!(
             !result.warnings.is_empty(),
             "expected EOF mid-header warning"
@@ -549,12 +580,12 @@ mod error_handling_tests {
 
     #[test]
     fn payload_end_exceeds_data_produces_warning_and_stops() {
-        let str_payload = make_string_payload(1, "ok", 8);
+        let str_payload = make_string_payload(1, "ok", IdSize::Eight);
         let mut data = make_record(0x01, &str_payload);
         data.push(0x01);
         data.write_u32::<BigEndian>(0).unwrap();
         data.write_u32::<BigEndian>(1000).unwrap();
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(
             !result.warnings.is_empty(),
             "expected out-of-bounds warning"
@@ -569,9 +600,9 @@ mod error_handling_tests {
         st_payload.write_u32::<BigEndian>(1).unwrap();
         st_payload.write_u32::<BigEndian>(1).unwrap();
         let mut data = make_record(0x05, &st_payload);
-        let str_payload = make_string_payload(7, "next", 8);
+        let str_payload = make_string_payload(7, "next", IdSize::Eight);
         data.extend(make_record(0x01, &str_payload));
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(!result.warnings.is_empty(), "expected parse warning");
         assert_eq!(
             result.records_indexed, 1,
@@ -587,18 +618,18 @@ mod error_handling_tests {
         st_payload.write_u32::<BigEndian>(1).unwrap();
         st_payload.write_u32::<BigEndian>(1).unwrap();
         let mut data = make_record(0x05, &st_payload);
-        let str_payload = make_string_payload(42, "good", 8);
+        let str_payload = make_string_payload(42, "good", IdSize::Eight);
         data.extend(make_record(0x01, &str_payload));
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.records_indexed, 1);
         assert_eq!(result.warnings.len(), 1);
     }
 
     #[test]
     fn valid_single_record_no_warnings() {
-        let payload = make_string_payload(7, "main", 8);
+        let payload = make_string_payload(7, "main", IdSize::Eight);
         let data = make_record(0x01, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(result.warnings.is_empty());
         assert_eq!(result.records_attempted, 1);
         assert_eq!(result.records_indexed, 1);
@@ -606,7 +637,7 @@ mod error_handling_tests {
 
     #[test]
     fn empty_data_no_warnings_no_records() {
-        let result = run_fp(&[], 8);
+        let result = run_fp(&[], IdSize::Eight);
         assert!(result.warnings.is_empty());
         assert_eq!(result.records_indexed, 0);
         assert_eq!(result.records_attempted, 0);
@@ -614,9 +645,9 @@ mod error_handling_tests {
 
     #[test]
     fn too_short_declared_length_stops_with_warning() {
-        let payload = make_load_class_payload(1, 100, 0, 200, 8);
+        let payload = make_load_class_payload(1, 100, 0, 200, IdSize::Eight);
         let data = make_record_with_declared_length(0x02, 4, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(
             !result.warnings.is_empty(),
             "expected a warning for short declared length"
@@ -625,12 +656,12 @@ mod error_handling_tests {
 
     #[test]
     fn extra_payload_bytes_produces_warning_and_continues() {
-        let mut payload = make_stack_trace_payload(3, 1, &[10], 8);
+        let mut payload = make_stack_trace_payload(3, 1, &[10], IdSize::Eight);
         payload.extend_from_slice(&[0xEE; 8]);
         let mut data = make_record(0x05, &payload);
-        let str_payload = make_string_payload(99, "after", 8);
+        let str_payload = make_string_payload(99, "after", IdSize::Eight);
         data.extend(make_record(0x01, &str_payload));
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(
             !result.warnings.is_empty(),
             "expected size-mismatch warning"
@@ -648,11 +679,11 @@ mod error_handling_tests {
 
     #[test]
     fn start_thread_with_extra_bytes_is_indexed_with_warning() {
-        let mut payload = make_start_thread_payload(7, 0xBEEF, 5, 42, 0, 0, 8);
+        let mut payload = make_start_thread_payload(7, 0xBEEF, 5, 42, 0, 0, IdSize::Eight);
         payload.extend_from_slice(&[0xFF; 4]);
         let data = make_record(0x06, &payload);
 
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(
             !result.warnings.is_empty(),
             "expected warning for extra bytes"
@@ -668,7 +699,7 @@ mod error_handling_tests {
     fn string_declared_length_smaller_than_id_size_stops_with_warning() {
         let payload = 1u64.to_be_bytes();
         let data = make_record_with_declared_length(0x01, 4, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(!result.warnings.is_empty(), "expected truncation warning");
     }
 }
@@ -679,7 +710,7 @@ mod record_parsing_tests {
 
     #[test]
     fn empty_data_returns_empty_index() {
-        let result = run_fp(&[], 8);
+        let result = run_fp(&[], IdSize::Eight);
         assert!(result.index.strings.is_empty());
         assert!(result.index.classes.is_empty());
         assert!(result.index.threads.is_empty());
@@ -689,30 +720,30 @@ mod record_parsing_tests {
 
     #[test]
     fn single_string_record_indexed() {
-        let payload = make_string_payload(7, "main", 8);
+        let payload = make_string_payload(7, "main", IdSize::Eight);
         let data = make_record(0x01, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.index.strings.len(), 1);
         assert_eq!(resolve(&result.index.strings[&7], &data), "main");
     }
 
     #[test]
     fn single_load_class_indexed() {
-        let payload = make_load_class_payload(1, 100, 0, 200, 8);
+        let payload = make_load_class_payload(1, 100, 0, 200, IdSize::Eight);
         let data = make_record(0x02, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.index.classes.len(), 1);
         assert_eq!(result.index.classes[&1].class_object_id, 100);
     }
 
     #[test]
     fn load_class_populates_class_names_by_id_with_dot_notation() {
-        let str_payload = make_string_payload(5, "java/util/HashMap", 8);
-        let cls_payload = make_load_class_payload(1, 100, 0, 5, 8);
+        let str_payload = make_string_payload(5, "java/util/HashMap", IdSize::Eight);
+        let cls_payload = make_load_class_payload(1, 100, 0, 5, IdSize::Eight);
         let mut data = Vec::new();
         data.extend(make_record(0x01, &str_payload));
         data.extend(make_record(0x02, &cls_payload));
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(
             result.index.class_names_by_id.get(&100),
             Some(&"java.util.HashMap".to_string())
@@ -721,9 +752,9 @@ mod record_parsing_tests {
 
     #[test]
     fn load_class_with_unknown_string_id_inserts_empty_name() {
-        let payload = make_load_class_payload(1, 42, 0, 99, 8);
+        let payload = make_load_class_payload(1, 42, 0, 99, IdSize::Eight);
         let data = make_record(0x02, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(
             result.index.class_names_by_id.get(&42),
             Some(&String::new())
@@ -732,27 +763,27 @@ mod record_parsing_tests {
 
     #[test]
     fn single_start_thread_indexed() {
-        let payload = make_start_thread_payload(2, 300, 0, 1, 2, 3, 8);
+        let payload = make_start_thread_payload(2, 300, 0, 1, 2, 3, IdSize::Eight);
         let data = make_record(0x06, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.index.threads.len(), 1);
         assert_eq!(result.index.threads[&2].object_id, 300);
     }
 
     #[test]
     fn single_stack_frame_indexed() {
-        let payload = make_stack_frame_payload(10, 1, 2, 3, 5, 42, 8);
+        let payload = make_stack_frame_payload(10, 1, 2, 3, 5, 42, IdSize::Eight);
         let data = make_record(0x04, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.index.stack_frames.len(), 1);
         assert_eq!(result.index.stack_frames[&10].line_number, 42);
     }
 
     #[test]
     fn single_stack_trace_indexed() {
-        let payload = make_stack_trace_payload(3, 1, &[10, 20], 8);
+        let payload = make_stack_trace_payload(3, 1, &[10, 20], IdSize::Eight);
         let data = make_record(0x05, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.index.stack_traces.len(), 1);
         assert_eq!(result.index.stack_traces[&3].frame_ids, vec![10u64, 20u64]);
     }
@@ -760,7 +791,7 @@ mod record_parsing_tests {
     #[test]
     fn unknown_tag_skipped_index_empty() {
         let data = make_record(0xFF, &[0u8; 4]);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(result.index.strings.is_empty());
         assert!(result.index.classes.is_empty());
         assert!(result.index.threads.is_empty());
@@ -772,10 +803,10 @@ mod record_parsing_tests {
     fn three_string_records_all_indexed() {
         let mut data = Vec::new();
         for (id, s) in [(1u64, "a"), (2, "b"), (3, "c")] {
-            let payload = make_string_payload(id, s, 8);
+            let payload = make_string_payload(id, s, IdSize::Eight);
             data.extend(make_record(0x01, &payload));
         }
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.index.strings.len(), 3);
         assert_eq!(resolve(&result.index.strings[&1], &data), "a");
         assert_eq!(resolve(&result.index.strings[&2], &data), "b");
@@ -785,11 +816,11 @@ mod record_parsing_tests {
     #[test]
     fn id_size_4_string_and_class_both_indexed() {
         let mut data = Vec::new();
-        let str_payload = make_string_payload(5, "foo", 4);
+        let str_payload = make_string_payload(5, "foo", IdSize::Four);
         data.extend(make_record(0x01, &str_payload));
-        let cls_payload = make_load_class_payload(1, 50, 0, 5, 4);
+        let cls_payload = make_load_class_payload(1, 50, 0, 5, IdSize::Four);
         data.extend(make_record(0x02, &cls_payload));
-        let result = run_fp(&data, 4);
+        let result = run_fp(&data, IdSize::Four);
         assert_eq!(result.index.strings.len(), 1);
         assert_eq!(resolve(&result.index.strings[&5], &data), "foo");
         assert_eq!(result.index.classes.len(), 1);
@@ -806,7 +837,7 @@ mod record_parsing_tests {
             heap_payload.extend_from_slice(&make_instance_sub(base | i, class_id));
         }
         let data = make_record(0x1C, &heap_payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(
             result.segment_filters.len(),
             1,
@@ -828,9 +859,9 @@ mod thread_resolution_tests {
 
     #[test]
     fn stack_trace_without_start_thread_synthesises_thread_entry() {
-        let payload = make_stack_trace_payload(5, 3, &[10], 8);
+        let payload = make_stack_trace_payload(5, 3, &[10], IdSize::Eight);
         let data = make_record(0x05, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(
             result.index.threads.contains_key(&3),
             "synthetic thread must be created from \
@@ -844,9 +875,9 @@ mod thread_resolution_tests {
 
     #[test]
     fn stack_trace_thread_serial_zero_does_not_synthesise_thread() {
-        let payload = make_stack_trace_payload(1, 0, &[], 8);
+        let payload = make_stack_trace_payload(1, 0, &[], IdSize::Eight);
         let data = make_record(0x05, &payload);
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert!(
             !result.index.threads.contains_key(&0),
             "thread_serial=0 must not be synthesised"
@@ -855,13 +886,13 @@ mod thread_resolution_tests {
 
     #[test]
     fn start_thread_record_takes_priority_over_synthetic_thread() {
-        let str_payload = make_string_payload(10, "main", 8);
-        let thread_payload = make_start_thread_payload(1, 100, 7, 10, 0, 0, 8);
-        let trace_payload = make_stack_trace_payload(7, 1, &[50], 8);
+        let str_payload = make_string_payload(10, "main", IdSize::Eight);
+        let thread_payload = make_start_thread_payload(1, 100, 7, 10, 0, 0, IdSize::Eight);
+        let trace_payload = make_stack_trace_payload(7, 1, &[50], IdSize::Eight);
         let mut data = make_record(0x01, &str_payload);
         data.extend(make_record(0x06, &thread_payload));
         data.extend(make_record(0x05, &trace_payload));
-        let result = run_fp(&data, 8);
+        let result = run_fp(&data, IdSize::Eight);
         assert_eq!(result.index.threads.len(), 1);
         let t = &result.index.threads[&1];
         assert_eq!(
@@ -880,7 +911,7 @@ mod thread_resolution_tests {
         data.extend_from_slice(&1u32.to_be_bytes()); // length = 1
         data.push(0xFFu8); // 1-byte payload, insufficient for 4-byte ID
 
-        let result = run_fp(&data, 4);
+        let result = run_fp(&data, IdSize::Four);
         assert!(
             result.warnings.iter().any(|w| w.contains("at offset")),
             "expected parse-failure warning, got: {:?}",
@@ -894,7 +925,6 @@ mod thread_resolution_tests {
         // parse_stack_frame reads exactly 24 bytes; we set
         // header_length=28 (4 extra bytes) to trigger the
         // "parsed OK but consumed X of Y bytes" warning.
-        let id_size = 4u32;
         let mut payload = Vec::new();
         payload.extend_from_slice(&1u32.to_be_bytes()); // frame_id
         payload.extend_from_slice(&2u32.to_be_bytes()); // method_name_string_id
@@ -910,7 +940,7 @@ mod thread_resolution_tests {
         data.extend_from_slice(&(payload.len() as u32).to_be_bytes());
         data.extend_from_slice(&payload);
 
-        let result = run_fp(&data, id_size);
+        let result = run_fp(&data, IdSize::Four);
         assert!(
             result
                 .warnings
@@ -947,7 +977,7 @@ mod builder_tests {
             .add_instance(object_id, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert_eq!(result.segment_filters.len(), 1);
         assert_eq!(
             result.segment_filters[0].segment_index, 0,
@@ -970,7 +1000,7 @@ mod builder_tests {
             .truncate_at(full.len() - 5)
             .build();
         let start = advance_past_header(&truncated);
-        let result = run_fp(&truncated[start..], 8);
+        let result = run_fp(&truncated[start..], IdSize::Eight);
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(id1));
     }
@@ -981,7 +1011,7 @@ mod builder_tests {
             .add_string(1, "hello")
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert!(result.segment_filters.is_empty());
     }
 
@@ -994,7 +1024,7 @@ mod builder_tests {
             .add_instance(id2, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert_eq!(result.segment_filters.len(), 1);
         assert_eq!(result.segment_filters[0].segment_index, 0);
         assert!(result.segment_filters[0].contains(id1));
@@ -1008,7 +1038,7 @@ mod builder_tests {
             .add_object_array(array_id, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(array_id));
     }
@@ -1020,7 +1050,7 @@ mod builder_tests {
             .add_prim_array(array_id, 0, 2, 8, &[0x01, 0x02])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.segment_filters[0].contains(array_id));
     }
@@ -1039,7 +1069,7 @@ mod builder_tests {
             .add_stack_trace(100, 1, &[50])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert!(result.warnings.is_empty());
         assert_eq!(result.records_indexed, result.records_attempted);
         assert_eq!(result.index.strings.len(), 2);
@@ -1064,7 +1094,7 @@ mod builder_tests {
             .build();
         let truncated = &bytes[..bytes.len() - 4];
         let start = advance_past_header(truncated);
-        let result = run_fp(&truncated[start..], 8);
+        let result = run_fp(&truncated[start..], IdSize::Eight);
         assert!(!result.warnings.is_empty(), "expected truncation warning");
         assert_eq!(result.index.strings.len(), 1);
         let records = &truncated[start..];
@@ -1082,7 +1112,7 @@ mod builder_tests {
             .add_java_frame_root(99, 1, 0)
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         let roots = result.index.java_frame_roots.get(&50);
         assert!(roots.is_some(), "frame_id=50 must have roots");
         assert_eq!(roots.unwrap(), &vec![99u64]);
@@ -1097,7 +1127,7 @@ mod builder_tests {
             .add_java_frame_root(99, 1, -1)
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert!(
             result.index.java_frame_roots.is_empty(),
             "root with frame_number=-1 must not \
@@ -1111,7 +1141,7 @@ mod builder_tests {
             .add_class_dump(100, 0, 16, &[(10, 10u8)])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert_eq!(result.index.class_dumps.len(), 1);
         let info = result.index.class_dumps.get(&100).unwrap();
         assert_eq!(info.class_object_id, 100);
@@ -1126,7 +1156,7 @@ mod builder_tests {
             .add_class_dump(200, 50, 24, &[(20, 10u8), (21, 8u8)])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         let info = result.index.class_dumps.get(&200).unwrap();
         assert_eq!(info.instance_fields.len(), 2);
         assert_eq!(info.instance_fields[0].name_string_id, 20);
@@ -1155,7 +1185,7 @@ mod builder_tests {
             .build();
 
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
 
         let mut expected_ids = BTreeSet::new();
         for dump in result.index.class_dumps.values() {
@@ -1190,7 +1220,7 @@ mod builder_tests {
             .add_instance(0xDEAD, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert_eq!(result.heap_record_ranges.len(), 1);
     }
 
@@ -1201,7 +1231,7 @@ mod builder_tests {
             .add_root_thread_obj(0xBEEF, 1, 10)
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert_eq!(
             result.index.thread_object_ids.get(&1),
             Some(&0xBEEF),
@@ -1217,7 +1247,7 @@ mod builder_tests {
             .add_root_thread_obj(0xCAFE, 1, 10)
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         let thread = result.index.threads.get(&1).unwrap();
         assert_eq!(
             thread.object_id, 0xCAFE,
@@ -1234,7 +1264,7 @@ mod builder_tests {
             .add_java_frame_root(99, 1, 0)
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         let roots = result.index.java_frame_roots.get(&50);
         assert!(
             roots.is_some(),
@@ -1253,7 +1283,7 @@ mod builder_tests {
             .add_java_frame_root(99, 1, 1)
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert!(
             result.index.java_frame_roots.is_empty(),
             "root with out-of-range frame_number \
@@ -1270,7 +1300,7 @@ mod builder_tests {
             .add_instance(thread_obj_id, 0, 100, &[1, 2, 3, 4])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert!(
             result.index.instance_offsets.contains(&thread_obj_id),
             "thread object must have a recorded offset"
@@ -1289,7 +1319,7 @@ mod builder_tests {
         class_object_id: u64,
         super_class_id: u64,
         instance_size: u32,
-        id_size: u32,
+        id_size: IdSize,
     ) -> Vec<u8> {
         let mut p = Vec::new();
         p.write_u8(0x20).unwrap();
@@ -1310,7 +1340,7 @@ mod builder_tests {
         obj_id: u64,
         class_id: u64,
         field_data: &[u8],
-        id_size: u32,
+        id_size: IdSize,
     ) -> Vec<u8> {
         let mut p = Vec::new();
         p.write_u8(0x21).unwrap();
@@ -1326,7 +1356,7 @@ mod builder_tests {
         arr_id: u64,
         elem_type: u8,
         elements: &[u8],
-        id_size: u32,
+        id_size: IdSize,
     ) -> Vec<u8> {
         let elem_size = primitive_element_size(elem_type);
         let num_elements = if elem_size > 0 {
@@ -1348,7 +1378,7 @@ mod builder_tests {
         arr_id: u64,
         class_id: u64,
         element_ids: &[u64],
-        id_size: u32,
+        id_size: IdSize,
     ) -> Vec<u8> {
         let mut p = Vec::new();
         p.write_u8(0x22).unwrap();
@@ -1362,8 +1392,8 @@ mod builder_tests {
         p
     }
 
-    fn write_id(buf: &mut Vec<u8>, id: u64, id_size: u32) {
-        if id_size == 8 {
+    fn write_id(buf: &mut Vec<u8>, id: u64, id_size: IdSize) {
+        if id_size == IdSize::Eight {
             buf.write_u64::<BigEndian>(id).unwrap();
         } else {
             buf.write_u32::<BigEndian>(id as u32).unwrap();
@@ -1372,7 +1402,7 @@ mod builder_tests {
 
     #[test]
     fn extract_class_dumps_only_returns_class_dumps() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut payload = Vec::new();
         payload.extend(make_class_dump_sub_record(100, 0, 16, id_size));
         payload.extend(make_instance_sub_record(200, 100, &[0; 16], id_size));
@@ -1388,7 +1418,7 @@ mod builder_tests {
 
     #[test]
     fn extract_heap_segment_skips_class_dump() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut payload = Vec::new();
         payload.extend(make_class_dump_sub_record(100, 0, 16, id_size));
         payload.extend(make_instance_sub_record(200, 100, &[0; 16], id_size));
@@ -1413,7 +1443,7 @@ mod builder_tests {
 
     #[test]
     fn subdivide_segment_no_split_below_threshold() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut payload = Vec::new();
         payload.extend(make_instance_sub_record(1, 0, &[0; 8], id_size));
         let offset = 0u64;
@@ -1425,7 +1455,7 @@ mod builder_tests {
 
     #[test]
     fn subdivide_segment_splits_at_sub_record_boundaries() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let single = make_instance_sub_record(1, 0, &[0; 8], id_size);
         let record_size = single.len();
         let threshold = record_size as u64;
@@ -1455,9 +1485,8 @@ mod builder_tests {
 
     #[test]
     fn parallel_path_produces_correct_results() {
-        let id_size = 8u32;
         let big_data = vec![0u8; 33 * 1024 * 1024];
-        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
             .add_class_dump(100, 0, big_data.len() as u32, &[])
             .add_instance(42, 0, 100, &big_data)
             .build();
@@ -1470,7 +1499,7 @@ mod builder_tests {
             "test data must exceed parallel threshold"
         );
 
-        let result = run_fp(data, id_size);
+        let result = run_fp(data, IdSize::Eight);
 
         assert!(
             result.index.class_dumps.contains_key(&100),
@@ -1496,8 +1525,7 @@ mod builder_tests {
 
     #[test]
     fn small_file_uses_sequential_path() {
-        let id_size = 8u32;
-        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
             .add_instance(42, 0, 100, &[1, 2, 3, 4])
             .build();
 
@@ -1507,7 +1535,7 @@ mod builder_tests {
         );
 
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], id_size);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert!(
             !result.index.class_dumps.is_empty() || !result.heap_record_ranges.is_empty(),
             "should produce valid results via \
@@ -1517,8 +1545,8 @@ mod builder_tests {
 
     #[test]
     fn sequential_path_reports_all_segments() {
-        let id_size = 8u32;
-        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+        let id_size = IdSize::Eight;
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size.as_u32())
             .add_instance(1, 0, 100, &[1])
             .add_instance(2, 0, 100, &[2])
             .add_instance(3, 0, 100, &[3])
@@ -1556,9 +1584,9 @@ mod builder_tests {
 
     #[test]
     fn parallel_path_reports_all_segments() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let big_data = vec![0u8; 33 * 1024 * 1024];
-        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size.as_u32())
             .add_class_dump(100, 0, big_data.len() as u32, &[])
             .add_instance(42, 0, 100, &big_data)
             .build();
@@ -1596,8 +1624,8 @@ mod builder_tests {
 
     #[test]
     fn segment_done_never_exceeds_total() {
-        let id_size = 8u32;
-        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+        let id_size = IdSize::Eight;
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size.as_u32())
             .add_instance(10, 0, 100, &[1])
             .add_instance(11, 0, 100, &[2])
             .add_instance(12, 0, 100, &[3])
@@ -1635,7 +1663,7 @@ mod builder_tests {
     #[test]
     #[cfg(feature = "test-utils")]
     fn progress_reports_after_heap_segment_skip() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let seg_payload_len = PROGRESS_REPORT_INTERVAL as u32 + 1024;
 
         // STRING record: id(8 bytes) + "hi"(2 bytes)
@@ -1713,7 +1741,7 @@ mod builder_tests {
     #[test]
     #[cfg(feature = "test-utils")]
     fn progress_heap_only_dump_two_segments() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let seg_payload_len = PROGRESS_REPORT_INTERVAL as u32 + 1024;
 
         let total_size = 2 * (RECORD_HEADER_SIZE + seg_payload_len as usize);
@@ -1743,7 +1771,7 @@ mod builder_tests {
     #[test]
     #[cfg(feature = "test-utils")]
     fn progress_small_heap_segment_no_extra_event() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let seg_payload_len = 1u32;
         let total_size = RECORD_HEADER_SIZE + seg_payload_len as usize;
         let mut data = vec![0u8; total_size];
@@ -1773,7 +1801,7 @@ mod builder_tests {
     #[test]
     #[cfg(feature = "test-utils")]
     fn progress_interleaved_segments_monotonic() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let seg_payload_len = PROGRESS_REPORT_INTERVAL as u32 + 1024;
         let str_payload = {
             let mut p = Vec::new();
@@ -1833,7 +1861,7 @@ mod builder_tests {
     #[test]
     #[cfg(feature = "test-utils")]
     fn progress_heap_dump_tag_variant() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let seg_payload_len = PROGRESS_REPORT_INTERVAL as u32 + 1024;
         let total_size = RECORD_HEADER_SIZE + seg_payload_len as usize;
         let mut data = vec![0u8; total_size];
@@ -1870,15 +1898,20 @@ mod chunked_extraction_tests {
     use super::*;
     use byteorder::{BigEndian, WriteBytesExt};
 
-    fn write_id(buf: &mut Vec<u8>, id: u64, id_size: u32) {
-        if id_size == 8 {
+    fn write_id(buf: &mut Vec<u8>, id: u64, id_size: IdSize) {
+        if id_size == IdSize::Eight {
             buf.write_u64::<BigEndian>(id).unwrap();
         } else {
             buf.write_u32::<BigEndian>(id as u32).unwrap();
         }
     }
 
-    fn make_instance_sub(obj_id: u64, class_id: u64, field_data: &[u8], id_size: u32) -> Vec<u8> {
+    fn make_instance_sub(
+        obj_id: u64,
+        class_id: u64,
+        field_data: &[u8],
+        id_size: IdSize,
+    ) -> Vec<u8> {
         let mut p = Vec::new();
         p.write_u8(0x21).unwrap(); // InstanceDump
         write_id(&mut p, obj_id, id_size);
@@ -1889,7 +1922,12 @@ mod chunked_extraction_tests {
         p
     }
 
-    fn make_prim_array_sub(arr_id: u64, elem_type: u8, elements: &[u8], id_size: u32) -> Vec<u8> {
+    fn make_prim_array_sub(
+        arr_id: u64,
+        elem_type: u8,
+        elements: &[u8],
+        id_size: IdSize,
+    ) -> Vec<u8> {
         let elem_size = primitive_element_size(elem_type);
         let num_elements = if elem_size > 0 {
             elements.len() / elem_size
@@ -1910,7 +1948,7 @@ mod chunked_extraction_tests {
         class_object_id: u64,
         super_class_id: u64,
         instance_size: u32,
-        id_size: u32,
+        id_size: IdSize,
     ) -> Vec<u8> {
         let mut p = Vec::new();
         p.write_u8(0x20).unwrap(); // ClassDump
@@ -1931,7 +1969,7 @@ mod chunked_extraction_tests {
         object_id: u64,
         thread_serial: u32,
         frame_number: i32,
-        id_size: u32,
+        id_size: IdSize,
     ) -> Vec<u8> {
         let mut p = Vec::new();
         p.write_u8(0x03).unwrap(); // GcRootJavaFrame
@@ -1944,7 +1982,7 @@ mod chunked_extraction_tests {
     /// 5.1: 6 InstanceDumps, chunk to hold ~2 each
     #[test]
     fn chunked_6_instances_3_chunks() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let field_data = [0u8; 8];
         let mut payload = Vec::new();
         for i in 1..=6u64 {
@@ -1970,7 +2008,7 @@ mod chunked_extraction_tests {
     /// 5.2: max_chunk_bytes > payload → single chunk
     #[test]
     fn no_chunking_when_max_exceeds_payload() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let field_data = [0u8; 8];
         let mut payload = Vec::new();
         for i in 1..=6u64 {
@@ -1984,7 +2022,7 @@ mod chunked_extraction_tests {
     /// 5.3: chunk boundary exactly at sub-record end
     #[test]
     fn chunk_boundary_at_exact_record_end() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let field_data = [0u8; 8];
         let mut payload = Vec::new();
         for i in 1..=4u64 {
@@ -2003,7 +2041,7 @@ mod chunked_extraction_tests {
     /// merged results must be identical
     #[test]
     fn mixed_records_single_vs_multi_chunk_identical() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut payload = Vec::new();
         payload.extend(make_instance_sub(1, 100, &[0u8; 8], id_size));
         payload.extend(make_prim_array_sub(
@@ -2020,10 +2058,10 @@ mod chunked_extraction_tests {
         assert!(multi.chunks.len() > 1, "must produce multiple chunks");
 
         // Merge both into separate contexts and compare
-        let mut ctx_s = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
+        let mut ctx_s = FirstPassContext::new(&[], IdSize::Eight, 0, MemoryBudget::Unlimited);
         single.merge_into(&mut ctx_s);
 
-        let mut ctx_m = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
+        let mut ctx_m = FirstPassContext::new(&[], IdSize::Eight, 0, MemoryBudget::Unlimited);
         multi.merge_into(&mut ctx_m);
 
         let s_frame_roots = ctx_s.raw_frame_roots.len();
@@ -2065,7 +2103,7 @@ mod chunked_extraction_tests {
         let mut notifier = ProgressNotifier::new(&mut obs);
         let result_budgeted = run_first_pass(
             &bytes[start..],
-            8,
+            IdSize::Eight,
             start as u64,
             &mut notifier,
             MemoryBudget::Bytes(512),
@@ -2076,7 +2114,7 @@ mod chunked_extraction_tests {
         let mut notifier2 = ProgressNotifier::new(&mut obs2);
         let result_none = run_first_pass(
             &bytes[start..],
-            8,
+            IdSize::Eight,
             start as u64,
             &mut notifier2,
             MemoryBudget::Unlimited,
@@ -2120,7 +2158,7 @@ mod chunked_extraction_tests {
             .add_instance(0xDEAD, 0, 100, &[1, 2, 3, 4])
             .build();
         let start = crate::test_utils::advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert_eq!(
             result.segment_filters.len(),
             1,
@@ -2137,7 +2175,7 @@ mod chunked_extraction_tests {
     /// 5.7: truncated sub-record at end of payload
     #[test]
     fn chunked_extraction_truncated_sub_record() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut payload = Vec::new();
         payload.extend(make_instance_sub(1, 100, &[0u8; 8], id_size));
         payload.extend(make_instance_sub(2, 100, &[0u8; 8], id_size));
@@ -2158,7 +2196,7 @@ mod chunked_extraction_tests {
     /// 5.8: data_offset correctness across chunks
     #[test]
     fn data_offset_correctness_across_chunks() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let field_data = [0u8; 8];
         let data_offset = 500usize;
         let mut payload = Vec::new();
@@ -2194,7 +2232,7 @@ mod chunked_extraction_tests {
     /// merge_segment_result call.
     #[test]
     fn single_chunk_merge_same_as_direct() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut payload = Vec::new();
         payload.extend(make_instance_sub(1, 100, &[0u8; 8], id_size));
         payload.extend(make_instance_sub(2, 100, &[0u8; 8], id_size));
@@ -2207,11 +2245,11 @@ mod chunked_extraction_tests {
         let direct_result = extract_heap_segment(&payload, 0, id_size, usize::MAX);
 
         // Merge via HeapSegmentParsingResult
-        let mut ctx_wrapper = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
+        let mut ctx_wrapper = FirstPassContext::new(&[], IdSize::Eight, 0, MemoryBudget::Unlimited);
         parsing_result.merge_into(&mut ctx_wrapper);
 
         // Merge via direct merge_segment_result
-        let mut ctx_direct = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
+        let mut ctx_direct = FirstPassContext::new(&[], IdSize::Eight, 0, MemoryBudget::Unlimited);
         for chunk in direct_result.chunks {
             merge_segment_result(&mut ctx_direct, chunk);
         }
@@ -2225,14 +2263,14 @@ mod chunked_extraction_tests {
     /// 5.10: empty payload → zero chunks
     #[test]
     fn empty_payload_zero_chunks() {
-        let result = extract_heap_segment(&[], 0, 8, 100);
+        let result = extract_heap_segment(&[], 0, IdSize::Eight, 100);
         assert!(
             result.chunks.is_empty(),
             "empty payload should produce no chunks"
         );
 
         // merge_into is a no-op
-        let mut ctx = FirstPassContext::new(&[], 8, 0, MemoryBudget::Unlimited);
+        let mut ctx = FirstPassContext::new(&[], IdSize::Eight, 0, MemoryBudget::Unlimited);
         result.merge_into(&mut ctx);
         assert!(ctx.raw_frame_roots.is_empty());
     }
@@ -2353,7 +2391,7 @@ mod budget_batching_tests {
     /// result and observer events.
     fn run_fp_with_budget(
         data: &[u8],
-        id_size: u32,
+        id_size: IdSize,
         budget: MemoryBudget,
     ) -> (IndexResult, hprof_api::TestObserver) {
         let mut obs = hprof_api::TestObserver::default();
@@ -2378,7 +2416,7 @@ mod budget_batching_tests {
         let bytes = builder.build();
         let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (_, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(64));
+        let (_, obs) = run_fp_with_budget(&bytes[start..], IdSize::Eight, MemoryBudget::Bytes(64));
 
         let byte_events: Vec<(u64, u64)> = obs
             .events
@@ -2421,8 +2459,10 @@ mod budget_batching_tests {
         let bytes = builder.build();
         let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (result_budget, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(128));
-        let (result_none, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
+        let (result_budget, _) =
+            run_fp_with_budget(&bytes[start..], IdSize::Eight, MemoryBudget::Bytes(128));
+        let (result_none, _) =
+            run_fp_with_budget(&bytes[start..], IdSize::Eight, MemoryBudget::Unlimited);
 
         assert_eq!(
             result_budget.segment_filters.len(),
@@ -2461,7 +2501,7 @@ mod budget_batching_tests {
             .build();
         let start = crate::test_utils::advance_past_header(&bytes);
 
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         assert_eq!(result.segment_filters.len(), 1);
         assert!(result.warnings.is_empty());
         assert_eq!(result.heap_record_ranges.len(), 1);
@@ -2479,7 +2519,8 @@ mod budget_batching_tests {
         let start = crate::test_utils::advance_past_header(&bytes);
 
         // Budget smaller than segment payload
-        let (result, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(16));
+        let (result, _) =
+            run_fp_with_budget(&bytes[start..], IdSize::Eight, MemoryBudget::Bytes(16));
         assert_eq!(
             result.segment_filters.len(),
             1,
@@ -2517,7 +2558,8 @@ mod budget_batching_tests {
         let start = crate::test_utils::advance_past_header(&bytes);
 
         // budget = 0 → floor = 64 MB
-        let (result, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(0));
+        let (result, _) =
+            run_fp_with_budget(&bytes[start..], IdSize::Eight, MemoryBudget::Bytes(0));
         // 3 HEAP_DUMP_SEGMENT records
         assert_eq!(result.heap_record_ranges.len(), 3);
         assert!(result.warnings.is_empty());
@@ -2551,7 +2593,8 @@ mod budget_batching_tests {
         let bytes = builder.build();
         let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (result, _) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(1));
+        let (result, _) =
+            run_fp_with_budget(&bytes[start..], IdSize::Eight, MemoryBudget::Bytes(1));
         // All 4 segments found despite tiny budget
         assert_eq!(result.heap_record_ranges.len(), 4);
         assert!(result.warnings.is_empty());
@@ -2617,7 +2660,8 @@ mod budget_batching_tests {
             .build();
         let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (result, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Unlimited);
+        let (result, obs) =
+            run_fp_with_budget(&bytes[start..], IdSize::Eight, MemoryBudget::Unlimited);
 
         assert_eq!(result.heap_record_ranges.len(), 2);
         assert!(result.warnings.is_empty());
@@ -2657,7 +2701,7 @@ mod budget_batching_tests {
         let bytes = builder.build();
         let start = crate::test_utils::advance_past_header(&bytes);
 
-        let (_, obs) = run_fp_with_budget(&bytes[start..], 8, MemoryBudget::Bytes(64));
+        let (_, obs) = run_fp_with_budget(&bytes[start..], IdSize::Eight, MemoryBudget::Bytes(64));
 
         let byte_events: Vec<(u64, u64)> = obs
             .events
@@ -2695,6 +2739,7 @@ mod budget_batching_tests {
 mod story_13_0_tests {
     use hprof_api::{MemoryBudget, ProgressEvent, ProgressNotifier, TestObserver};
 
+    use crate::id::IdSize;
     use crate::indexer::first_pass::run_first_pass;
     use crate::test_utils::{HprofTestBuilder, advance_past_header};
 
@@ -2727,7 +2772,7 @@ mod story_13_0_tests {
                 let mut notifier = ProgressNotifier::new(&mut obs);
                 let _result = run_first_pass(
                     &bytes[start..],
-                    8,
+                    IdSize::Eight,
                     0,
                     &mut notifier,
                     MemoryBudget::Unlimited,
@@ -2763,7 +2808,7 @@ mod story_13_0_tests {
             let mut notifier = ProgressNotifier::new(&mut obs);
             let _result = run_first_pass(
                 &bytes[start..],
-                8,
+                IdSize::Eight,
                 0,
                 &mut notifier,
                 MemoryBudget::Unlimited,
@@ -2798,12 +2843,13 @@ mod story_13_0_tests {
 mod post_extraction_tests {
     use hprof_api::{MemoryBudget, NullProgressObserver, ProgressNotifier};
 
+    use crate::id::IdSize;
     use crate::indexer::DiagnosticInfo;
     use crate::indexer::IndexResult;
     use crate::indexer::first_pass::run_first_pass;
     use crate::test_utils::{HprofTestBuilder, advance_past_header};
 
-    fn run_fp(data: &[u8], id_size: u32) -> IndexResult {
+    fn run_fp(data: &[u8], id_size: IdSize) -> IndexResult {
         let mut obs = NullProgressObserver;
         let mut notifier = ProgressNotifier::new(&mut obs);
         run_first_pass(data, id_size, 0, &mut notifier, MemoryBudget::Unlimited)
@@ -2844,7 +2890,7 @@ mod post_extraction_tests {
             .add_instance(1, 0, 100, &[])
             .build();
         let start = advance_past_header(&bytes);
-        let result = run_fp(&bytes[start..], 8);
+        let result = run_fp(&bytes[start..], IdSize::Eight);
         let diag = &result.diagnostics;
         assert!(
             diag.precise_index_heap_bytes > 0,
@@ -2963,7 +3009,7 @@ mod post_extraction_tests {
                 }
             };
             let id_size_offset = null_pos + 1;
-            let id_size = if id_size_offset + 4 <= raw.len() {
+            let raw_id_size = if id_size_offset + 4 <= raw.len() {
                 u32::from_be_bytes([
                     raw[id_size_offset],
                     raw[id_size_offset + 1],
@@ -2973,6 +3019,13 @@ mod post_extraction_tests {
             } else {
                 eprintln!("[post_extraction] {name}: header too short");
                 continue;
+            };
+            let id_size = match IdSize::from_raw(raw_id_size) {
+                Ok(s) => s,
+                Err(_) => {
+                    eprintln!("[post_extraction] {name}: bad id_size {raw_id_size}");
+                    continue;
+                }
             };
             let hdr_end = id_size_offset + 4 + 8;
             if hdr_end >= raw.len() {
@@ -3061,7 +3114,7 @@ mod post_extraction_tests {
             }
         };
         let id_size_offset = null_pos + 1;
-        let id_size = if id_size_offset + 4 <= raw.len() {
+        let raw_id_size = if id_size_offset + 4 <= raw.len() {
             u32::from_be_bytes([
                 raw[id_size_offset],
                 raw[id_size_offset + 1],
@@ -3071,6 +3124,13 @@ mod post_extraction_tests {
         } else {
             eprintln!("[post_extraction] {name}: header too short");
             return;
+        };
+        let id_size = match IdSize::from_raw(raw_id_size) {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("[post_extraction] {name}: bad id_size {raw_id_size}");
+                return;
+            }
         };
         let hdr_end = id_size_offset + 4 + 8;
         if hdr_end >= raw.len() {
@@ -3116,7 +3176,8 @@ mod post_extraction_tests {
 #[test]
 fn filter_lookup_matches_expected() {
     use crate::test_utils::{HprofTestBuilder, advance_past_header};
-    let id_size: u32 = 8;
+    let id_size_raw: u32 = 8;
+    let id_size = IdSize::Eight;
 
     // Build the dump. Record order matters for
     // computing expected offsets.
@@ -3125,7 +3186,7 @@ fn filter_lookup_matches_expected() {
     //  0: STACK_TRACE (tag 0x05)
     //  1: HEAP_DUMP_SEGMENT containing ROOT_THREAD_OBJ
     //  2: HEAP_DUMP_SEGMENT containing INSTANCE_DUMP 0x100
-    let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+    let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size_raw)
         // record 0: STACK_TRACE for thread_serial=1
         .add_stack_trace(1, 1, &[])
         // record 1: ROOT_THREAD_OBJ linking thread 1
@@ -3150,7 +3211,7 @@ fn filter_lookup_matches_expected() {
     //   length(4) + payload[sub-tag(1) + obj_id(8) +
     //   thread_serial(4) + stack_trace_serial(4)]
     //   = 9 + (1 + 8 + 4 + 4) = 9 + 17 = 26
-    let rec1_size = 9 + 1 + id_size as usize + 4 + 4;
+    let rec1_size = 9 + 1 + id_size.as_usize() + 4 + 4;
 
     // Record 2 (HEAP_DUMP_SEGMENT with INSTANCE_DUMP):
     //   tag(1) + time(4) + length(4) = 9 byte header.
@@ -3198,7 +3259,7 @@ fn entry_points_at_segment_boundary_large() {
     // Build a single HEAP_DUMP_SEGMENT containing:
     //   1) A large PRIM_ARRAY_DUMP (~64 MiB of zeros)
     //   2) A small INSTANCE_DUMP after the boundary
-    let id_size: u32 = 8;
+    let id_size = IdSize::Eight;
 
     // PRIM_ARRAY sub-record: sub-tag(1) + id(8) +
     //   stack_serial(4) + num_elements(4) + elem_type(1)
@@ -3232,7 +3293,7 @@ fn entry_points_at_segment_boundary_large() {
     payload.extend_from_slice(&300u64.to_be_bytes()); // class
     payload.extend_from_slice(&0u32.to_be_bytes()); // 0 bytes
 
-    let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+    let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
         .add_raw_heap_segment(&payload)
         .build();
 
@@ -3278,7 +3339,7 @@ fn entry_points_across_multiple_heap_segments() {
         .build();
 
     let start = advance_past_header(&bytes);
-    let result = run_fp(&bytes[start..], 8);
+    let result = run_fp(&bytes[start..], IdSize::Eight);
 
     assert!(
         result.segment_filters.iter().any(|f| f.contains(1)),
@@ -3307,7 +3368,7 @@ fn entry_points_across_multiple_heap_segments() {
 fn extract_heap_segment_cross_segment_entry_points() {
     use crate::indexer::segment::SEGMENT_SIZE;
 
-    let id_size: u32 = 8;
+    let id_size = IdSize::Eight;
     let mut payload = Vec::new();
 
     // INSTANCE_DUMP: tag(1)+id(8)+stack(4)+class(8)+
@@ -3366,7 +3427,7 @@ fn extract_heap_segment_cross_segment_entry_points() {
 fn extract_heap_segment_records_entry_points() {
     // Build a small payload with two INSTANCE_DUMPs.
     // Both at segment 0 (since data is tiny).
-    let id_size: u32 = 8;
+    let id_size = IdSize::Eight;
     let mut payload = Vec::new();
 
     // INSTANCE_DUMP #1
@@ -3423,7 +3484,7 @@ fn run_first_pass_emits_phase_changed_events_with_threads() {
         .add_instance(thread_obj_id, 0, 100, &[1, 2])
         .build();
     let start = advance_past_header(&bytes);
-    let (_result, obs) = run_fp_with_test_observer(&bytes[start..], 8);
+    let (_result, obs) = run_fp_with_test_observer(&bytes[start..], IdSize::Eight);
 
     // Find the filter-build phase signal
     let filter_idx = obs

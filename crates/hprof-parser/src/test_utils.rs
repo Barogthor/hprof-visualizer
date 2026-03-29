@@ -18,6 +18,7 @@
 //! ```
 
 use crate::StaticValue;
+use crate::id::IdSize;
 
 /// Returns the byte offset of the first record in a builder-produced byte slice.
 ///
@@ -34,7 +35,7 @@ pub fn advance_past_header(bytes: &[u8]) -> usize {
 /// with optional truncation and corruption mutations for testing error paths.
 pub struct HprofTestBuilder {
     version: &'static str,
-    id_size: u32,
+    id_size: IdSize,
     records: Vec<Vec<u8>>,
     truncate_at: Option<usize>,
     corrupt_record_at: Option<usize>,
@@ -48,7 +49,7 @@ impl HprofTestBuilder {
     ///   `build()` appends the null byte automatically
     /// - `id_size`: byte width of object IDs — must be 4 or 8
     pub fn new(version: &'static str, id_size: u32) -> Self {
-        Self::assert_valid_id_size(id_size);
+        let id_size = IdSize::from_raw(id_size).expect("test id_size must be 4 or 8");
         Self {
             version,
             id_size,
@@ -355,8 +356,6 @@ impl HprofTestBuilder {
     ///
     /// Applies truncation and corruption mutations if configured.
     pub fn build(self) -> Vec<u8> {
-        Self::assert_valid_id_size(self.id_size);
-
         let mut bytes = Vec::new();
 
         // Header: null-terminated version string
@@ -364,7 +363,7 @@ impl HprofTestBuilder {
         bytes.push(0x00);
 
         // Header: id_size as u32 big-endian
-        bytes.extend_from_slice(&self.id_size.to_be_bytes());
+        bytes.extend_from_slice(&self.id_size.as_u32().to_be_bytes());
 
         // Header: dump timestamp (8 bytes, big-endian, use 0)
         bytes.extend_from_slice(&0u64.to_be_bytes());
@@ -397,16 +396,8 @@ impl HprofTestBuilder {
     /// # Panics
     /// Panics if `id_size` is not 4 or 8 — the only valid hprof ID sizes.
     fn encode_id(&self, id: u64) -> Vec<u8> {
-        Self::assert_valid_id_size(self.id_size);
         let all = id.to_be_bytes();
-        all[8 - self.id_size as usize..].to_vec()
-    }
-
-    fn assert_valid_id_size(id_size: u32) {
-        assert!(
-            id_size == 4 || id_size == 8,
-            "id_size must be 4 or 8, got {id_size}"
-        );
+        all[8 - self.id_size.as_usize()..].to_vec()
     }
 
     fn static_value_type(value: &StaticValue) -> u8 {
@@ -423,11 +414,11 @@ impl HprofTestBuilder {
         }
     }
 
-    fn encode_static_value(out: &mut Vec<u8>, value: &StaticValue, id_size: u32) {
+    fn encode_static_value(out: &mut Vec<u8>, value: &StaticValue, id_size: IdSize) {
         match value {
             StaticValue::ObjectRef(id) => {
                 let all = id.to_be_bytes();
-                out.extend_from_slice(&all[8 - id_size as usize..]);
+                out.extend_from_slice(&all[8 - id_size.as_usize()..]);
             }
             StaticValue::Bool(v) => out.push(u8::from(*v)),
             StaticValue::Char(v) => {
@@ -685,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "id_size must be 4 or 8")]
+    #[should_panic(expected = "test id_size must be 4 or 8")]
     fn encode_id_panics_on_invalid_id_size() {
         HprofTestBuilder::new("JAVA PROFILE 1.0.2", 3)
             .add_string(1, "x")
@@ -693,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "id_size must be 4 or 8")]
+    #[should_panic(expected = "test id_size must be 4 or 8")]
     fn new_panics_on_invalid_id_size_without_records() {
         HprofTestBuilder::new("JAVA PROFILE 1.0.2", 3).build();
     }
