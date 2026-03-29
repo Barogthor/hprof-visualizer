@@ -51,6 +51,19 @@ pub struct BatchResult {
     pub offsets: FxHashMap<u64, u64>,
 }
 
+/// Returns `true` if `offset + len` exceeds `limit`,
+/// treating overflow as out-of-bounds.
+fn exceeds_bounds(
+    offset: usize,
+    len: usize,
+    limit: usize,
+) -> bool {
+    match offset.checked_add(len) {
+        Some(end) => end > limit,
+        None => true,
+    }
+}
+
 /// An open hprof file with a parsed header and populated structural index.
 ///
 /// ## Fields
@@ -228,10 +241,12 @@ impl HprofFile {
             .checked_mul(id_sz)?
             .checked_add(meta.elements_offset as usize)?;
         let records = self.records_bytes();
-        if byte_offset + id_sz > records.len() {
+        if exceeds_bounds(byte_offset, id_sz, records.len()) {
             return None;
         }
-        let mut cursor = std::io::Cursor::new(&records[byte_offset..byte_offset + id_sz]);
+        let mut cursor = std::io::Cursor::new(
+            &records[byte_offset..byte_offset + id_sz],
+        );
         read_id(&mut cursor, self.header.id_size).ok()
     }
 
@@ -242,7 +257,10 @@ impl HprofFile {
     /// a valid INSTANCE_DUMP.
     pub fn read_instance_at_offset(&self, offset: u64) -> Option<RawInstance> {
         let records = self.records_bytes();
-        let start = offset as usize;
+        let start = match usize::try_from(offset) {
+            Ok(s) => s,
+            Err(_) => return None,
+        };
         if start >= records.len() {
             return None;
         }
@@ -257,7 +275,7 @@ impl HprofFile {
         let class_object_id = read_id(&mut cursor, self.header.id_size).ok()?;
         let num_bytes = cursor.read_u32::<BigEndian>().ok()? as usize;
         let pos = cursor.position() as usize;
-        if pos + num_bytes > data.len() {
+        if exceeds_bounds(pos, num_bytes, data.len()) {
             return None;
         }
         Some(RawInstance {
@@ -274,7 +292,10 @@ impl HprofFile {
         use crate::indexer::first_pass::value_byte_size;
 
         let records = self.records_bytes();
-        let start = offset as usize;
+        let start = match usize::try_from(offset) {
+            Ok(s) => s,
+            Err(_) => return None,
+        };
         if start >= records.len() {
             return None;
         }
@@ -294,7 +315,7 @@ impl HprofFile {
         }
         let byte_count = num_elements.checked_mul(elem_size)?;
         let pos = cursor.position() as usize;
-        if pos + byte_count > data.len() {
+        if exceeds_bounds(pos, byte_count, data.len()) {
             return None;
         }
         Some((elem_type, data[pos..pos + byte_count].to_vec()))
@@ -556,7 +577,7 @@ fn scan_for_instance(data: &[u8], target_id: u64, id_size: u32) -> Option<(RawIn
             Err(_) => return SubRecordAction::Break,
         };
         let pos = cursor.position() as usize;
-        if pos + num_bytes > data.len() {
+        if exceeds_bounds(pos, num_bytes, data.len()) {
             return SubRecordAction::Break;
         }
         if obj_id == target_id {
@@ -602,7 +623,7 @@ fn scan_segment_for_instances(
             Err(_) => return SubRecordAction::Break,
         };
         let pos = cursor.position() as usize;
-        if pos + num_bytes > data.len() {
+        if exceeds_bounds(pos, num_bytes, data.len()) {
             #[cfg(feature = "dev-profiling")]
             tracing::warn!(
                 "scan_segment_for_instances: \
@@ -662,7 +683,7 @@ fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: u32) -> Option<(u8,
             None => return SubRecordAction::Break,
         };
         let pos = cursor.position() as usize;
-        if pos + byte_count > data.len() {
+        if exceeds_bounds(pos, byte_count, data.len()) {
             return SubRecordAction::Break;
         }
         if arr_id == target_id {
@@ -707,8 +728,20 @@ fn scan_for_object_array_meta(
             None => return SubRecordAction::Break,
         };
         let pos = cursor.position() as usize;
-        let elements_offset = data_base_offset + pos as u64;
-        if elements_offset as usize + byte_count > data_base_offset as usize + data.len() {
+        let elements_offset = match data_base_offset
+            .checked_add(pos as u64)
+        {
+            Some(o) => o,
+            None => return SubRecordAction::Break,
+        };
+        let abs_end = (data_base_offset as usize)
+            .checked_add(data.len());
+        let elem_end = (elements_offset as usize)
+            .checked_add(byte_count);
+        if match (elem_end, abs_end) {
+            (Some(e), Some(a)) => e > a,
+            _ => true,
+        } {
             return SubRecordAction::Break;
         }
         if arr_id == target_id {
@@ -731,7 +764,10 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_
 
     fn skip_n(cursor: &mut Cursor<&[u8]>, n: usize) -> bool {
         let pos = cursor.position() as usize;
-        let new_pos = pos.saturating_add(n);
+        let new_pos = match pos.checked_add(n) {
+            Some(p) => p,
+            None => return false,
+        };
         if new_pos > cursor.get_ref().len() {
             return false;
         }
@@ -782,7 +818,13 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_
             if read_id(cursor, id_size).is_err() {
                 return false;
             }
-            skip_n(cursor, num_elements as usize * id_size as usize)
+            let byte_count = match (num_elements as usize)
+                .checked_mul(id_size as usize)
+            {
+                Some(n) => n,
+                None => return false,
+            };
+            skip_n(cursor, byte_count)
         }
         HeapSubTag::PrimArrayDump => {
             // PRIMITIVE_ARRAY_DUMP: array_id + stack_serial(4) + num_elements(4) + elem_type(1) + data
@@ -802,7 +844,13 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_
             if elem_size == 0 {
                 return false;
             }
-            skip_n(cursor, num_elements as usize * elem_size)
+            let byte_count = match (num_elements as usize)
+                .checked_mul(elem_size)
+            {
+                Some(n) => n,
+                None => return false,
+            };
+            skip_n(cursor, byte_count)
         }
         _ => false,
     }
@@ -812,6 +860,22 @@ fn skip_sub_record(cursor: &mut std::io::Cursor<&[u8]>, sub_tag: HeapSubTag, id_
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn bounds_check_overflow_does_not_wrap() {
+        let pos: usize = usize::MAX - 5;
+        let num_bytes: usize = 10;
+        let data_len: usize = 100;
+        let overflows = pos.checked_add(num_bytes).is_none();
+        assert!(
+            overflows,
+            "pos + num_bytes must be detected as overflow"
+        );
+        assert!(
+            pos.wrapping_add(num_bytes) < data_len,
+            "wrapping_add would pass a naive bounds check"
+        );
+    }
 
     #[test]
     fn from_path_non_existent_returns_mmap_failed() {

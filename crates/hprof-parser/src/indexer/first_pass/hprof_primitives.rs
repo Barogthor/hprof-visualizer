@@ -58,7 +58,10 @@ pub(super) fn maybe_report_progress(
 /// out of bounds.
 pub(super) fn skip_n(cursor: &mut Cursor<&[u8]>, n: usize) -> bool {
     let pos = cursor.position() as usize;
-    let new_pos = pos.saturating_add(n);
+    let new_pos = match pos.checked_add(n) {
+        Some(p) => p,
+        None => return false,
+    };
     if new_pos > cursor.get_ref().len() {
         return false;
     }
@@ -270,6 +273,15 @@ mod tests {
         body.extend_from_slice(&16u32.to_be_bytes()); // instance_size
         body.extend_from_slice(&0u16.to_be_bytes()); // constant_pool_count
         body
+    }
+
+    #[test]
+    fn skip_n_overflow_returns_false() {
+        let data = [0u8; 4];
+        let mut cursor = Cursor::new(data.as_slice());
+        cursor.set_position(1);
+        assert!(!skip_n(&mut cursor, usize::MAX));
+        assert_eq!(cursor.position(), 1);
     }
 
     #[test]

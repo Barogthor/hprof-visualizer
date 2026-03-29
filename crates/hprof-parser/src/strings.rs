@@ -43,9 +43,14 @@ impl HprofStringRef {
     /// UTF-8 bytes are replaced with `\u{FFFD}`.
     pub fn resolve(&self, data: &[u8]) -> String {
         let start = self.offset as usize;
-        let end = start + self.len as usize;
+        #[allow(clippy::manual_saturating_arithmetic)]
+        let end = start
+            .checked_add(self.len as usize)
+            .unwrap_or(usize::MAX);
         match data.get(start..end) {
-            Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+            Some(bytes) => {
+                String::from_utf8_lossy(bytes).into_owned()
+            }
             None => String::new(),
         }
     }
@@ -100,6 +105,17 @@ pub fn parse_string_ref(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn resolve_overflow_offset_plus_len_returns_empty() {
+        let s = HprofStringRef {
+            id: 1,
+            offset: u64::MAX - 1,
+            len: 10,
+        };
+        let data = [0u8; 32];
+        assert_eq!(s.resolve(&data), "");
+    }
 
     #[test]
     fn hprof_string_ref_returns_static_size() {

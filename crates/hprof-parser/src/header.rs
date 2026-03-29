@@ -36,6 +36,19 @@ pub struct HprofHeader {
     pub records_start: usize,
 }
 
+/// Computes the byte offset where records begin.
+///
+/// Returns `Err(HprofError::TruncatedRecord)` if the
+/// arithmetic overflows (corrupt / impossibly large
+/// version string).
+fn records_start_offset(
+    null_pos: usize,
+) -> Result<usize, HprofError> {
+    null_pos
+        .checked_add(1 + 4 + 8)
+        .ok_or(HprofError::TruncatedRecord)
+}
+
 /// Parses an hprof header from a raw byte slice.
 ///
 /// # Parameters
@@ -75,8 +88,7 @@ pub fn parse_header(data: &[u8]) -> Result<HprofHeader, HprofError> {
         .read_u64::<BigEndian>()
         .map_err(|_| HprofError::TruncatedRecord)?;
 
-    // null terminator + id_size(4) + timestamp(8)
-    let records_start = null_pos + 1 + 4 + 8;
+    let records_start = records_start_offset(null_pos)?;
     Ok(HprofHeader {
         version,
         id_size,
@@ -87,6 +99,19 @@ pub fn parse_header(data: &[u8]) -> Result<HprofHeader, HprofError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn records_start_offset_overflow_returns_truncated() {
+        let err = records_start_offset(usize::MAX - 5)
+            .unwrap_err();
+        assert!(matches!(err, HprofError::TruncatedRecord));
+    }
+
+    #[test]
+    fn records_start_offset_normal_returns_correct_value() {
+        let offset = records_start_offset(19).unwrap();
+        assert_eq!(offset, 19 + 1 + 4 + 8);
+    }
 
     #[test]
     fn truncated_no_null_returns_truncated_record() {
