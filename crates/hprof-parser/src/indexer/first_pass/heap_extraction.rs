@@ -1,19 +1,17 @@
 //! Heap segment object extraction — sequential and parallel
 //! paths.
 
-use std::io::Cursor;
 use std::ops::Range;
 
-use super::hprof_primitives::{
-    PARALLEL_THRESHOLD, gc_root_skip_size, parse_class_dump, primitive_element_size, skip_n,
-};
+use super::hprof_primitives::PARALLEL_THRESHOLD;
 use super::offset_lookup::{EntryPointTracker, SegmentEntryPoint};
-use super::{ClassDumpEntry, FilterEntry, FirstPassContext, RawFrameRoot, RawThreadObject};
+use super::{
+    ClassDumpEntry, FilterEntry, FirstPassContext,
+    RawFrameRoot, RawThreadObject,
+};
+use crate::heap_reader::{HeapSubRecord, HeapSubRecordIter};
 use crate::id::IdSize;
 use crate::indexer::HeapRecordRange;
-use crate::read_id;
-use crate::tags::HeapSubTag;
-use byteorder::{BigEndian, ReadBytesExt};
 use hprof_api::ProgressNotifier;
 
 /// Per-worker output from heap segment extraction.
@@ -86,200 +84,85 @@ pub(super) fn extract_heap_segment(
     id_size: IdSize,
     max_chunk_bytes: usize,
 ) -> HeapSegmentParsingResult {
-    let mut cursor = Cursor::new(payload);
-    let chunk_est = max_chunk_bytes.min(payload.len()) / 40;
+    let chunk_est =
+        max_chunk_bytes.min(payload.len()) / 40;
     let mut chunks: Vec<HeapSegmentResult> = Vec::new();
-    let mut result = HeapSegmentResult::new_with_capacity(chunk_est);
+    let mut result =
+        HeapSegmentResult::new_with_capacity(chunk_est);
     let mut next_checkpoint = max_chunk_bytes;
     let mut ep_tracker = EntryPointTracker::new();
 
-    while let Ok(raw) = cursor.read_u8() {
-        let tag_pos = data_offset + cursor.position() as usize - 1;
+    let mut iter =
+        HeapSubRecordIter::new(payload, id_size);
+
+    while let Some(record) = iter.next() {
+        let tag_pos =
+            data_offset + iter.tag_position() as usize;
         ep_tracker.track(tag_pos);
-        let sub_tag = HeapSubTag::from(raw);
-        let sub_record_start = data_offset + cursor.position() as usize;
 
-        let ok = match sub_tag {
-            HeapSubTag::GcRootJavaFrame => {
-                let Ok(object_id) = read_id(&mut cursor, id_size) else {
-                    result.warnings.push(format!(
-                        "{sub_tag} at offset \
-                         {sub_record_start}: truncated \
-                         object_id"
-                    ));
-                    break;
-                };
-                let Ok(thread_serial) = cursor.read_u32::<BigEndian>() else {
-                    result.warnings.push(format!(
-                        "{sub_tag} at offset \
-                         {sub_record_start}: truncated \
-                         thread_serial"
-                    ));
-                    break;
-                };
-                let Ok(frame_number) = cursor.read_i32::<BigEndian>() else {
-                    result.warnings.push(format!(
-                        "{sub_tag} at offset \
-                         {sub_record_start}: truncated \
-                         frame_number"
-                    ));
-                    break;
-                };
-                result.raw_frame_roots.push(RawFrameRoot {
-                    object_id,
-                    thread_serial,
-                    frame_number,
-                });
-                true
+        match record {
+            HeapSubRecord::GcRootJavaFrame {
+                object_id,
+                thread_serial,
+                frame_number,
+            } => {
+                result.raw_frame_roots.push(
+                    RawFrameRoot {
+                        object_id,
+                        thread_serial,
+                        frame_number,
+                    },
+                );
             }
-            HeapSubTag::GcRootThreadObj => {
-                let Ok(object_id) = read_id(&mut cursor, id_size) else {
-                    result.warnings.push(format!(
-                        "{sub_tag} at offset \
-                         {sub_record_start}: truncated \
-                         object_id"
-                    ));
-                    break;
-                };
-                let Ok(thread_serial) = cursor.read_u32::<BigEndian>() else {
-                    result.warnings.push(format!(
-                        "{sub_tag} at offset \
-                         {sub_record_start}: truncated \
-                         thread_serial"
-                    ));
-                    break;
-                };
-                let Ok(_stack_trace_serial) = cursor.read_u32::<BigEndian>() else {
-                    result.warnings.push(format!(
-                        "{sub_tag} at offset \
-                         {sub_record_start}: truncated \
-                         stack_trace_serial"
-                    ));
-                    break;
-                };
-                result.raw_thread_objects.push(RawThreadObject {
-                    object_id,
-                    thread_serial,
-                });
-                true
+            HeapSubRecord::GcRootThreadObj {
+                object_id,
+                thread_serial,
+                ..
+            } => {
+                result.raw_thread_objects.push(
+                    RawThreadObject {
+                        object_id,
+                        thread_serial,
+                    },
+                );
             }
-
-            HeapSubTag::ClassDump => match parse_class_dump(&mut cursor, id_size) {
-                Some(info) => {
-                    #[cfg(feature = "dev-profiling")]
-                    if !info.static_fields.is_empty() {
-                        tracing::debug!(
-                            "heap_extract \
-                                 class_dump \
-                                 class=0x{:X} \
-                                 static_fields={} \
-                                 at_offset={}",
-                            info.class_object_id,
-                            info.static_fields.len(),
-                            sub_record_start
-                        );
-                    }
-                    result.class_dumps.push(ClassDumpEntry {
-                        class_object_id: info.class_object_id,
-                        info,
-                    });
-                    true
-                }
-                None => {
-                    #[cfg(feature = "dev-profiling")]
-                    tracing::debug!(
-                        "heap_extract class_dump \
-                             parse failed at_offset={}",
-                        sub_record_start
-                    );
-                    result.warnings.push(
-                        "truncated CLASS_DUMP \
-                             sub-record — skipping"
-                            .to_string(),
-                    );
-                    false
-                }
-            },
-
-            HeapSubTag::InstanceDump => {
-                let Ok(obj_id) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
+            HeapSubRecord::ClassDump(info) => {
+                result.class_dumps.push(ClassDumpEntry {
+                    class_object_id:
+                        info.class_object_id,
+                    info,
+                });
+            }
+            HeapSubRecord::Instance { id, .. } => {
                 result.filter_ids.push(FilterEntry {
                     data_offset: tag_pos,
-                    object_id: obj_id,
+                    object_id: id,
                 });
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                let Ok(_) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
-                let Ok(num_bytes) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                skip_n(&mut cursor, num_bytes as usize)
             }
-
-            HeapSubTag::ObjectArrayDump => {
-                let Ok(arr_id) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
+            HeapSubRecord::ObjectArray {
+                id, ..
+            } => {
                 result.filter_ids.push(FilterEntry {
                     data_offset: tag_pos,
-                    object_id: arr_id,
+                    object_id: id,
                 });
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                let Ok(num_elements) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                let Ok(_) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
-                skip_n(&mut cursor, num_elements as usize * id_size.as_usize())
             }
-
-            HeapSubTag::PrimArrayDump => {
-                let Ok(arr_id) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
+            HeapSubRecord::PrimArray { id, .. } => {
                 result.filter_ids.push(FilterEntry {
                     data_offset: tag_pos,
-                    object_id: arr_id,
+                    object_id: id,
                 });
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                let Ok(num_elements) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                let Ok(elem_type) = cursor.read_u8() else {
-                    break;
-                };
-                let elem_size = primitive_element_size(elem_type);
-                if elem_size == 0 {
-                    break;
-                }
-                skip_n(&mut cursor, num_elements as usize * elem_size)
             }
-
-            t if gc_root_skip_size(t, id_size).is_some() => {
-                skip_n(&mut cursor, gc_root_skip_size(t, id_size).unwrap())
-            }
-            _ => break,
-        };
-
-        if !ok {
-            break;
+            HeapSubRecord::GcRootOther { .. } => {}
         }
 
-        // Chunk checkpoint: flush after each complete
-        // sub-record when we pass the boundary.
-        if cursor.position() as usize >= next_checkpoint {
+        let pos = iter.position() as usize;
+        if pos >= next_checkpoint {
             chunks.push(result);
-            result = HeapSegmentResult::new_with_capacity(chunk_est);
+            result =
+                HeapSegmentResult::new_with_capacity(
+                    chunk_est,
+                );
             next_checkpoint += max_chunk_bytes;
         }
     }
@@ -287,8 +170,6 @@ pub(super) fn extract_heap_segment(
     if !result.is_empty() {
         chunks.push(result);
     }
-    // Attach entry points to the first chunk (they
-    // span the entire extraction call, not one chunk).
     let entry_points = ep_tracker.finish();
     if let Some(first) = chunks.first_mut() {
         first.segment_entry_points = entry_points;

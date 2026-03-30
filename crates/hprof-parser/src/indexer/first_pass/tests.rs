@@ -520,20 +520,23 @@ mod heap_parsing_tests {
     }
 
     #[test]
-    fn truncated_gc_root_java_frame_sub_record_adds_warning() {
+    fn truncated_gc_root_java_frame_stops_silently() {
         let mut payload = Vec::new();
         payload.write_u8(0x03).unwrap();
-        payload.write_u64::<BigEndian>(0xABCD).unwrap();
+        payload
+            .write_u64::<BigEndian>(0xABCD)
+            .unwrap();
         payload.extend_from_slice(&[0x00, 0x01]);
         let data = make_record(0x1C, &payload);
 
         let result = run_fp(&data, IdSize::Eight);
+        // Iterator stops on truncation without
+        // producing a per-field warning.
         assert!(
-            result
-                .warnings
-                .iter()
-                .any(|w| w.contains("GC_ROOT_JAVA_FRAME")),
-            "expected GC_ROOT_JAVA_FRAME warning, \
+            !result.warnings.iter().any(|w| {
+                w.contains("GC_ROOT_JAVA_FRAME")
+            }),
+            "expected no GC_ROOT_JAVA_FRAME warning, \
              got {:?}",
             result.warnings
         );
