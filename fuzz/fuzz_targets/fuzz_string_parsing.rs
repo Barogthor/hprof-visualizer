@@ -1,13 +1,14 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use std::io::Cursor;
 
 fuzz_target!(|data: &[u8]| {
     if data.is_empty() {
         return;
     }
     use hprof_parser::IdSize;
+    use hprof_parser::RecordReader;
+
     let id_size = if data[0] & 1 == 0 {
         IdSize::Four
     } else {
@@ -15,10 +16,9 @@ fuzz_target!(|data: &[u8]| {
     };
     let payload = &data[1..];
     let payload_len = payload.len() as u32;
-    let mut cursor = Cursor::new(payload);
-    let _ = hprof_parser::parse_string_ref(
-        &mut cursor,
-        id_size,
+    let mut reader =
+        RecordReader::new(payload, id_size);
+    let _ = reader.parse_string_ref(
         payload_len,
         0,
     );
