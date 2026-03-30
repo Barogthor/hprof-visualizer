@@ -29,6 +29,9 @@ pub use id::{IdSize, read_id};
 pub(crate) mod reader;
 pub use reader::RecordReader;
 
+pub(crate) mod heap_reader;
+pub use heap_reader::{HeapSubRecord, HeapSubRecordIter};
+
 pub(crate) mod record;
 pub use record::{RecordHeader, parse_record_header, skip_record};
 
