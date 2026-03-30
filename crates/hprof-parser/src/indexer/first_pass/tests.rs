@@ -572,10 +572,12 @@ mod heap_parsing_tests {
     #[test]
     fn gc_root_before_instance_dump_cursor_advances_correctly() {
         let gc_root_id: u64 = 0x5555;
+        let jni_global_ref_id: u64 = 0x7777; // GC_ROOT_JNI_GLOBAL has two id fields
         let obj_id: u64 = 0x6666;
         let mut payload = Vec::new();
         payload.write_u8(0x01).unwrap();
         payload.write_u64::<BigEndian>(gc_root_id).unwrap();
+        payload.write_u64::<BigEndian>(jni_global_ref_id).unwrap();
         payload.extend_from_slice(&make_instance_sub(obj_id, 200));
         let data = make_record(0x1C, &payload);
         let result = run_fp(&data, IdSize::Eight);

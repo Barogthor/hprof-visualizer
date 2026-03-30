@@ -155,6 +155,13 @@ impl<'a> Iterator for HeapSubRecordIter<'a> {
                     stack_trace_serial,
                 })
             }
+            HeapSubTag::GcRootUnknown => {
+                let object_id = self.reader.read_id()?;
+                Some(HeapSubRecord::GcRootOther {
+                    tag: raw,
+                    object_id,
+                })
+            }
             t if gc_root_has_object_id(t) => {
                 let object_id = self.reader.read_id()?;
                 let skip = gc_root_remaining_size(t, id_size)?;
@@ -191,10 +198,16 @@ fn gc_root_has_object_id(tag: HeapSubTag) -> bool {
 fn gc_root_remaining_size(tag: HeapSubTag, id_size: IdSize) -> Option<usize> {
     let id = id_size.as_usize();
     match tag {
-        HeapSubTag::GcRootJniGlobal | HeapSubTag::GcRootThreadBlock => Some(0),
-        HeapSubTag::GcRootJniLocal => Some(id),
-        HeapSubTag::GcRootNativeStack | HeapSubTag::GcRootInternedString => Some(8),
-        HeapSubTag::GcRootStickyClass | HeapSubTag::GcRootMonitorUsed => Some(4),
+        // object_id + jni_global_ref_id (id)
+        HeapSubTag::GcRootJniGlobal => Some(id),
+        // object_id + thread_serial (u4) + frame_number (u4)
+        HeapSubTag::GcRootJniLocal => Some(8),
+        // object_id + thread_serial (u4)
+        HeapSubTag::GcRootNativeStack | HeapSubTag::GcRootThreadBlock => Some(4),
+        // object_id only
+        HeapSubTag::GcRootStickyClass
+        | HeapSubTag::GcRootMonitorUsed
+        | HeapSubTag::GcRootInternedString => Some(0),
         _ => None,
     }
 }
@@ -334,6 +347,98 @@ mod tests {
                 "expected GcRootJavaFrame, \
                  got {other:?}"
             ),
+        }
+    }
+
+    /// Builds a GC root sub-record with the given tag,
+    /// object_id, and optional extra bytes after it.
+    fn make_gc_root(tag: u8, object_id: u64, extra: &[u8], id_size: IdSize) -> Vec<u8> {
+        let sz = id_size.as_usize();
+        let mut buf = vec![tag];
+        buf.extend_from_slice(&object_id.to_be_bytes()[8 - sz..]);
+        buf.extend_from_slice(extra);
+        buf
+    }
+
+    /// Asserts a single GcRootOther record followed by a sentinel
+    /// InstanceDump(id=99) can both be parsed — proves the GC root
+    /// consumed the right number of bytes.
+    fn assert_gc_root_then_instance(tag: u8, extra: &[u8], id_size: IdSize) {
+        let mut data = make_gc_root(tag, 42, extra, id_size);
+        data.extend(make_instance(99, 200, &[], id_size));
+
+        let records: Vec<_> = HeapSubRecordIter::new(&data, id_size).collect();
+        assert_eq!(records.len(), 2, "tag 0x{tag:02x}: expected GcRootOther + Instance");
+        match &records[1] {
+            HeapSubRecord::Instance { id, .. } => {
+                assert_eq!(*id, 99, "tag 0x{tag:02x}: sentinel instance id wrong");
+            }
+            other => panic!("tag 0x{tag:02x}: expected Instance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gc_root_jni_global_reads_two_ids() {
+        // 0x01: object_id (id) + jni_global_ref_id (id)
+        let id_size = IdSize::Eight;
+        let extra = 0xDEADBEEF_u64.to_be_bytes(); // jni_global_ref_id
+        assert_gc_root_then_instance(0x01, &extra, id_size);
+    }
+
+    #[test]
+    fn gc_root_native_stack_reads_id_plus_u32() {
+        // 0x04: object_id (id) + thread_serial (u4)
+        let id_size = IdSize::Eight;
+        let extra = 7_u32.to_be_bytes(); // thread_serial
+        assert_gc_root_then_instance(0x04, &extra, id_size);
+    }
+
+    #[test]
+    fn gc_root_sticky_class_reads_id_only() {
+        // 0x05: object_id (id) only
+        let id_size = IdSize::Eight;
+        assert_gc_root_then_instance(0x05, &[], id_size);
+    }
+
+    #[test]
+    fn gc_root_thread_block_reads_id_plus_u32() {
+        // 0x06: object_id (id) + thread_serial (u4)
+        let id_size = IdSize::Eight;
+        let extra = 3_u32.to_be_bytes(); // thread_serial
+        assert_gc_root_then_instance(0x06, &extra, id_size);
+    }
+
+    #[test]
+    fn gc_root_monitor_used_reads_id_only() {
+        // 0x07: object_id (id) only
+        let id_size = IdSize::Eight;
+        assert_gc_root_then_instance(0x07, &[], id_size);
+    }
+
+    #[test]
+    fn gc_root_interned_string_reads_id_only() {
+        // 0x09: object_id (id) only
+        let id_size = IdSize::Eight;
+        assert_gc_root_then_instance(0x09, &[], id_size);
+    }
+
+    #[test]
+    fn gc_root_unknown_yields_gc_root_other_and_continues() {
+        let id_size = IdSize::Eight;
+        // GC_ROOT_UNKNOWN (0x00): just an object_id
+        let mut data = vec![0x00];
+        data.extend_from_slice(&42u64.to_be_bytes());
+        // followed by a valid instance so we know iteration continues
+        data.extend(make_instance(99, 200, &[], id_size));
+
+        let records: Vec<_> = HeapSubRecordIter::new(&data, id_size).collect();
+        assert_eq!(records.len(), 2, "should yield GcRootOther + Instance");
+        match &records[0] {
+            HeapSubRecord::GcRootOther { tag, object_id } => {
+                assert_eq!(*tag, 0x00);
+                assert_eq!(*object_id, 42);
+            }
+            other => panic!("expected GcRootOther, got {other:?}"),
         }
     }
 
