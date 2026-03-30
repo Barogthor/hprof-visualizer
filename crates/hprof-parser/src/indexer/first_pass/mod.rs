@@ -71,7 +71,6 @@ mod record_scan;
 mod thread_resolution;
 
 use hprof_primitives::MAX_WARNINGS;
-pub(crate) use hprof_primitives::value_byte_size;
 
 #[cfg(test)]
 mod tests;

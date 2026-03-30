@@ -1,18 +1,26 @@
-//! Binary hprof format parsing for the hprof-visualizer project.
+//! Binary hprof format parsing for the
+//! hprof-visualizer project.
 //!
-//! The primary entry point is [`HprofFile`]: open a file, parse its header,
-//! and index all structural records in a single call. [`PreciseIndex`] exposes
-//! the resulting O(1) HashMap lookups for threads, stack frames, stack traces,
-//! class definitions, and strings.
+//! The primary entry point is [`HprofFile`]: open a
+//! file, parse its header, and index all structural
+//! records in a single call. [`PreciseIndex`] exposes
+//! the resulting O(1) HashMap lookups for threads,
+//! stack frames, stack traces, class definitions,
+//! and strings.
 //!
-//! Lower-level modules: error types ([`HprofError`]), memory-mapped file
-//! access ([`open_readonly`]), header parsing ([`parse_header`]), ID reading
-//! utility ([`read_id`]), record-level parsing ([`RecordHeader`],
-//! [`parse_record_header`], [`skip_record`]), string records
-//! ([`HprofStringRef`], [`parse_string_ref`]), structural records
-//! ([`ClassDef`], [`HprofThread`],
-//! [`StackFrame`], [`StackTrace`] and their parsers), and a feature-gated test
-//! builder ([`HprofTestBuilder`], enabled with `features = ["test-utils"]`).
+//! All binary parsing goes through
+//! [`RecordReader`] -- callers never manipulate raw
+//! cursors or pass `id_size` around.
+//!
+//! Lower-level modules: error types ([`HprofError`]),
+//! memory-mapped file access ([`open_readonly`]),
+//! header parsing ([`parse_header`]), ID reading
+//! utility ([`read_id`]), record types
+//! ([`RecordHeader`], [`HprofStringRef`],
+//! [`ClassDef`], [`HprofThread`], [`StackFrame`],
+//! [`StackTrace`]), and a feature-gated test builder
+//! ([`HprofTestBuilder`], enabled with
+//! `features = ["test-utils"]`).
 
 pub(crate) mod error;
 pub use error::HprofError;
@@ -33,16 +41,15 @@ pub(crate) mod heap_reader;
 pub use heap_reader::{HeapSubRecord, HeapSubRecordIter};
 
 pub(crate) mod record;
-pub use record::{RecordHeader, parse_record_header, skip_record};
+pub use record::RecordHeader;
 
 pub(crate) mod strings;
-pub use strings::{HprofStringRef, parse_string_ref};
+pub use strings::HprofStringRef;
 
 pub(crate) mod types;
 pub use types::{
     ClassDef, ClassDumpInfo, FieldDef, HprofThread, RawInstance, StackFrame, StackTrace,
-    StaticFieldDef, StaticValue, parse_load_class, parse_stack_frame, parse_stack_trace,
-    parse_start_thread,
+    StaticFieldDef, StaticValue,
 };
 
 pub(crate) mod java_types;

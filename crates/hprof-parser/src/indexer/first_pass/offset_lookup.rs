@@ -83,17 +83,13 @@ pub(crate) fn scan_segment_for_objects(
     let slice = &data[scan_offset..end];
     let mut results = Vec::new();
 
-    let mut iter =
-        HeapSubRecordIter::new(slice, id_size);
+    let mut iter = HeapSubRecordIter::new(slice, id_size);
     while let Some(record) = iter.next() {
-        let tag_pos = scan_offset
-            + iter.tag_position() as usize;
+        let tag_pos = scan_offset + iter.tag_position() as usize;
         let obj_id = match &record {
             HeapSubRecord::Instance { id, .. } => *id,
             HeapSubRecord::PrimArray { id, .. } => *id,
-            HeapSubRecord::ObjectArray { id, .. } => {
-                *id
-            }
+            HeapSubRecord::ObjectArray { id, .. } => *id,
             _ => continue,
         };
         if target_ids.contains(&obj_id) {

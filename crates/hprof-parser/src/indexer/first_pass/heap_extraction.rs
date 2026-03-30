@@ -5,10 +5,7 @@ use std::ops::Range;
 
 use super::hprof_primitives::PARALLEL_THRESHOLD;
 use super::offset_lookup::{EntryPointTracker, SegmentEntryPoint};
-use super::{
-    ClassDumpEntry, FilterEntry, FirstPassContext,
-    RawFrameRoot, RawThreadObject,
-};
+use super::{ClassDumpEntry, FilterEntry, FirstPassContext, RawFrameRoot, RawThreadObject};
 use crate::heap_reader::{HeapSubRecord, HeapSubRecordIter};
 use crate::id::IdSize;
 use crate::indexer::HeapRecordRange;
@@ -84,20 +81,16 @@ pub(super) fn extract_heap_segment(
     id_size: IdSize,
     max_chunk_bytes: usize,
 ) -> HeapSegmentParsingResult {
-    let chunk_est =
-        max_chunk_bytes.min(payload.len()) / 40;
+    let chunk_est = max_chunk_bytes.min(payload.len()) / 40;
     let mut chunks: Vec<HeapSegmentResult> = Vec::new();
-    let mut result =
-        HeapSegmentResult::new_with_capacity(chunk_est);
+    let mut result = HeapSegmentResult::new_with_capacity(chunk_est);
     let mut next_checkpoint = max_chunk_bytes;
     let mut ep_tracker = EntryPointTracker::new();
 
-    let mut iter =
-        HeapSubRecordIter::new(payload, id_size);
+    let mut iter = HeapSubRecordIter::new(payload, id_size);
 
     while let Some(record) = iter.next() {
-        let tag_pos =
-            data_offset + iter.tag_position() as usize;
+        let tag_pos = data_offset + iter.tag_position() as usize;
         ep_tracker.track(tag_pos);
 
         match record {
@@ -106,30 +99,25 @@ pub(super) fn extract_heap_segment(
                 thread_serial,
                 frame_number,
             } => {
-                result.raw_frame_roots.push(
-                    RawFrameRoot {
-                        object_id,
-                        thread_serial,
-                        frame_number,
-                    },
-                );
+                result.raw_frame_roots.push(RawFrameRoot {
+                    object_id,
+                    thread_serial,
+                    frame_number,
+                });
             }
             HeapSubRecord::GcRootThreadObj {
                 object_id,
                 thread_serial,
                 ..
             } => {
-                result.raw_thread_objects.push(
-                    RawThreadObject {
-                        object_id,
-                        thread_serial,
-                    },
-                );
+                result.raw_thread_objects.push(RawThreadObject {
+                    object_id,
+                    thread_serial,
+                });
             }
             HeapSubRecord::ClassDump(info) => {
                 result.class_dumps.push(ClassDumpEntry {
-                    class_object_id:
-                        info.class_object_id,
+                    class_object_id: info.class_object_id,
                     info,
                 });
             }
@@ -139,9 +127,7 @@ pub(super) fn extract_heap_segment(
                     object_id: id,
                 });
             }
-            HeapSubRecord::ObjectArray {
-                id, ..
-            } => {
+            HeapSubRecord::ObjectArray { id, .. } => {
                 result.filter_ids.push(FilterEntry {
                     data_offset: tag_pos,
                     object_id: id,
@@ -159,10 +145,7 @@ pub(super) fn extract_heap_segment(
         let pos = iter.position() as usize;
         if pos >= next_checkpoint {
             chunks.push(result);
-            result =
-                HeapSegmentResult::new_with_capacity(
-                    chunk_est,
-                );
+            result = HeapSegmentResult::new_with_capacity(chunk_est);
             next_checkpoint += max_chunk_bytes;
         }
     }

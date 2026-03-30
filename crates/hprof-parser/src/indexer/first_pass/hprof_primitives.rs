@@ -3,25 +3,21 @@
 
 use std::time::{Duration, Instant};
 
-use crate::id::IdSize;
-use crate::java_types::{
-    PRIM_TYPE_BOOLEAN, PRIM_TYPE_BYTE, PRIM_TYPE_CHAR,
-    PRIM_TYPE_DOUBLE, PRIM_TYPE_FLOAT, PRIM_TYPE_INT,
-    PRIM_TYPE_LONG, PRIM_TYPE_OBJECT_REF,
-    PRIM_TYPE_SHORT,
-};
-
 #[cfg(test)]
-use std::io::Cursor;
+use crate::id::IdSize;
+#[cfg(test)]
+use crate::java_types::{
+    PRIM_TYPE_BOOLEAN, PRIM_TYPE_BYTE, PRIM_TYPE_CHAR, PRIM_TYPE_DOUBLE, PRIM_TYPE_FLOAT,
+    PRIM_TYPE_INT, PRIM_TYPE_LONG, PRIM_TYPE_OBJECT_REF, PRIM_TYPE_SHORT, value_byte_size,
+};
+#[cfg(all(test, feature = "test-utils"))]
+use crate::tags::HeapSubTag;
+#[cfg(test)]
+use crate::{ClassDumpInfo, FieldDef, StaticFieldDef, StaticValue, read_id};
 #[cfg(test)]
 use byteorder::{BigEndian, ReadBytesExt};
 #[cfg(test)]
-use crate::tags::HeapSubTag;
-#[cfg(test)]
-use crate::{
-    ClassDumpInfo, FieldDef, StaticFieldDef,
-    StaticValue, read_id,
-};
+use std::io::Cursor;
 
 /// Minimum bytes between consecutive progress callbacks.
 pub(super) const PROGRESS_REPORT_INTERVAL: usize = 4 * 1024 * 1024;
@@ -67,10 +63,7 @@ pub(super) fn maybe_report_progress(
 /// Advances the cursor by `n` bytes, returning `false`
 /// if out of bounds.
 #[cfg(test)]
-pub(super) fn skip_n(
-    cursor: &mut Cursor<&[u8]>,
-    n: usize,
-) -> bool {
+pub(super) fn skip_n(cursor: &mut Cursor<&[u8]>, n: usize) -> bool {
     let pos = cursor.position() as usize;
     let new_pos = match pos.checked_add(n) {
         Some(p) => p,
@@ -85,7 +78,7 @@ pub(super) fn skip_n(
 
 /// Returns the byte size of a primitive hprof type code,
 /// or 0 for unknown.
-#[cfg(test)]
+#[cfg(all(test, feature = "test-utils"))]
 pub(super) fn primitive_element_size(type_byte: u8) -> usize {
     match type_byte {
         PRIM_TYPE_BOOLEAN => 1,
@@ -102,7 +95,7 @@ pub(super) fn primitive_element_size(type_byte: u8) -> usize {
 
 /// Returns the skip size for fixed-size GC root sub-tags,
 /// or `None` for anything else.
-#[cfg(test)]
+#[cfg(all(test, feature = "test-utils"))]
 pub(super) fn gc_root_skip_size(sub_tag: HeapSubTag, id_size: IdSize) -> Option<usize> {
     let id = id_size.as_usize();
     match sub_tag {
@@ -112,19 +105,6 @@ pub(super) fn gc_root_skip_size(sub_tag: HeapSubTag, id_size: IdSize) -> Option<
         HeapSubTag::GcRootNativeStack | HeapSubTag::GcRootInternedString => Some(id + 8),
         HeapSubTag::GcRootStickyClass | HeapSubTag::GcRootMonitorUsed => Some(id + 4),
         _ => None,
-    }
-}
-
-/// Returns the byte size of a value with the given hprof
-/// type code.
-pub(crate) fn value_byte_size(type_code: u8, id_size: IdSize) -> usize {
-    match type_code {
-        PRIM_TYPE_OBJECT_REF => id_size.as_usize(),
-        PRIM_TYPE_BOOLEAN | PRIM_TYPE_BYTE => 1,
-        PRIM_TYPE_CHAR | PRIM_TYPE_SHORT => 2,
-        PRIM_TYPE_FLOAT | PRIM_TYPE_INT => 4,
-        PRIM_TYPE_DOUBLE | PRIM_TYPE_LONG => 8,
-        _ => 0,
     }
 }
 

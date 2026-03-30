@@ -8,10 +8,7 @@ use super::hprof_primitives::maybe_report_progress;
 use crate::indexer::HeapRecordRange;
 use crate::reader::RecordReader;
 use crate::tags::RecordTag;
-use crate::{
-    ClassDef, HprofStringRef, HprofThread,
-    StackFrame, StackTrace,
-};
+use crate::{ClassDef, HprofStringRef, HprofThread, StackFrame, StackTrace};
 
 /// A successfully parsed structural record, ready for
 /// insertion into the index.
@@ -33,23 +30,12 @@ fn try_parse(
 ) -> Option<ParsedRecord> {
     match tag {
         RecordTag::StringInUtf8 => reader
-            .parse_string_ref(
-                header_length,
-                payload_start,
-            )
+            .parse_string_ref(header_length, payload_start)
             .map(ParsedRecord::String),
-        RecordTag::LoadClass => reader
-            .parse_load_class()
-            .map(ParsedRecord::LoadClass),
-        RecordTag::StackFrame => reader
-            .parse_stack_frame()
-            .map(ParsedRecord::StackFrame),
-        RecordTag::StackTrace => reader
-            .parse_stack_trace()
-            .map(ParsedRecord::StackTrace),
-        RecordTag::StartThread => reader
-            .parse_start_thread()
-            .map(ParsedRecord::StartThread),
+        RecordTag::LoadClass => reader.parse_load_class().map(ParsedRecord::LoadClass),
+        RecordTag::StackFrame => reader.parse_stack_frame().map(ParsedRecord::StackFrame),
+        RecordTag::StackTrace => reader.parse_stack_trace().map(ParsedRecord::StackTrace),
+        RecordTag::StartThread => reader.parse_start_thread().map(ParsedRecord::StartThread),
         _ => None,
     }
 }
@@ -67,25 +53,16 @@ impl FirstPassContext<'_> {
                     .index
                     .strings
                     .get(&c.class_name_string_id)
-                    .map(|sref| {
-                        sref.resolve(self.data)
-                            .replace('/', ".")
-                    })
+                    .map(|sref| sref.resolve(self.data).replace('/', "."))
                     .unwrap_or_default();
                 self.result
                     .index
                     .class_names_by_id
                     .insert(c.class_object_id, java_name);
-                self.result
-                    .index
-                    .classes
-                    .insert(c.class_serial, c);
+                self.result.index.classes.insert(c.class_serial, c);
             }
             ParsedRecord::StackFrame(f) => {
-                self.result
-                    .index
-                    .stack_frames
-                    .insert(f.frame_id, f);
+                self.result.index.stack_frames.insert(f.frame_id, f);
             }
             ParsedRecord::StackTrace(t) => {
                 self.result
@@ -94,10 +71,7 @@ impl FirstPassContext<'_> {
                     .insert(t.stack_trace_serial, t);
             }
             ParsedRecord::StartThread(t) => {
-                self.result
-                    .index
-                    .threads
-                    .insert(t.thread_serial, t);
+                self.result.index.threads.insert(t.thread_serial, t);
             }
         }
     }
@@ -105,33 +79,23 @@ impl FirstPassContext<'_> {
 
 /// Scans all records in `data`, dispatching known tags to
 /// parse + insert handlers.
-pub(super) fn scan_records(
-    ctx: &mut FirstPassContext,
-    notifier: &mut ProgressNotifier,
-) {
+pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNotifier) {
     #[cfg(feature = "dev-profiling")]
-    let _record_scan_span =
-        tracing::info_span!("record_scan").entered();
+    let _record_scan_span = tracing::info_span!("record_scan").entered();
 
     let data = ctx.data;
     let mut reader = RecordReader::new(data, ctx.id_size);
     let mut reported_any = false;
 
     while (reader.position() as usize) < data.len() {
-        let Some(header) =
-            reader.parse_record_header()
-        else {
-            ctx.push_warning(|| {
-                "EOF mid-header".to_string()
-            });
+        let Some(header) = reader.parse_record_header() else {
+            ctx.push_warning(|| "EOF mid-header".to_string());
             break;
         };
 
         let payload_start = reader.position() as usize;
         let tag = RecordTag::from(header.tag);
-        let payload_end = match payload_start
-            .checked_add(header.length as usize)
-        {
+        let payload_end = match payload_start.checked_add(header.length as usize) {
             Some(end) if end <= data.len() => end,
             Some(end) => {
                 ctx.push_warning(|| {
@@ -155,17 +119,11 @@ pub(super) fn scan_records(
             }
         };
 
-        if matches!(
-            tag,
-            RecordTag::HeapDump
-                | RecordTag::HeapDumpSegment
-        ) {
-            ctx.result
-                .heap_record_ranges
-                .push(HeapRecordRange {
-                    payload_start: payload_start as u64,
-                    payload_length: header.length as u64,
-                });
+        if matches!(tag, RecordTag::HeapDump | RecordTag::HeapDumpSegment) {
+            ctx.result.heap_record_ranges.push(HeapRecordRange {
+                payload_start: payload_start as u64,
+                payload_length: header.length as u64,
+            });
             reader.set_position(payload_end as u64);
             let pos = reader.position() as usize;
             reported_any |= maybe_report_progress(
@@ -201,8 +159,7 @@ pub(super) fn scan_records(
         ctx.result.records_attempted += 1;
 
         let payload = &data[payload_start..payload_end];
-        let mut payload_reader =
-            RecordReader::new(payload, ctx.id_size);
+        let mut payload_reader = RecordReader::new(payload, ctx.id_size);
 
         match try_parse(
             tag,
@@ -211,9 +168,7 @@ pub(super) fn scan_records(
             header.length,
         ) {
             Some(record) => {
-                let consumed =
-                    payload_reader.position() as usize
-                        == header.length as usize;
+                let consumed = payload_reader.position() as usize == header.length as usize;
                 if !consumed {
                     ctx.push_warning(|| {
                         format!(
@@ -253,12 +208,7 @@ pub(super) fn scan_records(
     }
 
     ctx.cursor_position = reader.position();
-    if !reported_any
-        || (ctx.cursor_position as usize)
-            > ctx.last_progress_bytes
-    {
-        notifier.bytes_scanned(
-            ctx.base_offset + ctx.cursor_position,
-        );
+    if !reported_any || (ctx.cursor_position as usize) > ctx.last_progress_bytes {
+        notifier.bytes_scanned(ctx.base_offset + ctx.cursor_position);
     }
 }

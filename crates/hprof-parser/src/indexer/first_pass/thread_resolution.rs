@@ -11,12 +11,12 @@ use byteorder::{BigEndian, ReadBytesExt};
 use hprof_api::ProgressNotifier;
 
 use super::FirstPassContext;
-use super::hprof_primitives::value_byte_size;
 use super::offset_lookup::batch_lookup_by_filter;
 use crate::id::IdSize;
 use crate::indexer::precise::PreciseIndex;
 use crate::indexer::segment::SegmentFilter;
 use crate::java_types::PRIM_TYPE_OBJECT_REF;
+use crate::java_types::value_byte_size;
 use crate::tags::HeapSubTag;
 use crate::{HprofThread, read_id};
 

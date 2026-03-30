@@ -6,10 +6,10 @@
 //! dispatch and skip logic lives in
 //! [`Iterator::next`] — callers never touch raw bytes.
 
+use crate::ClassDumpInfo;
 use crate::id::IdSize;
 use crate::reader::RecordReader;
 use crate::tags::HeapSubTag;
-use crate::ClassDumpInfo;
 
 /// A parsed heap sub-record yielded by
 /// [`HeapSubRecordIter`].
@@ -50,10 +50,7 @@ pub enum HeapSubRecord<'a> {
         stack_trace_serial: u32,
     },
     /// Other GC root sub-tags.
-    GcRootOther {
-        tag: u8,
-        object_id: u64,
-    },
+    GcRootOther { tag: u8, object_id: u64 },
 }
 
 /// Iterator over heap sub-records in a segment.
@@ -65,15 +62,9 @@ pub struct HeapSubRecordIter<'a> {
 impl<'a> HeapSubRecordIter<'a> {
     /// Creates an iterator over the sub-records in
     /// `segment_data`.
-    pub fn new(
-        segment_data: &'a [u8],
-        id_size: IdSize,
-    ) -> Self {
+    pub fn new(segment_data: &'a [u8], id_size: IdSize) -> Self {
         Self {
-            reader: RecordReader::new(
-                segment_data,
-                id_size,
-            ),
+            reader: RecordReader::new(segment_data, id_size),
             last_tag_pos: 0,
         }
     }
@@ -104,10 +95,8 @@ impl<'a> Iterator for HeapSubRecordIter<'a> {
                 let id = self.reader.read_id()?;
                 let _serial = self.reader.read_u32()?;
                 let class_id = self.reader.read_id()?;
-                let num_bytes =
-                    self.reader.read_u32()? as usize;
-                let field_data =
-                    self.reader.read_bytes(num_bytes)?;
+                let num_bytes = self.reader.read_u32()? as usize;
+                let field_data = self.reader.read_bytes(num_bytes)?;
                 Some(HeapSubRecord::Instance {
                     id,
                     class_id,
@@ -117,16 +106,10 @@ impl<'a> Iterator for HeapSubRecordIter<'a> {
             HeapSubTag::ObjectArrayDump => {
                 let id = self.reader.read_id()?;
                 let _serial = self.reader.read_u32()?;
-                let num_elements =
-                    self.reader.read_u32()?;
+                let num_elements = self.reader.read_u32()?;
                 let class_id = self.reader.read_id()?;
-                let byte_count =
-                    (num_elements as usize)
-                        .checked_mul(
-                            id_size.as_usize(),
-                        )?;
-                let elements_data =
-                    self.reader.read_bytes(byte_count)?;
+                let byte_count = (num_elements as usize).checked_mul(id_size.as_usize())?;
+                let elements_data = self.reader.read_bytes(byte_count)?;
                 Some(HeapSubRecord::ObjectArray {
                     id,
                     class_id,
@@ -137,20 +120,14 @@ impl<'a> Iterator for HeapSubRecordIter<'a> {
             HeapSubTag::PrimArrayDump => {
                 let id = self.reader.read_id()?;
                 let _serial = self.reader.read_u32()?;
-                let num_elements =
-                    self.reader.read_u32()?;
-                let element_type =
-                    self.reader.read_u8()?;
-                let elem_size =
-                    primitive_element_size(element_type);
+                let num_elements = self.reader.read_u32()?;
+                let element_type = self.reader.read_u8()?;
+                let elem_size = primitive_element_size(element_type);
                 if elem_size == 0 {
                     return None;
                 }
-                let byte_count =
-                    (num_elements as usize)
-                        .checked_mul(elem_size)?;
-                let data =
-                    self.reader.read_bytes(byte_count)?;
+                let byte_count = (num_elements as usize).checked_mul(elem_size)?;
+                let data = self.reader.read_bytes(byte_count)?;
                 Some(HeapSubRecord::PrimArray {
                     id,
                     element_type,
@@ -159,17 +136,13 @@ impl<'a> Iterator for HeapSubRecordIter<'a> {
                 })
             }
             HeapSubTag::ClassDump => {
-                let info =
-                    self.reader.parse_class_dump()?;
+                let info = self.reader.parse_class_dump()?;
                 Some(HeapSubRecord::ClassDump(info))
             }
             HeapSubTag::GcRootJavaFrame => {
-                let object_id =
-                    self.reader.read_id()?;
-                let thread_serial =
-                    self.reader.read_u32()?;
-                let frame_number =
-                    self.reader.read_i32()?;
+                let object_id = self.reader.read_id()?;
+                let thread_serial = self.reader.read_u32()?;
+                let frame_number = self.reader.read_i32()?;
                 Some(HeapSubRecord::GcRootJavaFrame {
                     object_id,
                     thread_serial,
@@ -177,12 +150,9 @@ impl<'a> Iterator for HeapSubRecordIter<'a> {
                 })
             }
             HeapSubTag::GcRootThreadObj => {
-                let object_id =
-                    self.reader.read_id()?;
-                let thread_serial =
-                    self.reader.read_u32()?;
-                let stack_trace_serial =
-                    self.reader.read_u32()?;
+                let object_id = self.reader.read_id()?;
+                let thread_serial = self.reader.read_u32()?;
+                let stack_trace_serial = self.reader.read_u32()?;
                 Some(HeapSubRecord::GcRootThreadObj {
                     object_id,
                     thread_serial,
@@ -190,11 +160,8 @@ impl<'a> Iterator for HeapSubRecordIter<'a> {
                 })
             }
             t if gc_root_has_object_id(t) => {
-                let object_id =
-                    self.reader.read_id()?;
-                let skip = gc_root_remaining_size(
-                    t, id_size,
-                )?;
+                let object_id = self.reader.read_id()?;
+                let skip = gc_root_remaining_size(t, id_size)?;
                 if !self.reader.skip(skip) {
                     return None;
                 }
@@ -225,19 +192,13 @@ fn gc_root_has_object_id(tag: HeapSubTag) -> bool {
 
 /// Returns the number of bytes to skip AFTER reading
 /// the object_id for a GC root sub-tag.
-fn gc_root_remaining_size(
-    tag: HeapSubTag,
-    id_size: IdSize,
-) -> Option<usize> {
+fn gc_root_remaining_size(tag: HeapSubTag, id_size: IdSize) -> Option<usize> {
     let id = id_size.as_usize();
     match tag {
-        HeapSubTag::GcRootJniGlobal
-        | HeapSubTag::GcRootThreadBlock => Some(0),
+        HeapSubTag::GcRootJniGlobal | HeapSubTag::GcRootThreadBlock => Some(0),
         HeapSubTag::GcRootJniLocal => Some(id),
-        HeapSubTag::GcRootNativeStack
-        | HeapSubTag::GcRootInternedString => Some(8),
-        HeapSubTag::GcRootStickyClass
-        | HeapSubTag::GcRootMonitorUsed => Some(4),
+        HeapSubTag::GcRootNativeStack | HeapSubTag::GcRootInternedString => Some(8),
+        HeapSubTag::GcRootStickyClass | HeapSubTag::GcRootMonitorUsed => Some(4),
         _ => None,
     }
 }
@@ -258,24 +219,13 @@ fn primitive_element_size(type_byte: u8) -> usize {
 mod tests {
     use super::*;
 
-    fn make_instance(
-        id: u64,
-        class_id: u64,
-        field_data: &[u8],
-        id_size: IdSize,
-    ) -> Vec<u8> {
+    fn make_instance(id: u64, class_id: u64, field_data: &[u8], id_size: IdSize) -> Vec<u8> {
         let sz = id_size.as_usize();
         let mut buf = vec![0x21];
-        buf.extend_from_slice(
-            &id.to_be_bytes()[8 - sz..],
-        );
+        buf.extend_from_slice(&id.to_be_bytes()[8 - sz..]);
         buf.extend_from_slice(&0u32.to_be_bytes());
-        buf.extend_from_slice(
-            &class_id.to_be_bytes()[8 - sz..],
-        );
-        buf.extend_from_slice(
-            &(field_data.len() as u32).to_be_bytes(),
-        );
+        buf.extend_from_slice(&class_id.to_be_bytes()[8 - sz..]);
+        buf.extend_from_slice(&(field_data.len() as u32).to_be_bytes());
         buf.extend_from_slice(field_data);
         buf
     }
@@ -289,13 +239,9 @@ mod tests {
     ) -> Vec<u8> {
         let sz = id_size.as_usize();
         let mut buf = vec![0x23];
-        buf.extend_from_slice(
-            &id.to_be_bytes()[8 - sz..],
-        );
+        buf.extend_from_slice(&id.to_be_bytes()[8 - sz..]);
         buf.extend_from_slice(&0u32.to_be_bytes());
-        buf.extend_from_slice(
-            &num_elements.to_be_bytes(),
-        );
+        buf.extend_from_slice(&num_elements.to_be_bytes());
         buf.push(elem_type);
         buf.extend_from_slice(elements);
         buf
@@ -304,11 +250,8 @@ mod tests {
     #[test]
     fn iter_instance_dump() {
         let id_size = IdSize::Eight;
-        let data =
-            make_instance(42, 100, &[1, 2, 3], id_size);
-        let records: Vec<_> =
-            HeapSubRecordIter::new(&data, id_size)
-                .collect();
+        let data = make_instance(42, 100, &[1, 2, 3], id_size);
+        let records: Vec<_> = HeapSubRecordIter::new(&data, id_size).collect();
         assert_eq!(records.len(), 1);
         match &records[0] {
             HeapSubRecord::Instance {
@@ -321,9 +264,7 @@ mod tests {
                 assert_eq!(*field_data, &[1, 2, 3]);
             }
             other => {
-                panic!(
-                    "expected Instance, got {other:?}"
-                )
+                panic!("expected Instance, got {other:?}")
             }
         }
     }
@@ -331,16 +272,8 @@ mod tests {
     #[test]
     fn iter_prim_array() {
         let id_size = IdSize::Eight;
-        let data = make_prim_array(
-            99,
-            10,
-            &[0, 0, 0, 1, 0, 0, 0, 2],
-            2,
-            id_size,
-        );
-        let records: Vec<_> =
-            HeapSubRecordIter::new(&data, id_size)
-                .collect();
+        let data = make_prim_array(99, 10, &[0, 0, 0, 1, 0, 0, 0, 2], 2, id_size);
+        let records: Vec<_> = HeapSubRecordIter::new(&data, id_size).collect();
         assert_eq!(records.len(), 1);
         match &records[0] {
             HeapSubRecord::PrimArray {
@@ -354,9 +287,7 @@ mod tests {
                 assert_eq!(*num_elements, 2);
             }
             other => {
-                panic!(
-                    "expected PrimArray, got {other:?}"
-                )
+                panic!("expected PrimArray, got {other:?}")
             }
         }
     }
@@ -364,14 +295,9 @@ mod tests {
     #[test]
     fn iter_multiple_records() {
         let id_size = IdSize::Eight;
-        let mut data =
-            make_instance(1, 100, &[0xAA], id_size);
-        data.extend(make_instance(
-            2, 200, &[0xBB], id_size,
-        ));
-        let records: Vec<_> =
-            HeapSubRecordIter::new(&data, id_size)
-                .collect();
+        let mut data = make_instance(1, 100, &[0xAA], id_size);
+        data.extend(make_instance(2, 200, &[0xBB], id_size));
+        let records: Vec<_> = HeapSubRecordIter::new(&data, id_size).collect();
         assert_eq!(records.len(), 2);
     }
 
@@ -379,17 +305,13 @@ mod tests {
     fn iter_truncated_stops() {
         let id_size = IdSize::Eight;
         let data = [0x21, 0x00];
-        let records: Vec<_> =
-            HeapSubRecordIter::new(&data, id_size)
-                .collect();
+        let records: Vec<_> = HeapSubRecordIter::new(&data, id_size).collect();
         assert!(records.is_empty());
     }
 
     #[test]
     fn iter_empty_yields_nothing() {
-        let records: Vec<_> =
-            HeapSubRecordIter::new(&[], IdSize::Eight)
-                .collect();
+        let records: Vec<_> = HeapSubRecordIter::new(&[], IdSize::Eight).collect();
         assert!(records.is_empty());
     }
 
@@ -400,9 +322,7 @@ mod tests {
         data.extend_from_slice(&42u64.to_be_bytes());
         data.extend_from_slice(&1u32.to_be_bytes());
         data.extend_from_slice(&5i32.to_be_bytes());
-        let records: Vec<_> =
-            HeapSubRecordIter::new(&data, id_size)
-                .collect();
+        let records: Vec<_> = HeapSubRecordIter::new(&data, id_size).collect();
         assert_eq!(records.len(), 1);
         match &records[0] {
             HeapSubRecord::GcRootJavaFrame {
@@ -424,22 +344,15 @@ mod tests {
     #[test]
     fn tag_position_tracks_sub_record_offsets() {
         let id_size = IdSize::Eight;
-        let inst1 =
-            make_instance(1, 100, &[], id_size);
+        let inst1 = make_instance(1, 100, &[], id_size);
         let inst2_start = inst1.len();
         let mut data = inst1;
-        data.extend(make_instance(
-            2, 200, &[], id_size,
-        ));
+        data.extend(make_instance(2, 200, &[], id_size));
 
-        let mut iter =
-            HeapSubRecordIter::new(&data, id_size);
+        let mut iter = HeapSubRecordIter::new(&data, id_size);
         iter.next().unwrap();
         assert_eq!(iter.tag_position(), 0);
         iter.next().unwrap();
-        assert_eq!(
-            iter.tag_position(),
-            inst2_start as u64,
-        );
+        assert_eq!(iter.tag_position(), inst2_start as u64,);
     }
 }
