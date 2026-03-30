@@ -10,7 +10,17 @@ use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
 
 use crate::id::IdSize;
-use crate::HprofError;
+use crate::indexer::first_pass::value_byte_size;
+use crate::java_types::{
+    PRIM_TYPE_BOOLEAN, PRIM_TYPE_BYTE, PRIM_TYPE_CHAR,
+    PRIM_TYPE_DOUBLE, PRIM_TYPE_FLOAT, PRIM_TYPE_INT,
+    PRIM_TYPE_LONG, PRIM_TYPE_OBJECT_REF,
+    PRIM_TYPE_SHORT,
+};
+use crate::{
+    ClassDumpInfo, FieldDef, HprofError, StaticFieldDef,
+    StaticValue,
+};
 
 /// Wraps a cursor over raw bytes with id_size context.
 pub struct RecordReader<'a> {
@@ -274,6 +284,151 @@ impl<'a> RecordReader<'a> {
             len: content_len,
         })
     }
+    /// Reads a static field value based on type code.
+    pub fn read_static_value(
+        &mut self,
+        type_code: u8,
+    ) -> Option<StaticValue> {
+        match type_code {
+            PRIM_TYPE_OBJECT_REF => {
+                Some(StaticValue::ObjectRef(
+                    self.read_id()?,
+                ))
+            }
+            PRIM_TYPE_BOOLEAN => {
+                Some(StaticValue::Bool(
+                    self.read_u8()? != 0,
+                ))
+            }
+            PRIM_TYPE_CHAR => {
+                let code = self.read_u16()?;
+                Some(StaticValue::Char(
+                    char::from_u32(code as u32)
+                        .unwrap_or(
+                            char::REPLACEMENT_CHARACTER,
+                        ),
+                ))
+            }
+            PRIM_TYPE_FLOAT => Some(
+                StaticValue::Float(
+                    self.cursor
+                        .read_f32::<BigEndian>()
+                        .ok()?,
+                ),
+            ),
+            PRIM_TYPE_DOUBLE => Some(
+                StaticValue::Double(
+                    self.cursor
+                        .read_f64::<BigEndian>()
+                        .ok()?,
+                ),
+            ),
+            PRIM_TYPE_BYTE => Some(StaticValue::Byte(
+                self.cursor.read_i8().ok()?,
+            )),
+            PRIM_TYPE_SHORT => Some(
+                StaticValue::Short(
+                    self.cursor
+                        .read_i16::<BigEndian>()
+                        .ok()?,
+                ),
+            ),
+            PRIM_TYPE_INT => Some(StaticValue::Int(
+                self.cursor
+                    .read_i32::<BigEndian>()
+                    .ok()?,
+            )),
+            PRIM_TYPE_LONG => Some(StaticValue::Long(
+                self.cursor
+                    .read_i64::<BigEndian>()
+                    .ok()?,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Parses a `CLASS_DUMP` sub-record body (after the
+    /// sub-tag byte).
+    pub fn parse_class_dump(
+        &mut self,
+    ) -> Option<ClassDumpInfo> {
+        let class_object_id = self.read_id()?;
+        let _stack_trace_serial = self.read_u32()?;
+        let super_class_id = self.read_id()?;
+        if !self.skip(5 * self.id_size.as_usize()) {
+            return None;
+        }
+        let instance_size = self.read_u32()?;
+
+        let cp_count = self.read_u16()?;
+        for _ in 0..cp_count {
+            let _index = self.read_u16()?;
+            let cp_type = self.read_u8()?;
+            let val_size =
+                value_byte_size(cp_type, self.id_size);
+            if !self.skip(val_size) {
+                return None;
+            }
+        }
+
+        let static_count = self.read_u16()?;
+        let mut static_fields =
+            Vec::with_capacity(static_count as usize);
+        let mut static_parse_ok = true;
+        for _ in 0..static_count {
+            let Some(name_string_id) = self.read_id()
+            else {
+                static_parse_ok = false;
+                break;
+            };
+            let Some(field_type) = self.read_u8() else {
+                static_parse_ok = false;
+                break;
+            };
+            match self.read_static_value(field_type) {
+                Some(v) => {
+                    static_fields.push(StaticFieldDef {
+                        name_string_id,
+                        value: v,
+                    });
+                }
+                None => {
+                    static_parse_ok = false;
+                    break;
+                }
+            }
+        }
+
+        if !static_parse_ok {
+            return Some(ClassDumpInfo {
+                class_object_id,
+                super_class_id,
+                instance_size,
+                static_fields: vec![],
+                instance_fields: vec![],
+            });
+        }
+
+        let field_count = self.read_u16()?;
+        let mut instance_fields =
+            Vec::with_capacity(field_count as usize);
+        for _ in 0..field_count {
+            let name_string_id = self.read_id()?;
+            let field_type = self.read_u8()?;
+            instance_fields.push(FieldDef {
+                name_string_id,
+                field_type,
+            });
+        }
+
+        Some(ClassDumpInfo {
+            class_object_id,
+            super_class_id,
+            instance_size,
+            static_fields,
+            instance_fields,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -517,5 +672,74 @@ mod tests {
         assert_eq!(s.id, 42);
         assert_eq!(s.offset, 100 + 8);
         assert_eq!(s.len, 5);
+    }
+
+    fn push_id(
+        buf: &mut Vec<u8>,
+        id: u64,
+        id_size: IdSize,
+    ) {
+        if id_size == IdSize::Eight {
+            buf.extend_from_slice(&id.to_be_bytes());
+        } else {
+            buf.extend_from_slice(
+                &(id as u32).to_be_bytes(),
+            );
+        }
+    }
+
+    fn make_minimal_class_dump(
+        id_size: IdSize,
+    ) -> Vec<u8> {
+        let mut body = Vec::new();
+        push_id(&mut body, 100, id_size);
+        body.extend_from_slice(&0u32.to_be_bytes());
+        push_id(&mut body, 50, id_size);
+        for _ in 0..5 {
+            push_id(&mut body, 0, id_size);
+        }
+        body.extend_from_slice(&16u32.to_be_bytes());
+        body.extend_from_slice(&0u16.to_be_bytes());
+        body
+    }
+
+    #[test]
+    fn parse_class_dump_minimal() {
+        let id_size = IdSize::Eight;
+        let mut body = make_minimal_class_dump(id_size);
+        body.extend_from_slice(&0u16.to_be_bytes());
+        body.extend_from_slice(&1u16.to_be_bytes());
+        push_id(&mut body, 20, id_size);
+        body.push(10); // INT
+
+        let mut r = RecordReader::new(&body, id_size);
+        let info = r.parse_class_dump().unwrap();
+        assert_eq!(info.class_object_id, 100);
+        assert_eq!(info.super_class_id, 50);
+        assert_eq!(info.instance_size, 16);
+        assert_eq!(info.instance_fields.len(), 1);
+        assert_eq!(
+            info.instance_fields[0].name_string_id, 20
+        );
+    }
+
+    #[test]
+    fn parse_class_dump_with_static_int() {
+        use crate::StaticValue;
+        let id_size = IdSize::Eight;
+        let mut body = make_minimal_class_dump(id_size);
+        body.extend_from_slice(&1u16.to_be_bytes());
+        push_id(&mut body, 10, id_size);
+        body.push(10); // INT
+        body.extend_from_slice(&42i32.to_be_bytes());
+        body.extend_from_slice(&0u16.to_be_bytes());
+
+        let mut r = RecordReader::new(&body, id_size);
+        let info = r.parse_class_dump().unwrap();
+        assert_eq!(info.static_fields.len(), 1);
+        assert_eq!(
+            info.static_fields[0].value,
+            StaticValue::Int(42)
+        );
     }
 }
