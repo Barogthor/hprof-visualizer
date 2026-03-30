@@ -58,9 +58,6 @@ pub mod indexer;
 pub use indexer::HeapRecordRange;
 pub use indexer::precise::PreciseIndex;
 
-pub mod visitor;
-pub use visitor::HeapVisitor;
-
 pub(crate) mod hprof_file;
 pub use hprof_file::HprofFile;
 
