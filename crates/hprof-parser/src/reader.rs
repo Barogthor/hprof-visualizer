@@ -43,53 +43,63 @@ impl<'a> RecordReader<'a> {
     }
 
     /// Returns the id_size.
+    #[inline]
     pub fn id_size(&self) -> IdSize {
         self.id_size
     }
 
     /// Returns the current byte position.
+    #[inline]
     pub fn position(&self) -> u64 {
         self.cursor.position()
     }
 
     /// Sets the current byte position.
+    #[inline]
     pub fn set_position(&mut self, pos: u64) {
         self.cursor.set_position(pos);
     }
 
     /// Returns the number of bytes remaining.
+    #[inline]
     pub fn remaining(&self) -> u64 {
         let len = self.cursor.get_ref().len() as u64;
         len.saturating_sub(self.cursor.position())
     }
 
     /// Reads a `u8`.
+    #[inline]
     pub fn read_u8(&mut self) -> Option<u8> {
         self.cursor.read_u8().ok()
     }
 
     /// Reads a big-endian `u16`.
+    #[inline]
     pub fn read_u16(&mut self) -> Option<u16> {
         self.cursor.read_u16::<BigEndian>().ok()
     }
 
     /// Reads a big-endian `u32`.
+    #[inline]
     pub fn read_u32(&mut self) -> Option<u32> {
         self.cursor.read_u32::<BigEndian>().ok()
     }
 
     /// Reads a big-endian `u64`.
+    #[inline]
     pub fn read_u64(&mut self) -> Option<u64> {
         self.cursor.read_u64::<BigEndian>().ok()
     }
 
     /// Reads a big-endian `i32`.
+    #[inline]
     pub fn read_i32(&mut self) -> Option<i32> {
         self.cursor.read_i32::<BigEndian>().ok()
     }
 
     /// Reads an object ID (4 or 8 bytes depending on
     /// `id_size`), returned as `u64`.
+    #[inline]
     pub fn read_id(&mut self) -> Option<u64> {
         self.read_id_result().ok()
     }
@@ -97,6 +107,7 @@ impl<'a> RecordReader<'a> {
     /// Reads an object ID, returning a typed error on
     /// truncation. Use this when the caller needs to
     /// produce a detailed warning message.
+    #[inline]
     pub fn read_id_result(&mut self) -> Result<u64, HprofError> {
         match self.id_size {
             IdSize::Four => self
@@ -113,6 +124,7 @@ impl<'a> RecordReader<'a> {
 
     /// Advances the cursor by `n` bytes. Returns `false`
     /// if out of bounds (cursor unchanged).
+    #[inline]
     pub fn skip(&mut self, n: usize) -> bool {
         let pos = self.cursor.position() as usize;
         let new_pos = match pos.checked_add(n) {
@@ -129,6 +141,7 @@ impl<'a> RecordReader<'a> {
     /// Returns a zero-copy slice of `n` bytes at the
     /// current position, advancing the cursor.
     /// Returns `None` if fewer than `n` bytes remain.
+    #[inline]
     pub fn read_bytes(&mut self, n: usize) -> Option<&'a [u8]> {
         let pos = self.cursor.position() as usize;
         let end = pos.checked_add(n)?;
