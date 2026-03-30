@@ -5,10 +5,12 @@ use std::collections::HashSet;
 #[cfg(feature = "test-utils")]
 use std::time::Instant;
 
+use rustc_hash::FxHashMap;
+
 use hprof_api::ProgressNotifier;
 
 use super::FirstPassContext;
-use super::offset_lookup::batch_lookup_by_filter;
+use super::offset_lookup::{SegmentEntryPoint, batch_lookup_by_filter};
 use crate::id::IdSize;
 use crate::indexer::precise::PreciseIndex;
 use crate::indexer::segment::SegmentFilter;
@@ -25,20 +27,9 @@ struct ObjRef {
     ref_id: u64,
 }
 
-/// Synthesises threads, correlates GC roots, and
-/// resolves transitive offsets via batched filter
-/// lookups.
-pub(super) fn resolve_all(
-    ctx: &mut FirstPassContext,
-    filters: &[SegmentFilter],
-    entry_points: &[super::offset_lookup::SegmentEntryPoint],
-    notifier: &mut ProgressNotifier,
-) {
-    #[cfg(feature = "dev-profiling")]
-    let _thread_cache_span = tracing::info_span!("thread_cache_build").entered();
-
-    // Synthesise thread entries from STACK_TRACE
-    // records when the file has no START_THREAD (0x06).
+/// Synthesises thread entries from STACK_TRACE records
+/// when the file has no START_THREAD (0x06).
+fn synthesise_threads(ctx: &mut FirstPassContext) {
     let traces: Vec<_> = ctx
         .result
         .index
@@ -61,9 +52,11 @@ pub(super) fn resolve_all(
                 group_parent_name_string_id: 0,
             });
     }
+}
 
-    // Populate thread_object_ids from ROOT_THREAD_OBJ
-    // sub-records and update synthetic threads.
+/// Populates `thread_object_ids` from ROOT_THREAD_OBJ
+/// sub-records and patches synthetic thread `object_id`.
+fn populate_thread_object_ids(ctx: &mut FirstPassContext) {
     for rto in std::mem::take(&mut ctx.raw_thread_objects) {
         ctx.result
             .index
@@ -75,9 +68,10 @@ pub(super) fn resolve_all(
             thread.object_id = rto.object_id;
         }
     }
+}
 
-    // Correlate GC_ROOT_JAVA_FRAME roots with stack
-    // traces.
+/// Correlates GC_ROOT_JAVA_FRAME roots with stack frames.
+fn correlate_frame_roots(ctx: &mut FirstPassContext) {
     for root in std::mem::take(&mut ctx.raw_frame_roots) {
         if root.frame_number < 0 {
             continue;
@@ -93,8 +87,7 @@ pub(super) fn resolve_all(
         else {
             continue;
         };
-        let idx = root.frame_number as usize;
-        let Some(&frame_id) = trace.frame_ids.get(idx) else {
+        let Some(&frame_id) = trace.frame_ids.get(root.frame_number as usize) else {
             continue;
         };
         ctx.result
@@ -104,8 +97,53 @@ pub(super) fn resolve_all(
             .or_default()
             .push(root.object_id);
     }
+}
 
-    // ── Batched filter lookups (3 rounds) ──
+/// Runs one batch filter lookup round: emits the phase
+/// label, resolves `ids`, merges warnings, inserts found
+/// offsets into `instance_offsets`, and returns the raw
+/// lookup map for callers that need it.
+fn run_batch_round(
+    ctx: &mut FirstPassContext,
+    filters: &[SegmentFilter],
+    entry_points: &[SegmentEntryPoint],
+    ids: &HashSet<u64>,
+    notifier: &mut ProgressNotifier,
+    phase: &str,
+) -> FxHashMap<u64, u64> {
+    notifier.phase_changed(phase);
+    let (found, warns) = batch_lookup_by_filter(
+        filters,
+        entry_points,
+        ctx.data,
+        ctx.id_size,
+        ids,
+        &ctx.result.heap_record_ranges,
+    );
+    for w in warns {
+        ctx.push_warning(|| w);
+    }
+    for (&id, &offset) in &found {
+        ctx.result.index.instance_offsets.insert(id, offset);
+    }
+    found
+}
+
+/// Synthesises threads, correlates GC roots, and
+/// resolves transitive offsets via batched filter
+/// lookups.
+pub(super) fn resolve_all(
+    ctx: &mut FirstPassContext,
+    filters: &[SegmentFilter],
+    entry_points: &[SegmentEntryPoint],
+    notifier: &mut ProgressNotifier,
+) {
+    #[cfg(feature = "dev-profiling")]
+    let _thread_cache_span = tracing::info_span!("thread_cache_build").entered();
+
+    synthesise_threads(ctx);
+    populate_thread_object_ids(ctx);
+    correlate_frame_roots(ctx);
 
     let data = ctx.data;
     let id_size = ctx.id_size;
@@ -113,103 +151,71 @@ pub(super) fn resolve_all(
     #[cfg(feature = "test-utils")]
     let t0 = Instant::now();
 
-    // Round 0: thread object offsets
-    let thread_ids: HashSet<u64> = ctx
-        .result
-        .index
-        .thread_object_ids
-        .values()
-        .copied()
-        .collect();
+    let thread_ids: HashSet<u64> =
+        ctx.result.index.thread_object_ids.values().copied().collect();
 
     if !thread_ids.is_empty() {
-        notifier.phase_changed("Resolving threads (round 1/3)\u{2026}");
-        let (found, warns) = batch_lookup_by_filter(
+        // Round 0: locate thread object instances.
+        run_batch_round(
+            ctx,
             filters,
             entry_points,
-            data,
-            id_size,
             &thread_ids,
-            &ctx.result.heap_record_ranges,
+            notifier,
+            "Resolving threads (round 1/3)\u{2026}",
         );
-        for w in warns {
-            ctx.push_warning(|| w);
-        }
-        for (&id, &offset) in &found {
-            ctx.result.index.instance_offsets.insert(id, offset);
-        }
 
-        // Round 1: transitive refs (name, holder)
+        // Round 1: collect name/holder refs from thread instances.
         let mut round1_ids: HashSet<u64> = HashSet::new();
-        let thread_offsets: Vec<u64> = ctx.result.index.instance_offsets.values();
-
-        let mut string_offsets: Vec<(u64, u64)> = Vec::new();
-
-        for offset in thread_offsets {
+        let mut name_ref_ids: HashSet<u64> = HashSet::new();
+        for offset in ctx.result.index.instance_offsets.values() {
             let Some(inst) = read_raw_instance_at(data, offset, id_size) else {
                 continue;
             };
-            let refs = extract_obj_refs(
+            for r in extract_obj_refs(
                 inst.field_data,
                 inst.class_object_id,
                 &["name", "holder"],
                 &ctx.result.index,
                 id_size,
                 data,
-            );
-            for r in &refs {
+            ) {
                 if !ctx.result.index.instance_offsets.contains(&r.ref_id) {
                     round1_ids.insert(r.ref_id);
                     if r.field_name == "name" {
-                        string_offsets.push((r.ref_id, 0));
+                        name_ref_ids.insert(r.ref_id);
                     }
                 }
             }
         }
 
         if !round1_ids.is_empty() {
-            notifier.phase_changed("Resolving threads (round 2/3)\u{2026}");
-            let (found1, warns1) = batch_lookup_by_filter(
+            let found1 = run_batch_round(
+                ctx,
                 filters,
                 entry_points,
-                data,
-                id_size,
                 &round1_ids,
-                &ctx.result.heap_record_ranges,
+                notifier,
+                "Resolving threads (round 2/3)\u{2026}",
             );
-            for w in warns1 {
-                ctx.push_warning(|| w);
-            }
-            for (id, offset) in &found1 {
-                ctx.result.index.instance_offsets.insert(*id, *offset);
-            }
 
-            // Update string_offsets with resolved
-            // offsets for round 2
-            for (id, off) in &mut string_offsets {
-                if let Some(&resolved) = found1.get(id) {
-                    *off = resolved;
-                }
-            }
-
-            // Round 2: value refs from String instances
+            // Round 2: collect value refs from String instances.
             let mut round2_ids: HashSet<u64> = HashSet::new();
-            for (_, str_offset) in &string_offsets {
-                if *str_offset == 0 {
-                    continue;
-                }
-                let Some(str_inst) = read_raw_instance_at(data, *str_offset, id_size) else {
+            for id in &name_ref_ids {
+                let Some(&str_offset) = found1.get(id) else {
                     continue;
                 };
-                let refs = extract_obj_refs(
+                let Some(str_inst) = read_raw_instance_at(data, str_offset, id_size) else {
+                    continue;
+                };
+                for r in extract_obj_refs(
                     str_inst.field_data,
                     str_inst.class_object_id,
                     &["value"],
                     &ctx.result.index,
                     id_size,
                     data,
-                );
-                for r in &refs {
+                ) {
                     if !ctx.result.index.instance_offsets.contains(&r.ref_id) {
                         round2_ids.insert(r.ref_id);
                     }
@@ -217,24 +223,14 @@ pub(super) fn resolve_all(
             }
 
             if !round2_ids.is_empty() {
-                notifier.phase_changed(
-                    "Resolving threads (round 3/3)\
-                     \u{2026}",
-                );
-                let (found2, warns2) = batch_lookup_by_filter(
+                run_batch_round(
+                    ctx,
                     filters,
                     entry_points,
-                    data,
-                    id_size,
                     &round2_ids,
-                    &ctx.result.heap_record_ranges,
+                    notifier,
+                    "Resolving threads (round 3/3)\u{2026}",
                 );
-                for w in warns2 {
-                    ctx.push_warning(|| w);
-                }
-                for (&id, &offset) in &found2 {
-                    ctx.result.index.instance_offsets.insert(id, offset);
-                }
             }
         }
     }
@@ -314,18 +310,11 @@ fn extract_obj_refs(
                         .map(|sref| sref.resolve(records_data))
                         .unwrap_or_default();
                     if target_names.contains(&name.as_str()) {
-                        results.push(ObjRef {
-                            field_name: name,
-                            ref_id,
-                        });
+                        results.push(ObjRef { field_name: name, ref_id });
                     }
                 }
-            } else {
-                let pos = reader.position() as usize + field_size;
-                if pos > field_data.len() {
-                    return results;
-                }
-                reader.set_position(pos as u64);
+            } else if !reader.skip(field_size) {
+                return results;
             }
         }
     }
