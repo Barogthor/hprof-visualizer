@@ -11,6 +11,7 @@ use crate::java_types::{
     PRIM_TYPE_BOOLEAN, PRIM_TYPE_BYTE, PRIM_TYPE_CHAR, PRIM_TYPE_DOUBLE, PRIM_TYPE_FLOAT,
     PRIM_TYPE_INT, PRIM_TYPE_LONG, PRIM_TYPE_OBJECT_REF, PRIM_TYPE_SHORT,
 };
+#[cfg(test)]
 use crate::tags::HeapSubTag;
 use crate::{ClassDumpInfo, FieldDef, StaticFieldDef, StaticValue, read_id};
 
@@ -72,6 +73,7 @@ pub(super) fn skip_n(cursor: &mut Cursor<&[u8]>, n: usize) -> bool {
 
 /// Returns the byte size of a primitive hprof type code,
 /// or 0 for unknown.
+#[cfg(test)]
 pub(super) fn primitive_element_size(type_byte: u8) -> usize {
     match type_byte {
         PRIM_TYPE_BOOLEAN => 1,
@@ -88,6 +90,7 @@ pub(super) fn primitive_element_size(type_byte: u8) -> usize {
 
 /// Returns the skip size for fixed-size GC root sub-tags,
 /// or `None` for anything else.
+#[cfg(test)]
 pub(super) fn gc_root_skip_size(sub_tag: HeapSubTag, id_size: IdSize) -> Option<usize> {
     let id = id_size.as_usize();
     match sub_tag {

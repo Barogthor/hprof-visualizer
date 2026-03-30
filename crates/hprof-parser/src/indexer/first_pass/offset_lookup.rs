@@ -6,18 +6,12 @@
 //! windows.
 
 use std::collections::HashSet;
-use std::io::Cursor;
 
-use byteorder::{BigEndian, ReadBytesExt};
 use rustc_hash::FxHashMap;
 
-use super::hprof_primitives::{
-    gc_root_skip_size, parse_class_dump, primitive_element_size, skip_n,
-};
+use crate::heap_reader::{HeapSubRecord, HeapSubRecordIter};
 use crate::id::IdSize;
 use crate::indexer::segment::{SEGMENT_SIZE, SegmentFilter};
-use crate::read_id;
-use crate::tags::HeapSubTag;
 
 /// Marks the byte position of the first sub-record tag
 /// at or after a [`SEGMENT_SIZE`] boundary.
@@ -87,93 +81,23 @@ pub(crate) fn scan_segment_for_objects(
         return Vec::new();
     }
     let slice = &data[scan_offset..end];
-    let mut cursor = Cursor::new(slice);
     let mut results = Vec::new();
 
-    while let Ok(raw) = cursor.read_u8() {
-        let tag_pos = scan_offset + cursor.position() as usize - 1;
-        let sub_tag = HeapSubTag::from(raw);
-
-        match sub_tag {
-            HeapSubTag::InstanceDump => {
-                let Ok(obj_id) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
-                if target_ids.contains(&obj_id) {
-                    results.push((obj_id, tag_pos as u64));
-                }
-                // skip: stack_serial(4) + class_id(id) +
-                //   num_bytes(4) + field_data
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                let Ok(_) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
-                let Ok(num_bytes) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                if !skip_n(&mut cursor, num_bytes as usize) {
-                    break;
-                }
+    let mut iter =
+        HeapSubRecordIter::new(slice, id_size);
+    while let Some(record) = iter.next() {
+        let tag_pos = scan_offset
+            + iter.tag_position() as usize;
+        let obj_id = match &record {
+            HeapSubRecord::Instance { id, .. } => *id,
+            HeapSubRecord::PrimArray { id, .. } => *id,
+            HeapSubRecord::ObjectArray { id, .. } => {
+                *id
             }
-            HeapSubTag::PrimArrayDump => {
-                let Ok(arr_id) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
-                if target_ids.contains(&arr_id) {
-                    results.push((arr_id, tag_pos as u64));
-                }
-                // skip: stack_serial(4) +
-                //   num_elements(4) + elem_type(1) + data
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                let Ok(num_elements) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                let Ok(elem_type) = cursor.read_u8() else {
-                    break;
-                };
-                let elem_size = primitive_element_size(elem_type);
-                if elem_size == 0 {
-                    break;
-                }
-                if !skip_n(&mut cursor, num_elements as usize * elem_size) {
-                    break;
-                }
-            }
-            HeapSubTag::ObjectArrayDump => {
-                // Read arr_id, skip rest.
-                // Thread objects are never
-                // OBJECT_ARRAY instances.
-                let Ok(_arr_id) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                let Ok(num_elements) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                let Ok(_) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
-                if !skip_n(&mut cursor, num_elements as usize * id_size.as_usize()) {
-                    break;
-                }
-            }
-            HeapSubTag::ClassDump => {
-                if parse_class_dump(&mut cursor, id_size).is_none() {
-                    break;
-                }
-            }
-            t if gc_root_skip_size(t, id_size).is_some() => {
-                if !skip_n(&mut cursor, gc_root_skip_size(t, id_size).unwrap()) {
-                    break;
-                }
-            }
-            _ => break,
+            _ => continue,
+        };
+        if target_ids.contains(&obj_id) {
+            results.push((obj_id, tag_pos as u64));
         }
     }
 
