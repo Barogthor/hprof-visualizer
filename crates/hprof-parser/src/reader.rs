@@ -17,6 +17,15 @@ use crate::java_types::{
 };
 use crate::{ClassDumpInfo, FieldDef, HprofError, StaticFieldDef, StaticValue};
 
+/// Parsed body of an `INSTANCE_DUMP` sub-record
+/// (after the sub-tag byte `0x21`).
+pub struct InstanceDumpBody<'a> {
+    pub object_id: u64,
+    pub class_object_id: u64,
+    /// Raw field bytes, ordered by class hierarchy.
+    pub field_data: &'a [u8],
+}
+
 /// Wraps a cursor over raw bytes with id_size context.
 pub struct RecordReader<'a> {
     cursor: Cursor<&'a [u8]>,
@@ -280,6 +289,23 @@ impl<'a> RecordReader<'a> {
             PRIM_TYPE_LONG => Some(StaticValue::Long(self.cursor.read_i64::<BigEndian>().ok()?)),
             _ => None,
         }
+    }
+
+    /// Parses an `INSTANCE_DUMP` sub-record body (after
+    /// the sub-tag byte `0x21`).
+    pub fn parse_instance_dump_body(
+        &mut self,
+    ) -> Option<InstanceDumpBody<'a>> {
+        let object_id = self.read_id()?;
+        let _stack_serial = self.read_u32()?;
+        let class_object_id = self.read_id()?;
+        let num_bytes = self.read_u32()? as usize;
+        let field_data = self.read_bytes(num_bytes)?;
+        Some(InstanceDumpBody {
+            object_id,
+            class_object_id,
+            field_data,
+        })
     }
 
     /// Parses a `CLASS_DUMP` sub-record body (after the
@@ -651,5 +677,70 @@ mod tests {
         let info = r.parse_class_dump().unwrap();
         assert_eq!(info.static_fields.len(), 1);
         assert_eq!(info.static_fields[0].value, StaticValue::Int(42));
+    }
+
+    #[test]
+    fn parse_class_dump_with_static_fields_returns_correct_count_and_values() {
+        use crate::StaticValue;
+        let id_size = IdSize::Eight;
+        let mut body = make_minimal_class_dump(id_size);
+
+        body.extend_from_slice(&2u16.to_be_bytes()); // static_fields_count
+
+        // static int field: value = 42
+        push_id(&mut body, 10, id_size);
+        body.push(10); // PRIM_TYPE_INT
+        body.extend_from_slice(&42i32.to_be_bytes());
+
+        // static object ref field: value = 0xDEAD
+        push_id(&mut body, 11, id_size);
+        body.push(2); // PRIM_TYPE_OBJECT_REF
+        push_id(&mut body, 0xDEAD, id_size);
+
+        body.extend_from_slice(&1u16.to_be_bytes()); // instance_fields_count
+        push_id(&mut body, 20, id_size);
+        body.push(10); // PRIM_TYPE_INT
+
+        let mut r = RecordReader::new(&body, id_size);
+        let parsed = r.parse_class_dump().expect("class dump should parse");
+
+        assert_eq!(parsed.static_fields.len(), 2);
+        assert_eq!(parsed.static_fields[0].name_string_id, 10);
+        assert_eq!(parsed.static_fields[0].value, StaticValue::Int(42));
+        assert_eq!(parsed.static_fields[1].name_string_id, 11);
+        assert_eq!(parsed.static_fields[1].value, StaticValue::ObjectRef(0xDEAD));
+    }
+
+    #[test]
+    fn parse_class_dump_no_static_fields_returns_empty_vec() {
+        let id_size = IdSize::Eight;
+        let mut body = make_minimal_class_dump(id_size);
+        body.extend_from_slice(&0u16.to_be_bytes()); // static_fields_count
+        body.extend_from_slice(&1u16.to_be_bytes()); // instance_fields_count
+        push_id(&mut body, 20, id_size);
+        body.push(10); // PRIM_TYPE_INT
+
+        let mut r = RecordReader::new(&body, id_size);
+        let parsed = r.parse_class_dump().expect("class dump should parse");
+        assert!(parsed.static_fields.is_empty());
+    }
+
+    #[test]
+    fn parse_class_dump_unknown_static_field_type_returns_partial_info() {
+        let id_size = IdSize::Eight;
+        let mut body = make_minimal_class_dump(id_size);
+        body.extend_from_slice(&1u16.to_be_bytes()); // static_fields_count
+        push_id(&mut body, 10, id_size);
+        body.push(0x03); // unknown field type
+        body.extend_from_slice(&0u16.to_be_bytes()); // instance_fields_count
+
+        let mut r = RecordReader::new(&body, id_size);
+        let info = r
+            .parse_class_dump()
+            .expect("partial ClassDumpInfo must be returned, not None");
+        assert_eq!(info.class_object_id, 100);
+        assert_eq!(info.super_class_id, 50);
+        assert!(info.static_fields.is_empty(), "static_fields must be empty on unknown type");
+        assert!(info.instance_fields.is_empty(), "instance_fields must be empty");
     }
 }

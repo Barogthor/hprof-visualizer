@@ -92,15 +92,11 @@ impl<'a> Iterator for HeapSubRecordIter<'a> {
 
         match sub_tag {
             HeapSubTag::InstanceDump => {
-                let id = self.reader.read_id()?;
-                let _serial = self.reader.read_u32()?;
-                let class_id = self.reader.read_id()?;
-                let num_bytes = self.reader.read_u32()? as usize;
-                let field_data = self.reader.read_bytes(num_bytes)?;
+                let body = self.reader.parse_instance_dump_body()?;
                 Some(HeapSubRecord::Instance {
-                    id,
-                    class_id,
-                    field_data,
+                    id: body.object_id,
+                    class_id: body.class_object_id,
+                    field_data: body.field_data,
                 })
             }
             HeapSubTag::ObjectArrayDump => {

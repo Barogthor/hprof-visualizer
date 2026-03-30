@@ -150,6 +150,16 @@ pub(super) fn extract_heap_segment(
         }
     }
 
+    let pos = iter.position() as usize;
+    if pos < payload.len() {
+        result.warnings.push(format!(
+            "heap segment truncated or unknown sub-tag \
+             at absolute offset {}: {} bytes unread",
+            data_offset + pos,
+            payload.len() - pos,
+        ));
+    }
+
     if !result.is_empty() {
         chunks.push(result);
     }

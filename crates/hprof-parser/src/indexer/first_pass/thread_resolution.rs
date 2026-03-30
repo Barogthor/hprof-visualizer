@@ -2,11 +2,8 @@
 //! filter-based transitive offset resolution.
 
 use std::collections::HashSet;
-use std::io::Cursor;
 #[cfg(feature = "test-utils")]
 use std::time::Instant;
-
-use byteorder::{BigEndian, ReadBytesExt};
 
 use hprof_api::ProgressNotifier;
 
@@ -17,15 +14,9 @@ use crate::indexer::precise::PreciseIndex;
 use crate::indexer::segment::SegmentFilter;
 use crate::java_types::PRIM_TYPE_OBJECT_REF;
 use crate::java_types::value_byte_size;
+use crate::reader::{InstanceDumpBody, RecordReader};
 use crate::tags::HeapSubTag;
-use crate::{HprofThread, read_id};
-
-/// Parsed INSTANCE_DUMP header: class identity and
-/// raw field bytes.
-struct RawInstance<'a> {
-    class_object_id: u64,
-    field_data: &'a [u8],
-}
+use crate::HprofThread;
 
 /// An object-reference field extracted by name from
 /// an instance's field data.
@@ -260,28 +251,17 @@ fn read_raw_instance_at<'a>(
     data: &'a [u8],
     offset: u64,
     id_size: IdSize,
-) -> Option<RawInstance<'a>> {
+) -> Option<InstanceDumpBody<'a>> {
     let start = offset as usize;
     if start >= data.len() {
         return None;
     }
     let slice = &data[start..];
-    let mut cursor = Cursor::new(slice);
-    if HeapSubTag::from(cursor.read_u8().ok()?) != HeapSubTag::InstanceDump {
+    let mut reader = RecordReader::new(slice, id_size);
+    if HeapSubTag::from(reader.read_u8()?) != HeapSubTag::InstanceDump {
         return None;
     }
-    let _obj_id = read_id(&mut cursor, id_size).ok()?;
-    let _stack_serial = cursor.read_u32::<BigEndian>().ok()?;
-    let class_object_id = read_id(&mut cursor, id_size).ok()?;
-    let num_bytes = cursor.read_u32::<BigEndian>().ok()? as usize;
-    let pos = cursor.position() as usize;
-    if pos + num_bytes > slice.len() {
-        return None;
-    }
-    Some(RawInstance {
-        class_object_id,
-        field_data: &slice[pos..pos + num_bytes],
-    })
+    reader.parse_instance_dump_body()
 }
 
 /// Extracts `ObjectRef` (type 2) field values by name
@@ -311,7 +291,7 @@ fn extract_obj_refs(
         current = info.super_class_id;
     }
 
-    let mut cursor = Cursor::new(field_data);
+    let mut reader = RecordReader::new(field_data, id_size);
     let mut results = Vec::new();
 
     for &cid in &chain {
@@ -324,7 +304,7 @@ fn extract_obj_refs(
                 return results;
             }
             if field.field_type == PRIM_TYPE_OBJECT_REF {
-                let Ok(ref_id) = read_id(&mut cursor, id_size) else {
+                let Some(ref_id) = reader.read_id() else {
                     return results;
                 };
                 if ref_id != 0 {
@@ -341,11 +321,11 @@ fn extract_obj_refs(
                     }
                 }
             } else {
-                let pos = cursor.position() as usize + field_size;
+                let pos = reader.position() as usize + field_size;
                 if pos > field_data.len() {
                     return results;
                 }
-                cursor.set_position(pos as u64);
+                reader.set_position(pos as u64);
             }
         }
     }

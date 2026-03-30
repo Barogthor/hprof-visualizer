@@ -165,14 +165,10 @@ impl HprofFile {
         if HeapSubTag::from(tag) != HeapSubTag::InstanceDump {
             return None;
         }
-        let _obj_id = reader.read_id()?;
-        let _stack_serial = reader.read_u32()?;
-        let class_object_id = reader.read_id()?;
-        let num_bytes = reader.read_u32()? as usize;
-        let data = reader.read_bytes(num_bytes)?;
+        let body = reader.parse_instance_dump_body()?;
         Some(RawInstance {
-            class_object_id,
-            data: data.to_vec(),
+            class_object_id: body.class_object_id,
+            data: body.field_data.to_vec(),
         })
     }
 

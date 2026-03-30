@@ -12,10 +12,9 @@ use byteorder::ReadBytesExt;
 #[cfg(feature = "test-utils")]
 use super::heap_extraction::{compute_batch_ranges, extract_heap_segment, merge_segment_result};
 #[cfg(feature = "test-utils")]
-use super::hprof_primitives::{
-    PARALLEL_THRESHOLD, PROGRESS_REPORT_INTERVAL, gc_root_skip_size, parse_class_dump,
-    primitive_element_size, skip_n,
-};
+use super::hprof_primitives::{PARALLEL_THRESHOLD, PROGRESS_REPORT_INTERVAL};
+#[cfg(feature = "test-utils")]
+use crate::reader::RecordReader;
 #[cfg(feature = "test-utils")]
 use super::offset_lookup::SegmentEntryPoint;
 use super::*;
@@ -23,6 +22,56 @@ use super::*;
 use crate::tags::HeapSubTag;
 #[cfg(feature = "test-utils")]
 use crate::{ClassDumpInfo, read_id};
+
+/// Advances a raw cursor by `n` bytes; returns `false` on overflow/bounds.
+#[cfg(feature = "test-utils")]
+fn skip_n(cursor: &mut Cursor<&[u8]>, n: usize) -> bool {
+    let pos = cursor.position() as usize;
+    let new_pos = match pos.checked_add(n) {
+        Some(p) => p,
+        None => return false,
+    };
+    if new_pos > cursor.get_ref().len() {
+        return false;
+    }
+    cursor.set_position(new_pos as u64);
+    true
+}
+
+/// Returns the byte size of a primitive hprof type code, or 0 for unknown.
+#[cfg(feature = "test-utils")]
+fn primitive_element_size(type_byte: u8) -> usize {
+    use crate::java_types::{
+        PRIM_TYPE_BOOLEAN, PRIM_TYPE_BYTE, PRIM_TYPE_CHAR, PRIM_TYPE_DOUBLE, PRIM_TYPE_FLOAT,
+        PRIM_TYPE_INT, PRIM_TYPE_LONG, PRIM_TYPE_SHORT,
+    };
+    match type_byte {
+        PRIM_TYPE_BOOLEAN => 1,
+        PRIM_TYPE_CHAR => 2,
+        PRIM_TYPE_FLOAT => 4,
+        PRIM_TYPE_DOUBLE => 8,
+        PRIM_TYPE_BYTE => 1,
+        PRIM_TYPE_SHORT => 2,
+        PRIM_TYPE_INT => 4,
+        PRIM_TYPE_LONG => 8,
+        _ => 0,
+    }
+}
+
+/// Returns the skip size for fixed-size GC root sub-tags, or `None` otherwise.
+#[cfg(feature = "test-utils")]
+fn gc_root_skip_size(sub_tag: crate::tags::HeapSubTag, id_size: IdSize) -> Option<usize> {
+    use crate::tags::HeapSubTag;
+    let id = id_size.as_usize();
+    match sub_tag {
+        HeapSubTag::GcRootJniGlobal | HeapSubTag::GcRootThreadBlock => Some(id),
+        HeapSubTag::GcRootJniLocal => Some(2 * id),
+        HeapSubTag::GcRootJavaFrame | HeapSubTag::GcRootThreadObj => Some(id + 4 + 4),
+        HeapSubTag::GcRootNativeStack | HeapSubTag::GcRootInternedString => Some(id + 8),
+        HeapSubTag::GcRootStickyClass | HeapSubTag::GcRootMonitorUsed => Some(id + 4),
+        _ => None,
+    }
+}
 
 /// Runs `run_first_pass` with a `NullProgressObserver`.
 fn run_fp(data: &[u8], id_size: IdSize) -> IndexResult {
@@ -112,6 +161,21 @@ fn skip_heap_object(
     }
 }
 
+/// Parses a `CLASS_DUMP` sub-record from the current cursor position using
+/// [`RecordReader`], advancing `cursor` by the bytes consumed.
+#[cfg(feature = "test-utils")]
+fn parse_class_dump_at(
+    cursor: &mut Cursor<&[u8]>,
+    id_size: IdSize,
+) -> Option<ClassDumpInfo> {
+    let pos = cursor.position() as usize;
+    let remaining = &cursor.get_ref()[pos..];
+    let mut r = RecordReader::new(remaining, id_size);
+    let info = r.parse_class_dump()?;
+    cursor.set_position(pos as u64 + r.position());
+    Some(info)
+}
+
 /// Scans a heap segment payload extracting only
 /// `CLASS_DUMP` (0x20) sub-records.
 #[cfg(feature = "test-utils")]
@@ -122,7 +186,7 @@ fn extract_class_dumps_only(payload: &[u8], id_size: IdSize) -> Vec<(u64, ClassD
     while let Ok(raw) = cursor.read_u8() {
         let sub_tag = HeapSubTag::from(raw);
         let ok = match sub_tag {
-            HeapSubTag::ClassDump => match parse_class_dump(&mut cursor, id_size) {
+            HeapSubTag::ClassDump => match parse_class_dump_at(&mut cursor, id_size) {
                 Some(info) => {
                     let id = info.class_object_id;
                     results.push((id, info));
@@ -174,7 +238,7 @@ fn subdivide_segment(
         };
         let sub_tag = HeapSubTag::from(raw);
         let ok = match sub_tag {
-            HeapSubTag::ClassDump => parse_class_dump(&mut cursor, id_size).is_some(),
+            HeapSubTag::ClassDump => parse_class_dump_at(&mut cursor, id_size).is_some(),
             t if gc_root_skip_size(t, id_size).is_some() => {
                 skip_n(&mut cursor, gc_root_skip_size(t, id_size).unwrap())
             }
@@ -1069,6 +1133,7 @@ mod builder_tests {
             .add_thread(2, 400, 0, 1, 0, 0)
             .add_stack_frame(50, 1, 2, 1, 10, 42)
             .add_stack_trace(100, 1, &[50])
+            .add_class_dump(200, 0, 0, &[])
             .build();
         let start = advance_past_header(&bytes);
         let result = run_fp(&bytes[start..], IdSize::Eight);
