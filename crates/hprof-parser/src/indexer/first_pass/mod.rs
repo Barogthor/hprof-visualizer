@@ -71,7 +71,7 @@ mod record_scan;
 mod thread_resolution;
 
 use hprof_primitives::MAX_WARNINGS;
-pub(crate) use hprof_primitives::{parse_class_dump, value_byte_size};
+pub(crate) use hprof_primitives::value_byte_size;
 
 #[cfg(test)]
 mod tests;

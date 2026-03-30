@@ -1,19 +1,27 @@
 //! Low-level hprof binary parsing primitives and
 //! cross-cutting utilities.
 
-use std::io::Cursor;
 use std::time::{Duration, Instant};
-
-use byteorder::{BigEndian, ReadBytesExt};
 
 use crate::id::IdSize;
 use crate::java_types::{
-    PRIM_TYPE_BOOLEAN, PRIM_TYPE_BYTE, PRIM_TYPE_CHAR, PRIM_TYPE_DOUBLE, PRIM_TYPE_FLOAT,
-    PRIM_TYPE_INT, PRIM_TYPE_LONG, PRIM_TYPE_OBJECT_REF, PRIM_TYPE_SHORT,
+    PRIM_TYPE_BOOLEAN, PRIM_TYPE_BYTE, PRIM_TYPE_CHAR,
+    PRIM_TYPE_DOUBLE, PRIM_TYPE_FLOAT, PRIM_TYPE_INT,
+    PRIM_TYPE_LONG, PRIM_TYPE_OBJECT_REF,
+    PRIM_TYPE_SHORT,
 };
+
+#[cfg(test)]
+use std::io::Cursor;
+#[cfg(test)]
+use byteorder::{BigEndian, ReadBytesExt};
 #[cfg(test)]
 use crate::tags::HeapSubTag;
-use crate::{ClassDumpInfo, FieldDef, StaticFieldDef, StaticValue, read_id};
+#[cfg(test)]
+use crate::{
+    ClassDumpInfo, FieldDef, StaticFieldDef,
+    StaticValue, read_id,
+};
 
 /// Minimum bytes between consecutive progress callbacks.
 pub(super) const PROGRESS_REPORT_INTERVAL: usize = 4 * 1024 * 1024;
@@ -56,9 +64,13 @@ pub(super) fn maybe_report_progress(
     }
 }
 
-/// Advances the cursor by `n` bytes, returning `false` if
-/// out of bounds.
-pub(super) fn skip_n(cursor: &mut Cursor<&[u8]>, n: usize) -> bool {
+/// Advances the cursor by `n` bytes, returning `false`
+/// if out of bounds.
+#[cfg(test)]
+pub(super) fn skip_n(
+    cursor: &mut Cursor<&[u8]>,
+    n: usize,
+) -> bool {
     let pos = cursor.position() as usize;
     let new_pos = match pos.checked_add(n) {
         Some(p) => p,
@@ -116,8 +128,9 @@ pub(crate) fn value_byte_size(type_code: u8, id_size: IdSize) -> usize {
     }
 }
 
-/// Parses a `CLASS_DUMP` sub-record body (after the sub-tag
-/// byte), returning `None` on any read failure.
+/// Parses a `CLASS_DUMP` sub-record body (after the
+/// sub-tag byte), returning `None` on any read failure.
+#[cfg(test)]
 fn read_static_value(
     cursor: &mut Cursor<&[u8]>,
     id_size: IdSize,
@@ -142,7 +155,8 @@ fn read_static_value(
     }
 }
 
-pub(crate) fn parse_class_dump(
+#[cfg(test)]
+pub(super) fn parse_class_dump(
     cursor: &mut Cursor<&[u8]>,
     id_size: IdSize,
 ) -> Option<ClassDumpInfo> {

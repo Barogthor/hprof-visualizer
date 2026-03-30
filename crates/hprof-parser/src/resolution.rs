@@ -10,6 +10,9 @@ use byteorder::{BigEndian, ReadBytesExt};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
+use crate::heap_reader::{
+    HeapSubRecord, HeapSubRecordIter,
+};
 use crate::id::IdSize;
 use crate::tags::HeapSubTag;
 use crate::{RawInstance, read_id};
@@ -520,343 +523,6 @@ impl HprofFile {
         result
     }
 
-    /// Walks every heap sub-record, dispatching typed
-    /// callbacks to `visitor`.
-    ///
-    /// Iterates all [`HeapRecordRange`]s in order. The
-    /// visitor can return [`ControlFlow::Break`] from any
-    /// callback to stop the walk early.
-    ///
-    /// Sub-record types not handled by [`HeapVisitor`]
-    /// (GC roots, unknown tags) are silently skipped.
-    pub fn visit_heap(
-        &self,
-        visitor: &mut dyn crate::visitor::HeapVisitor,
-    ) {
-        use crate::indexer::first_pass::{
-            parse_class_dump, value_byte_size,
-        };
-        use std::ops::ControlFlow;
-
-        let records = self.records_bytes();
-        let id_size = self.header.id_size;
-
-        for r in &self.heap_record_ranges {
-            let start = r.payload_start as usize;
-            let end = (r.payload_start
-                + r.payload_length)
-                as usize;
-            if start >= records.len() {
-                continue;
-            }
-            let slice =
-                &records[start..end.min(records.len())];
-            let mut broke = false;
-
-            walk_heap_subrecords(
-                slice,
-                id_size,
-                |sub_tag, _tag_pos, cursor| match sub_tag
-                {
-                    HeapSubTag::InstanceDump => {
-                        let obj_id =
-                            match read_id(cursor, id_size)
-                            {
-                                Ok(id) => id,
-                                Err(_) => {
-                                    return SubRecordAction::Break
-                                }
-                            };
-                        let _serial = match cursor
-                            .read_u32::<BigEndian>()
-                        {
-                            Ok(v) => v,
-                            Err(_) => {
-                                return SubRecordAction::Break
-                            }
-                        };
-                        let class_id =
-                            match read_id(cursor, id_size)
-                            {
-                                Ok(id) => id,
-                                Err(_) => {
-                                    return SubRecordAction::Break
-                                }
-                            };
-                        let num_bytes = match cursor
-                            .read_u32::<BigEndian>()
-                        {
-                            Ok(n) => n as usize,
-                            Err(_) => {
-                                return SubRecordAction::Break
-                            }
-                        };
-                        let pos =
-                            cursor.position() as usize;
-                        if exceeds_bounds(
-                            pos,
-                            num_bytes,
-                            slice.len(),
-                        ) {
-                            return SubRecordAction::Break;
-                        }
-                        let data =
-                            &slice[pos..pos + num_bytes];
-                        let flow = visitor.on_instance(
-                            obj_id, class_id, data,
-                        );
-                        cursor.set_position(
-                            (pos + num_bytes) as u64,
-                        );
-                        if flow == ControlFlow::Break(()) {
-                            broke = true;
-                            return SubRecordAction::Break;
-                        }
-                        SubRecordAction::Consumed
-                    }
-                    HeapSubTag::ObjectArrayDump => {
-                        let arr_id =
-                            match read_id(cursor, id_size)
-                            {
-                                Ok(id) => id,
-                                Err(_) => {
-                                    return SubRecordAction::Break
-                                }
-                            };
-                        let _serial = match cursor
-                            .read_u32::<BigEndian>()
-                        {
-                            Ok(v) => v,
-                            Err(_) => {
-                                return SubRecordAction::Break
-                            }
-                        };
-                        let num_elements = match cursor
-                            .read_u32::<BigEndian>()
-                        {
-                            Ok(n) => n,
-                            Err(_) => {
-                                return SubRecordAction::Break
-                            }
-                        };
-                        let class_id =
-                            match read_id(cursor, id_size)
-                            {
-                                Ok(id) => id,
-                                Err(_) => {
-                                    return SubRecordAction::Break
-                                }
-                            };
-                        let byte_count =
-                            match (num_elements as usize)
-                                .checked_mul(
-                                    id_size.as_usize(),
-                                ) {
-                                Some(n) => n,
-                                None => {
-                                    return SubRecordAction::Break
-                                }
-                            };
-                        let pos =
-                            cursor.position() as usize;
-                        if exceeds_bounds(
-                            pos,
-                            byte_count,
-                            slice.len(),
-                        ) {
-                            return SubRecordAction::Break;
-                        }
-                        let data =
-                            &slice[pos..pos + byte_count];
-                        let flow =
-                            visitor.on_object_array(
-                                arr_id,
-                                class_id,
-                                num_elements,
-                                data,
-                                id_size,
-                            );
-                        cursor.set_position(
-                            (pos + byte_count) as u64,
-                        );
-                        if flow == ControlFlow::Break(()) {
-                            broke = true;
-                            return SubRecordAction::Break;
-                        }
-                        SubRecordAction::Consumed
-                    }
-                    HeapSubTag::PrimArrayDump => {
-                        let arr_id =
-                            match read_id(cursor, id_size)
-                            {
-                                Ok(id) => id,
-                                Err(_) => {
-                                    return SubRecordAction::Break
-                                }
-                            };
-                        let _serial = match cursor
-                            .read_u32::<BigEndian>()
-                        {
-                            Ok(v) => v,
-                            Err(_) => {
-                                return SubRecordAction::Break
-                            }
-                        };
-                        let num_elements = match cursor
-                            .read_u32::<BigEndian>()
-                        {
-                            Ok(n) => n,
-                            Err(_) => {
-                                return SubRecordAction::Break
-                            }
-                        };
-                        let elem_type =
-                            match cursor.read_u8() {
-                                Ok(t) => t,
-                                Err(_) => {
-                                    return SubRecordAction::Break
-                                }
-                            };
-                        let elem_size = value_byte_size(
-                            elem_type, id_size,
-                        );
-                        if elem_size == 0 {
-                            return SubRecordAction::Break;
-                        }
-                        let byte_count =
-                            match (num_elements as usize)
-                                .checked_mul(elem_size)
-                            {
-                                Some(n) => n,
-                                None => {
-                                    return SubRecordAction::Break
-                                }
-                            };
-                        let pos =
-                            cursor.position() as usize;
-                        if exceeds_bounds(
-                            pos,
-                            byte_count,
-                            slice.len(),
-                        ) {
-                            return SubRecordAction::Break;
-                        }
-                        let data =
-                            &slice[pos..pos + byte_count];
-                        let flow = visitor.on_prim_array(
-                            arr_id,
-                            elem_type,
-                            num_elements,
-                            data,
-                        );
-                        cursor.set_position(
-                            (pos + byte_count) as u64,
-                        );
-                        if flow == ControlFlow::Break(()) {
-                            broke = true;
-                            return SubRecordAction::Break;
-                        }
-                        SubRecordAction::Consumed
-                    }
-                    HeapSubTag::ClassDump => {
-                        let pos =
-                            cursor.position() as usize;
-                        let cd_data = &slice[pos..];
-                        let mut cd_cursor =
-                            std::io::Cursor::new(cd_data);
-                        if let Some(info) =
-                            parse_class_dump(
-                                &mut cd_cursor,
-                                id_size,
-                            )
-                        {
-                            let consumed =
-                                cd_cursor.position()
-                                    as usize;
-                            cursor.set_position(
-                                (pos + consumed) as u64,
-                            );
-                            let flow =
-                                visitor.on_class_dump(
-                                    &info,
-                                );
-                            if flow
-                                == ControlFlow::Break(())
-                            {
-                                broke = true;
-                                return SubRecordAction::Break;
-                            }
-                            SubRecordAction::Consumed
-                        } else {
-                            SubRecordAction::Break
-                        }
-                    }
-                    _ => SubRecordAction::Continue,
-                },
-            );
-            if broke {
-                break;
-            }
-        }
-    }
-}
-
-/// Controls iteration in [`walk_heap_subrecords`].
-enum SubRecordAction {
-    /// Callback did not consume the sub-record body.
-    /// The walker calls `skip_sub_record` to advance
-    /// past it.
-    Continue,
-    /// Callback already advanced the cursor past the
-    /// sub-record body.
-    Consumed,
-    /// Stop the walk immediately.
-    Break,
-}
-
-/// Walks every heap sub-record in `data`, invoking
-/// `callback` for each one.
-///
-/// The cursor is positioned just **after** the sub-tag
-/// byte when the callback is invoked. The callback must
-/// return [`SubRecordAction`] to indicate whether it
-/// consumed the sub-record body or wants the walker to
-/// skip it.
-///
-/// Stops on `SubRecordAction::Break`, I/O error, or
-/// when `skip_sub_record` fails (truncated data).
-fn walk_heap_subrecords<F>(
-    data: &[u8],
-    id_size: IdSize,
-    mut callback: F,
-) where
-    F: FnMut(
-        HeapSubTag,
-        u64,
-        &mut std::io::Cursor<&[u8]>,
-    ) -> SubRecordAction,
-{
-    use std::io::Cursor;
-
-    let mut cursor = Cursor::new(data);
-    loop {
-        let tag_pos = cursor.position();
-        let sub_tag = match cursor.read_u8() {
-            Ok(t) => HeapSubTag::from(t),
-            Err(_) => return,
-        };
-        match callback(sub_tag, tag_pos, &mut cursor) {
-            SubRecordAction::Break => return,
-            SubRecordAction::Consumed => {}
-            SubRecordAction::Continue => {
-                if !skip_sub_record(
-                    &mut cursor, sub_tag, id_size,
-                ) {
-                    return;
-                }
-            }
-        }
-    }
 }
 
 fn scan_for_instance(
@@ -864,60 +530,26 @@ fn scan_for_instance(
     target_id: u64,
     id_size: IdSize,
 ) -> Option<(RawInstance, u64)> {
-    let mut result = None;
-    walk_heap_subrecords(
-        data,
-        id_size,
-        |sub_tag, tag_pos, cursor| {
-            if sub_tag != HeapSubTag::InstanceDump {
-                return SubRecordAction::Continue;
-            }
-            let obj_id = match read_id(cursor, id_size) {
-                Ok(id) => id,
-                Err(_) => return SubRecordAction::Break,
-            };
-            let _serial =
-                match cursor.read_u32::<BigEndian>() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let class_object_id =
-                match read_id(cursor, id_size) {
-                    Ok(id) => id,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let num_bytes =
-                match cursor.read_u32::<BigEndian>() {
-                    Ok(n) => n as usize,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let pos = cursor.position() as usize;
-            if exceeds_bounds(pos, num_bytes, data.len()) {
-                return SubRecordAction::Break;
-            }
-            if obj_id == target_id {
-                result = Some((
-                    RawInstance {
-                        class_object_id,
-                        data: data[pos..pos + num_bytes]
-                            .to_vec(),
-                    },
-                    tag_pos,
-                ));
-                return SubRecordAction::Break;
-            }
-            cursor
-                .set_position((pos + num_bytes) as u64);
-            SubRecordAction::Consumed
-        },
-    );
-    result
+    let mut iter =
+        HeapSubRecordIter::new(data, id_size);
+    loop {
+        let record = iter.next()?;
+        if let HeapSubRecord::Instance {
+            id,
+            class_id,
+            field_data,
+        } = record
+            && id == target_id
+        {
+            return Some((
+                RawInstance {
+                    class_object_id: class_id,
+                    data: field_data.to_vec(),
+                },
+                iter.tag_position(),
+            ));
+        }
+    }
 }
 
 fn scan_segment_for_instances(
@@ -926,69 +558,29 @@ fn scan_segment_for_instances(
     id_size: IdSize,
 ) -> Vec<(u64, RawInstance, u64)> {
     let mut results = Vec::new();
-    walk_heap_subrecords(
-        data,
-        id_size,
-        |sub_tag, tag_pos, cursor| {
-            if sub_tag != HeapSubTag::InstanceDump {
-                return SubRecordAction::Continue;
-            }
-            let obj_id = match read_id(cursor, id_size) {
-                Ok(id) => id,
-                Err(_) => return SubRecordAction::Break,
-            };
-            let _serial =
-                match cursor.read_u32::<BigEndian>() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let class_object_id =
-                match read_id(cursor, id_size) {
-                    Ok(id) => id,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let num_bytes =
-                match cursor.read_u32::<BigEndian>() {
-                    Ok(n) => n as usize,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let pos = cursor.position() as usize;
-            if exceeds_bounds(pos, num_bytes, data.len()) {
-                #[cfg(feature = "dev-profiling")]
-                tracing::warn!(
-                    "scan_segment_for_instances: \
-                     truncated INSTANCE_DUMP \
-                     0x{obj_id:X} \
-                     at offset {pos}: declared \
-                     {num_bytes} \
-                     bytes but only {} available",
-                    data.len().saturating_sub(pos)
-                );
-                return SubRecordAction::Break;
-            }
-            if target_ids.contains(&obj_id) {
-                results.push((
-                    obj_id,
-                    RawInstance {
-                        class_object_id,
-                        data: data[pos..pos + num_bytes]
-                            .to_vec(),
-                    },
-                    tag_pos,
-                ));
-            }
-            cursor
-                .set_position((pos + num_bytes) as u64);
-            SubRecordAction::Consumed
-        },
-    );
-    results
+    let mut iter =
+        HeapSubRecordIter::new(data, id_size);
+    loop {
+        let Some(record) = iter.next() else {
+            return results;
+        };
+        if let HeapSubRecord::Instance {
+            id,
+            class_id,
+            field_data,
+        } = record
+            && target_ids.contains(&id)
+        {
+            results.push((
+                id,
+                RawInstance {
+                    class_object_id: class_id,
+                    data: field_data.to_vec(),
+                },
+                iter.tag_position(),
+            ));
+        }
+    }
 }
 
 fn scan_for_prim_array(
@@ -996,68 +588,24 @@ fn scan_for_prim_array(
     target_id: u64,
     id_size: IdSize,
 ) -> Option<(u8, Vec<u8>)> {
-    use crate::indexer::first_pass::value_byte_size;
-
-    let mut result = None;
-    walk_heap_subrecords(
-        data,
-        id_size,
-        |sub_tag, _tag_pos, cursor| {
-            if sub_tag != HeapSubTag::PrimArrayDump {
-                return SubRecordAction::Continue;
-            }
-            let arr_id = match read_id(cursor, id_size) {
-                Ok(id) => id,
-                Err(_) => return SubRecordAction::Break,
-            };
-            let _serial =
-                match cursor.read_u32::<BigEndian>() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let num_elements =
-                match cursor.read_u32::<BigEndian>() {
-                    Ok(n) => n as usize,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let elem_type = match cursor.read_u8() {
-                Ok(t) => t,
-                Err(_) => return SubRecordAction::Break,
-            };
-            let elem_size =
-                value_byte_size(elem_type, id_size);
-            if elem_size == 0 {
-                return SubRecordAction::Break;
-            }
-            let byte_count =
-                match num_elements.checked_mul(elem_size) {
-                    Some(n) => n,
-                    None => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let pos = cursor.position() as usize;
-            if exceeds_bounds(pos, byte_count, data.len())
-            {
-                return SubRecordAction::Break;
-            }
-            if arr_id == target_id {
-                result = Some((
-                    elem_type,
-                    data[pos..pos + byte_count].to_vec(),
-                ));
-                return SubRecordAction::Break;
-            }
-            cursor
-                .set_position((pos + byte_count) as u64);
-            SubRecordAction::Consumed
-        },
-    );
-    result
+    let mut iter =
+        HeapSubRecordIter::new(data, id_size);
+    loop {
+        let record = iter.next()?;
+        if let HeapSubRecord::PrimArray {
+            id,
+            element_type,
+            data: arr_data,
+            ..
+        } = record
+            && id == target_id
+        {
+            return Some((
+                element_type,
+                arr_data.to_vec(),
+            ));
+        }
+    }
 }
 
 fn scan_for_object_array_meta(
@@ -1066,208 +614,33 @@ fn scan_for_object_array_meta(
     id_size: IdSize,
     data_base_offset: u64,
 ) -> Option<ObjectArrayMeta> {
-    let mut result = None;
-    walk_heap_subrecords(
-        data,
-        id_size,
-        |sub_tag, _tag_pos, cursor| {
-            if sub_tag != HeapSubTag::ObjectArrayDump {
-                return SubRecordAction::Continue;
-            }
-            let arr_id = match read_id(cursor, id_size) {
-                Ok(id) => id,
-                Err(_) => return SubRecordAction::Break,
-            };
-            let _serial =
-                match cursor.read_u32::<BigEndian>() {
-                    Ok(v) => v,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let num_elements =
-                match cursor.read_u32::<BigEndian>() {
-                    Ok(n) => n,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let class_id =
-                match read_id(cursor, id_size) {
-                    Ok(id) => id,
-                    Err(_) => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let byte_count =
-                match (num_elements as usize)
-                    .checked_mul(id_size.as_usize())
-                {
-                    Some(n) => n,
-                    None => {
-                        return SubRecordAction::Break
-                    }
-                };
-            let pos = cursor.position() as usize;
-            let elements_offset = match data_base_offset
-                .checked_add(pos as u64)
-            {
-                Some(o) => o,
-                None => return SubRecordAction::Break,
-            };
-            let abs_end = (data_base_offset as usize)
-                .checked_add(data.len());
-            let elem_end = (elements_offset as usize)
-                .checked_add(byte_count);
-            if match (elem_end, abs_end) {
-                (Some(e), Some(a)) => e > a,
-                _ => true,
-            } {
-                return SubRecordAction::Break;
-            }
-            if arr_id == target_id {
-                result = Some(ObjectArrayMeta {
-                    class_id,
-                    num_elements,
-                    elements_offset,
-                });
-                return SubRecordAction::Break;
-            }
-            cursor
-                .set_position((pos + byte_count) as u64);
-            SubRecordAction::Consumed
-        },
-    );
-    result
-}
-
-fn skip_sub_record(
-    cursor: &mut std::io::Cursor<&[u8]>,
-    sub_tag: HeapSubTag,
-    id_size: IdSize,
-) -> bool {
-    use crate::indexer::first_pass::{
-        parse_class_dump, value_byte_size,
-    };
-    use std::io::Cursor;
-
-    fn skip_n(
-        cursor: &mut Cursor<&[u8]>,
-        n: usize,
-    ) -> bool {
-        let pos = cursor.position() as usize;
-        let new_pos = match pos.checked_add(n) {
-            Some(p) => p,
-            None => return false,
-        };
-        if new_pos > cursor.get_ref().len() {
-            return false;
+    let mut iter =
+        HeapSubRecordIter::new(data, id_size);
+    loop {
+        let record = iter.next()?;
+        if let HeapSubRecord::ObjectArray {
+            id,
+            class_id,
+            num_elements,
+            elements_data,
+        } = record
+            && id == target_id
+        {
+            let elements_offset =
+                data_base_offset
+                    + iter.position()
+                    - elements_data.len() as u64;
+            return Some(ObjectArrayMeta {
+                class_id,
+                num_elements,
+                elements_offset,
+            });
         }
-        cursor.set_position(new_pos as u64);
-        true
-    }
-
-    match sub_tag {
-        HeapSubTag::GcRootJniGlobal
-        | HeapSubTag::GcRootThreadBlock => {
-            skip_n(cursor, id_size.as_usize())
-        }
-        HeapSubTag::GcRootJniLocal => {
-            skip_n(cursor, 2 * id_size.as_usize())
-        }
-        HeapSubTag::GcRootJavaFrame
-        | HeapSubTag::GcRootThreadObj
-        | HeapSubTag::GcRootInternedString => {
-            skip_n(cursor, id_size.as_usize() + 8)
-        }
-        HeapSubTag::GcRootNativeStack => {
-            skip_n(cursor, id_size.as_usize() + 8)
-        }
-        HeapSubTag::GcRootStickyClass
-        | HeapSubTag::GcRootMonitorUsed => {
-            skip_n(cursor, id_size.as_usize() + 4)
-        }
-        HeapSubTag::ClassDump => {
-            parse_class_dump(cursor, id_size).is_some()
-        }
-        HeapSubTag::InstanceDump => {
-            if read_id(cursor, id_size).is_err() {
-                return false;
-            }
-            if cursor.read_u32::<BigEndian>().is_err() {
-                return false;
-            }
-            if read_id(cursor, id_size).is_err() {
-                return false;
-            }
-            let Ok(num_bytes) =
-                cursor.read_u32::<BigEndian>()
-            else {
-                return false;
-            };
-            skip_n(cursor, num_bytes as usize)
-        }
-        HeapSubTag::ObjectArrayDump => {
-            if read_id(cursor, id_size).is_err() {
-                return false;
-            }
-            if cursor.read_u32::<BigEndian>().is_err() {
-                return false;
-            }
-            let Ok(num_elements) =
-                cursor.read_u32::<BigEndian>()
-            else {
-                return false;
-            };
-            if read_id(cursor, id_size).is_err() {
-                return false;
-            }
-            let byte_count =
-                match (num_elements as usize)
-                    .checked_mul(id_size.as_usize())
-                {
-                    Some(n) => n,
-                    None => return false,
-                };
-            skip_n(cursor, byte_count)
-        }
-        HeapSubTag::PrimArrayDump => {
-            if read_id(cursor, id_size).is_err() {
-                return false;
-            }
-            if cursor.read_u32::<BigEndian>().is_err() {
-                return false;
-            }
-            let Ok(num_elements) =
-                cursor.read_u32::<BigEndian>()
-            else {
-                return false;
-            };
-            let Ok(elem_type) = cursor.read_u8() else {
-                return false;
-            };
-            let elem_size =
-                value_byte_size(elem_type, id_size);
-            if elem_size == 0 {
-                return false;
-            }
-            let byte_count =
-                match (num_elements as usize)
-                    .checked_mul(elem_size)
-                {
-                    Some(n) => n,
-                    None => return false,
-                };
-            skip_n(cursor, byte_count)
-        }
-        _ => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn bounds_check_overflow_does_not_wrap() {
         let pos: usize = usize::MAX - 5;
@@ -1285,170 +658,10 @@ mod tests {
         );
     }
 
-    // ── walk_heap_subrecords tests ──
-
-    #[test]
-    fn walk_full_traversal_visits_all_sub_records() {
-        let id_size = IdSize::Eight;
-        let mut payload = Vec::new();
-
-        // Instance A (obj_id=0xAA, class=100, data=[0x11])
-        payload.push(0x21);
-        payload.extend_from_slice(
-            &0xAAu64.to_be_bytes(),
-        );
-        payload
-            .extend_from_slice(&0u32.to_be_bytes());
-        payload.extend_from_slice(
-            &100u64.to_be_bytes(),
-        );
-        payload
-            .extend_from_slice(&1u32.to_be_bytes());
-        payload.push(0x11);
-
-        // Instance B (obj_id=0xBB, class=200, data=[0x22])
-        payload.push(0x21);
-        payload.extend_from_slice(
-            &0xBBu64.to_be_bytes(),
-        );
-        payload
-            .extend_from_slice(&0u32.to_be_bytes());
-        payload.extend_from_slice(
-            &200u64.to_be_bytes(),
-        );
-        payload
-            .extend_from_slice(&1u32.to_be_bytes());
-        payload.push(0x22);
-
-        let mut visited = Vec::new();
-        walk_heap_subrecords(
-            &payload,
-            id_size,
-            |sub_tag, tag_pos, _cursor| {
-                visited.push((sub_tag, tag_pos));
-                SubRecordAction::Continue
-            },
-        );
-        assert_eq!(visited.len(), 2);
-        assert_eq!(
-            visited[0].0,
-            HeapSubTag::InstanceDump
-        );
-        assert_eq!(visited[0].1, 0);
-        assert_eq!(
-            visited[1].0,
-            HeapSubTag::InstanceDump
-        );
-        assert_eq!(visited[1].1, 26);
-    }
-
-    #[test]
-    fn walk_break_stops_iteration() {
-        let id_size = IdSize::Eight;
-        let mut payload = Vec::new();
-
-        for obj_id in [0xAAu64, 0xBBu64] {
-            payload.push(0x21);
-            payload.extend_from_slice(
-                &obj_id.to_be_bytes(),
-            );
-            payload.extend_from_slice(
-                &0u32.to_be_bytes(),
-            );
-            payload.extend_from_slice(
-                &100u64.to_be_bytes(),
-            );
-            payload.extend_from_slice(
-                &0u32.to_be_bytes(),
-            );
-        }
-
-        let mut count = 0u32;
-        walk_heap_subrecords(
-            &payload,
-            id_size,
-            |_sub_tag, _tag_pos, _cursor| {
-                count += 1;
-                SubRecordAction::Break
-            },
-        );
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn walk_truncated_sub_record_exits_silently() {
-        let payload = vec![0x21, 0x00, 0x00];
-        let mut count = 0u32;
-        walk_heap_subrecords(
-            &payload,
-            IdSize::Eight,
-            |_sub_tag, _tag_pos, _cursor| {
-                count += 1;
-                SubRecordAction::Continue
-            },
-        );
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn walk_consumed_action_skips_auto_skip() {
-        let id_size = IdSize::Eight;
-        let mut payload = Vec::new();
-        payload.push(0x21);
-        payload.extend_from_slice(
-            &0xAAu64.to_be_bytes(),
-        );
-        payload
-            .extend_from_slice(&0u32.to_be_bytes());
-        payload.extend_from_slice(
-            &100u64.to_be_bytes(),
-        );
-        payload
-            .extend_from_slice(&1u32.to_be_bytes());
-        payload.push(0xFF);
-
-        let mut visited = Vec::new();
-        walk_heap_subrecords(
-            &payload,
-            id_size,
-            |sub_tag, _tag_pos, cursor| {
-                visited.push(sub_tag);
-                let _ = read_id(cursor, id_size);
-                let _ = cursor.read_u32::<BigEndian>();
-                let _ = read_id(cursor, id_size);
-                if let Ok(n) =
-                    cursor.read_u32::<BigEndian>()
-                {
-                    let pos =
-                        cursor.position() as usize;
-                    cursor.set_position(
-                        (pos + n as usize) as u64,
-                    );
-                }
-                SubRecordAction::Consumed
-            },
-        );
-        assert_eq!(visited.len(), 1);
-    }
-
-    #[test]
-    fn walk_empty_data_invokes_no_callbacks() {
-        let mut count = 0u32;
-        walk_heap_subrecords(
-            &[],
-            IdSize::Eight,
-            |_sub_tag, _tag_pos, _cursor| {
-                count += 1;
-                SubRecordAction::Continue
-            },
-        );
-        assert_eq!(count, 0);
-    }
 }
 
 #[cfg(all(test, feature = "test-utils"))]
 mod builder_tests {
-    use super::*;
     use crate::hprof_file::HprofFile;
     use crate::test_utils::HprofTestBuilder;
     use std::io::Write;
@@ -2121,166 +1334,4 @@ mod builder_tests {
         assert_eq!(elems, elements);
     }
 
-    // ── 4.2: HeapVisitor ──
-
-    fn build_hfile(bytes: &[u8]) -> HprofFile {
-        use std::io::Write;
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        tmp.write_all(bytes).unwrap();
-        tmp.flush().unwrap();
-        HprofFile::from_path(tmp.path()).unwrap()
-    }
-
-    #[test]
-    fn visit_heap_calls_on_instance_for_each_instance() {
-        use crate::visitor::HeapVisitor;
-        use std::ops::ControlFlow;
-
-        struct Collector {
-            instances: Vec<(u64, u64)>,
-        }
-        impl HeapVisitor for Collector {
-            fn on_instance(
-                &mut self,
-                id: u64,
-                class_id: u64,
-                _data: &[u8],
-            ) -> ControlFlow<()> {
-                self.instances.push((id, class_id));
-                ControlFlow::Continue(())
-            }
-        }
-
-        let bytes =
-            HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
-                .add_instance(0xA, 0, 100, &[1, 2])
-                .add_instance(0xB, 0, 200, &[3, 4])
-                .build();
-        let hfile = build_hfile(&bytes);
-
-        let mut v = Collector { instances: vec![] };
-        hfile.visit_heap(&mut v);
-
-        assert_eq!(v.instances.len(), 2);
-        assert!(
-            v.instances.contains(&(0xA, 100)),
-            "must visit instance 0xA"
-        );
-        assert!(
-            v.instances.contains(&(0xB, 200)),
-            "must visit instance 0xB"
-        );
-    }
-
-    #[test]
-    fn visit_heap_break_stops_early() {
-        use crate::visitor::HeapVisitor;
-        use std::ops::ControlFlow;
-
-        struct StopAfterFirst {
-            count: usize,
-        }
-        impl HeapVisitor for StopAfterFirst {
-            fn on_instance(
-                &mut self,
-                _id: u64,
-                _class_id: u64,
-                _data: &[u8],
-            ) -> ControlFlow<()> {
-                self.count += 1;
-                ControlFlow::Break(())
-            }
-        }
-
-        let bytes =
-            HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
-                .add_instance(0xA, 0, 100, &[1])
-                .add_instance(0xB, 0, 200, &[2])
-                .build();
-        let hfile = build_hfile(&bytes);
-
-        let mut v = StopAfterFirst { count: 0 };
-        hfile.visit_heap(&mut v);
-
-        assert_eq!(v.count, 1, "must stop after first");
-    }
-
-    #[test]
-    fn visit_heap_visits_prim_arrays() {
-        use crate::visitor::HeapVisitor;
-        use std::ops::ControlFlow;
-
-        struct PrimCollector {
-            arrays: Vec<(u64, u8, u32)>,
-        }
-        impl HeapVisitor for PrimCollector {
-            fn on_prim_array(
-                &mut self,
-                id: u64,
-                element_type: u8,
-                num_elements: u32,
-                _data: &[u8],
-            ) -> ControlFlow<()> {
-                self.arrays.push((
-                    id,
-                    element_type,
-                    num_elements,
-                ));
-                ControlFlow::Continue(())
-            }
-        }
-
-        let bytes =
-            HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
-                .add_prim_array(0xC, 0, 3, 8, &[10, 20, 30])
-                .build();
-        let hfile = build_hfile(&bytes);
-
-        let mut v = PrimCollector { arrays: vec![] };
-        hfile.visit_heap(&mut v);
-
-        assert_eq!(v.arrays.len(), 1);
-        assert_eq!(v.arrays[0], (0xC, 8, 3));
-    }
-
-    #[test]
-    fn visit_heap_visits_object_arrays() {
-        use crate::visitor::HeapVisitor;
-        use std::ops::ControlFlow;
-
-        struct ObjArrCollector {
-            arrays: Vec<(u64, u64, u32)>,
-        }
-        impl HeapVisitor for ObjArrCollector {
-            fn on_object_array(
-                &mut self,
-                id: u64,
-                class_id: u64,
-                num_elements: u32,
-                _elements_data: &[u8],
-                id_size: IdSize,
-            ) -> ControlFlow<()> {
-                assert_eq!(id_size, IdSize::Eight);
-                self.arrays.push((
-                    id,
-                    class_id,
-                    num_elements,
-                ));
-                ControlFlow::Continue(())
-            }
-        }
-
-        let elements = vec![0x10u64, 0x20, 0x30];
-        let bytes =
-            HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
-                .add_object_array(0xD, 0, 500, &elements)
-                .build();
-        let hfile = build_hfile(&bytes);
-
-        let mut v = ObjArrCollector { arrays: vec![] };
-        hfile.visit_heap(&mut v);
-
-        assert_eq!(v.arrays.len(), 1);
-        assert_eq!(v.arrays[0], (0xD, 500, 3));
-    }
 }
