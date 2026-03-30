@@ -62,7 +62,10 @@ pub mod visitor;
 pub use visitor::HeapVisitor;
 
 pub(crate) mod hprof_file;
-pub use hprof_file::{BatchResult, HprofFile, ObjectArrayMeta};
+pub use hprof_file::HprofFile;
+
+pub(crate) mod resolution;
+pub use resolution::{BatchResult, ObjectArrayMeta};
 
 #[cfg(feature = "test-utils")]
 pub(crate) mod test_utils;
