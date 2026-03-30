@@ -6,7 +6,6 @@
 
 use std::collections::HashSet;
 
-use byteorder::{BigEndian, ReadBytesExt};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
@@ -14,8 +13,9 @@ use crate::heap_reader::{
     HeapSubRecord, HeapSubRecordIter,
 };
 use crate::id::IdSize;
+use crate::reader::RecordReader;
 use crate::tags::HeapSubTag;
-use crate::{RawInstance, read_id};
+use crate::RawInstance;
 
 use crate::hprof_file::HprofFile;
 
@@ -167,16 +167,20 @@ impl HprofFile {
         let id_sz = self.header.id_size.as_usize();
         let byte_offset = (index as usize)
             .checked_mul(id_sz)?
-            .checked_add(meta.elements_offset as usize)?;
+            .checked_add(
+                meta.elements_offset as usize,
+            )?;
         let records = self.records_bytes();
-        if exceeds_bounds(byte_offset, id_sz, records.len())
-        {
+        if exceeds_bounds(
+            byte_offset, id_sz, records.len(),
+        ) {
             return None;
         }
-        let mut cursor = std::io::Cursor::new(
+        let mut reader = RecordReader::new(
             &records[byte_offset..byte_offset + id_sz],
+            self.header.id_size,
         );
-        read_id(&mut cursor, self.header.id_size).ok()
+        reader.read_id()
     }
 
     /// Reads an `INSTANCE_DUMP` sub-record at a known
@@ -191,37 +195,29 @@ impl HprofFile {
         offset: u64,
     ) -> Option<RawInstance> {
         let records = self.records_bytes();
-        let start = match usize::try_from(offset) {
-            Ok(s) => s,
-            Err(_) => return None,
-        };
+        let start = usize::try_from(offset).ok()?;
         if start >= records.len() {
             return None;
         }
-        let data = &records[start..];
-        let mut cursor = std::io::Cursor::new(data);
-        let sub_tag =
-            HeapSubTag::from(cursor.read_u8().ok()?);
-        if sub_tag != HeapSubTag::InstanceDump {
+        let mut reader = RecordReader::new(
+            &records[start..],
+            self.header.id_size,
+        );
+        let tag = reader.read_u8()?;
+        if HeapSubTag::from(tag)
+            != HeapSubTag::InstanceDump
+        {
             return None;
         }
-        let _obj_id =
-            read_id(&mut cursor, self.header.id_size)
-                .ok()?;
-        let _stack_serial =
-            cursor.read_u32::<BigEndian>().ok()?;
-        let class_object_id =
-            read_id(&mut cursor, self.header.id_size)
-                .ok()?;
+        let _obj_id = reader.read_id()?;
+        let _stack_serial = reader.read_u32()?;
+        let class_object_id = reader.read_id()?;
         let num_bytes =
-            cursor.read_u32::<BigEndian>().ok()? as usize;
-        let pos = cursor.position() as usize;
-        if exceeds_bounds(pos, num_bytes, data.len()) {
-            return None;
-        }
+            reader.read_u32()? as usize;
+        let data = reader.read_bytes(num_bytes)?;
         Some(RawInstance {
             class_object_id,
-            data: data[pos..pos + num_bytes].to_vec(),
+            data: data.to_vec(),
         })
     }
 
@@ -238,43 +234,35 @@ impl HprofFile {
         use crate::indexer::first_pass::value_byte_size;
 
         let records = self.records_bytes();
-        let start = match usize::try_from(offset) {
-            Ok(s) => s,
-            Err(_) => return None,
-        };
+        let start = usize::try_from(offset).ok()?;
         if start >= records.len() {
             return None;
         }
-        let data = &records[start..];
-        let mut cursor = std::io::Cursor::new(data);
-        let sub_tag =
-            HeapSubTag::from(cursor.read_u8().ok()?);
-        if sub_tag != HeapSubTag::PrimArrayDump {
+        let mut reader = RecordReader::new(
+            &records[start..],
+            self.header.id_size,
+        );
+        let tag = reader.read_u8()?;
+        if HeapSubTag::from(tag)
+            != HeapSubTag::PrimArrayDump
+        {
             return None;
         }
-        let _arr_id =
-            read_id(&mut cursor, self.header.id_size)
-                .ok()?;
-        let _stack_serial =
-            cursor.read_u32::<BigEndian>().ok()?;
+        let _arr_id = reader.read_id()?;
+        let _stack_serial = reader.read_u32()?;
         let num_elements =
-            cursor.read_u32::<BigEndian>().ok()? as usize;
-        let elem_type = cursor.read_u8().ok()?;
-        let elem_size =
-            value_byte_size(elem_type, self.header.id_size);
+            reader.read_u32()? as usize;
+        let elem_type = reader.read_u8()?;
+        let elem_size = value_byte_size(
+            elem_type, self.header.id_size,
+        );
         if elem_size == 0 {
             return None;
         }
         let byte_count =
             num_elements.checked_mul(elem_size)?;
-        let pos = cursor.position() as usize;
-        if exceeds_bounds(pos, byte_count, data.len()) {
-            return None;
-        }
-        Some((
-            elem_type,
-            data[pos..pos + byte_count].to_vec(),
-        ))
+        let data = reader.read_bytes(byte_count)?;
+        Some((elem_type, data.to_vec()))
     }
 
     /// Scans heap segments that might contain
