@@ -17,20 +17,27 @@ use memmap2::Mmap;
 use crate::indexer::{first_pass::run_first_pass, precise::PreciseIndex, segment::SegmentFilter};
 use crate::{HprofError, HprofHeader, open_readonly, parse_header};
 
+/// Statistics collected during the first-pass indexing of an hprof file.
+///
+/// Groups the three observable outputs of the indexer: parse warnings,
+/// and record counts used to compute the indexing ratio.
+#[derive(Debug)]
+pub struct IndexStats {
+    /// Non-fatal warnings collected during indexing (truncated payloads, etc.).
+    pub warnings: Vec<String>,
+    /// Known-type records whose header and payload window were within bounds.
+    pub records_attempted: u64,
+    /// Records successfully parsed and inserted into the index.
+    pub records_indexed: u64,
+}
+
 /// An open hprof file with a parsed header and populated structural index.
 ///
 /// ## Fields
-/// - `header`: [`HprofHeader`] — parsed file header (version, id_size,
-///   timestamp).
 /// - `index`: [`PreciseIndex`] — O(1) lookup maps for all structural records.
-/// - `index_warnings`: non-fatal parse errors collected during indexing.
-/// - `records_attempted`: known-type records whose payload window was within
-///   bounds. Unknown-tag records are silently skipped and not counted here.
-/// - `records_indexed`: records successfully parsed and inserted into the index.
-/// - `segment_filters`: probabilistic per-segment filters for object ID
-///   resolution. Each [`SegmentFilter`] covers a 64 MiB slice of the records
-///   section and allows fast candidate-segment lookup before a targeted scan.
+/// - `stats`: [`IndexStats`] — warnings and record counts from the indexing pass.
 ///
+/// Use [`HprofFile::id_size`] to retrieve the ID width from the file header.
 /// The internal `mmap` field keeps the memory mapping alive and is used
 /// by [`HprofFile::resolve_string`] to lazily decode string content.
 #[derive(Debug)]
@@ -38,25 +45,18 @@ pub struct HprofFile {
     /// Memory mapping — used by `resolve_string` and kept alive for
     /// the duration of this struct's lifetime.
     mmap: Mmap,
-    /// Parsed hprof file header.
-    pub header: HprofHeader,
+    /// Parsed hprof file header (crate-internal; use [`HprofFile::id_size`]).
+    pub(crate) header: HprofHeader,
     /// O(1) lookup index built from the first sequential pass.
     pub index: PreciseIndex,
-    /// Warnings collected during indexing (non-fatal parse errors).
-    pub index_warnings: Vec<String>,
-    /// Records whose header and payload window were valid.
-    pub records_attempted: u64,
-    /// Records successfully parsed and inserted into the index.
-    pub records_indexed: u64,
+    /// Statistics and warnings from the indexing pass.
+    pub stats: IndexStats,
     /// Probabilistic per-segment filters for object ID resolution.
-    // `SegmentFilter` is `pub(crate)` — object resolution via segment filters is Story 3.4.
-    #[allow(private_interfaces)]
-    pub segment_filters: Vec<SegmentFilter>,
+    pub(crate) segment_filters: Vec<SegmentFilter>,
     /// Byte offset of the first record (immediately after the file header).
-    pub records_start: usize,
-    /// Location of every HEAP_DUMP / HEAP_DUMP_SEGMENT
-    /// record. See [`HeapRecordRange`].
-    pub heap_record_ranges: Vec<crate::indexer::HeapRecordRange>,
+    pub(crate) records_start: usize,
+    /// Location of every HEAP_DUMP / HEAP_DUMP_SEGMENT record.
+    pub(crate) heap_record_ranges: Vec<crate::indexer::HeapRecordRange>,
 }
 
 impl HprofFile {
@@ -96,9 +96,11 @@ impl HprofFile {
             mmap,
             header,
             index: result.index,
-            index_warnings: result.warnings,
-            records_attempted: result.records_attempted,
-            records_indexed: result.records_indexed,
+            stats: IndexStats {
+                warnings: result.warnings,
+                records_attempted: result.records_attempted,
+                records_indexed: result.records_indexed,
+            },
             segment_filters: result.segment_filters,
             records_start,
             heap_record_ranges: result.heap_record_ranges,
@@ -135,6 +137,11 @@ impl HprofFile {
     pub fn resolve_string(&self, sref: &crate::HprofStringRef) -> String {
         sref.resolve(&self.mmap[self.records_start..])
     }
+
+    /// Returns the ID width declared in the file header (`4` or `8` bytes).
+    pub fn id_size(&self) -> crate::IdSize {
+        self.header.id_size
+    }
 }
 
 #[cfg(test)]
@@ -165,7 +172,7 @@ mod tests {
         tmp.flush().unwrap();
 
         let hfile = HprofFile::from_path(tmp.path()).unwrap(); // Ok, not Err
-        assert!(!hfile.index_warnings.is_empty());
+        assert!(!hfile.stats.warnings.is_empty());
         assert!(hfile.index.strings.is_empty());
     }
 
@@ -247,9 +254,9 @@ mod tests {
         assert_eq!(hfile.header.version, HprofVersion::V1_0_2);
         assert_eq!(hfile.header.id_size, IdSize::Eight);
         assert!(hfile.index.strings.is_empty());
-        assert!(hfile.index_warnings.is_empty());
-        assert_eq!(hfile.records_attempted, 0);
-        assert_eq!(hfile.records_indexed, 0);
+        assert!(hfile.stats.warnings.is_empty());
+        assert_eq!(hfile.stats.records_attempted, 0);
+        assert_eq!(hfile.stats.records_indexed, 0);
     }
 }
 
@@ -315,9 +322,9 @@ mod builder_tests {
         assert_eq!(hfile.index.strings.len(), 1);
         let sref = &hfile.index.strings[&99];
         assert_eq!(hfile.resolve_string(sref), "thread-main");
-        assert!(hfile.index_warnings.is_empty());
-        assert_eq!(hfile.records_attempted, 1);
-        assert_eq!(hfile.records_indexed, 1);
+        assert!(hfile.stats.warnings.is_empty());
+        assert_eq!(hfile.stats.records_attempted, 1);
+        assert_eq!(hfile.stats.records_indexed, 1);
     }
 
     #[test]

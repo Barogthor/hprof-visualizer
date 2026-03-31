@@ -185,7 +185,7 @@ fn extract_array_list(
     let fields = decode_fields(
         raw,
         &hfile.index,
-        hfile.header.id_size,
+        hfile.id_size(),
         hfile.records_bytes(),
     );
 
@@ -231,7 +231,7 @@ fn extract_hash_map(
     let fields = decode_fields(
         raw,
         &hfile.index,
-        hfile.header.id_size,
+        hfile.id_size(),
         hfile.records_bytes(),
     );
 
@@ -319,7 +319,7 @@ fn extract_hash_map(
                     let nf = decode_fields(
                         &nr,
                         &hfile.index,
-                        hfile.header.id_size,
+                        hfile.id_size(),
                         hfile.records_bytes(),
                     );
                     node_id = nf
@@ -370,7 +370,7 @@ fn extract_hash_map(
                 let node_fields = decode_fields(
                     &node_raw,
                     &hfile.index,
-                    hfile.header.id_size,
+                    hfile.id_size(),
                     hfile.records_bytes(),
                 );
                 let key = node_fields
@@ -489,7 +489,7 @@ fn extract_hash_map_full(
                 let node_fields = decode_fields(
                     &node_raw,
                     &hfile.index,
-                    hfile.header.id_size,
+                    hfile.id_size(),
                     hfile.records_bytes(),
                 );
                 let key = node_fields
@@ -564,7 +564,7 @@ fn extract_hash_set(
     let fields = decode_fields(
         raw,
         &hfile.index,
-        hfile.header.id_size,
+        hfile.id_size(),
         hfile.records_bytes(),
     );
 
@@ -615,7 +615,7 @@ fn extract_linked_list(
     let fields = decode_fields(
         raw,
         &hfile.index,
-        hfile.header.id_size,
+        hfile.id_size(),
         hfile.records_bytes(),
     );
 
@@ -682,7 +682,7 @@ fn extract_linked_list(
             let node_fields = decode_fields(
                 &node_raw,
                 &hfile.index,
-                hfile.header.id_size,
+                hfile.id_size(),
                 hfile.records_bytes(),
             );
             let item = node_fields
@@ -878,7 +878,7 @@ fn id_to_field_value(id: u64, hfile: &HprofFile) -> FieldValue {
         let entry_count = crate::engine_impl::collection_entry_count(
             &raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
         let inline_value = crate::engine_impl::resolve_inline_value(&class_name, hfile, id);
@@ -901,7 +901,7 @@ fn id_to_field_value(id: u64, hfile: &HprofFile) -> FieldValue {
     // Try primitive array.
     if let Some((etype, bytes)) = hfile.find_prim_array(id) {
         let type_name = crate::engine_impl::prim_array_type_name(etype);
-        let esz = crate::engine_impl::field_byte_size(etype, hfile.header.id_size);
+        let esz = crate::engine_impl::field_byte_size(etype, hfile.id_size());
         let cnt = if esz > 0 { bytes.len() / esz } else { 0 };
         return FieldValue::ObjectRef {
             id,

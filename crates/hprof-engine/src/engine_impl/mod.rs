@@ -144,7 +144,7 @@ pub(crate) fn resolve_inline_value(
     let fields = crate::resolver::decode_fields(
         &raw,
         &hfile.index,
-        hfile.header.id_size,
+        hfile.id_size(),
         hfile.records_bytes(),
     );
     fields
@@ -298,7 +298,7 @@ impl Engine {
 
     /// Returns the identifier size used in this heap dump.
     fn id_size(&self) -> IdSize {
-        self.hfile.header.id_size
+        self.hfile.id_size()
     }
 
     /// Resolves all thread metadata (name + state) once
@@ -372,7 +372,7 @@ impl Engine {
         let fields = crate::resolver::decode_fields(
             &raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
 
@@ -424,7 +424,7 @@ impl Engine {
         let holder_fields = crate::resolver::decode_fields(
             &holder_raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
         holder_fields.iter().find_map(|f| {
@@ -451,7 +451,7 @@ impl Engine {
         let fields = crate::resolver::decode_fields(
             &raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
         let value_id = fields.iter().find_map(|f| {
@@ -510,7 +510,7 @@ impl Engine {
         let str_fields = crate::resolver::decode_fields(
             &str_raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
         let value_id = str_fields.iter().find_map(|f| {
@@ -841,7 +841,7 @@ impl Drop for Engine {
 
 impl NavigationEngine for Engine {
     fn warnings(&self) -> &[String] {
-        &self.hfile.index_warnings
+        &self.hfile.stats.warnings
     }
 
     fn list_threads(&self) -> Vec<ThreadInfo> {
@@ -1098,19 +1098,19 @@ impl NavigationEngine for Engine {
     }
 
     fn indexing_ratio(&self) -> f64 {
-        if self.hfile.records_attempted == 0 {
+        if self.hfile.stats.records_attempted == 0 {
             return 100.0;
         }
-        self.hfile.records_indexed as f64 / self.hfile.records_attempted as f64 * 100.0
+        self.hfile.stats.records_indexed as f64 / self.hfile.stats.records_attempted as f64 * 100.0
     }
 
     fn is_fully_indexed(&self) -> bool {
         // A file truncated mid-record breaks out of the scan loop before
         // incrementing records_attempted, so the ratio stays 100%.
         // index_warnings catches that case (payload-exceeds-file warnings).
-        self.hfile.index_warnings.is_empty()
-            && (self.hfile.records_attempted == 0
-                || self.hfile.records_indexed >= self.hfile.records_attempted)
+        self.hfile.stats.warnings.is_empty()
+            && (self.hfile.stats.records_attempted == 0
+                || self.hfile.stats.records_indexed >= self.hfile.stats.records_attempted)
     }
 
     fn skeleton_bytes(&self) -> usize {

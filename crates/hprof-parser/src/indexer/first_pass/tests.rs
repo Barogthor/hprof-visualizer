@@ -2698,7 +2698,7 @@ mod budget_batching_tests {
             hfile_budget.segment_filters.len(),
             hfile_none.segment_filters.len(),
         );
-        assert_eq!(hfile_budget.records_indexed, hfile_none.records_indexed,);
+        assert_eq!(hfile_budget.stats.records_indexed, hfile_none.stats.records_indexed,);
         assert_eq!(
             hfile_budget.heap_record_ranges.len(),
             hfile_none.heap_record_ranges.len(),

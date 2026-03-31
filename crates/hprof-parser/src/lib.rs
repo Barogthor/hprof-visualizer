@@ -66,7 +66,7 @@ pub use indexer::HeapRecordRange;
 pub use indexer::precise::PreciseIndex;
 
 pub(crate) mod hprof_file;
-pub use hprof_file::HprofFile;
+pub use hprof_file::{HprofFile, IndexStats};
 
 pub(crate) mod resolution;
 pub use resolution::{BatchResult, ObjectArrayMeta};

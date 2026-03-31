@@ -113,9 +113,9 @@ pub fn open_hprof_file_with_progress(
         hprof_api::MemoryBudget::Unlimited,
     )?;
     Ok(IndexSummary {
-        records_attempted: hfile.records_attempted,
-        records_indexed: hfile.records_indexed,
-        warnings: hfile.index_warnings,
+        records_attempted: hfile.stats.records_attempted,
+        records_indexed: hfile.stats.records_indexed,
+        warnings: hfile.stats.warnings,
     })
 }
 

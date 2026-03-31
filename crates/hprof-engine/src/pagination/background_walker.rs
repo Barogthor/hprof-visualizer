@@ -177,7 +177,7 @@ fn walk_hash_map(
     let fields = decode_fields(
         raw,
         &hfile.index,
-        hfile.header.id_size,
+        hfile.id_size(),
         hfile.records_bytes(),
     );
 
@@ -217,7 +217,7 @@ fn walk_hash_map(
                 let head_fields = decode_fields(
                     head_raw,
                     &hfile.index,
-                    hfile.header.id_size,
+                    hfile.id_size(),
                     hfile.records_bytes(),
                 );
                 let next_id = extract_next_id(&head_fields);
@@ -271,7 +271,7 @@ fn walk_hash_map(
             let node_fields = decode_fields(
                 &node_raw,
                 &hfile.index,
-                hfile.header.id_size,
+                hfile.id_size(),
                 hfile.records_bytes(),
             );
             node_id = extract_next_id(&node_fields);
@@ -309,7 +309,7 @@ fn walk_linked_list(
     let fields = decode_fields(
         raw,
         &hfile.index,
-        hfile.header.id_size,
+        hfile.id_size(),
         hfile.records_bytes(),
     );
 
@@ -356,7 +356,7 @@ fn walk_linked_list(
         let node_fields = decode_fields(
             &node_raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
         node_id = extract_next_id(&node_fields);
@@ -393,7 +393,7 @@ fn walk_hash_set(
     let fields = decode_fields(
         raw,
         &hfile.index,
-        hfile.header.id_size,
+        hfile.id_size(),
         hfile.records_bytes(),
     );
 
