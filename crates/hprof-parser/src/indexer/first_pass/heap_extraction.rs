@@ -6,8 +6,8 @@ use std::ops::Range;
 use super::hprof_primitives::PARALLEL_THRESHOLD;
 use super::offset_lookup::{EntryPointTracker, SegmentEntryPoint};
 use super::{ClassDumpEntry, FilterEntry, FirstPassContext, RawFrameRoot, RawThreadObject};
+use crate::format::IdSize;
 use crate::heap_reader::{HeapSubRecord, HeapSubRecordIter};
-use crate::id::IdSize;
 use crate::indexer::HeapRecordRange;
 use hprof_api::ProgressNotifier;
 

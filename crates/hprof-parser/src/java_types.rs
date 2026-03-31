@@ -32,7 +32,7 @@ pub const PRIM_TYPE_LONG: u8 = 11;
 
 /// Returns the byte size of a value with the given
 /// hprof type code.
-pub(crate) fn value_byte_size(type_code: u8, id_size: crate::id::IdSize) -> usize {
+pub(crate) fn value_byte_size(type_code: u8, id_size: crate::format::IdSize) -> usize {
     match type_code {
         PRIM_TYPE_OBJECT_REF => id_size.as_usize(),
         PRIM_TYPE_BOOLEAN | PRIM_TYPE_BYTE => 1,

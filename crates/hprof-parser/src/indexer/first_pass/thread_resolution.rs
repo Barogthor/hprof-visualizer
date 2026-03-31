@@ -11,14 +11,14 @@ use hprof_api::ProgressNotifier;
 
 use super::FirstPassContext;
 use super::offset_lookup::{SegmentEntryPoint, batch_lookup_by_filter};
-use crate::id::IdSize;
+use crate::HprofThread;
+use crate::format::IdSize;
 use crate::indexer::precise::PreciseIndex;
 use crate::indexer::segment::SegmentFilter;
 use crate::java_types::PRIM_TYPE_OBJECT_REF;
 use crate::java_types::value_byte_size;
 use crate::reader::{InstanceDumpBody, RecordReader};
 use crate::tags::HeapSubTag;
-use crate::HprofThread;
 
 /// An object-reference field extracted by name from
 /// an instance's field data.
@@ -151,8 +151,13 @@ pub(super) fn resolve_all(
     #[cfg(feature = "test-utils")]
     let t0 = Instant::now();
 
-    let thread_ids: HashSet<u64> =
-        ctx.result.index.thread_object_ids.values().copied().collect();
+    let thread_ids: HashSet<u64> = ctx
+        .result
+        .index
+        .thread_object_ids
+        .values()
+        .copied()
+        .collect();
 
     if !thread_ids.is_empty() {
         // Round 0: locate thread object instances.
@@ -310,7 +315,10 @@ fn extract_obj_refs(
                         .map(|sref| sref.resolve(records_data))
                         .unwrap_or_default();
                     if target_names.contains(&name.as_str()) {
-                        results.push(ObjRef { field_name: name, ref_id });
+                        results.push(ObjRef {
+                            field_name: name,
+                            ref_id,
+                        });
                     }
                 }
             } else if !reader.skip(field_size) {

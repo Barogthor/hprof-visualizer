@@ -18,7 +18,7 @@
 //! ```
 
 use crate::StaticValue;
-use crate::id::IdSize;
+use crate::format::IdSize;
 
 /// Returns the byte offset of the first record in a builder-produced byte slice.
 ///

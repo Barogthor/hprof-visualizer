@@ -28,23 +28,16 @@ pub use error::HprofError;
 pub(crate) mod mmap;
 pub use mmap::open_readonly;
 
-pub(crate) mod header;
-pub use header::{HprofHeader, HprofVersion, parse_header};
-
-pub(crate) mod id;
-pub use id::{IdSize, read_id};
+pub(crate) mod format;
+pub use format::{
+    HprofHeader, HprofStringRef, HprofVersion, IdSize, RecordHeader, parse_header, read_id,
+};
 
 pub(crate) mod reader;
 pub use reader::RecordReader;
 
 pub(crate) mod heap_reader;
 pub use heap_reader::{HeapSubRecord, HeapSubRecordIter};
-
-pub(crate) mod record;
-pub use record::RecordHeader;
-
-pub(crate) mod strings;
-pub use strings::HprofStringRef;
 
 pub(crate) mod types;
 pub use types::{

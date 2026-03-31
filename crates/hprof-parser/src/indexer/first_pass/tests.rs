@@ -14,10 +14,10 @@ use super::heap_extraction::{compute_batch_ranges, extract_heap_segment, merge_s
 #[cfg(feature = "test-utils")]
 use super::hprof_primitives::{PARALLEL_THRESHOLD, PROGRESS_REPORT_INTERVAL};
 #[cfg(feature = "test-utils")]
-use crate::reader::RecordReader;
-#[cfg(feature = "test-utils")]
 use super::offset_lookup::SegmentEntryPoint;
 use super::*;
+#[cfg(feature = "test-utils")]
+use crate::reader::RecordReader;
 #[cfg(feature = "test-utils")]
 use crate::tags::HeapSubTag;
 #[cfg(feature = "test-utils")]
@@ -164,10 +164,7 @@ fn skip_heap_object(
 /// Parses a `CLASS_DUMP` sub-record from the current cursor position using
 /// [`RecordReader`], advancing `cursor` by the bytes consumed.
 #[cfg(feature = "test-utils")]
-fn parse_class_dump_at(
-    cursor: &mut Cursor<&[u8]>,
-    id_size: IdSize,
-) -> Option<ClassDumpInfo> {
+fn parse_class_dump_at(cursor: &mut Cursor<&[u8]>, id_size: IdSize) -> Option<ClassDumpInfo> {
     let pos = cursor.position() as usize;
     let remaining = &cursor.get_ref()[pos..];
     let mut r = RecordReader::new(remaining, id_size);
@@ -2698,7 +2695,10 @@ mod budget_batching_tests {
             hfile_budget.segment_filters.len(),
             hfile_none.segment_filters.len(),
         );
-        assert_eq!(hfile_budget.stats.records_indexed, hfile_none.stats.records_indexed,);
+        assert_eq!(
+            hfile_budget.stats.records_indexed,
+            hfile_none.stats.records_indexed,
+        );
         assert_eq!(
             hfile_budget.heap_record_ranges.len(),
             hfile_none.heap_record_ranges.len(),
@@ -2808,7 +2808,7 @@ mod budget_batching_tests {
 mod story_13_0_tests {
     use hprof_api::{MemoryBudget, ProgressEvent, ProgressNotifier, TestObserver};
 
-    use crate::id::IdSize;
+    use crate::format::IdSize;
     use crate::indexer::first_pass::run_first_pass;
     use crate::test_utils::{HprofTestBuilder, advance_past_header};
 
@@ -2912,7 +2912,7 @@ mod story_13_0_tests {
 mod post_extraction_tests {
     use hprof_api::{MemoryBudget, NullProgressObserver, ProgressNotifier};
 
-    use crate::id::IdSize;
+    use crate::format::IdSize;
     use crate::indexer::DiagnosticInfo;
     use crate::indexer::IndexResult;
     use crate::indexer::first_pass::run_first_pass;

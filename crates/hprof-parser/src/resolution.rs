@@ -10,8 +10,8 @@ use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::RawInstance;
+use crate::format::IdSize;
 use crate::heap_reader::{HeapSubRecord, HeapSubRecordIter};
-use crate::id::IdSize;
 use crate::reader::RecordReader;
 use crate::tags::HeapSubTag;
 

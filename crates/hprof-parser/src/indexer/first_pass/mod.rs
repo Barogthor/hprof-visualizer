@@ -24,7 +24,7 @@ use hprof_api::{MemoryBudget, ProgressNotifier};
 use rustc_hash::FxHashSet;
 
 use crate::ClassDumpInfo;
-use crate::id::IdSize;
+use crate::format::IdSize;
 #[cfg(feature = "test-utils")]
 use crate::indexer::DiagnosticInfo;
 use crate::indexer::IndexResult;

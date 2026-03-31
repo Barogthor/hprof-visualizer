@@ -9,7 +9,7 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
 
-use crate::id::IdSize;
+use crate::format::IdSize;
 use crate::java_types::value_byte_size;
 use crate::java_types::{
     PRIM_TYPE_BOOLEAN, PRIM_TYPE_BYTE, PRIM_TYPE_CHAR, PRIM_TYPE_DOUBLE, PRIM_TYPE_FLOAT,
@@ -306,9 +306,7 @@ impl<'a> RecordReader<'a> {
 
     /// Parses an `INSTANCE_DUMP` sub-record body (after
     /// the sub-tag byte `0x21`).
-    pub fn parse_instance_dump_body(
-        &mut self,
-    ) -> Option<InstanceDumpBody<'a>> {
+    pub fn parse_instance_dump_body(&mut self) -> Option<InstanceDumpBody<'a>> {
         let object_id = self.read_id()?;
         let _stack_serial = self.read_u32()?;
         let class_object_id = self.read_id()?;
@@ -721,7 +719,10 @@ mod tests {
         assert_eq!(parsed.static_fields[0].name_string_id, 10);
         assert_eq!(parsed.static_fields[0].value, StaticValue::Int(42));
         assert_eq!(parsed.static_fields[1].name_string_id, 11);
-        assert_eq!(parsed.static_fields[1].value, StaticValue::ObjectRef(0xDEAD));
+        assert_eq!(
+            parsed.static_fields[1].value,
+            StaticValue::ObjectRef(0xDEAD)
+        );
     }
 
     #[test]
@@ -753,7 +754,13 @@ mod tests {
             .expect("partial ClassDumpInfo must be returned, not None");
         assert_eq!(info.class_object_id, 100);
         assert_eq!(info.super_class_id, 50);
-        assert!(info.static_fields.is_empty(), "static_fields must be empty on unknown type");
-        assert!(info.instance_fields.is_empty(), "instance_fields must be empty");
+        assert!(
+            info.static_fields.is_empty(),
+            "static_fields must be empty on unknown type"
+        );
+        assert!(
+            info.instance_fields.is_empty(),
+            "instance_fields must be empty"
+        );
     }
 }

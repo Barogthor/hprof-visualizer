@@ -9,8 +9,8 @@ use std::collections::HashSet;
 
 use rustc_hash::FxHashMap;
 
+use crate::format::IdSize;
 use crate::heap_reader::{HeapSubRecord, HeapSubRecordIter};
-use crate::id::IdSize;
 use crate::indexer::segment::{SEGMENT_SIZE, SegmentFilter};
 
 /// Marks the byte position of the first sub-record tag

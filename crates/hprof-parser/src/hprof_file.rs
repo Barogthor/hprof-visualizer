@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn from_path_valid_file_parses_header() {
         use crate::HprofVersion;
-        use crate::id::IdSize;
+        use crate::format::IdSize;
 
         // Build a minimal valid hprof file (header only, no records)
         let mut bytes: Vec<u8> = Vec::new();

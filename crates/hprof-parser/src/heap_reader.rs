@@ -7,7 +7,7 @@
 //! [`Iterator::next`] — callers never touch raw bytes.
 
 use crate::ClassDumpInfo;
-use crate::id::IdSize;
+use crate::format::IdSize;
 use crate::reader::RecordReader;
 use crate::tags::HeapSubTag;
 
@@ -368,7 +368,11 @@ mod tests {
         data.extend(make_instance(99, 200, &[], id_size));
 
         let records: Vec<_> = HeapSubRecordIter::new(&data, id_size).collect();
-        assert_eq!(records.len(), 2, "tag 0x{tag:02x}: expected GcRootOther + Instance");
+        assert_eq!(
+            records.len(),
+            2,
+            "tag 0x{tag:02x}: expected GcRootOther + Instance"
+        );
         match &records[1] {
             HeapSubRecord::Instance { id, .. } => {
                 assert_eq!(*id, 99, "tag 0x{tag:02x}: sentinel instance id wrong");
