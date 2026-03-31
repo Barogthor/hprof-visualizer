@@ -2045,6 +2045,18 @@ mod chunked_extraction_tests {
         p
     }
 
+    fn empty_extraction_output() -> HeapExtractionOutput {
+        HeapExtractionOutput {
+            seg_builder: SegmentFilterBuilder::new(),
+            segment_entry_points: Vec::new(),
+            raw_frame_roots: Vec::new(),
+            raw_thread_objects: Vec::new(),
+            class_dumps: Vec::new(),
+            warnings: Vec::new(),
+            suppressed_warnings: 0,
+        }
+    }
+
     /// 5.1: 6 InstanceDumps, chunk to hold ~2 each
     #[test]
     fn chunked_6_instances_3_chunks() {
@@ -2123,30 +2135,33 @@ mod chunked_extraction_tests {
         let multi = extract_heap_segment(&payload, 0, id_size, 40);
         assert!(multi.chunks.len() > 1, "must produce multiple chunks");
 
-        // Merge both into separate contexts and compare
-        let mut ctx_s = FirstPassContext::new(&[], IdSize::Eight, 0, MemoryBudget::Unlimited);
-        single.merge_into(&mut ctx_s);
+        // Merge both into separate outputs and compare
+        let mut out_s = empty_extraction_output();
+        single.merge_into(&mut out_s);
 
-        let mut ctx_m = FirstPassContext::new(&[], IdSize::Eight, 0, MemoryBudget::Unlimited);
-        multi.merge_into(&mut ctx_m);
+        let mut out_m = empty_extraction_output();
+        multi.merge_into(&mut out_m);
 
-        let s_frame_roots = ctx_s.raw_frame_roots.len();
-        let m_frame_roots = ctx_m.raw_frame_roots.len();
-        let s_class_dumps = ctx_s.result.index.class_dumps.len();
-        let m_class_dumps = ctx_m.result.index.class_dumps.len();
         assert_eq!(
-            s_frame_roots, m_frame_roots,
+            out_s.raw_frame_roots.len(),
+            out_m.raw_frame_roots.len(),
             "raw_frame_roots count must match"
         );
-        assert_eq!(s_class_dumps, m_class_dumps, "class_dumps count must match");
-
-        // Verify filter_ids equivalence via segment_filters (AC3)
-        let idx_s = ctx_s.finish();
-        let idx_m = ctx_m.finish();
         assert_eq!(
-            idx_s.segment_filters.len(),
-            idx_m.segment_filters.len(),
-            "segment_filter count must match (validates filter_ids identity)"
+            out_s.class_dumps.len(),
+            out_m.class_dumps.len(),
+            "class_dumps count must match",
+        );
+
+        // Verify filter_ids equivalence via
+        // segment_filters (AC3)
+        let (filters_s, _) = out_s.seg_builder.finish();
+        let (filters_m, _) = out_m.seg_builder.finish();
+        assert_eq!(
+            filters_s.len(),
+            filters_m.len(),
+            "segment_filter count must match \
+             (validates filter_ids identity)"
         );
     }
 
@@ -2196,7 +2211,7 @@ mod chunked_extraction_tests {
 
         // Value-for-value: instance_offsets keys and
         // offsets (verifies plumbing through
-        // FirstPassContext → extract_all → merge_into).
+        // extract_all → merge_into pipeline).
         let mut budgeted_ids: Vec<u64> = result_budgeted.index.instance_offsets.keys();
         budgeted_ids.sort_unstable();
         let mut none_ids: Vec<u64> = result_none.index.instance_offsets.keys();
@@ -2311,18 +2326,18 @@ mod chunked_extraction_tests {
         let direct_result = extract_heap_segment(&payload, 0, id_size, usize::MAX);
 
         // Merge via HeapSegmentParsingResult
-        let mut ctx_wrapper = FirstPassContext::new(&[], IdSize::Eight, 0, MemoryBudget::Unlimited);
-        parsing_result.merge_into(&mut ctx_wrapper);
+        let mut out_wrapper = empty_extraction_output();
+        parsing_result.merge_into(&mut out_wrapper);
 
         // Merge via direct merge_segment_result
-        let mut ctx_direct = FirstPassContext::new(&[], IdSize::Eight, 0, MemoryBudget::Unlimited);
+        let mut out_direct = empty_extraction_output();
         for chunk in direct_result.chunks {
-            merge_segment_result(&mut ctx_direct, chunk);
+            merge_segment_result(&mut out_direct, chunk);
         }
 
         assert_eq!(
-            ctx_wrapper.raw_frame_roots.len(),
-            ctx_direct.raw_frame_roots.len(),
+            out_wrapper.raw_frame_roots.len(),
+            out_direct.raw_frame_roots.len(),
         );
     }
 
@@ -2336,9 +2351,9 @@ mod chunked_extraction_tests {
         );
 
         // merge_into is a no-op
-        let mut ctx = FirstPassContext::new(&[], IdSize::Eight, 0, MemoryBudget::Unlimited);
-        result.merge_into(&mut ctx);
-        assert!(ctx.raw_frame_roots.is_empty());
+        let mut output = empty_extraction_output();
+        result.merge_into(&mut output);
+        assert!(output.raw_frame_roots.is_empty());
     }
 }
 
@@ -3378,8 +3393,8 @@ fn entry_points_at_segment_boundary_large() {
         !result.segment_filters.is_empty(),
         "must have at least 1 segment filter"
     );
-    // Entry points are stored in FirstPassContext which
-    // is consumed by finish(). We verify indirectly by
+    // Entry points are internal to the pipeline and
+    // consumed during assembly. We verify indirectly by
     // checking that the INSTANCE_DUMP was indexed (its
     // offset would be found via the filter).
     // More direct verification: ensure the second
@@ -3688,18 +3703,16 @@ fn push_warning_closure_not_called_beyond_cap() {
     let mut suppressed: u64 = 0;
 
     for i in 0..super::hprof_primitives::MAX_WARNINGS {
-        super::FirstPassContext::push_warning_raw(&mut warnings, &mut suppressed, || {
-            format!("warn {i}")
-        });
+        super::push_warning_capped(&mut warnings, &mut suppressed, || format!("warn {i}"));
     }
-    assert_eq!(warnings.len(), super::hprof_primitives::MAX_WARNINGS);
+    assert_eq!(warnings.len(), super::hprof_primitives::MAX_WARNINGS,);
 
-    super::FirstPassContext::push_warning_raw(&mut warnings, &mut suppressed, || {
+    super::push_warning_capped(&mut warnings, &mut suppressed, || {
         call_count.fetch_add(1, Ordering::SeqCst);
         "overflow".to_string()
     });
 
     assert_eq!(call_count.load(Ordering::SeqCst), 0);
     assert_eq!(suppressed, 1);
-    assert_eq!(warnings.len(), super::hprof_primitives::MAX_WARNINGS);
+    assert_eq!(warnings.len(), super::hprof_primitives::MAX_WARNINGS,);
 }

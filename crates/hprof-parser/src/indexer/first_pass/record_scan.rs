@@ -1,11 +1,15 @@
 //! Top-level record scanning loop with enum-based
 //! parse-and-insert dispatch.
 
+use std::time::Instant;
+
 use hprof_api::ProgressNotifier;
 
-use super::FirstPassContext;
 use super::hprof_primitives::maybe_report_progress;
+use super::{RecordScanOutput, push_warning_capped};
+use crate::format::IdSize;
 use crate::indexer::HeapRecordRange;
+use crate::indexer::precise::PreciseIndex;
 use crate::reader::RecordReader;
 use crate::tags::RecordTag;
 use crate::{ClassDef, HprofStringRef, HprofThread, StackFrame, StackTrace};
@@ -40,56 +44,61 @@ fn try_parse(
     }
 }
 
-impl FirstPassContext<'_> {
-    /// Inserts a parsed record into the index.
-    fn insert_record(&mut self, record: ParsedRecord) {
-        match record {
-            ParsedRecord::String(s) => {
-                self.result.index.strings.insert(s.id, s);
-            }
-            ParsedRecord::LoadClass(c) => {
-                let java_name = self
-                    .result
-                    .index
-                    .strings
-                    .get(&c.class_name_string_id)
-                    .map(|sref| sref.resolve(self.data).replace('/', "."))
-                    .unwrap_or_default();
-                self.result
-                    .index
-                    .class_names_by_id
-                    .insert(c.class_object_id, java_name);
-                self.result.index.classes.insert(c.class_serial, c);
-            }
-            ParsedRecord::StackFrame(f) => {
-                self.result.index.stack_frames.insert(f.frame_id, f);
-            }
-            ParsedRecord::StackTrace(t) => {
-                self.result
-                    .index
-                    .stack_traces
-                    .insert(t.stack_trace_serial, t);
-            }
-            ParsedRecord::StartThread(t) => {
-                self.result.index.threads.insert(t.thread_serial, t);
-            }
+/// Inserts a parsed record into the index.
+fn insert_record(index: &mut PreciseIndex, data: &[u8], record: ParsedRecord) {
+    match record {
+        ParsedRecord::String(s) => {
+            index.strings.insert(s.id, s);
+        }
+        ParsedRecord::LoadClass(c) => {
+            let java_name = index
+                .strings
+                .get(&c.class_name_string_id)
+                .map(|sref| sref.resolve(data).replace('/', "."))
+                .unwrap_or_default();
+            index.class_names_by_id.insert(c.class_object_id, java_name);
+            index.classes.insert(c.class_serial, c);
+        }
+        ParsedRecord::StackFrame(f) => {
+            index.stack_frames.insert(f.frame_id, f);
+        }
+        ParsedRecord::StackTrace(t) => {
+            index.stack_traces.insert(t.stack_trace_serial, t);
+        }
+        ParsedRecord::StartThread(t) => {
+            index.threads.insert(t.thread_serial, t);
         }
     }
 }
 
-/// Scans all records in `data`, dispatching known tags to
-/// parse + insert handlers.
-pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNotifier) {
+/// Scans all records in `data`, dispatching known tags
+/// to parse + insert handlers.
+pub(super) fn scan_records(
+    data: &[u8],
+    id_size: IdSize,
+    base_offset: u64,
+    notifier: &mut ProgressNotifier,
+) -> RecordScanOutput {
     #[cfg(feature = "dev-profiling")]
     let _record_scan_span = tracing::info_span!("record_scan").entered();
 
-    let data = ctx.data;
-    let mut reader = RecordReader::new(data, ctx.id_size);
+    let mut index = PreciseIndex::with_capacity(data.len());
+    let mut heap_record_ranges: Vec<HeapRecordRange> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut suppressed: u64 = 0;
+    let mut records_attempted: u64 = 0;
+    let mut records_indexed: u64 = 0;
+    let mut last_progress_bytes: usize = 0;
+    let mut last_progress_at = Instant::now();
+
+    let mut reader = RecordReader::new(data, id_size);
     let mut reported_any = false;
 
     while (reader.position() as usize) < data.len() {
         let Some(header) = reader.parse_record_header() else {
-            ctx.push_warning(|| "EOF mid-header".to_string());
+            push_warning_capped(&mut warnings, &mut suppressed, || {
+                "EOF mid-header".to_string()
+            });
             break;
         };
 
@@ -98,20 +107,20 @@ pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNo
         let payload_end = match payload_start.checked_add(header.length as usize) {
             Some(end) if end <= data.len() => end,
             Some(end) => {
-                ctx.push_warning(|| {
+                push_warning_capped(&mut warnings, &mut suppressed, || {
                     format!(
                         "record {tag} payload end \
-                         {end} exceeds file size {}",
+                             {end} exceeds file size {}",
                         data.len()
                     )
                 });
                 break;
             }
             None => {
-                ctx.push_warning(|| {
+                push_warning_capped(&mut warnings, &mut suppressed, || {
                     format!(
-                        "record {tag} payload length \
-                         overflow: {}",
+                        "record {tag} payload \
+                             length overflow: {}",
                         header.length
                     )
                 });
@@ -120,7 +129,7 @@ pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNo
         };
 
         if matches!(tag, RecordTag::HeapDump | RecordTag::HeapDumpSegment) {
-            ctx.result.heap_record_ranges.push(HeapRecordRange {
+            heap_record_ranges.push(HeapRecordRange {
                 payload_start: payload_start as u64,
                 payload_length: header.length as u64,
             });
@@ -128,9 +137,9 @@ pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNo
             let pos = reader.position() as usize;
             reported_any |= maybe_report_progress(
                 pos,
-                ctx.base_offset,
-                &mut ctx.last_progress_bytes,
-                &mut ctx.last_progress_at,
+                base_offset,
+                &mut last_progress_bytes,
+                &mut last_progress_at,
                 notifier,
             );
             continue;
@@ -148,18 +157,18 @@ pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNo
             let pos = reader.position() as usize;
             reported_any |= maybe_report_progress(
                 pos,
-                ctx.base_offset,
-                &mut ctx.last_progress_bytes,
-                &mut ctx.last_progress_at,
+                base_offset,
+                &mut last_progress_bytes,
+                &mut last_progress_at,
                 notifier,
             );
             continue;
         }
 
-        ctx.result.records_attempted += 1;
+        records_attempted += 1;
 
         let payload = &data[payload_start..payload_end];
-        let mut payload_reader = RecordReader::new(payload, ctx.id_size);
+        let mut payload_reader = RecordReader::new(payload, id_size);
 
         match try_parse(
             tag,
@@ -170,27 +179,27 @@ pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNo
             Some(record) => {
                 let consumed = payload_reader.position() as usize == header.length as usize;
                 if !consumed {
-                    ctx.push_warning(|| {
+                    push_warning_capped(&mut warnings, &mut suppressed, || {
                         format!(
                             "record {tag} at offset \
-                             {payload_start}: parsed \
-                             OK but consumed {} of \
-                             {} bytes (extra bytes \
-                             ignored)",
+                                 {payload_start}: parsed \
+                                 OK but consumed {} of \
+                                 {} bytes (extra bytes \
+                                 ignored)",
                             payload_reader.position(),
                             header.length,
                         )
                     });
                 }
-                ctx.insert_record(record);
-                ctx.result.records_indexed += 1;
+                insert_record(&mut index, data, record);
+                records_indexed += 1;
             }
             None => {
-                ctx.push_warning(|| {
+                push_warning_capped(&mut warnings, &mut suppressed, || {
                     format!(
                         "record {tag} at offset \
-                         {payload_start}: \
-                         parse failed (truncated?)"
+                             {payload_start}: \
+                             parse failed (truncated?)"
                     )
                 });
             }
@@ -200,15 +209,24 @@ pub(super) fn scan_records(ctx: &mut FirstPassContext, notifier: &mut ProgressNo
         let pos = reader.position() as usize;
         reported_any |= maybe_report_progress(
             pos,
-            ctx.base_offset,
-            &mut ctx.last_progress_bytes,
-            &mut ctx.last_progress_at,
+            base_offset,
+            &mut last_progress_bytes,
+            &mut last_progress_at,
             notifier,
         );
     }
 
-    ctx.cursor_position = reader.position();
-    if !reported_any || (ctx.cursor_position as usize) > ctx.last_progress_bytes {
-        notifier.bytes_scanned(ctx.base_offset + ctx.cursor_position);
+    let cursor_position = reader.position();
+    if !reported_any || (cursor_position as usize) > last_progress_bytes {
+        notifier.bytes_scanned(base_offset + cursor_position);
+    }
+
+    RecordScanOutput {
+        index,
+        heap_record_ranges,
+        warnings,
+        suppressed_warnings: suppressed,
+        records_attempted,
+        records_indexed,
     }
 }

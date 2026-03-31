@@ -16,8 +16,6 @@
 //! (throttled), segment completion counts during heap
 //! extraction, and done/total for name resolution.
 
-use std::time::Instant;
-
 #[cfg(feature = "test-utils")]
 use hprof_api::MemorySize;
 use hprof_api::{MemoryBudget, ProgressNotifier};
@@ -27,9 +25,10 @@ use crate::ClassDumpInfo;
 use crate::format::IdSize;
 #[cfg(feature = "test-utils")]
 use crate::indexer::DiagnosticInfo;
+use crate::indexer::HeapRecordRange;
 use crate::indexer::IndexResult;
 use crate::indexer::precise::PreciseIndex;
-use crate::indexer::segment::{SegmentFilter, SegmentFilterBuilder};
+use crate::indexer::segment::SegmentFilterBuilder;
 
 /// `GC_ROOT_JAVA_FRAME` sub-record: links a heap object
 /// to a specific frame in a thread's stack trace.
@@ -75,144 +74,74 @@ use hprof_primitives::MAX_WARNINGS;
 #[cfg(test)]
 mod tests;
 
-/// Mutable state threaded through all first-pass phases.
-struct FirstPassContext<'a> {
-    data: &'a [u8],
-    id_size: IdSize,
-    base_offset: u64,
-    result: IndexResult,
-    seg_builder: Option<SegmentFilterBuilder>,
-    /// Pre-built filters + warnings from early
-    /// `seg_builder.finish()` call.
-    built_filters: Option<(Vec<SegmentFilter>, Vec<String>)>,
-    segment_entry_points: Vec<offset_lookup::SegmentEntryPoint>,
-    raw_frame_roots: Vec<RawFrameRoot>,
-    raw_thread_objects: Vec<RawThreadObject>,
-    suppressed_warnings: u64,
-    last_progress_bytes: usize,
-    last_progress_at: Instant,
-    cursor_position: u64,
-    /// Memory budget for chunked heap extraction.
-    budget: MemoryBudget,
+/// Output of the record scanning phase.
+pub(super) struct RecordScanOutput {
+    pub(super) index: PreciseIndex,
+    pub(super) heap_record_ranges: Vec<HeapRecordRange>,
+    pub(super) warnings: Vec<String>,
+    pub(super) suppressed_warnings: u64,
+    pub(super) records_attempted: u64,
+    pub(super) records_indexed: u64,
 }
 
-impl<'a> FirstPassContext<'a> {
-    fn new(data: &'a [u8], id_size: IdSize, base_offset: u64, budget: MemoryBudget) -> Self {
-        Self {
-            data,
-            id_size,
-            base_offset,
-            result: IndexResult {
-                index: PreciseIndex::with_capacity(data.len()),
-                warnings: Vec::new(),
-                records_attempted: 0,
-                records_indexed: 0,
-                segment_filters: Vec::new(),
-                heap_record_ranges: Vec::new(),
-                #[cfg(feature = "test-utils")]
-                diagnostics: DiagnosticInfo::default(),
-            },
-            seg_builder: Some(SegmentFilterBuilder::new()),
-            built_filters: None,
-            segment_entry_points: Vec::new(),
-            raw_frame_roots: Vec::new(),
-            raw_thread_objects: Vec::new(),
-            suppressed_warnings: 0,
-            last_progress_bytes: 0,
-            last_progress_at: Instant::now(),
-            cursor_position: 0,
-            budget,
-        }
-    }
+/// Output of the heap extraction phase.
+pub(super) struct HeapExtractionOutput {
+    pub(super) seg_builder: SegmentFilterBuilder,
+    pub(super) segment_entry_points: Vec<offset_lookup::SegmentEntryPoint>,
+    pub(super) raw_frame_roots: Vec<RawFrameRoot>,
+    pub(super) raw_thread_objects: Vec<RawThreadObject>,
+    pub(super) class_dumps: Vec<ClassDumpEntry>,
+    pub(super) warnings: Vec<String>,
+    pub(super) suppressed_warnings: u64,
+}
 
-    fn push_warning(&mut self, msg: impl FnOnce() -> String) {
-        Self::push_warning_raw(
-            &mut self.result.warnings,
-            &mut self.suppressed_warnings,
-            msg,
-        );
-    }
+/// Output of the thread resolution phase.
+pub(super) struct ResolveOutput {
+    pub(super) warnings: Vec<String>,
+    pub(super) suppressed_warnings: u64,
+    #[cfg(feature = "test-utils")]
+    pub(super) filter_lookup_ms: u64,
+}
 
-    /// Pushes a warning using separate mutable refs
-    /// (for use where `&mut self` would cause borrow
-    /// conflicts).
-    fn push_warning_raw(
-        warnings: &mut Vec<String>,
-        suppressed: &mut u64,
-        msg: impl FnOnce() -> String,
-    ) {
-        if warnings.len() < MAX_WARNINGS {
-            warnings.push(msg());
-        } else {
-            *suppressed += 1;
-        }
-    }
-
-    fn push_suppressed_summary(&mut self) {
-        if self.suppressed_warnings > 0 {
-            self.result.warnings.push(format!(
-                "... {} additional warning(s) \
-                 suppressed (only first \
-                 {MAX_WARNINGS} shown)",
-                self.suppressed_warnings
-            ));
-        }
-    }
-
-    /// Finishes the segment filter builder early,
-    /// returning `(filters, entry_points)` for immediate
-    /// use in thread resolution.
-    ///
-    /// Any filter-build warnings are pushed directly into
-    /// `self.result.warnings` so they are never lost.
-    fn finish_filters_early(
-        &mut self,
-    ) -> (Vec<SegmentFilter>, Vec<offset_lookup::SegmentEntryPoint>) {
-        let (filters, warnings) = self
-            .seg_builder
-            .take()
-            .expect("seg_builder already consumed")
-            .finish();
-        for w in warnings {
-            self.push_warning(|| w);
-        }
-        self.built_filters = Some((Vec::new(), Vec::new()));
-        let mut entry_points = std::mem::take(&mut self.segment_entry_points);
-        entry_points.sort_unstable_by_key(|ep| ep.segment_index);
-        (filters, entry_points)
-    }
-
-    fn finish(mut self) -> IndexResult {
-        self.push_suppressed_summary();
-
-        let (filters, filter_warnings) = if let Some(builder) = self.seg_builder.take() {
-            #[cfg(feature = "dev-profiling")]
-            tracing::debug!(
-                completed_segments = builder.completed_count(),
-                pending_ids = builder.pending_id_count(),
-                "segment_filter_build: pre-finish"
-            );
-            builder.finish()
-        } else {
-            self.built_filters.take().unwrap_or_default()
-        };
-
-        self.result.segment_filters = filters;
-        self.result.warnings.extend(filter_warnings);
-        self.result
+/// Pushes a warning with [`MAX_WARNINGS`] cap.
+pub(super) fn push_warning_capped(
+    warnings: &mut Vec<String>,
+    suppressed: &mut u64,
+    msg: impl FnOnce() -> String,
+) {
+    if warnings.len() < MAX_WARNINGS {
+        warnings.push(msg());
+    } else {
+        *suppressed += 1;
     }
 }
 
-/// Resolves all unique field `name_string_id` values from every
-/// `ClassDumpInfo` (instance and static fields) into
-/// `ctx.result.index.field_names`.
+/// Extends warnings with global cap semantics.
+pub(super) fn extend_warnings_capped(
+    warnings: &mut Vec<String>,
+    suppressed: &mut u64,
+    incoming: impl IntoIterator<Item = String>,
+) {
+    for w in incoming {
+        push_warning_capped(warnings, suppressed, || w);
+    }
+}
+
+/// Resolves all unique field `name_string_id` values from
+/// every `ClassDumpInfo` (instance and static fields) into
+/// `index.field_names`.
 ///
 /// Called once after heap extraction completes, when all
-/// `class_dumps` entries are fully populated. Missing string
-/// IDs are collected as warnings rather than hard errors.
-fn preload_field_names(ctx: &mut FirstPassContext) {
+/// `class_dumps` entries are fully populated. Missing
+/// string IDs are collected as warnings.
+fn preload_field_names(
+    index: &mut PreciseIndex,
+    data: &[u8],
+    warnings: &mut Vec<String>,
+    suppressed: &mut u64,
+) {
     let mut field_name_ids = FxHashSet::default();
-    for class_dump in ctx.result.index.class_dumps.values() {
+    for class_dump in index.class_dumps.values() {
         for field in &class_dump.instance_fields {
             field_name_ids.insert(field.name_string_id);
         }
@@ -221,15 +150,15 @@ fn preload_field_names(ctx: &mut FirstPassContext) {
         }
     }
 
-    ctx.result.index.field_names.reserve(field_name_ids.len());
+    index.field_names.reserve(field_name_ids.len());
 
     let mut resolved_names = Vec::with_capacity(field_name_ids.len());
     let mut missing_name_ids = Vec::new();
     {
-        let strings = &ctx.result.index.strings;
+        let strings = &index.strings;
         for name_string_id in field_name_ids {
             if let Some(sref) = strings.get(&name_string_id) {
-                resolved_names.push((name_string_id, sref.resolve(ctx.data)));
+                resolved_names.push((name_string_id, sref.resolve(data)));
             } else {
                 missing_name_ids.push(name_string_id);
             }
@@ -237,20 +166,24 @@ fn preload_field_names(ctx: &mut FirstPassContext) {
     }
 
     for name_string_id in missing_name_ids {
-        ctx.push_warning(|| {
-            format!("field name string id {name_string_id} missing from STRING records")
+        push_warning_capped(warnings, suppressed, || {
+            format!(
+                "field name string id \
+                 {name_string_id} missing from \
+                 STRING records"
+            )
         });
     }
 
     for (name_string_id, name) in resolved_names {
-        ctx.result.index.field_names.insert(name_string_id, name);
+        index.field_names.insert(name_string_id, name);
     }
 
     #[cfg(feature = "dev-profiling")]
     {
-        let field_names_heap_bytes = field_names_heap_bytes(&ctx.result.index);
+        let field_names_heap_bytes = field_names_heap_bytes(index);
         tracing::info!(
-            field_names_entries = ctx.result.index.field_names.len(),
+            field_names_entries = index.field_names.len(),
             field_names_heap_bytes,
             "first-pass preloaded field_names cache"
         );
@@ -303,38 +236,83 @@ pub fn run_first_pass(
     #[cfg(feature = "dev-profiling")]
     let _first_pass_span = tracing::info_span!("first_pass").entered();
 
-    let mut ctx = FirstPassContext::new(data, id_size, base_offset, budget);
-    record_scan::scan_records(&mut ctx, notifier);
-    heap_extraction::extract_all(&mut ctx, notifier);
-    preload_field_names(&mut ctx);
+    // Phase 1: Record scanning
+    let scan = record_scan::scan_records(data, id_size, base_offset, notifier);
 
-    // Build segment filters BEFORE thread resolution.
-    // Filters are needed for batched lookups.
+    // Phase 2: Heap extraction
+    let extraction =
+        heap_extraction::extract_all(data, id_size, &scan.heap_record_ranges, budget, notifier);
+
+    // Assemble index
+    let mut index = scan.index;
+    for entry in extraction.class_dumps {
+        index.class_dumps.insert(entry.class_object_id, entry.info);
+    }
+
+    // Merge warnings with global cap
+    let mut warnings = scan.warnings;
+    let mut suppressed = scan.suppressed_warnings + extraction.suppressed_warnings;
+    extend_warnings_capped(&mut warnings, &mut suppressed, extraction.warnings);
+
+    // Phase 3: Preload field names
+    preload_field_names(&mut index, data, &mut warnings, &mut suppressed);
+
+    // Build segment filters
     notifier.phase_changed("Building segment filters\u{2026}");
-    let (filters, entry_points) = ctx.finish_filters_early();
+    let (filters, filter_warnings) = {
+        #[cfg(feature = "dev-profiling")]
+        let _seg_filter_span = tracing::info_span!("segment_filter_build").entered();
+        extraction.seg_builder.finish()
+    };
+    extend_warnings_capped(&mut warnings, &mut suppressed, filter_warnings);
+    let mut entry_points = extraction.segment_entry_points;
+    entry_points.sort_unstable_by_key(|ep| ep.segment_index);
+
+    // Phase 4: Thread resolution
+    let resolve = thread_resolution::resolve_all(
+        data,
+        id_size,
+        &mut index,
+        &scan.heap_record_ranges,
+        &filters,
+        &entry_points,
+        extraction.raw_frame_roots,
+        extraction.raw_thread_objects,
+        notifier,
+    );
+    suppressed += resolve.suppressed_warnings;
+    extend_warnings_capped(&mut warnings, &mut suppressed, resolve.warnings);
+
+    // Build result
+    let mut result = IndexResult {
+        index,
+        warnings,
+        records_attempted: scan.records_attempted,
+        records_indexed: scan.records_indexed,
+        segment_filters: filters,
+        heap_record_ranges: scan.heap_record_ranges,
+        #[cfg(feature = "test-utils")]
+        diagnostics: DiagnosticInfo {
+            entry_point_count: entry_points.len(),
+            filter_lookup_ms: resolve.filter_lookup_ms,
+            precise_index_heap_bytes: 0,
+        },
+    };
 
     #[cfg(feature = "test-utils")]
     {
-        ctx.result.diagnostics = DiagnosticInfo {
-            entry_point_count: entry_points.len(),
-            filter_lookup_ms: 0,
-            precise_index_heap_bytes: ctx.result.index.memory_size(),
-        };
+        result.diagnostics.precise_index_heap_bytes = result.index.memory_size();
     }
 
-    // Resolve thread objects via batched filter
-    // lookups.
-    thread_resolution::resolve_all(&mut ctx, &filters, &entry_points, notifier);
+    crate::indexer::validation::validate_index(&mut result);
 
-    // Post-indexation coherence validation.
-    crate::indexer::validation::validate_index(&mut ctx.result);
-
-    // Store filters back for finish() to consume.
-    ctx.built_filters = Some((filters, Vec::new()));
-
-    {
-        #[cfg(feature = "dev-profiling")]
-        let _seg_filter_span = tracing::info_span!("segment_filter_build").entered();
-        ctx.finish()
+    if suppressed > 0 {
+        result.warnings.push(format!(
+            "... {suppressed} additional warning(s) \
+             suppressed (only first \
+             {MAX_WARNINGS} shown)",
+        ));
     }
+
+    result
 }
