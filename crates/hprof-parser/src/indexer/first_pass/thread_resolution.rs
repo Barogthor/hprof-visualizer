@@ -125,17 +125,21 @@ fn run_batch_round(
     (found, warns)
 }
 
+/// Read-only inputs for [`resolve_all`].
+pub(super) struct ResolveCtx<'a> {
+    pub data: &'a [u8],
+    pub id_size: IdSize,
+    pub heap_record_ranges: &'a [HeapRecordRange],
+    pub filters: &'a [SegmentFilter],
+    pub entry_points: &'a [SegmentEntryPoint],
+}
+
 /// Synthesises threads, correlates GC roots, and
 /// resolves transitive offsets via batched filter
 /// lookups.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_all(
-    data: &[u8],
-    id_size: IdSize,
+    ctx: &ResolveCtx<'_>,
     index: &mut PreciseIndex,
-    heap_record_ranges: &[HeapRecordRange],
-    filters: &[SegmentFilter],
-    entry_points: &[SegmentEntryPoint],
     raw_frame_roots: Vec<RawFrameRoot>,
     raw_thread_objects: Vec<RawThreadObject>,
     notifier: &mut ProgressNotifier,
@@ -148,11 +152,11 @@ pub(super) fn resolve_all(
     correlate_frame_roots(index, raw_frame_roots);
 
     let lookup = LookupCtx {
-        data,
-        id_size,
-        heap_record_ranges,
-        filters,
-        entry_points,
+        data: ctx.data,
+        id_size: ctx.id_size,
+        heap_record_ranges: ctx.heap_record_ranges,
+        filters: ctx.filters,
+        entry_points: ctx.entry_points,
     };
 
     let mut warnings: Vec<String> = Vec::new();
@@ -180,7 +184,7 @@ pub(super) fn resolve_all(
         let mut round1_ids: HashSet<u64> = HashSet::new();
         let mut name_ref_ids: HashSet<u64> = HashSet::new();
         for offset in index.instance_offsets.values() {
-            let Some(inst) = read_raw_instance_at(data, offset, id_size) else {
+            let Some(inst) = read_raw_instance_at(ctx.data, offset, ctx.id_size) else {
                 continue;
             };
             for r in extract_obj_refs(
@@ -188,8 +192,8 @@ pub(super) fn resolve_all(
                 inst.class_object_id,
                 &["name", "holder"],
                 index,
-                id_size,
-                data,
+                ctx.id_size,
+                ctx.data,
             ) {
                 if !index.instance_offsets.contains(&r.ref_id) {
                     round1_ids.insert(r.ref_id);
@@ -219,7 +223,8 @@ pub(super) fn resolve_all(
                 let Some(&str_offset) = found1.get(id) else {
                     continue;
                 };
-                let Some(str_inst) = read_raw_instance_at(data, str_offset, id_size) else {
+                let Some(str_inst) = read_raw_instance_at(ctx.data, str_offset, ctx.id_size)
+                else {
                     continue;
                 };
                 for r in extract_obj_refs(
@@ -227,8 +232,8 @@ pub(super) fn resolve_all(
                     str_inst.class_object_id,
                     &["value"],
                     index,
-                    id_size,
-                    data,
+                    ctx.id_size,
+                    ctx.data,
                 ) {
                     if !index.instance_offsets.contains(&r.ref_id) {
                         round2_ids.insert(r.ref_id);

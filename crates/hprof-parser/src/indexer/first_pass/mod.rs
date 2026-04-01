@@ -269,13 +269,16 @@ pub fn run_first_pass(
     entry_points.sort_unstable_by_key(|ep| ep.segment_index);
 
     // Phase 4: Thread resolution
-    let resolve = thread_resolution::resolve_all(
+    let resolve_ctx = thread_resolution::ResolveCtx {
         data,
         id_size,
+        heap_record_ranges: &scan.heap_record_ranges,
+        filters: &filters,
+        entry_points: &entry_points,
+    };
+    let resolve = thread_resolution::resolve_all(
+        &resolve_ctx,
         &mut index,
-        &scan.heap_record_ranges,
-        &filters,
-        &entry_points,
         extraction.raw_frame_roots,
         extraction.raw_thread_objects,
         notifier,
