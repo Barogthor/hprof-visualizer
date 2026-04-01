@@ -161,6 +161,7 @@ mod tests {
                 instance_size: 0,
                 static_fields: vec![],
                 instance_fields: vec![],
+                partial: false,
             },
         );
         validate_index(&mut result);
@@ -208,6 +209,7 @@ mod tests {
                 instance_size: 0,
                 static_fields: vec![],
                 instance_fields: vec![],
+                partial: false,
             },
         );
         result.index.class_dumps.insert(
@@ -218,6 +220,7 @@ mod tests {
                 instance_size: 0,
                 static_fields: vec![],
                 instance_fields: vec![],
+                partial: false,
             },
         );
         validate_index(&mut result);
@@ -239,6 +242,7 @@ mod tests {
                 instance_size: 0,
                 static_fields: vec![],
                 instance_fields: vec![],
+                partial: false,
             },
         );
         result.index.class_dumps.insert(
@@ -249,6 +253,7 @@ mod tests {
                 instance_size: 0,
                 static_fields: vec![],
                 instance_fields: vec![],
+                partial: false,
             },
         );
         validate_index(&mut result);

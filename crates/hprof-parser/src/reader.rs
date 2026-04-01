@@ -341,38 +341,17 @@ impl<'a> RecordReader<'a> {
         }
 
         let static_count = self.read_u16()?;
-        let mut static_fields = Vec::with_capacity(static_count as usize);
-        let mut static_parse_ok = true;
-        for _ in 0..static_count {
-            let Some(name_string_id) = self.read_id() else {
-                static_parse_ok = false;
-                break;
-            };
-            let Some(field_type) = self.read_u8() else {
-                static_parse_ok = false;
-                break;
-            };
-            match self.read_static_value(field_type) {
-                Some(v) => {
-                    static_fields.push(StaticFieldDef {
-                        name_string_id,
-                        value: v,
-                    });
-                }
-                None => {
-                    static_parse_ok = false;
-                    break;
-                }
-            }
-        }
+        let (static_fields, static_complete) =
+            self.parse_static_fields(static_count);
 
-        if !static_parse_ok {
+        if !static_complete {
             return Some(ClassDumpInfo {
                 class_object_id,
                 super_class_id,
                 instance_size,
                 static_fields: vec![],
                 instance_fields: vec![],
+                partial: true,
             });
         }
 
@@ -393,7 +372,32 @@ impl<'a> RecordReader<'a> {
             instance_size,
             static_fields,
             instance_fields,
+            partial: false,
         })
+    }
+
+    /// Parses `count` static field entries.
+    ///
+    /// Returns `(fields, complete)` where `complete` is `false` when
+    /// parsing was cut short by an unknown type or truncated data.
+    fn parse_static_fields(&mut self, count: u16) -> (Vec<StaticFieldDef>, bool) {
+        let mut fields = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let Some(name_string_id) = self.read_id() else {
+                return (fields, false);
+            };
+            let Some(field_type) = self.read_u8() else {
+                return (fields, false);
+            };
+            match self.read_static_value(field_type) {
+                Some(v) => fields.push(StaticFieldDef {
+                    name_string_id,
+                    value: v,
+                }),
+                None => return (fields, false),
+            }
+        }
+        (fields, true)
     }
 }
 
@@ -762,5 +766,24 @@ mod tests {
             info.instance_fields.is_empty(),
             "instance_fields must be empty"
         );
+        assert!(info.partial, "partial must be true on truncated parse");
+    }
+
+    #[test]
+    fn parse_class_dump_clean_parse_is_not_partial() {
+        let id_size = IdSize::Eight;
+        let mut body = make_minimal_class_dump(id_size);
+        body.extend_from_slice(&1u16.to_be_bytes()); // static_fields_count
+        push_id(&mut body, 10, id_size);
+        body.push(10); // PRIM_TYPE_INT
+        body.extend_from_slice(&99i32.to_be_bytes());
+        body.extend_from_slice(&0u16.to_be_bytes()); // instance_fields_count
+
+        let mut r = RecordReader::new(&body, id_size);
+        let info = r
+            .parse_class_dump()
+            .expect("clean class dump should parse");
+        assert!(!info.partial, "clean parse must not be partial");
+        assert_eq!(info.static_fields.len(), 1);
     }
 }

@@ -922,6 +922,7 @@ mod collection_tests {
                     name_string_id: 1,
                     field_type: type_code,
                 }],
+                partial: false,
             },
         );
         (index, class_id, buf)
@@ -1063,6 +1064,7 @@ mod collection_tests {
                         field_type: 2,
                     },
                 ],
+                partial: false,
             },
         );
         index.class_dumps.insert(
@@ -1098,6 +1100,7 @@ mod collection_tests {
                         field_type: 6,
                     },
                 ],
+                partial: false,
             },
         );
         index
@@ -1169,6 +1172,7 @@ mod collection_tests {
                         field_type: 10,
                     },
                 ],
+                partial: false,
             },
         );
         index.class_dumps.insert(
@@ -1192,6 +1196,7 @@ mod collection_tests {
                         field_type: 4,
                     },
                 ],
+                partial: false,
             },
         );
         index

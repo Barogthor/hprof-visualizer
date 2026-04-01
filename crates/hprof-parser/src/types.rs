@@ -123,6 +123,10 @@ pub struct ClassDumpInfo {
     /// Instance fields in declaration order
     /// (NOT including inherited fields).
     pub instance_fields: Vec<FieldDef>,
+    /// `true` when field parsing was truncated (e.g.
+    /// unknown static field type or corrupted data).
+    /// Callers should treat field lists as incomplete.
+    pub partial: bool,
 }
 
 /// Raw bytes of an `INSTANCE_DUMP` sub-record payload,
@@ -274,6 +278,7 @@ mod memory_size_tests {
             instance_size: 16,
             static_fields,
             instance_fields: fields,
+            partial: false,
         };
         let expected = size_of::<ClassDumpInfo>()
             + 3 * size_of::<StaticFieldDef>()
@@ -332,6 +337,7 @@ mod new_type_compile_tests {
                 name_string_id: 1,
                 field_type: 10,
             }],
+            partial: false,
         };
         assert_eq!(c.class_object_id, 100);
         assert_eq!(c.super_class_id, 50);

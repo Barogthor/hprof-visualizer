@@ -157,6 +157,7 @@ mod tests {
                         field_type: ft,
                     })
                     .collect(),
+                partial: false,
             },
         );
         let mut buf = Vec::new();
@@ -241,6 +242,7 @@ mod tests {
                     name_string_id: 1,
                     field_type: 10,
                 }],
+                partial: false,
             },
         );
         index.class_dumps.insert(
@@ -254,6 +256,7 @@ mod tests {
                     name_string_id: 2,
                     field_type: 10,
                 }],
+                partial: false,
             },
         );
         // Build records buffer with "x" at offset 0, "y" at offset 1
