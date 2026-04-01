@@ -174,12 +174,7 @@ fn walk_hash_map(
     progress: &Arc<AtomicUsize>,
     cancel: &Arc<AtomicBool>,
 ) {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.id_size(),
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let table_id = fields.iter().find_map(|f| {
         if f.name == "table"
@@ -306,12 +301,7 @@ fn walk_linked_list(
     progress: &Arc<AtomicUsize>,
     cancel: &Arc<AtomicBool>,
 ) {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.id_size(),
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let mut node_id = fields
         .iter()
@@ -390,12 +380,7 @@ fn walk_hash_set(
     progress: &Arc<AtomicUsize>,
     cancel: &Arc<AtomicBool>,
 ) {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.id_size(),
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let map_id = fields.iter().find_map(|f| {
         if f.name == "map"

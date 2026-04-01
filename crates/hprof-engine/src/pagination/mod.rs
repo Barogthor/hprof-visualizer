@@ -182,12 +182,7 @@ fn extract_array_list(
     offset: usize,
     limit: usize,
 ) -> Option<CollectionPage> {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.id_size(),
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let mut size: Option<u64> = None;
     let mut element_data_id: Option<u64> = None;
@@ -228,12 +223,7 @@ fn extract_hash_map(
     concurrent: bool,
     mut skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.id_size(),
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let mut size: Option<u64> = None;
     let mut table_id: Option<u64> = None;
@@ -316,12 +306,8 @@ fn extract_hash_map(
                     break;
                 }
                 if let Some(nr) = Engine::read_instance_public(hfile, node_id) {
-                    let nf = decode_fields(
-                        &nr,
-                        &hfile.index,
-                        hfile.id_size(),
-                        hfile.records_bytes(),
-                    );
+                    let nf =
+                        decode_fields(&nr, &hfile.index, hfile.id_size(), hfile.records_bytes());
                     node_id = nf
                         .iter()
                         .find(|f| f.name == "next")
@@ -561,12 +547,7 @@ fn extract_hash_set(
     limit: usize,
     skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.id_size(),
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let map_id = fields.iter().find_map(|f| {
         if f.name == "map"
@@ -612,12 +593,7 @@ fn extract_linked_list(
     limit: usize,
     mut skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.id_size(),
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let mut size: Option<u64> = None;
     let mut first_id: Option<u64> = None;

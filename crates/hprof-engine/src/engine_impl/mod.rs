@@ -141,12 +141,8 @@ pub(crate) fn resolve_inline_value(
         return None;
     }
     let raw = Engine::read_instance(hfile, object_id)?;
-    let fields = crate::resolver::decode_fields(
-        &raw,
-        &hfile.index,
-        hfile.id_size(),
-        hfile.records_bytes(),
-    );
+    let fields =
+        crate::resolver::decode_fields(&raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
     fields
         .iter()
         .find(|f| f.name == "value")
