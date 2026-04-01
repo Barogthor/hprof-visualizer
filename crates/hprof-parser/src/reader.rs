@@ -383,10 +383,7 @@ impl<'a> RecordReader<'a> {
     pub fn skip_class_dump_body(&mut self) -> bool {
         // class_object_id + stack_serial + super_class_id
         // + 5 refs + instance_size
-        let fixed = 2 * self.id_size.as_usize()
-            + 4
-            + 5 * self.id_size.as_usize()
-            + 4;
+        let fixed = 2 * self.id_size.as_usize() + 4 + 5 * self.id_size.as_usize() + 4;
         if !self.skip(fixed) {
             return false;
         }

@@ -134,13 +134,11 @@ pub(crate) fn scan_segment_for_objects(
                 let Some(elem_type) = reader.read_u8() else {
                     break;
                 };
-                let elem_size =
-                    value_byte_size(elem_type, id_size);
+                let elem_size = value_byte_size(elem_type, id_size);
                 if elem_size == 0 {
                     break;
                 }
-                let byte_count =
-                    (num_elements as usize).saturating_mul(elem_size);
+                let byte_count = (num_elements as usize).saturating_mul(elem_size);
                 if !reader.skip(byte_count) {
                     break;
                 }
@@ -164,8 +162,7 @@ pub(crate) fn scan_segment_for_objects(
                 if !reader.skip(id_sz) {
                     break;
                 }
-                let byte_count =
-                    (num_elements as usize).saturating_mul(id_sz);
+                let byte_count = (num_elements as usize).saturating_mul(id_sz);
                 if !reader.skip(byte_count) {
                     break;
                 }
@@ -195,9 +192,7 @@ pub(crate) fn scan_segment_for_objects(
                 }
             }
             t if gc_root_has_object_id(t) => {
-                let skip_after =
-                    gc_root_remaining_size(t, id_size)
-                        .unwrap_or(0);
+                let skip_after = gc_root_remaining_size(t, id_size).unwrap_or(0);
                 if !reader.skip(id_sz + skip_after) {
                     break;
                 }
@@ -297,11 +292,8 @@ pub(crate) fn batch_lookup_by_filter(
             continue;
         }
 
-        let ep_idx = entry_points
-            .binary_search_by_key(
-                &filter.segment_index,
-                |ep| ep.segment_index,
-            );
+        let ep_idx =
+            entry_points.binary_search_by_key(&filter.segment_index, |ep| ep.segment_index);
         let scan_start = match ep_idx {
             Ok(i) => entry_points[i].scan_offset,
             Err(_) => {
@@ -338,7 +330,11 @@ pub(crate) fn batch_lookup_by_filter(
             let mut found = Vec::new();
             for &(from, to) in &job.ranges {
                 found.extend(scan_segment_for_objects(
-                    data, from, to, id_size, &job.candidates,
+                    data,
+                    from,
+                    to,
+                    id_size,
+                    &job.candidates,
                 ));
             }
             found
