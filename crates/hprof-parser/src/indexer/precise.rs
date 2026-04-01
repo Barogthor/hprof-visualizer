@@ -31,6 +31,17 @@ use crate::{ClassDef, ClassDumpInfo, HprofStringRef, HprofThread, StackFrame, St
 /// Uses `std::sync::RwLock` for interior mutability.
 /// Callers use `.get()`, `.insert()`, `.insert_batch()`
 /// without knowing about the lock.
+///
+/// # Lock-poisoning policy
+///
+/// All methods recover from a poisoned `RwLock` via
+/// `unwrap_or_else(|e| e.into_inner())`. This is safe
+/// because the cache is **insert-only**: no method
+/// removes or reorders entries, so a panic during a
+/// write cannot leave the map in an inconsistent
+/// state. The worst case is a missing entry, which
+/// callers already handle (all lookups return
+/// `Option`).
 #[derive(Debug)]
 pub(crate) struct OffsetCache {
     inner: RwLock<FxHashMap<u64, u64>>,

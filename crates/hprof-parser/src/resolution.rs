@@ -63,8 +63,12 @@ pub struct BatchResult {
     pub offsets: FxHashMap<u64, u64>,
 }
 
-/// Returns `true` if `offset + len` exceeds `limit`,
-/// treating overflow as out-of-bounds.
+/// Returns `true` if the range `[offset, offset+len)`
+/// exceeds `limit`, treating overflow as out-of-bounds.
+///
+/// Used for range-checked reads where both offset and
+/// length are variable. Simple `offset >= limit` guards
+/// elsewhere do not need this helper.
 fn exceeds_bounds(offset: usize, len: usize, limit: usize) -> bool {
     match offset.checked_add(len) {
         Some(end) => end > limit,
@@ -297,6 +301,11 @@ impl HprofFile {
     /// The returned [`BatchResult`] maps have
     /// **unspecified iteration order**. See [`BatchResult`]
     /// docs for details.
+    ///
+    /// For IDs matched by multiple candidate segments
+    /// (BinaryFuse8 false positives), the chosen offset
+    /// is arbitrary but always valid — first segment
+    /// result found during parallel merge wins.
     pub fn batch_find_instances(&self, object_ids: &[u64]) -> BatchResult {
         use crate::indexer::segment::SEGMENT_SIZE;
         self.batch_find_instances_inner(object_ids, SEGMENT_SIZE)

@@ -200,6 +200,9 @@ impl HprofStringRef {
     /// Invalid UTF-8 bytes are replaced with `\u{FFFD}`.
     pub fn resolve(&self, data: &[u8]) -> String {
         let start = self.offset as usize;
+        // Intentional: we want usize::MAX (not
+        // saturating_add) so the subsequent
+        // `data.get(start..end)` returns None on overflow.
         #[allow(clippy::manual_saturating_arithmetic)]
         let end = start.checked_add(self.len as usize).unwrap_or(usize::MAX);
         match data.get(start..end) {

@@ -16,6 +16,12 @@ use crate::heap_reader::{HeapSubRecord, HeapSubRecordIter};
 use crate::indexer::HeapRecordRange;
 use crate::indexer::segment::SegmentFilterBuilder;
 
+/// Estimated average size (in bytes) of a heap
+/// sub-record, used to pre-allocate chunk result
+/// vectors. Derived from empirical observation of
+/// typical Java heap dumps.
+const AVG_HEAP_RECORD_SIZE_ESTIMATE: usize = 40;
+
 /// Per-worker output from heap segment extraction.
 pub(super) struct HeapSegmentResult {
     pub(super) filter_ids: Vec<FilterEntry>,
@@ -86,7 +92,7 @@ pub(super) fn extract_heap_segment(
     id_size: IdSize,
     max_chunk_bytes: usize,
 ) -> HeapSegmentParsingResult {
-    let chunk_est = max_chunk_bytes.min(payload.len()) / 40;
+    let chunk_est = max_chunk_bytes.min(payload.len()) / AVG_HEAP_RECORD_SIZE_ESTIMATE;
     let mut chunks: Vec<HeapSegmentResult> = Vec::new();
     let mut result = HeapSegmentResult::new_with_capacity(chunk_est);
     let mut next_checkpoint = max_chunk_bytes;
