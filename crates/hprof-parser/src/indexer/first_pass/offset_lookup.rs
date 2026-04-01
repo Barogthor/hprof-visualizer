@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::format::IdSize;
@@ -208,6 +209,34 @@ pub(crate) fn scan_segment_for_objects(
     results
 }
 
+/// Maps each 64 MiB segment index to the heap record
+/// byte ranges that overlap it.
+///
+/// Each entry is `(payload_start_clamped, payload_end_clamped)`
+/// in absolute byte offsets.
+fn build_segment_range_index(
+    heap_ranges: &[crate::indexer::HeapRecordRange],
+) -> FxHashMap<usize, Vec<(usize, usize)>> {
+    let mut index: FxHashMap<usize, Vec<(usize, usize)>> = FxHashMap::default();
+    for hr in heap_ranges {
+        let ps = hr.payload_start as usize;
+        let pe = ps + hr.payload_length as usize;
+        if pe == 0 || ps >= pe {
+            continue;
+        }
+        let first_seg = ps / SEGMENT_SIZE;
+        let last_seg = (pe - 1) / SEGMENT_SIZE;
+        for seg in first_seg..=last_seg {
+            let seg_start = seg * SEGMENT_SIZE;
+            let seg_end = seg_start + SEGMENT_SIZE;
+            let from = ps.max(seg_start);
+            let to = pe.min(seg_end);
+            index.entry(seg).or_default().push((from, to));
+        }
+    }
+    index
+}
+
 /// Performs batched filter-based object lookups across
 /// all segments.
 ///
@@ -244,21 +273,35 @@ pub(crate) fn batch_lookup_by_filter(
         );
     }
 
+    // Pre-compute segment_index → [(range_start, range_end)]
+    // so the inner loop is O(overlapping ranges per segment)
+    // instead of O(all heap ranges).
+    let seg_ranges = build_segment_range_index(heap_ranges);
+
+    // Build scan jobs: (scan_start, scan_end, candidates)
+    // per filter, then execute in parallel.
+    struct ScanJob {
+        ranges: Vec<(usize, usize)>,
+        candidates: HashSet<u64>,
+    }
+    let mut jobs: Vec<ScanJob> = Vec::new();
+
     for filter in filters {
-        // Collect target IDs that pass this filter
         let candidates: HashSet<u64> = target_ids
             .iter()
             .copied()
-            .filter(|id| !result_map.contains_key(id) && filter.contains(*id))
+            .filter(|id| filter.contains(*id))
             .collect();
 
         if candidates.is_empty() {
             continue;
         }
 
-        // Find entry point via binary search
-        let ep_idx =
-            entry_points.binary_search_by_key(&filter.segment_index, |ep| ep.segment_index);
+        let ep_idx = entry_points
+            .binary_search_by_key(
+                &filter.segment_index,
+                |ep| ep.segment_index,
+            );
         let scan_start = match ep_idx {
             Ok(i) => entry_points[i].scan_offset,
             Err(_) => {
@@ -273,23 +316,39 @@ pub(crate) fn batch_lookup_by_filter(
 
         let scan_end = (filter.segment_index + 1) * SEGMENT_SIZE;
 
-        // Scan each HEAP_DUMP_SEGMENT payload that
-        // overlaps [scan_start, scan_end).
-        for hr in heap_ranges {
-            let ps = hr.payload_start as usize;
-            let pe = ps + hr.payload_length as usize;
-            // Skip ranges entirely outside the window
-            if pe <= scan_start || ps >= scan_end {
-                continue;
+        if let Some(ranges) = seg_ranges.get(&filter.segment_index) {
+            let clamped: Vec<(usize, usize)> = ranges
+                .iter()
+                .map(|&(from, to)| (from.max(scan_start), to.min(scan_end)))
+                .filter(|(from, to)| from < to)
+                .collect();
+            if !clamped.is_empty() {
+                jobs.push(ScanJob {
+                    ranges: clamped,
+                    candidates,
+                });
             }
-            // Clamp to scan window
-            let from = scan_start.max(ps);
-            let to = scan_end.min(pe);
+        }
+    }
 
-            let found = scan_segment_for_objects(data, from, to, id_size, &candidates);
-            for (id, offset) in found {
-                result_map.insert(id, offset);
+    // Execute scans in parallel.
+    let per_job: Vec<Vec<(u64, u64)>> = jobs
+        .par_iter()
+        .map(|job| {
+            let mut found = Vec::new();
+            for &(from, to) in &job.ranges {
+                found.extend(scan_segment_for_objects(
+                    data, from, to, id_size, &job.candidates,
+                ));
             }
+            found
+        })
+        .collect();
+
+    // Merge results: first-found wins.
+    for found in per_job {
+        for (id, offset) in found {
+            result_map.entry(id).or_insert(offset);
         }
     }
 
