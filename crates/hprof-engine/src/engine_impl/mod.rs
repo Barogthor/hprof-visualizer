@@ -14,7 +14,7 @@ use std::sync::Arc;
 use hprof_api::{NullProgressObserver, ParseProgressObserver, ProgressNotifier};
 use rayon::prelude::*;
 
-use hprof_parser::{HprofFile, PreciseIndex, RawInstance, StaticValue};
+use hprof_parser::{HprofFile, IdSize, PreciseIndex, RawInstance, StaticValue};
 
 use hprof_parser::jvm_to_java;
 
@@ -54,7 +54,7 @@ const COLLECTION_CLASS_SUFFIXES: &[&str] = &[
 pub(crate) fn collection_entry_count(
     raw: &RawInstance,
     index: &PreciseIndex,
-    id_size: u32,
+    id_size: IdSize,
     records_bytes: &[u8],
 ) -> Option<u64> {
     let class_name = index.class_names_by_id.get(&raw.class_object_id)?;
@@ -82,9 +82,9 @@ pub(crate) fn collection_entry_count(
 }
 
 /// Returns the byte size of a field given its type code.
-pub(crate) fn field_byte_size(type_code: u8, id_size: u32) -> usize {
+pub(crate) fn field_byte_size(type_code: u8, id_size: IdSize) -> usize {
     match type_code {
-        2 => id_size as usize,
+        2 => id_size.as_usize(),
         4 => 1,
         5 => 2,
         6 => 4,
@@ -141,12 +141,8 @@ pub(crate) fn resolve_inline_value(
         return None;
     }
     let raw = Engine::read_instance(hfile, object_id)?;
-    let fields = crate::resolver::decode_fields(
-        &raw,
-        &hfile.index,
-        hfile.header.id_size,
-        hfile.records_bytes(),
-    );
+    let fields =
+        crate::resolver::decode_fields(&raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
     fields
         .iter()
         .find(|f| f.name == "value")
@@ -224,6 +220,10 @@ pub struct Engine {
     skip_indexes: Mutex<StdHashMap<u64, crate::pagination::SkipIndex>>,
     /// Active background walkers keyed by collection ID.
     walkers: Mutex<StdHashMap<u64, crate::pagination::WalkerHandle>>,
+    /// On-demand cache for resolved hprof string refs.
+    /// Not tracked by `memory_counter` — bounded by
+    /// distinct string IDs (typically < 200 KB).
+    string_cache: Mutex<FxHashMap<u64, Arc<str>>>,
 }
 
 impl Engine {
@@ -253,6 +253,7 @@ impl Engine {
             object_cache: crate::cache::ObjectCache::new(),
             skip_indexes: Mutex::new(StdHashMap::new()),
             walkers: Mutex::new(StdHashMap::new()),
+            string_cache: Mutex::new(FxHashMap::default()),
         })
     }
 
@@ -287,7 +288,13 @@ impl Engine {
             object_cache: crate::cache::ObjectCache::new(),
             skip_indexes: Mutex::new(StdHashMap::new()),
             walkers: Mutex::new(StdHashMap::new()),
+            string_cache: Mutex::new(FxHashMap::default()),
         })
+    }
+
+    /// Returns the identifier size used in this heap dump.
+    fn id_size(&self) -> IdSize {
+        self.hfile.id_size()
     }
 
     /// Resolves all thread metadata (name + state) once
@@ -361,7 +368,7 @@ impl Engine {
         let fields = crate::resolver::decode_fields(
             &raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
 
@@ -413,7 +420,7 @@ impl Engine {
         let holder_fields = crate::resolver::decode_fields(
             &holder_raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
         holder_fields.iter().find_map(|f| {
@@ -440,7 +447,7 @@ impl Engine {
         let fields = crate::resolver::decode_fields(
             &raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
         let value_id = fields.iter().find_map(|f| {
@@ -458,13 +465,13 @@ impl Engine {
     /// Reads an instance by offset if available, falling back to
     /// `find_instance`.
     fn read_instance(hfile: &HprofFile, obj_id: u64) -> Option<RawInstance> {
-        if let Some(off) = hfile.index.instance_offsets.get(obj_id)
+        if let Some(off) = hfile.index.get_offset(obj_id)
             && let Some(raw) = hfile.read_instance_at_offset(off)
         {
             return Some(raw);
         }
         if let Some((raw, offset)) = hfile.find_instance(obj_id) {
-            hfile.index.instance_offsets.insert(obj_id, offset);
+            hfile.index.insert_offset(obj_id, offset);
             return Some(raw);
         }
         None
@@ -473,7 +480,7 @@ impl Engine {
     /// Reads a primitive array by offset if available, falling back to
     /// `find_prim_array`.
     fn read_prim_array(hfile: &HprofFile, arr_id: u64) -> Option<(u8, Vec<u8>)> {
-        if let Some(off) = hfile.index.instance_offsets.get(arr_id)
+        if let Some(off) = hfile.index.get_offset(arr_id)
             && let Some(r) = hfile.read_prim_array_at_offset(off)
         {
             return Some(r);
@@ -499,7 +506,7 @@ impl Engine {
         let str_fields = crate::resolver::decode_fields(
             &str_raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
         let value_id = str_fields.iter().find_map(|f| {
@@ -552,7 +559,7 @@ impl Engine {
             let entry_count = collection_entry_count(
                 &child_raw,
                 &self.hfile.index,
-                self.hfile.header.id_size,
+                self.id_size(),
                 self.hfile.records_bytes(),
             );
             (class_name, entry_count, inline_value)
@@ -560,7 +567,7 @@ impl Engine {
             ("Object[]".to_string(), Some(meta.num_elements as u64), None)
         } else if let Some((elem_type, bytes)) = self.hfile.find_prim_array(object_id) {
             let type_name = prim_array_type_name(elem_type);
-            let elem_size = field_byte_size(elem_type, 0);
+            let elem_size = field_byte_size(elem_type, self.id_size());
             let count = if elem_size > 0 {
                 bytes.len() / elem_size
             } else {
@@ -598,6 +605,21 @@ impl Engine {
         }
     }
 
+    /// Resolves a [`hprof_parser::HprofStringRef`] with caching.
+    ///
+    /// First call for a given `sref.id` delegates to
+    /// `hfile.resolve_string()`; subsequent calls return
+    /// the cached `Arc<str>`.
+    fn cached_resolve_string(&self, sref: &hprof_parser::HprofStringRef) -> Arc<str> {
+        let mut cache = self.string_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = cache.get(&sref.id) {
+            return Arc::clone(cached);
+        }
+        let resolved: Arc<str> = self.hfile.resolve_string(sref).into();
+        cache.insert(sref.id, Arc::clone(&resolved));
+        resolved
+    }
+
     fn resolve_name(&self, name_string_id: u64) -> String {
         if let Some(name) = self.hfile.index.field_names.get(&name_string_id) {
             return name.clone();
@@ -606,7 +628,7 @@ impl Engine {
             .index
             .strings
             .get(&name_string_id)
-            .map(|sref| self.hfile.resolve_string(sref))
+            .map(|sref| self.cached_resolve_string(sref).to_string())
             .unwrap_or_else(|| format!("<unknown:{}>", name_string_id))
     }
 
@@ -633,7 +655,7 @@ impl Engine {
         let mut fields = crate::resolver::decode_fields(
             &raw,
             &self.hfile.index,
-            self.hfile.header.id_size,
+            self.id_size(),
             self.hfile.records_bytes(),
         );
         for field in &mut fields {
@@ -815,7 +837,7 @@ impl Drop for Engine {
 
 impl NavigationEngine for Engine {
     fn warnings(&self) -> &[String] {
-        &self.hfile.index_warnings
+        &self.hfile.stats.warnings
     }
 
     fn list_threads(&self) -> Vec<ThreadInfo> {
@@ -919,7 +941,7 @@ impl NavigationEngine for Engine {
                             let ec = collection_entry_count(
                                 &raw,
                                 &self.hfile.index,
-                                self.hfile.header.id_size,
+                                self.id_size(),
                                 self.hfile.records_bytes(),
                             );
                             (cn, ec)
@@ -927,7 +949,7 @@ impl NavigationEngine for Engine {
                             ("Object[]".to_string(), Some(meta.num_elements as u64))
                         } else if let Some((etype, bytes)) = self.hfile.find_prim_array(object_id) {
                             let type_name = prim_array_type_name(etype).to_string();
-                            let esz = field_byte_size(etype, self.hfile.header.id_size);
+                            let esz = field_byte_size(etype, self.id_size());
                             let cnt = if esz > 0 { bytes.len() / esz } else { 0 };
                             (format!("{type_name}[]"), Some(cnt as u64))
                         } else {
@@ -1048,7 +1070,7 @@ impl NavigationEngine for Engine {
         let fields = crate::resolver::decode_fields(
             &raw,
             &self.hfile.index,
-            self.hfile.header.id_size,
+            self.id_size(),
             self.hfile.records_bytes(),
         );
         let value_id = fields.iter().find_map(|f| {
@@ -1072,19 +1094,19 @@ impl NavigationEngine for Engine {
     }
 
     fn indexing_ratio(&self) -> f64 {
-        if self.hfile.records_attempted == 0 {
+        if self.hfile.stats.records_attempted == 0 {
             return 100.0;
         }
-        self.hfile.records_indexed as f64 / self.hfile.records_attempted as f64 * 100.0
+        self.hfile.stats.records_indexed as f64 / self.hfile.stats.records_attempted as f64 * 100.0
     }
 
     fn is_fully_indexed(&self) -> bool {
         // A file truncated mid-record breaks out of the scan loop before
         // incrementing records_attempted, so the ratio stays 100%.
-        // index_warnings catches that case (payload-exceeds-file warnings).
-        self.hfile.index_warnings.is_empty()
-            && (self.hfile.records_attempted == 0
-                || self.hfile.records_indexed >= self.hfile.records_attempted)
+        // stats.warnings catches that case (payload-exceeds-file warnings).
+        self.hfile.stats.warnings.is_empty()
+            && (self.hfile.stats.records_attempted == 0
+                || self.hfile.stats.records_indexed >= self.hfile.stats.records_attempted)
     }
 
     fn skeleton_bytes(&self) -> usize {

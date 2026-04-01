@@ -11,6 +11,7 @@
 pub mod first_pass;
 pub(crate) mod precise;
 pub(crate) mod segment;
+pub(crate) mod validation;
 
 use precise::PreciseIndex;
 use segment::SegmentFilter;
@@ -69,6 +70,9 @@ pub struct IndexResult {
     /// Location of every `HEAP_DUMP` (0x0C) and
     /// `HEAP_DUMP_SEGMENT` (0x1C) record.
     pub heap_record_ranges: Vec<HeapRecordRange>,
+    /// `true` when at least one heap segment had
+    /// unrecognised or truncated sub-tags.
+    pub has_heap_parse_anomalies: bool,
     /// Post-extraction allocation diagnostics.
     ///
     /// Only populated with the `test-utils` feature.
@@ -100,6 +104,7 @@ mod tests {
             records_indexed: indexed,
             segment_filters: Vec::new(),
             heap_record_ranges: Vec::new(),
+            has_heap_parse_anomalies: false,
             #[cfg(feature = "test-utils")]
             diagnostics: DiagnosticInfo::default(),
         }

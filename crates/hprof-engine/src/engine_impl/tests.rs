@@ -104,7 +104,7 @@ fn is_fully_indexed_false_for_partial_file() {
 fn is_fully_indexed_false_when_file_truncated_mid_record() {
     // A file truncated mid-record breaks the scan loop before
     // incrementing records_attempted, so the ratio stays 100/100.
-    // is_fully_indexed() must detect this via index_warnings.
+    // is_fully_indexed() must detect this via stats.warnings.
     use std::io::Write as IoWrite;
     let mut bytes = minimal_hprof_bytes();
     // Append a STRING record header claiming 9999 bytes of payload,
@@ -850,10 +850,33 @@ mod resolve_string_tests {
         let engine = engine_from_bytes(&bytes);
         assert!(engine.resolve_string(0x100).is_none());
     }
+
+    fn make_engine_with_string(id: u64, content: &str) -> Engine {
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_string(id, content)
+            .build();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &bytes).unwrap();
+        Engine::from_file(tmp.path(), &EngineConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn cached_resolve_string_returns_same_arc() {
+        let engine = make_engine_with_string(42, "hello");
+        let sref = engine.hfile.index.strings.get(&42).unwrap();
+
+        let a = engine.cached_resolve_string(sref);
+        let b = engine.cached_resolve_string(sref);
+
+        assert_eq!(&*a, "hello");
+        assert!(Arc::ptr_eq(&a, &b), "second call should return cached Arc");
+    }
 }
 
 mod collection_tests {
-    use hprof_parser::{ClassDumpInfo, FieldDef, HprofStringRef, PreciseIndex, RawInstance};
+    use hprof_parser::{
+        ClassDumpInfo, FieldDef, HprofStringRef, IdSize, PreciseIndex, RawInstance,
+    };
 
     use super::collection_entry_count;
 
@@ -899,6 +922,7 @@ mod collection_tests {
                     name_string_id: 1,
                     field_type: type_code,
                 }],
+                partial: false,
             },
         );
         (index, class_id, buf)
@@ -914,7 +938,10 @@ mod collection_tests {
             class_object_id: class_id,
             data: 524288i32.to_be_bytes().to_vec(),
         };
-        assert_eq!(collection_entry_count(&raw, &index, 8, &buf), Some(524288));
+        assert_eq!(
+            collection_entry_count(&raw, &index, IdSize::Eight, &buf),
+            Some(524288)
+        );
     }
 
     #[test]
@@ -927,7 +954,10 @@ mod collection_tests {
             class_object_id: class_id,
             data: 42i32.to_be_bytes().to_vec(),
         };
-        assert_eq!(collection_entry_count(&raw, &index, 8, &buf), None);
+        assert_eq!(
+            collection_entry_count(&raw, &index, IdSize::Eight, &buf),
+            None
+        );
     }
 
     #[test]
@@ -937,7 +967,10 @@ mod collection_tests {
             class_object_id: 999,
             data: 42i32.to_be_bytes().to_vec(),
         };
-        assert_eq!(collection_entry_count(&raw, &index, 8, &[]), None);
+        assert_eq!(
+            collection_entry_count(&raw, &index, IdSize::Eight, &[]),
+            None
+        );
     }
 
     #[test]
@@ -950,7 +983,10 @@ mod collection_tests {
             class_object_id: class_id,
             data: 7i32.to_be_bytes().to_vec(),
         };
-        assert_eq!(collection_entry_count(&raw, &index, 8, &buf), Some(7));
+        assert_eq!(
+            collection_entry_count(&raw, &index, IdSize::Eight, &buf),
+            Some(7)
+        );
     }
 
     #[test]
@@ -963,7 +999,10 @@ mod collection_tests {
             class_object_id: class_id,
             data: 3i32.to_be_bytes().to_vec(),
         };
-        assert_eq!(collection_entry_count(&raw, &index, 8, &buf), Some(3));
+        assert_eq!(
+            collection_entry_count(&raw, &index, IdSize::Eight, &buf),
+            Some(3)
+        );
     }
 
     #[test]
@@ -976,7 +1015,10 @@ mod collection_tests {
             class_object_id: class_id,
             data: (-1i32).to_be_bytes().to_vec(),
         };
-        assert_eq!(collection_entry_count(&raw, &index, 8, &buf), None);
+        assert_eq!(
+            collection_entry_count(&raw, &index, IdSize::Eight, &buf),
+            None
+        );
     }
 
     #[test]
@@ -1022,6 +1064,7 @@ mod collection_tests {
                         field_type: 2,
                     },
                 ],
+                partial: false,
             },
         );
         index.class_dumps.insert(
@@ -1057,6 +1100,7 @@ mod collection_tests {
                         field_type: 6,
                     },
                 ],
+                partial: false,
             },
         );
         index
@@ -1079,7 +1123,10 @@ mod collection_tests {
             data,
         };
 
-        assert_eq!(collection_entry_count(&raw, &index, 8, &buf), Some(14_000));
+        assert_eq!(
+            collection_entry_count(&raw, &index, IdSize::Eight, &buf),
+            Some(14_000)
+        );
     }
 
     #[test]
@@ -1125,6 +1172,7 @@ mod collection_tests {
                         field_type: 10,
                     },
                 ],
+                partial: false,
             },
         );
         index.class_dumps.insert(
@@ -1148,6 +1196,7 @@ mod collection_tests {
                         field_type: 4,
                     },
                 ],
+                partial: false,
             },
         );
         index
@@ -1169,7 +1218,10 @@ mod collection_tests {
             data,
         };
 
-        assert_eq!(collection_entry_count(&raw, &index, 8, &buf), Some(14_000));
+        assert_eq!(
+            collection_entry_count(&raw, &index, IdSize::Eight, &buf),
+            Some(14_000)
+        );
     }
 }
 

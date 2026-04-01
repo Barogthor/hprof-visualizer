@@ -10,12 +10,13 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use hprof_api::{MemoryBudget, NullProgressObserver, ProgressNotifier};
+use hprof_parser::IdSize;
 use hprof_parser::indexer::first_pass::run_first_pass;
 use hprof_parser::parse_header;
 
 /// Returns `(data, records_start, id_size)` or `None` if
 /// env var is unset.
-fn load_bench_file() -> Option<(Vec<u8>, usize, u32)> {
+fn load_bench_file() -> Option<(Vec<u8>, usize, IdSize)> {
     let path = match std::env::var("HPROF_BENCH_FILE") {
         Ok(p) => {
             let p = std::path::PathBuf::from(p);

@@ -6,16 +6,15 @@
 //! windows.
 
 use std::collections::HashSet;
-use std::io::Cursor;
 
-use byteorder::{BigEndian, ReadBytesExt};
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
-use super::hprof_primitives::{
-    gc_root_skip_size, parse_class_dump, primitive_element_size, skip_n,
-};
+use crate::format::IdSize;
+use crate::heap_reader::{gc_root_has_object_id, gc_root_remaining_size};
 use crate::indexer::segment::{SEGMENT_SIZE, SegmentFilter};
-use crate::read_id;
+use crate::java_types::value_byte_size;
+use crate::reader::RecordReader;
 use crate::tags::HeapSubTag;
 
 /// Marks the byte position of the first sub-record tag
@@ -78,7 +77,7 @@ pub(crate) fn scan_segment_for_objects(
     data: &[u8],
     scan_offset: usize,
     scan_end: usize,
-    id_size: u32,
+    id_size: IdSize,
     target_ids: &HashSet<u64>,
 ) -> Vec<(u64, u64)> {
     let end = scan_end.min(data.len());
@@ -86,38 +85,39 @@ pub(crate) fn scan_segment_for_objects(
         return Vec::new();
     }
     let slice = &data[scan_offset..end];
-    let mut cursor = Cursor::new(slice);
+    let mut reader = RecordReader::new(slice, id_size);
     let mut results = Vec::new();
+    let id_sz = id_size.as_usize();
 
-    while let Ok(raw) = cursor.read_u8() {
-        let tag_pos = scan_offset + cursor.position() as usize - 1;
+    while let Some(raw) = reader.read_u8() {
+        let tag_pos = scan_offset + reader.position() as usize - 1;
         let sub_tag = HeapSubTag::from(raw);
 
         match sub_tag {
             HeapSubTag::InstanceDump => {
-                let Ok(obj_id) = read_id(&mut cursor, id_size) else {
+                let Some(obj_id) = reader.read_id() else {
                     break;
                 };
                 if target_ids.contains(&obj_id) {
                     results.push((obj_id, tag_pos as u64));
                 }
-                // skip: stack_serial(4) + class_id(id) +
-                //   num_bytes(4) + field_data
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
+                // skip: stack_serial(4) + class_id(id)
+                //   + num_bytes(4) + field_data
+                let Some(_) = reader.read_u32() else {
                     break;
                 };
-                let Ok(_) = read_id(&mut cursor, id_size) else {
+                if !reader.skip(id_sz) {
+                    break;
+                }
+                let Some(num_bytes) = reader.read_u32() else {
                     break;
                 };
-                let Ok(num_bytes) = cursor.read_u32::<BigEndian>() else {
-                    break;
-                };
-                if !skip_n(&mut cursor, num_bytes as usize) {
+                if !reader.skip(num_bytes as usize) {
                     break;
                 }
             }
             HeapSubTag::PrimArrayDump => {
-                let Ok(arr_id) = read_id(&mut cursor, id_size) else {
+                let Some(arr_id) = reader.read_id() else {
                     break;
                 };
                 if target_ids.contains(&arr_id) {
@@ -125,50 +125,75 @@ pub(crate) fn scan_segment_for_objects(
                 }
                 // skip: stack_serial(4) +
                 //   num_elements(4) + elem_type(1) + data
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
+                if !reader.skip(4) {
+                    break;
+                }
+                let Some(num_elements) = reader.read_u32() else {
                     break;
                 };
-                let Ok(num_elements) = cursor.read_u32::<BigEndian>() else {
+                let Some(elem_type) = reader.read_u8() else {
                     break;
                 };
-                let Ok(elem_type) = cursor.read_u8() else {
-                    break;
-                };
-                let elem_size = primitive_element_size(elem_type);
+                let elem_size = value_byte_size(elem_type, id_size);
                 if elem_size == 0 {
                     break;
                 }
-                if !skip_n(&mut cursor, num_elements as usize * elem_size) {
+                let byte_count = (num_elements as usize).saturating_mul(elem_size);
+                if !reader.skip(byte_count) {
                     break;
                 }
             }
             HeapSubTag::ObjectArrayDump => {
-                // Read arr_id, skip rest.
-                // Thread objects are never
-                // OBJECT_ARRAY instances.
-                let Ok(_arr_id) = read_id(&mut cursor, id_size) else {
+                let Some(arr_id) = reader.read_id() else {
                     break;
                 };
-                let Ok(_) = cursor.read_u32::<BigEndian>() else {
+                if target_ids.contains(&arr_id) {
+                    results.push((arr_id, tag_pos as u64));
+                }
+                // skip: stack_serial(4) +
+                //   num_elements(4) + class_id(id) +
+                //   elements
+                if !reader.skip(4) {
+                    break;
+                }
+                let Some(num_elements) = reader.read_u32() else {
                     break;
                 };
-                let Ok(num_elements) = cursor.read_u32::<BigEndian>() else {
+                if !reader.skip(id_sz) {
                     break;
-                };
-                let Ok(_) = read_id(&mut cursor, id_size) else {
-                    break;
-                };
-                if !skip_n(&mut cursor, num_elements as usize * id_size as usize) {
+                }
+                let byte_count = (num_elements as usize).saturating_mul(id_sz);
+                if !reader.skip(byte_count) {
                     break;
                 }
             }
             HeapSubTag::ClassDump => {
-                if parse_class_dump(&mut cursor, id_size).is_none() {
+                if !reader.skip_class_dump_body() {
                     break;
                 }
             }
-            t if gc_root_skip_size(t, id_size).is_some() => {
-                if !skip_n(&mut cursor, gc_root_skip_size(t, id_size).unwrap()) {
+            HeapSubTag::GcRootUnknown => {
+                if !reader.skip(id_sz) {
+                    break;
+                }
+            }
+            HeapSubTag::GcRootJavaFrame => {
+                // object_id + thread_serial(4) +
+                //   frame_number(4)
+                if !reader.skip(id_sz + 8) {
+                    break;
+                }
+            }
+            HeapSubTag::GcRootThreadObj => {
+                // object_id + thread_serial(4) +
+                //   stack_trace_serial(4)
+                if !reader.skip(id_sz + 8) {
+                    break;
+                }
+            }
+            t if gc_root_has_object_id(t) => {
+                let skip_after = gc_root_remaining_size(t, id_size).unwrap_or(0);
+                if !reader.skip(id_sz + skip_after) {
                     break;
                 }
             }
@@ -177,6 +202,34 @@ pub(crate) fn scan_segment_for_objects(
     }
 
     results
+}
+
+/// Maps each 64 MiB segment index to the heap record
+/// byte ranges that overlap it.
+///
+/// Each entry is `(payload_start_clamped, payload_end_clamped)`
+/// in absolute byte offsets.
+fn build_segment_range_index(
+    heap_ranges: &[crate::indexer::HeapRecordRange],
+) -> FxHashMap<usize, Vec<(usize, usize)>> {
+    let mut index: FxHashMap<usize, Vec<(usize, usize)>> = FxHashMap::default();
+    for hr in heap_ranges {
+        let ps = hr.payload_start as usize;
+        let pe = ps + hr.payload_length as usize;
+        if pe == 0 || ps >= pe {
+            continue;
+        }
+        let first_seg = ps / SEGMENT_SIZE;
+        let last_seg = (pe - 1) / SEGMENT_SIZE;
+        for seg in first_seg..=last_seg {
+            let seg_start = seg * SEGMENT_SIZE;
+            let seg_end = seg_start + SEGMENT_SIZE;
+            let from = ps.max(seg_start);
+            let to = pe.min(seg_end);
+            index.entry(seg).or_default().push((from, to));
+        }
+    }
+    index
 }
 
 /// Performs batched filter-based object lookups across
@@ -193,7 +246,7 @@ pub(crate) fn batch_lookup_by_filter(
     filters: &[SegmentFilter],
     entry_points: &[SegmentEntryPoint],
     data: &[u8],
-    id_size: u32,
+    id_size: IdSize,
     target_ids: &HashSet<u64>,
     heap_ranges: &[crate::indexer::HeapRecordRange],
 ) -> (FxHashMap<u64, u64>, Vec<String>) {
@@ -215,19 +268,30 @@ pub(crate) fn batch_lookup_by_filter(
         );
     }
 
+    // Pre-compute segment_index → [(range_start, range_end)]
+    // so the inner loop is O(overlapping ranges per segment)
+    // instead of O(all heap ranges).
+    let seg_ranges = build_segment_range_index(heap_ranges);
+
+    // Build scan jobs: (scan_start, scan_end, candidates)
+    // per filter, then execute in parallel.
+    struct ScanJob {
+        ranges: Vec<(usize, usize)>,
+        candidates: HashSet<u64>,
+    }
+    let mut jobs: Vec<ScanJob> = Vec::new();
+
     for filter in filters {
-        // Collect target IDs that pass this filter
         let candidates: HashSet<u64> = target_ids
             .iter()
             .copied()
-            .filter(|id| !result_map.contains_key(id) && filter.contains(*id))
+            .filter(|id| filter.contains(*id))
             .collect();
 
         if candidates.is_empty() {
             continue;
         }
 
-        // Find entry point via binary search
         let ep_idx =
             entry_points.binary_search_by_key(&filter.segment_index, |ep| ep.segment_index);
         let scan_start = match ep_idx {
@@ -244,23 +308,43 @@ pub(crate) fn batch_lookup_by_filter(
 
         let scan_end = (filter.segment_index + 1) * SEGMENT_SIZE;
 
-        // Scan each HEAP_DUMP_SEGMENT payload that
-        // overlaps [scan_start, scan_end).
-        for hr in heap_ranges {
-            let ps = hr.payload_start as usize;
-            let pe = ps + hr.payload_length as usize;
-            // Skip ranges entirely outside the window
-            if pe <= scan_start || ps >= scan_end {
-                continue;
+        if let Some(ranges) = seg_ranges.get(&filter.segment_index) {
+            let clamped: Vec<(usize, usize)> = ranges
+                .iter()
+                .map(|&(from, to)| (from.max(scan_start), to.min(scan_end)))
+                .filter(|(from, to)| from < to)
+                .collect();
+            if !clamped.is_empty() {
+                jobs.push(ScanJob {
+                    ranges: clamped,
+                    candidates,
+                });
             }
-            // Clamp to scan window
-            let from = scan_start.max(ps);
-            let to = scan_end.min(pe);
+        }
+    }
 
-            let found = scan_segment_for_objects(data, from, to, id_size, &candidates);
-            for (id, offset) in found {
-                result_map.insert(id, offset);
+    // Execute scans in parallel.
+    let per_job: Vec<Vec<(u64, u64)>> = jobs
+        .par_iter()
+        .map(|job| {
+            let mut found = Vec::new();
+            for &(from, to) in &job.ranges {
+                found.extend(scan_segment_for_objects(
+                    data,
+                    from,
+                    to,
+                    id_size,
+                    &job.candidates,
+                ));
             }
+            found
+        })
+        .collect();
+
+    // Merge results: first-found wins.
+    for found in per_job {
+        for (id, offset) in found {
+            result_map.entry(id).or_insert(offset);
         }
     }
 
@@ -294,11 +378,12 @@ mod tests {
 
     /// Builds raw sub-record bytes for an
     /// INSTANCE_DUMP (sub-tag 0x21).
-    fn make_instance_sub(obj_id: u64, class_id: u64, id_size: u32) -> Vec<u8> {
+    fn make_instance_sub(obj_id: u64, class_id: u64, id_size: IdSize) -> Vec<u8> {
+        let sz = id_size.as_usize();
         let mut buf = vec![0x21u8];
-        buf.extend_from_slice(&obj_id.to_be_bytes()[8 - id_size as usize..]);
+        buf.extend_from_slice(&obj_id.to_be_bytes()[8 - sz..]);
         buf.extend_from_slice(&0u32.to_be_bytes());
-        buf.extend_from_slice(&class_id.to_be_bytes()[8 - id_size as usize..]);
+        buf.extend_from_slice(&class_id.to_be_bytes()[8 - sz..]);
         buf.extend_from_slice(&0u32.to_be_bytes());
         buf
     }
@@ -318,7 +403,7 @@ mod tests {
 
     #[test]
     fn batch_lookup_finds_known_objects() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut data = Vec::new();
         data.extend(make_instance_sub(0xA, 100, id_size));
         let pos_b = data.len();
@@ -346,7 +431,7 @@ mod tests {
 
     #[test]
     fn batch_lookup_missing_id_absent_from_result() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let data = make_instance_sub(0xA, 100, id_size);
         let filters = build_filter_seg0(&[0xA]);
         let ep = vec![SegmentEntryPoint {
@@ -370,7 +455,7 @@ mod tests {
 
     #[test]
     fn batch_lookup_multiple_ids_same_segment() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut data = Vec::new();
         data.extend(make_instance_sub(1, 100, id_size));
         data.extend(make_instance_sub(2, 100, id_size));
@@ -393,7 +478,7 @@ mod tests {
 
     #[test]
     fn scan_finds_instance_dump() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let data = make_instance_sub(42, 100, id_size);
 
         let target: HashSet<u64> = [42].into_iter().collect();
@@ -406,7 +491,7 @@ mod tests {
 
     #[test]
     fn scan_finds_prim_array_dump() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let mut data = Vec::new();
         data.push(0x23); // PRIM_ARRAY_DUMP
         data.extend_from_slice(&99u64.to_be_bytes());
@@ -424,7 +509,7 @@ mod tests {
 
     #[test]
     fn scan_skips_non_target_objects() {
-        let id_size = 8u32;
+        let id_size = IdSize::Eight;
         let data = make_instance_sub(1, 100, id_size);
 
         let target: HashSet<u64> = [999].into_iter().collect();

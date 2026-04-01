@@ -1,0 +1,30 @@
+[package]
+name = "hprof-parser-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hprof-parser = { path = "../crates/hprof-parser" }
+hprof-api = { path = "../crates/hprof-api" }
+
+[[bin]]
+name = "fuzz_parse_header"
+path = "fuzz_targets/fuzz_parse_header.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_first_pass"
+path = "fuzz_targets/fuzz_first_pass.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_string_parsing"
+path = "fuzz_targets/fuzz_string_parsing.rs"
+doc = false

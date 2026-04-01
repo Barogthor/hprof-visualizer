@@ -1268,7 +1268,7 @@ mod batch_pre_resolution {
         for i in 0..30u64 {
             let node_id = 0x200 + i;
             assert!(
-                hfile.index.instance_offsets.contains(&node_id),
+                hfile.index.contains_offset(&node_id),
                 "head node 0x{node_id:X} must be cached"
             );
         }
@@ -1300,7 +1300,7 @@ mod batch_pre_resolution {
         for i in 0..15u64 {
             let node_id = 0x200 + i;
             assert!(
-                hfile.index.instance_offsets.contains(&node_id),
+                hfile.index.contains_offset(&node_id),
                 "node 0x{node_id:X} must be cached"
             );
         }
@@ -1321,7 +1321,7 @@ mod batch_pre_resolution {
         for i in 0..16u64 {
             let node_id = 0x200 + i;
             assert!(
-                hfile.index.instance_offsets.contains(&node_id),
+                hfile.index.contains_offset(&node_id),
                 "node 0x{node_id:X} must be cached"
             );
         }
@@ -1407,7 +1407,7 @@ mod batch_pre_resolution {
         for i in 0..20u64 {
             let node_id = 0x200 + i;
             assert!(
-                hfile.index.instance_offsets.contains(&node_id),
+                hfile.index.contains_offset(&node_id),
                 "HashSet head node 0x{node_id:X} \
                  must be cached via inherited batch"
             );
@@ -1428,17 +1428,17 @@ mod batch_pre_resolution {
         for i in 0..20u64 {
             let node_id = 0x200 + i;
             assert!(
-                hfile.index.instance_offsets.contains(&node_id),
+                hfile.index.contains_offset(&node_id),
                 "LL node 0x{node_id:X} must be cached"
             );
         }
 
-        let before_len = hfile.index.instance_offsets.len();
+        let before_len = hfile.index.offset_count();
 
         // Second call — no new entries added
         let _p2 = get_page(&hfile, 0x100, 0, 20, None).unwrap();
 
-        let after_len = hfile.index.instance_offsets.len();
+        let after_len = hfile.index.offset_count();
         assert_eq!(
             before_len, after_len,
             "second visit must not add new entries"

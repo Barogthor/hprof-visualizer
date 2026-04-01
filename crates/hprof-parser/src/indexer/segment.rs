@@ -115,20 +115,6 @@ impl SegmentFilterBuilder {
         }
     }
 
-    /// Returns the number of segment filters already
-    /// built.
-    #[allow(dead_code)]
-    pub(crate) fn completed_count(&self) -> usize {
-        self.filters.len()
-    }
-
-    /// Returns the number of raw IDs currently
-    /// accumulated (not yet finalized).
-    #[allow(dead_code)]
-    pub(crate) fn pending_id_count(&self) -> usize {
-        self.current_ids.len()
-    }
-
     /// Finalizes the last segment and returns
     /// `(filters, warnings)`.
     ///
@@ -142,8 +128,21 @@ impl SegmentFilterBuilder {
         (self.filters, self.warnings)
     }
 
+    /// Returns the number of segment filters already built.
+    #[cfg(test)]
+    pub(crate) fn completed_count(&self) -> usize {
+        self.filters.len()
+    }
+
+    /// Returns the number of raw IDs currently accumulated
+    /// (not yet finalized).
+    #[cfg(test)]
+    pub(crate) fn pending_id_count(&self) -> usize {
+        self.current_ids.len()
+    }
+
     /// Alias for [`finish`](SegmentFilterBuilder::finish).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn build(self) -> (Vec<SegmentFilter>, Vec<String>) {
         self.finish()
     }

@@ -7,7 +7,7 @@
 use std::io::Cursor;
 
 use byteorder::{BigEndian, ReadBytesExt};
-use hprof_parser::{PreciseIndex, RawInstance, read_id};
+use hprof_parser::{IdSize, PreciseIndex, RawInstance, read_id};
 
 use crate::engine::{FieldInfo, FieldValue};
 
@@ -27,7 +27,7 @@ use crate::engine::{FieldInfo, FieldValue};
 pub fn decode_fields(
     raw: &RawInstance,
     index: &PreciseIndex,
-    id_size: u32,
+    id_size: IdSize,
     _records_bytes: &[u8],
 ) -> Vec<FieldInfo> {
     let mut ordered_defs: Vec<(u64, u8)> = Vec::new();
@@ -93,7 +93,11 @@ fn collect_fields(class_id: u64, index: &PreciseIndex, out: &mut Vec<(u64, u8)>)
     }
 }
 
-fn read_field_value(cursor: &mut Cursor<&[u8]>, type_code: u8, id_size: u32) -> Option<FieldValue> {
+fn read_field_value(
+    cursor: &mut Cursor<&[u8]>,
+    type_code: u8,
+    id_size: IdSize,
+) -> Option<FieldValue> {
     match type_code {
         2 => {
             let id = read_id(cursor, id_size).ok()?;
@@ -153,6 +157,7 @@ mod tests {
                         field_type: ft,
                     })
                     .collect(),
+                partial: false,
             },
         );
         let mut buf = Vec::new();
@@ -187,7 +192,7 @@ mod tests {
             data: 5i32.to_be_bytes().to_vec(),
         };
 
-        let fields = decode_fields(&raw, &index, 8, &buf);
+        let fields = decode_fields(&raw, &index, IdSize::Eight, &buf);
 
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].name, "from_field_names_cache");
@@ -203,7 +208,7 @@ mod tests {
             data: 9i32.to_be_bytes().to_vec(),
         };
 
-        let fields = decode_fields(&raw, &index, 8, &buf);
+        let fields = decode_fields(&raw, &index, IdSize::Eight, &buf);
 
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].name, "<field:1>");
@@ -217,7 +222,7 @@ mod tests {
             class_object_id: 100,
             data: 42i32.to_be_bytes().to_vec(),
         };
-        let fields = decode_fields(&raw, &index, 8, &buf);
+        let fields = decode_fields(&raw, &index, IdSize::Eight, &buf);
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].name, "count");
         assert_eq!(fields[0].value, FieldValue::Int(42));
@@ -237,6 +242,7 @@ mod tests {
                     name_string_id: 1,
                     field_type: 10,
                 }],
+                partial: false,
             },
         );
         index.class_dumps.insert(
@@ -250,6 +256,7 @@ mod tests {
                     name_string_id: 2,
                     field_type: 10,
                 }],
+                partial: false,
             },
         );
         // Build records buffer with "x" at offset 0, "y" at offset 1
@@ -280,7 +287,7 @@ mod tests {
             class_object_id: 100,
             data,
         };
-        let fields = decode_fields(&raw, &index, 8, &buf);
+        let fields = decode_fields(&raw, &index, IdSize::Eight, &buf);
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].name, "y");
         assert_eq!(fields[0].value, FieldValue::Int(3));
@@ -296,7 +303,7 @@ mod tests {
             class_object_id: 100,
             data: id.to_be_bytes().to_vec(),
         };
-        let fields = decode_fields(&raw, &index, 8, &buf);
+        let fields = decode_fields(&raw, &index, IdSize::Eight, &buf);
         assert_eq!(
             fields[0].value,
             FieldValue::ObjectRef {
@@ -315,7 +322,7 @@ mod tests {
             class_object_id: 100,
             data: 0u64.to_be_bytes().to_vec(),
         };
-        let fields = decode_fields(&raw, &index, 8, &buf);
+        let fields = decode_fields(&raw, &index, IdSize::Eight, &buf);
         assert_eq!(fields[0].value, FieldValue::Null);
     }
 
@@ -326,7 +333,7 @@ mod tests {
             class_object_id: 100,
             data: vec![1u8],
         };
-        let fields = decode_fields(&raw, &index, 8, &buf);
+        let fields = decode_fields(&raw, &index, IdSize::Eight, &buf);
         assert_eq!(fields[0].value, FieldValue::Bool(true));
     }
 
@@ -338,7 +345,7 @@ mod tests {
             class_object_id: 100,
             data: val.to_be_bytes().to_vec(),
         };
-        let fields = decode_fields(&raw, &index, 8, &buf);
+        let fields = decode_fields(&raw, &index, IdSize::Eight, &buf);
         assert_eq!(fields[0].value, FieldValue::Long(i64::MAX));
     }
 
@@ -349,7 +356,7 @@ mod tests {
             class_object_id: 100,
             data: vec![0u8, 1],
         };
-        let fields = decode_fields(&raw, &index, 8, &buf);
+        let fields = decode_fields(&raw, &index, IdSize::Eight, &buf);
         assert!(fields.is_empty());
     }
 }

@@ -30,6 +30,19 @@ pub const PRIM_TYPE_INT: u8 = 10;
 /// Hprof type code for `long`.
 pub const PRIM_TYPE_LONG: u8 = 11;
 
+/// Returns the byte size of a value with the given
+/// hprof type code.
+pub(crate) fn value_byte_size(type_code: u8, id_size: crate::format::IdSize) -> usize {
+    match type_code {
+        PRIM_TYPE_OBJECT_REF => id_size.as_usize(),
+        PRIM_TYPE_BOOLEAN | PRIM_TYPE_BYTE => 1,
+        PRIM_TYPE_CHAR | PRIM_TYPE_SHORT => 2,
+        PRIM_TYPE_FLOAT | PRIM_TYPE_INT => 4,
+        PRIM_TYPE_DOUBLE | PRIM_TYPE_LONG => 8,
+        _ => 0,
+    }
+}
+
 /// Converts a JVM type descriptor or binary class name to a human-readable
 /// Java simple name.
 ///

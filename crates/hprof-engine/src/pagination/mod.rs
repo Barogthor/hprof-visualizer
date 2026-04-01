@@ -182,12 +182,7 @@ fn extract_array_list(
     offset: usize,
     limit: usize,
 ) -> Option<CollectionPage> {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.header.id_size,
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let mut size: Option<u64> = None;
     let mut element_data_id: Option<u64> = None;
@@ -228,12 +223,7 @@ fn extract_hash_map(
     concurrent: bool,
     mut skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.header.id_size,
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let mut size: Option<u64> = None;
     let mut table_id: Option<u64> = None;
@@ -288,11 +278,11 @@ fn extract_hash_map(
     let uncached_heads: Vec<u64> = table_elements[start_slot..]
         .iter()
         .copied()
-        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .filter(|&id| id != 0 && !hfile.index.contains_offset(&id))
         .collect();
     if uncached_heads.len() >= BATCH_THRESHOLD {
         let batch = hfile.batch_find_instances(&uncached_heads);
-        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        hfile.index.insert_offset_batch(&batch.offsets);
     }
 
     let adjusted_offset = offset - checkpoint_index;
@@ -316,12 +306,8 @@ fn extract_hash_map(
                     break;
                 }
                 if let Some(nr) = Engine::read_instance_public(hfile, node_id) {
-                    let nf = decode_fields(
-                        &nr,
-                        &hfile.index,
-                        hfile.header.id_size,
-                        hfile.records_bytes(),
-                    );
+                    let nf =
+                        decode_fields(&nr, &hfile.index, hfile.id_size(), hfile.records_bytes());
                     node_id = nf
                         .iter()
                         .find(|f| f.name == "next")
@@ -370,7 +356,7 @@ fn extract_hash_map(
                 let node_fields = decode_fields(
                     &node_raw,
                     &hfile.index,
-                    hfile.header.id_size,
+                    hfile.id_size(),
                     hfile.records_bytes(),
                 );
                 let key = node_fields
@@ -423,11 +409,11 @@ fn extract_hash_map(
                 FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
                 _ => None,
             })
-            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .filter(|id| !hfile.index.contains_offset(id))
             .collect();
         if !obj_ids.is_empty() {
             let batch = hfile.batch_find_instances(&obj_ids);
-            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+            hfile.index.insert_offset_batch(&batch.offsets);
         }
     }
 
@@ -456,11 +442,11 @@ fn extract_hash_map_full(
     let uncached_heads: Vec<u64> = table_elements
         .iter()
         .copied()
-        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .filter(|&id| id != 0 && !hfile.index.contains_offset(&id))
         .collect();
     if uncached_heads.len() >= BATCH_THRESHOLD {
         let batch = hfile.batch_find_instances(&uncached_heads);
-        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        hfile.index.insert_offset_batch(&batch.offsets);
     }
 
     let target_count = offset + limit;
@@ -489,7 +475,7 @@ fn extract_hash_map_full(
                 let node_fields = decode_fields(
                     &node_raw,
                     &hfile.index,
-                    hfile.header.id_size,
+                    hfile.id_size(),
                     hfile.records_bytes(),
                 );
                 let key = node_fields
@@ -542,11 +528,11 @@ fn extract_hash_map_full(
                 FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
                 _ => None,
             })
-            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .filter(|id| !hfile.index.contains_offset(id))
             .collect();
         if !obj_ids.is_empty() {
             let batch = hfile.batch_find_instances(&obj_ids);
-            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+            hfile.index.insert_offset_batch(&batch.offsets);
         }
     }
 
@@ -561,12 +547,7 @@ fn extract_hash_set(
     limit: usize,
     skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.header.id_size,
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let map_id = fields.iter().find_map(|f| {
         if f.name == "map"
@@ -612,12 +593,7 @@ fn extract_linked_list(
     limit: usize,
     mut skip_index: Option<&mut SkipIndex>,
 ) -> Option<CollectionPage> {
-    let fields = decode_fields(
-        raw,
-        &hfile.index,
-        hfile.header.id_size,
-        hfile.records_bytes(),
-    );
+    let fields = decode_fields(raw, &hfile.index, hfile.id_size(), hfile.records_bytes());
 
     let mut size: Option<u64> = None;
     let mut first_id: Option<u64> = None;
@@ -682,7 +658,7 @@ fn extract_linked_list(
             let node_fields = decode_fields(
                 &node_raw,
                 &hfile.index,
-                hfile.header.id_size,
+                hfile.id_size(),
                 hfile.records_bytes(),
             );
             let item = node_fields
@@ -723,11 +699,11 @@ fn extract_linked_list(
                 FieldValue::ObjectRef { id, .. } if *id != 0 => Some(*id),
                 _ => None,
             })
-            .filter(|id| !hfile.index.instance_offsets.contains(id))
+            .filter(|id| !hfile.index.contains_offset(id))
             .collect();
         if !obj_ids.is_empty() {
             let batch = hfile.batch_find_instances(&obj_ids);
-            hfile.index.instance_offsets.insert_batch(&batch.offsets);
+            hfile.index.insert_offset_batch(&batch.offsets);
         }
     }
 
@@ -799,12 +775,12 @@ fn paginate_object_array(
     let uncached: Vec<u64> = element_ids
         .iter()
         .copied()
-        .filter(|&id| id != 0 && !hfile.index.instance_offsets.contains(&id))
+        .filter(|&id| id != 0 && !hfile.index.contains_offset(&id))
         .collect();
 
     if !uncached.is_empty() {
         let batch = hfile.batch_find_instances(&uncached);
-        hfile.index.instance_offsets.insert_batch(&batch.offsets);
+        hfile.index.insert_offset_batch(&batch.offsets);
     }
 
     // Step 3: Resolve all elements (batch-found IDs now
@@ -878,7 +854,7 @@ fn id_to_field_value(id: u64, hfile: &HprofFile) -> FieldValue {
         let entry_count = crate::engine_impl::collection_entry_count(
             &raw,
             &hfile.index,
-            hfile.header.id_size,
+            hfile.id_size(),
             hfile.records_bytes(),
         );
         let inline_value = crate::engine_impl::resolve_inline_value(&class_name, hfile, id);
@@ -901,7 +877,7 @@ fn id_to_field_value(id: u64, hfile: &HprofFile) -> FieldValue {
     // Try primitive array.
     if let Some((etype, bytes)) = hfile.find_prim_array(id) {
         let type_name = crate::engine_impl::prim_array_type_name(etype);
-        let esz = crate::engine_impl::field_byte_size(etype, hfile.header.id_size);
+        let esz = crate::engine_impl::field_byte_size(etype, hfile.id_size());
         let cnt = if esz > 0 { bytes.len() / esz } else { 0 };
         return FieldValue::ObjectRef {
             id,
