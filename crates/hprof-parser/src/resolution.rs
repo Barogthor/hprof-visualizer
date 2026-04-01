@@ -516,8 +516,7 @@ fn scan_for_object_array_meta(
         } = record
             && *id == target_id
         {
-            let elements_offset =
-                data_base_offset + cur_pos - elements_data.len() as u64;
+            let elements_offset = data_base_offset + cur_pos - elements_data.len() as u64;
             Some(ObjectArrayMeta {
                 class_id: *class_id,
                 num_elements: *num_elements,

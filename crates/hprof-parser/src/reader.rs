@@ -341,8 +341,7 @@ impl<'a> RecordReader<'a> {
         }
 
         let static_count = self.read_u16()?;
-        let (static_fields, static_complete) =
-            self.parse_static_fields(static_count);
+        let (static_fields, static_complete) = self.parse_static_fields(static_count);
 
         if !static_complete {
             return Some(ClassDumpInfo {
@@ -780,9 +779,7 @@ mod tests {
         body.extend_from_slice(&0u16.to_be_bytes()); // instance_fields_count
 
         let mut r = RecordReader::new(&body, id_size);
-        let info = r
-            .parse_class_dump()
-            .expect("clean class dump should parse");
+        let info = r.parse_class_dump().expect("clean class dump should parse");
         assert!(!info.partial, "clean parse must not be partial");
         assert_eq!(info.static_fields.len(), 1);
     }

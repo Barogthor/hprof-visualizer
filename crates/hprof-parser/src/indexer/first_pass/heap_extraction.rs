@@ -127,6 +127,7 @@ pub(super) fn extract_heap_segment(
                 });
             }
             HeapSubRecord::ClassDump(info) => {
+                let info = *info;
                 result.class_dumps.push(ClassDumpEntry {
                     class_object_id: info.class_object_id,
                     info,

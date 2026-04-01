@@ -36,7 +36,13 @@ pub enum HeapSubRecord<'a> {
         data: &'a [u8],
     },
     /// `CLASS_DUMP` (sub-tag `0x20`).
-    ClassDump(ClassDumpInfo),
+    ///
+    /// Boxed to keep the enum small (~40 bytes instead
+    /// of 72): `ClassDumpInfo` contains two `Vec`s that
+    /// inflate the enum for every variant. CLASS_DUMP
+    /// records are rare (~0.1% of sub-records) so the
+    /// heap allocation is negligible.
+    ClassDump(Box<ClassDumpInfo>),
     /// `GC_ROOT_JAVA_FRAME` (sub-tag `0x03`).
     GcRootJavaFrame {
         object_id: u64,
@@ -133,7 +139,7 @@ impl<'a> Iterator for HeapSubRecordIter<'a> {
             }
             HeapSubTag::ClassDump => {
                 let info = self.reader.parse_class_dump()?;
-                Some(HeapSubRecord::ClassDump(info))
+                Some(HeapSubRecord::ClassDump(Box::new(info)))
             }
             HeapSubTag::GcRootJavaFrame => {
                 let object_id = self.reader.read_id()?;

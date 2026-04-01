@@ -223,8 +223,7 @@ pub(super) fn resolve_all(
                 let Some(&str_offset) = found1.get(id) else {
                     continue;
                 };
-                let Some(str_inst) = read_raw_instance_at(ctx.data, str_offset, ctx.id_size)
-                else {
+                let Some(str_inst) = read_raw_instance_at(ctx.data, str_offset, ctx.id_size) else {
                     continue;
                 };
                 for r in extract_obj_refs(
