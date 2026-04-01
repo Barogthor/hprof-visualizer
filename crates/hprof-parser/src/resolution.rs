@@ -963,6 +963,34 @@ mod builder_tests {
     }
 
     #[test]
+    fn find_object_array_meta_reports_elements_offset() {
+        let id_size = 8u32;
+        let elements = [0x1u64, 0x2u64, 0x3u64];
+        let mut payload = Vec::new();
+        payload.push(0x22u8); // OBJECT_ARRAY_DUMP
+        payload.extend_from_slice(&0xAu64.to_be_bytes()); // array id
+        payload.extend_from_slice(&0u32.to_be_bytes()); // stack serial
+        payload.extend_from_slice(&(elements.len() as u32).to_be_bytes());
+        payload.extend_from_slice(&0xCCu64.to_be_bytes()); // class id
+        for elem in elements {
+            payload.extend_from_slice(&elem.to_be_bytes());
+        }
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", id_size)
+            .add_raw_heap_segment(&payload)
+            .build();
+        let hfile = hfile_from_bytes(&bytes);
+
+        let meta = hfile.find_object_array_meta(0xA).expect("must find meta");
+        let payload_start = hfile.heap_record_ranges[0].payload_start;
+        let expected_elements_offset = payload_start + 1 + 8 + 4 + 4 + 8;
+        assert_eq!(meta.elements_offset, expected_elements_offset);
+
+        assert_eq!(hfile.read_object_array_element(&meta, 0), Some(0x1));
+        assert_eq!(hfile.read_object_array_element(&meta, 2), Some(0x3));
+    }
+
+    #[test]
     fn find_object_array_meta_id_size_4() {
         let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 4)
             .add_object_array(0xA, 0, 0xCC, &[0x1, 0x2, 0x3])
