@@ -401,26 +401,48 @@ impl HprofFile {
     }
 }
 
-fn scan_for_instance(data: &[u8], target_id: u64, id_size: IdSize) -> Option<(RawInstance, u64)> {
+/// Scans heap sub-records for the first match.
+///
+/// Calls `extract` for each record with the record reference,
+/// `tag_position` (byte offset of the record's tag), and
+/// `cur_pos` (read cursor after the record).
+/// Returns the first `Some` result.
+fn scan_heap_for<T>(
+    data: &[u8],
+    id_size: IdSize,
+    mut extract: impl FnMut(&HeapSubRecord<'_>, u64, u64) -> Option<T>,
+) -> Option<T> {
     let mut iter = HeapSubRecordIter::new(data, id_size);
     loop {
         let record = iter.next()?;
+        let tag_pos = iter.tag_position();
+        let cur_pos = iter.position();
+        if let Some(result) = extract(&record, tag_pos, cur_pos) {
+            return Some(result);
+        }
+    }
+}
+
+fn scan_for_instance(data: &[u8], target_id: u64, id_size: IdSize) -> Option<(RawInstance, u64)> {
+    scan_heap_for(data, id_size, |record, tag_pos, _| {
         if let HeapSubRecord::Instance {
             id,
             class_id,
             field_data,
         } = record
-            && id == target_id
+            && *id == target_id
         {
-            return Some((
+            Some((
                 RawInstance {
-                    class_object_id: class_id,
+                    class_object_id: *class_id,
                     data: field_data.to_vec(),
                 },
-                iter.tag_position(),
-            ));
+                tag_pos,
+            ))
+        } else {
+            None
         }
-    }
+    })
 }
 
 fn scan_segment_for_instances(
@@ -454,20 +476,20 @@ fn scan_segment_for_instances(
 }
 
 fn scan_for_prim_array(data: &[u8], target_id: u64, id_size: IdSize) -> Option<(u8, Vec<u8>)> {
-    let mut iter = HeapSubRecordIter::new(data, id_size);
-    loop {
-        let record = iter.next()?;
+    scan_heap_for(data, id_size, |record, _, _| {
         if let HeapSubRecord::PrimArray {
             id,
             element_type,
             data: arr_data,
             ..
         } = record
-            && id == target_id
+            && *id == target_id
         {
-            return Some((element_type, arr_data.to_vec()));
+            Some((*element_type, arr_data.to_vec()))
+        } else {
+            None
         }
-    }
+    })
 }
 
 fn scan_for_object_array_meta(
@@ -476,25 +498,26 @@ fn scan_for_object_array_meta(
     id_size: IdSize,
     data_base_offset: u64,
 ) -> Option<ObjectArrayMeta> {
-    let mut iter = HeapSubRecordIter::new(data, id_size);
-    loop {
-        let record = iter.next()?;
+    scan_heap_for(data, id_size, |record, _, cur_pos| {
         if let HeapSubRecord::ObjectArray {
             id,
             class_id,
             num_elements,
             elements_data,
         } = record
-            && id == target_id
+            && *id == target_id
         {
-            let elements_offset = data_base_offset + iter.position() - elements_data.len() as u64;
-            return Some(ObjectArrayMeta {
-                class_id,
-                num_elements,
+            let elements_offset =
+                data_base_offset + cur_pos - elements_data.len() as u64;
+            Some(ObjectArrayMeta {
+                class_id: *class_id,
+                num_elements: *num_elements,
                 elements_offset,
-            });
+            })
+        } else {
+            None
         }
-    }
+    })
 }
 
 #[cfg(test)]
