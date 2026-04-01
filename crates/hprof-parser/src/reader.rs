@@ -375,6 +375,61 @@ impl<'a> RecordReader<'a> {
         })
     }
 
+    /// Skips past a `CLASS_DUMP` sub-record body
+    /// (after the sub-tag byte) without allocating.
+    ///
+    /// Returns `true` on success, `false` on truncation
+    /// or an unknown static-field type.
+    pub fn skip_class_dump_body(&mut self) -> bool {
+        // class_object_id + stack_serial + super_class_id
+        // + 5 refs + instance_size
+        let fixed = 2 * self.id_size.as_usize()
+            + 4
+            + 5 * self.id_size.as_usize()
+            + 4;
+        if !self.skip(fixed) {
+            return false;
+        }
+        // Constant pool
+        let Some(cp_count) = self.read_u16() else {
+            return false;
+        };
+        for _ in 0..cp_count {
+            if self.read_u16().is_none() {
+                return false;
+            }
+            let Some(cp_type) = self.read_u8() else {
+                return false;
+            };
+            if !self.skip(value_byte_size(cp_type, self.id_size)) {
+                return false;
+            }
+        }
+        // Static fields
+        let Some(static_count) = self.read_u16() else {
+            return false;
+        };
+        for _ in 0..static_count {
+            // name_string_id + type
+            if !self.skip(self.id_size.as_usize()) {
+                return false;
+            }
+            let Some(ft) = self.read_u8() else {
+                return false;
+            };
+            let sz = value_byte_size(ft, self.id_size);
+            if sz == 0 || !self.skip(sz) {
+                return false;
+            }
+        }
+        // Instance fields
+        let Some(field_count) = self.read_u16() else {
+            return false;
+        };
+        let per_field = self.id_size.as_usize() + 1;
+        self.skip(field_count as usize * per_field)
+    }
+
     /// Parses `count` static field entries.
     ///
     /// Returns `(fields, complete)` where `complete` is `false` when

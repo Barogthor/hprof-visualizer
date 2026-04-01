@@ -30,6 +30,9 @@ pub(super) struct HeapSegmentResult {
     pub(super) raw_thread_objects: Vec<RawThreadObject>,
     pub(super) class_dumps: Vec<ClassDumpEntry>,
     pub(super) warnings: Vec<String>,
+    /// Set when the segment had unrecognised or
+    /// truncated sub-tags.
+    pub(super) has_parse_anomaly: bool,
 }
 
 impl HeapSegmentResult {
@@ -51,6 +54,7 @@ impl HeapSegmentResult {
             raw_thread_objects: Vec::new(),
             class_dumps: Vec::new(),
             warnings: Vec::new(),
+            has_parse_anomaly: false,
         }
     }
 }
@@ -128,6 +132,13 @@ pub(super) fn extract_heap_segment(
             }
             HeapSubRecord::ClassDump(info) => {
                 let info = *info;
+                if info.partial {
+                    result.warnings.push(format!(
+                        "CLASS_DUMP at absolute offset {tag_pos} parsed partially \
+                         for class_object_id=0x{:x}; field metadata is incomplete",
+                        info.class_object_id,
+                    ));
+                }
                 result.class_dumps.push(ClassDumpEntry {
                     class_object_id: info.class_object_id,
                     info,
@@ -164,6 +175,7 @@ pub(super) fn extract_heap_segment(
 
     let pos = iter.position() as usize;
     if pos < payload.len() {
+        result.has_parse_anomaly = true;
         result.warnings.push(format!(
             "heap segment truncated or unknown sub-tag \
              at absolute offset {}: {} bytes unread",
@@ -205,6 +217,7 @@ pub(super) fn merge_segment_result(
         .raw_thread_objects
         .extend(seg_result.raw_thread_objects);
     output.class_dumps.extend(seg_result.class_dumps);
+    output.has_heap_parse_anomalies |= seg_result.has_parse_anomaly;
     for w in seg_result.warnings {
         push_warning_capped(&mut output.warnings, &mut output.suppressed_warnings, || w);
     }
@@ -270,6 +283,7 @@ pub(super) fn extract_all(
         class_dumps: Vec::new(),
         warnings: Vec::new(),
         suppressed_warnings: 0,
+        has_heap_parse_anomalies: false,
     };
 
     let total_heap_bytes: u64 = heap_record_ranges.iter().map(|r| r.payload_length).sum();

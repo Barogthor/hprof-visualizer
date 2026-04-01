@@ -3,7 +3,7 @@
 //! [`HprofFile`] memory-maps the file, parses its header, and runs the
 //! first-pass indexer in one call, making all structural metadata available
 //! via [`HprofFile::index`] after construction. Truncated or corrupted
-//! records are non-fatal and collected in [`HprofFile::index_warnings`].
+//! records are non-fatal and collected in [`HprofFile::stats`].
 //!
 //! Use [`HprofFile::from_path_with_progress`] to receive byte-offset callbacks
 //! during indexing, or [`HprofFile::from_path`] for a no-op convenience
@@ -29,6 +29,10 @@ pub struct IndexStats {
     pub records_attempted: u64,
     /// Records successfully parsed and inserted into the index.
     pub records_indexed: u64,
+    /// `true` when at least one heap segment had unrecognised
+    /// or truncated sub-tags, meaning BinaryFuse filter
+    /// coverage may be incomplete.
+    pub has_heap_parse_anomalies: bool,
 }
 
 /// An open hprof file with a parsed header and populated structural index.
@@ -65,9 +69,8 @@ impl HprofFile {
     /// reporting progress through the observer.
     ///
     /// Truncated or corrupted records are non-fatal:
-    /// they are collected in
-    /// [`HprofFile::index_warnings`] and indexing
-    /// continues where possible.
+    /// they are collected in [`HprofFile::stats`]
+    /// and indexing continues where possible.
     ///
     /// ## Errors
     /// - [`HprofError::MmapFailed`] — file not found or
@@ -100,6 +103,7 @@ impl HprofFile {
                 warnings: result.warnings,
                 records_attempted: result.records_attempted,
                 records_indexed: result.records_indexed,
+                has_heap_parse_anomalies: result.has_heap_parse_anomalies,
             },
             segment_filters: result.segment_filters,
             records_start,
@@ -355,6 +359,47 @@ mod builder_tests {
                 .get(&name_string_id)
                 .map(String::as_str),
             Some("count")
+        );
+    }
+
+    #[test]
+    fn partial_class_dump_surfaces_warning_and_partial_flag() {
+        let mut payload = Vec::new();
+        payload.push(0x20); // CLASS_DUMP
+        payload.extend_from_slice(&0x100u64.to_be_bytes()); // class_object_id
+        payload.extend_from_slice(&0u32.to_be_bytes()); // stack_trace_serial
+        payload.extend_from_slice(&0u64.to_be_bytes()); // super_class_id
+        for _ in 0..5 {
+            payload.extend_from_slice(&0u64.to_be_bytes());
+        }
+        payload.extend_from_slice(&16u32.to_be_bytes()); // instance_size
+        payload.extend_from_slice(&0u16.to_be_bytes()); // cp_count
+        payload.extend_from_slice(&1u16.to_be_bytes()); // static_count
+        payload.extend_from_slice(&0x200u64.to_be_bytes()); // static field name_string_id
+        payload.push(0x03); // unknown static type => partial parse
+
+        let bytes = HprofTestBuilder::new("JAVA PROFILE 1.0.2", 8)
+            .add_raw_heap_segment(&payload)
+            .build();
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&bytes).unwrap();
+        tmp.flush().unwrap();
+
+        let hfile = HprofFile::from_path(tmp.path()).unwrap();
+        let info = hfile
+            .index
+            .class_dumps
+            .get(&0x100)
+            .expect("class dump must be indexed");
+        assert!(info.partial, "class dump must be marked partial");
+        assert!(
+            hfile
+                .stats
+                .warnings
+                .iter()
+                .any(|w| w.contains("parsed partially") && w.contains("0x100")),
+            "partial class dump warning must be surfaced"
         );
     }
 }

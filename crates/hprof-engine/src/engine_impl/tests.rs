@@ -104,7 +104,7 @@ fn is_fully_indexed_false_for_partial_file() {
 fn is_fully_indexed_false_when_file_truncated_mid_record() {
     // A file truncated mid-record breaks the scan loop before
     // incrementing records_attempted, so the ratio stays 100/100.
-    // is_fully_indexed() must detect this via index_warnings.
+    // is_fully_indexed() must detect this via stats.warnings.
     use std::io::Write as IoWrite;
     let mut bytes = minimal_hprof_bytes();
     // Append a STRING record header claiming 9999 bytes of payload,

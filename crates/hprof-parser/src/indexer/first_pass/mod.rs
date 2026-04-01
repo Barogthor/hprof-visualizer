@@ -93,6 +93,9 @@ pub(super) struct HeapExtractionOutput {
     pub(super) class_dumps: Vec<ClassDumpEntry>,
     pub(super) warnings: Vec<String>,
     pub(super) suppressed_warnings: u64,
+    /// `true` when at least one heap segment had
+    /// unrecognised or truncated sub-tags.
+    pub(super) has_heap_parse_anomalies: bool,
 }
 
 /// Output of the thread resolution phase.
@@ -294,6 +297,7 @@ pub fn run_first_pass(
         records_indexed: scan.records_indexed,
         segment_filters: filters,
         heap_record_ranges: scan.heap_record_ranges,
+        has_heap_parse_anomalies: extraction.has_heap_parse_anomalies,
         #[cfg(feature = "test-utils")]
         diagnostics: DiagnosticInfo {
             entry_point_count: entry_points.len(),

@@ -2054,6 +2054,7 @@ mod chunked_extraction_tests {
             class_dumps: Vec::new(),
             warnings: Vec::new(),
             suppressed_warnings: 0,
+            has_heap_parse_anomalies: false,
         }
     }
 

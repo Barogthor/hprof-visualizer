@@ -186,7 +186,7 @@ impl<'a> Iterator for HeapSubRecordIter<'a> {
 
 /// Returns true if this GC root sub-tag starts with
 /// an object ID.
-fn gc_root_has_object_id(tag: HeapSubTag) -> bool {
+pub(crate) fn gc_root_has_object_id(tag: HeapSubTag) -> bool {
     matches!(
         tag,
         HeapSubTag::GcRootJniGlobal
@@ -201,7 +201,7 @@ fn gc_root_has_object_id(tag: HeapSubTag) -> bool {
 
 /// Returns the number of bytes to skip AFTER reading
 /// the object_id for a GC root sub-tag.
-fn gc_root_remaining_size(tag: HeapSubTag, id_size: IdSize) -> Option<usize> {
+pub(crate) fn gc_root_remaining_size(tag: HeapSubTag, id_size: IdSize) -> Option<usize> {
     let id = id_size.as_usize();
     match tag {
         // object_id + jni_global_ref_id (id)

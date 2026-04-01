@@ -248,11 +248,10 @@ impl HprofFile {
             }
 
             let start = r.payload_start as usize;
-            let end = (payload_end as usize).min(records.len());
             if start >= records.len() {
                 continue;
             }
-
+            let end = (payload_end as usize).min(records.len());
             if let Some(result) = scanner(&records[start..end], r.payload_start) {
                 return Some(result);
             }
@@ -412,10 +411,10 @@ impl HprofFile {
 
 /// Scans heap sub-records for the first match.
 ///
-/// Calls `extract` for each record with the record reference,
-/// `tag_position` (byte offset of the record's tag), and
-/// `cur_pos` (read cursor after the record).
-/// Returns the first `Some` result.
+/// Calls `extract` for each record with the record
+/// reference, `tag_position` (byte offset of the
+/// record's tag), and `cur_pos` (read cursor after
+/// the record). Returns the first `Some` result.
 fn scan_heap_for<T>(
     data: &[u8],
     id_size: IdSize,

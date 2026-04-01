@@ -1103,7 +1103,7 @@ impl NavigationEngine for Engine {
     fn is_fully_indexed(&self) -> bool {
         // A file truncated mid-record breaks out of the scan loop before
         // incrementing records_attempted, so the ratio stays 100%.
-        // index_warnings catches that case (payload-exceeds-file warnings).
+        // stats.warnings catches that case (payload-exceeds-file warnings).
         self.hfile.stats.warnings.is_empty()
             && (self.hfile.stats.records_attempted == 0
                 || self.hfile.stats.records_indexed >= self.hfile.stats.records_attempted)

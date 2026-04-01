@@ -10,8 +10,11 @@ use std::collections::HashSet;
 use rustc_hash::FxHashMap;
 
 use crate::format::IdSize;
-use crate::heap_reader::{HeapSubRecord, HeapSubRecordIter};
+use crate::heap_reader::{gc_root_has_object_id, gc_root_remaining_size};
 use crate::indexer::segment::{SEGMENT_SIZE, SegmentFilter};
+use crate::java_types::value_byte_size;
+use crate::reader::RecordReader;
+use crate::tags::HeapSubTag;
 
 /// Marks the byte position of the first sub-record tag
 /// at or after a [`SEGMENT_SIZE`] boundary.
@@ -81,19 +84,124 @@ pub(crate) fn scan_segment_for_objects(
         return Vec::new();
     }
     let slice = &data[scan_offset..end];
+    let mut reader = RecordReader::new(slice, id_size);
     let mut results = Vec::new();
+    let id_sz = id_size.as_usize();
 
-    let mut iter = HeapSubRecordIter::new(slice, id_size);
-    while let Some(record) = iter.next() {
-        let tag_pos = scan_offset + iter.tag_position() as usize;
-        let obj_id = match &record {
-            HeapSubRecord::Instance { id, .. } => *id,
-            HeapSubRecord::PrimArray { id, .. } => *id,
-            HeapSubRecord::ObjectArray { id, .. } => *id,
-            _ => continue,
-        };
-        if target_ids.contains(&obj_id) {
-            results.push((obj_id, tag_pos as u64));
+    while let Some(raw) = reader.read_u8() {
+        let tag_pos = scan_offset + reader.position() as usize - 1;
+        let sub_tag = HeapSubTag::from(raw);
+
+        match sub_tag {
+            HeapSubTag::InstanceDump => {
+                let Some(obj_id) = reader.read_id() else {
+                    break;
+                };
+                if target_ids.contains(&obj_id) {
+                    results.push((obj_id, tag_pos as u64));
+                }
+                // skip: stack_serial(4) + class_id(id)
+                //   + num_bytes(4) + field_data
+                let Some(_) = reader.read_u32() else {
+                    break;
+                };
+                if !reader.skip(id_sz) {
+                    break;
+                }
+                let Some(num_bytes) = reader.read_u32() else {
+                    break;
+                };
+                if !reader.skip(num_bytes as usize) {
+                    break;
+                }
+            }
+            HeapSubTag::PrimArrayDump => {
+                let Some(arr_id) = reader.read_id() else {
+                    break;
+                };
+                if target_ids.contains(&arr_id) {
+                    results.push((arr_id, tag_pos as u64));
+                }
+                // skip: stack_serial(4) +
+                //   num_elements(4) + elem_type(1) + data
+                if !reader.skip(4) {
+                    break;
+                }
+                let Some(num_elements) = reader.read_u32() else {
+                    break;
+                };
+                let Some(elem_type) = reader.read_u8() else {
+                    break;
+                };
+                let elem_size =
+                    value_byte_size(elem_type, id_size);
+                if elem_size == 0 {
+                    break;
+                }
+                let byte_count =
+                    (num_elements as usize).saturating_mul(elem_size);
+                if !reader.skip(byte_count) {
+                    break;
+                }
+            }
+            HeapSubTag::ObjectArrayDump => {
+                let Some(arr_id) = reader.read_id() else {
+                    break;
+                };
+                if target_ids.contains(&arr_id) {
+                    results.push((arr_id, tag_pos as u64));
+                }
+                // skip: stack_serial(4) +
+                //   num_elements(4) + class_id(id) +
+                //   elements
+                if !reader.skip(4) {
+                    break;
+                }
+                let Some(num_elements) = reader.read_u32() else {
+                    break;
+                };
+                if !reader.skip(id_sz) {
+                    break;
+                }
+                let byte_count =
+                    (num_elements as usize).saturating_mul(id_sz);
+                if !reader.skip(byte_count) {
+                    break;
+                }
+            }
+            HeapSubTag::ClassDump => {
+                if !reader.skip_class_dump_body() {
+                    break;
+                }
+            }
+            HeapSubTag::GcRootUnknown => {
+                if !reader.skip(id_sz) {
+                    break;
+                }
+            }
+            HeapSubTag::GcRootJavaFrame => {
+                // object_id + thread_serial(4) +
+                //   frame_number(4)
+                if !reader.skip(id_sz + 8) {
+                    break;
+                }
+            }
+            HeapSubTag::GcRootThreadObj => {
+                // object_id + thread_serial(4) +
+                //   stack_trace_serial(4)
+                if !reader.skip(id_sz + 8) {
+                    break;
+                }
+            }
+            t if gc_root_has_object_id(t) => {
+                let skip_after =
+                    gc_root_remaining_size(t, id_size)
+                        .unwrap_or(0);
+                if !reader.skip(id_sz + skip_after) {
+                    break;
+                }
+            }
+            _ => break,
         }
     }
 

@@ -132,6 +132,7 @@ mod tests {
             records_indexed: 0,
             segment_filters: Vec::new(),
             heap_record_ranges: Vec::new(),
+            has_heap_parse_anomalies: false,
             #[cfg(feature = "test-utils")]
             diagnostics: crate::indexer::DiagnosticInfo::default(),
         }
